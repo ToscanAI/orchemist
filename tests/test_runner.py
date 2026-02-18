@@ -33,7 +33,6 @@ def test_db():
     # Add execute method to support older code paths
     def execute_sql(sql, params=None):
         conn = db.get_connection()
-        # SQLite doesn't support inline INDEX in CREATE TABLE, so remove them
         sql_cleaned = sql
         import re
         # Remove SQL comments (-- style)
@@ -42,6 +41,8 @@ def test_db():
         sql_cleaned = re.sub(r',?\s*INDEX\s+\w+\s*\([^)]*\)', '', sql_cleaned)
         # Remove trailing commas before closing parens
         sql_cleaned = re.sub(r',\s*\)', ')', sql_cleaned)
+        # Remove ON CONFLICT clauses (not supported without unique constraints)
+        sql_cleaned = re.sub(r'\s+ON\s+CONFLICT[^;]*$', '', sql_cleaned, flags=re.MULTILINE | re.DOTALL)
         
         if params:
             conn.execute(sql_cleaned, params)
@@ -49,7 +50,16 @@ def test_db():
             conn.execute(sql_cleaned)
         conn.commit()
     
+    def fetch_all_sql(sql, params=None):
+        conn = db.get_connection()
+        if params:
+            cursor = conn.execute(sql, params)
+        else:
+            cursor = conn.execute(sql)
+        return [dict(row) for row in cursor.fetchall()]
+    
     db.execute = execute_sql
+    db.fetch_all = fetch_all_sql
     return db
 
 
