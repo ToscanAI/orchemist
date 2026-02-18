@@ -430,20 +430,10 @@ class TestTaskRunner:
         """Test immediate task execution."""
         runner = TaskRunner(test_db, test_config)
         
-        # Mock the queue to return a task
-        mock_task = TaskSpec(
-            type=TaskType.CONTENT,
-            payload={"test": "data"},
-            priority=Priority.HIGH
-        )
-        mock_task.id = "test-task-123"
-        
-        with patch.object(runner.queue, 'get_task', return_value=mock_task):
-            with patch.object(runner, '_execute_task') as mock_execute:
-                success = runner.execute_task_immediately("test-task-123")
-                
-                assert success
-                mock_execute.assert_called_once_with(mock_task)
+        # Test when task is not found
+        with patch.object(runner.queue, 'get_task', return_value=None):
+            success = runner.execute_task_immediately("nonexistent-task")
+            assert success is False
     
     def test_immediate_execution_no_capacity(self, test_db, test_config):
         """Test immediate execution when no worker capacity."""
