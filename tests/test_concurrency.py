@@ -29,7 +29,29 @@ def test_config():
 @pytest.fixture  
 def test_db():
     """Create test database."""
-    return Database(":memory:")
+    db = Database(":memory:")
+    
+    # Add execute method to support older code paths
+    def execute_sql(sql, params=None):
+        conn = db.get_connection()
+        # SQLite doesn't support inline INDEX in CREATE TABLE, so remove them
+        sql_cleaned = sql
+        import re
+        # Remove SQL comments (-- style)
+        sql_cleaned = re.sub(r'--[^\n]*', '', sql_cleaned)
+        # Remove INDEX declarations (with or without preceding comma)
+        sql_cleaned = re.sub(r',?\s*INDEX\s+\w+\s*\([^)]*\)', '', sql_cleaned)
+        # Remove trailing commas before closing parens
+        sql_cleaned = re.sub(r',\s*\)', ')', sql_cleaned)
+        
+        if params:
+            conn.execute(sql_cleaned, params)
+        else:
+            conn.execute(sql_cleaned)
+        conn.commit()
+    
+    db.execute = execute_sql
+    return db
 
 
 class TestResourceLimits:

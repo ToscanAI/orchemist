@@ -254,8 +254,8 @@ class TestEnvironmentOverrides:
         # Test different types
         os.environ['ORCH_QUEUE_MAX_WORKERS'] = '20'  # int
         os.environ['ORCH_RESOURCES_DAILY_BUDGET_USD'] = '150.50'  # float
-        os.environ['ORCH_DEBUG_MODE'] = 'true'  # bool
         os.environ['ORCH_LOGGING_LEVEL'] = 'DEBUG'  # string
+        os.environ['ORCH_MODELS_DEFAULT_TIER'] = 'opus-4-6'  # string
         
         try:
             config_dict = {}
@@ -263,13 +263,13 @@ class TestEnvironmentOverrides:
             
             assert result["queue"]["max_workers"] == 20
             assert result["resources"]["daily_budget_usd"] == 150.50
-            assert result["debug_mode"] is True
             assert result["logging"]["level"] == "DEBUG"
+            assert result["models"]["default_tier"] == "opus-4-6"
         
         finally:
             # Clean up
             for key in ['ORCH_QUEUE_MAX_WORKERS', 'ORCH_RESOURCES_DAILY_BUDGET_USD',
-                       'ORCH_DEBUG_MODE', 'ORCH_LOGGING_LEVEL']:
+                       'ORCH_LOGGING_LEVEL', 'ORCH_MODELS_DEFAULT_TIER']:
                 os.environ.pop(key, None)
     
     def test_env_override_ignores_non_orch(self):

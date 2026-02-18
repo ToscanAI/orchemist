@@ -28,7 +28,29 @@ def test_config():
 @pytest.fixture
 def test_db():
     """Create test database."""
-    return Database(":memory:")
+    db = Database(":memory:")
+    
+    # Add execute method to support older code paths
+    def execute_sql(sql, params=None):
+        conn = db.get_connection()
+        # SQLite doesn't support inline INDEX in CREATE TABLE, so remove them
+        sql_cleaned = sql
+        import re
+        # Remove SQL comments (-- style)
+        sql_cleaned = re.sub(r'--[^\n]*', '', sql_cleaned)
+        # Remove INDEX declarations (with or without preceding comma)
+        sql_cleaned = re.sub(r',?\s*INDEX\s+\w+\s*\([^)]*\)', '', sql_cleaned)
+        # Remove trailing commas before closing parens
+        sql_cleaned = re.sub(r',\s*\)', ')', sql_cleaned)
+        
+        if params:
+            conn.execute(sql_cleaned, params)
+        else:
+            conn.execute(sql_cleaned)
+        conn.commit()
+    
+    db.execute = execute_sql
+    return db
 
 
 @pytest.fixture
@@ -67,7 +89,7 @@ class TestDryRunExecutor:
         assert result.state == TaskState.FAILED
         assert result.confidence == 0.0
         assert len(result.errors) > 0
-        assert result.errors[0]["code"] == "dry_run_failure"
+        assert result.errors[0].code == "dry_run_failure"
     
     def test_dry_run_executor_can_handle_all(self):
         """Test that dry run executor can handle all task types."""
@@ -120,7 +142,7 @@ class TestLocalExecutor:
         assert result.state == TaskState.FAILED
         assert result.confidence == 0.0
         assert len(result.errors) > 0
-        assert "Command failed" in result.errors[0]["message"]
+        assert "Command failed" in result.errors[0].message
     
     def test_local_executor_security_check(self):
         """Test security check for disallowed commands."""
@@ -135,7 +157,7 @@ class TestLocalExecutor:
         result = executor.execute(task, "worker-1")
         
         assert result.state == TaskState.FAILED
-        assert "not allowed" in result.errors[0]["message"]
+        assert "not allowed" in result.errors[0].message
     
     def test_local_executor_missing_command(self):
         """Test execution with missing command."""
@@ -150,7 +172,7 @@ class TestLocalExecutor:
         result = executor.execute(task, "worker-1")
         
         assert result.state == TaskState.FAILED
-        assert "No 'command' specified" in result.errors[0]["message"]
+        assert "No 'command' specified" in result.errors[0].message
     
     def test_local_executor_timeout(self):
         """Test command timeout handling."""
@@ -169,7 +191,7 @@ class TestLocalExecutor:
         
         assert result.state == TaskState.FAILED
         assert execution_time < 5  # Should timeout quickly
-        assert "timed out" in result.errors[0]["message"]
+        assert "timed out" in result.errors[0].message
     
     def test_local_executor_task_type_handling(self):
         """Test which task types local executor can handle."""
@@ -271,7 +293,8 @@ class TestOpenClawExecutor:
             assert result.state == TaskState.SUCCESS
             assert result.confidence == 0.85
             assert result.tokens_consumed == 500
-            assert result.cost_usd == 0.05
+            from decimal import Decimal
+            assert result.cost_usd == Decimal("0.05")
     
     def test_openclaw_execution_simulation_failure(self, test_config, sample_task):
         """Test simulated failed OpenClaw execution."""
