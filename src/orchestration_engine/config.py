@@ -8,7 +8,7 @@ import os
 import toml
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from decimal import Decimal
 
 
@@ -54,7 +54,8 @@ class PathsConfig(BaseModel):
     logs: str = Field(default="~/.orchestration-engine/logs/", description="Log directory")
     config_file: str = Field(default="~/.orchestration-engine/config.toml", description="Configuration file path")
     
-    @validator('database', 'logs', 'config_file')
+    @field_validator('database', 'logs', 'config_file')
+    @classmethod
     def expand_path(cls, v):
         """Expand user home directory in paths."""
         return str(Path(v).expanduser())
@@ -73,7 +74,7 @@ class ResourceConfig(BaseModel):
 
 class LoggingConfig(BaseModel):
     """Logging configuration."""
-    level: str = Field(default="INFO", regex="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
+    level: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
     format: str = Field(default="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     max_file_size_mb: int = Field(default=100, ge=1, le=1000)
     backup_count: int = Field(default=5, ge=1, le=20)
