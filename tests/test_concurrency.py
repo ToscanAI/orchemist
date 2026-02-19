@@ -436,14 +436,22 @@ class TestWorkerPoolBackgroundTasks:
             # Verify worker is running
             assert pool._workers[worker_id].state == WorkerState.RUNNING
             
-            # Wait for stale detection (longer than timeout)
-            time.sleep(2)  # Wait longer than 0.6 seconds
+            # Wait for the stale timeout to expire
+            time.sleep(1)  # longer than 0.6 seconds
             
-            # Worker should be marked as stale
-            # Note: This might be flaky in CI, so we'll be lenient
+            # Manually trigger stale detection (background thread runs every 30s)
+            stale_timeout = timedelta(minutes=config.queue.stale_worker_timeout_minutes)
+            now = datetime.now()
+            with pool._lock:
+                stale_workers = [
+                    wid for wid, w in pool._workers.items()
+                    if w.state == WorkerState.RUNNING and now - w.last_heartbeat > stale_timeout
+                ]
+            for wid in stale_workers:
+                pool._mark_worker_stale(wid)
+            
             worker = pool._workers.get(worker_id)
             if worker:
-                # If worker still exists, it might be stale or terminated
                 assert worker.state in [WorkerState.STALE, WorkerState.TERMINATED]
         
         finally:

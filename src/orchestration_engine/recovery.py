@@ -345,7 +345,6 @@ class RecoveryManager:
                 error_message TEXT,
                 backoff_seconds INTEGER,
                 success BOOLEAN,
-                FOREIGN KEY(task_id) REFERENCES tasks(id),
                 INDEX idx_retry_task (task_id),
                 INDEX idx_retry_schedule (scheduled_at)
             )
@@ -397,12 +396,17 @@ class RecoveryManager:
         # Record error pattern for learning
         self._record_error_pattern(error_message, error_type, task_type, model_tier)
         
+        # Determine whether this is the task's first failure (not a retry attempt).
+        # Circuit breakers should count unique task failures, not individual retry attempts
+        # of the same task — otherwise the CB fires before max_retries are exhausted.
+        is_first_failure = task_id not in self._retry_states
+        
         # Get or create retry state
         retry_state = self._get_retry_state(task_id, task_type, model_tier or "sonnet-4")
         
         # Check circuit breakers
         cb_key = f"{task_type.value}:{model_tier or 'default'}"
-        if self._check_circuit_breaker(cb_key, error_type):
+        if self._check_circuit_breaker(cb_key, error_type, increment=is_first_failure):
             logger.warning(f"Circuit breaker open for {cb_key}, not retrying task {task_id}")
             return False, None, None
         
@@ -426,7 +430,7 @@ class RecoveryManager:
             next_model = select_model_tier(task_type, retry_state.current_attempt + 1).value
         
         # Record retry attempt in database
-        self._record_retry_attempt(retry_state.attempts[-1])
+        self._record_retry_attempt(task_id, retry_state.attempts[-1])
         
         logger.info(f"Task {task_id} scheduled for retry {retry_state.current_attempt} at {retry_at} "
                    f"(error_type={error_type}, next_model={next_model})")
@@ -477,16 +481,27 @@ class RecoveryManager:
         
         return self._retry_states[task_id]
     
-    def _check_circuit_breaker(self, key: str, error_type: ErrorType) -> bool:
-        """Check if circuit breaker should prevent retry."""
+    def _check_circuit_breaker(self, key: str, error_type: ErrorType,
+                               increment: bool = True) -> bool:
+        """Check if circuit breaker should prevent retry.
+        
+        Args:
+            key: Circuit breaker key (task_type:model_tier)
+            error_type: Type of error
+            increment: Whether to count this as a new failure. Should be True only
+                       for the first failure of each unique task, not for retries,
+                       so the CB reflects unique-task failure rate rather than
+                       per-attempt failure rate.
+        """
         if key not in self._circuit_breakers:
             self._circuit_breakers[key] = self._load_circuit_breaker_state(key)
         
         cb = self._circuit_breakers[key]
         
-        # Record failure
-        cb.record_failure(self.config.retry.circuit_breaker_threshold)
-        self._save_circuit_breaker_state(key)
+        # Only record failure for first-time task failures (not retries of the same task)
+        if increment:
+            cb.record_failure(self.config.retry.circuit_breaker_threshold)
+            self._save_circuit_breaker_state(key)
         
         # Check if circuit is open
         is_open = cb.is_open(
@@ -501,16 +516,23 @@ class RecoveryManager:
     
     def _load_circuit_breaker_state(self, key: str) -> CircuitBreakerState:
         """Load circuit breaker state from database."""
-        row = self.db.fetch_one("""
+        rows = self.db.fetch_all("""
             SELECT * FROM circuit_breaker_state WHERE name = ?
         """, [key])
+        row = rows[0] if rows else None
         
         if row:
+            opened_at = row['opened_at']
+            if isinstance(opened_at, str):
+                opened_at = datetime.fromisoformat(opened_at)
+            last_failure = row['last_failure']
+            if isinstance(last_failure, str):
+                last_failure = datetime.fromisoformat(last_failure)
             return CircuitBreakerState(
                 name=key,
                 failure_count=row['failure_count'],
-                last_failure=row['last_failure'],
-                opened_at=row['opened_at'],
+                last_failure=last_failure,
+                opened_at=opened_at,
                 state=row['state']
             )
         
@@ -521,16 +543,11 @@ class RecoveryManager:
         cb = self._circuit_breakers[key]
         
         self.db.execute("""
-            INSERT INTO circuit_breaker_state (name, failure_count, last_failure, opened_at, state)
+            INSERT OR REPLACE INTO circuit_breaker_state (name, failure_count, last_failure, opened_at, state)
             VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(name) DO UPDATE SET
-                failure_count = EXCLUDED.failure_count,
-                last_failure = EXCLUDED.last_failure,
-                opened_at = EXCLUDED.opened_at,
-                state = EXCLUDED.state
         """, [cb.name, cb.failure_count, cb.last_failure, cb.opened_at, cb.state])
     
-    def _record_retry_attempt(self, attempt: RetryAttempt) -> None:
+    def _record_retry_attempt(self, task_id: str, attempt: RetryAttempt) -> None:
         """Record retry attempt in database."""
         self.db.execute("""
             INSERT INTO retry_attempts (
@@ -538,7 +555,7 @@ class RecoveryManager:
                 error_type, error_message, backoff_seconds
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """, [
-            self._retry_states[next(iter(self._retry_states))].task_id,  # Get task_id from retry state
+            task_id,
             attempt.attempt_number, attempt.scheduled_at, attempt.model_tier,
             attempt.error_type.value if attempt.error_type else None,
             attempt.error_message, attempt.backoff_seconds

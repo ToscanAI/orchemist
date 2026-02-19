@@ -151,8 +151,7 @@ class WorkerPool:
                 last_heartbeat TIMESTAMP NOT NULL,
                 last_activity TEXT,
                 INDEX idx_worker_state (state),
-                INDEX idx_worker_heartbeat (last_heartbeat),
-                FOREIGN KEY(assigned_task_id) REFERENCES tasks(id)
+                INDEX idx_worker_heartbeat (last_heartbeat)
             )
         """)
         
@@ -248,21 +247,11 @@ class WorkerPool:
             Worker ID if assigned, None if no workers available
         """
         with self._lock:
-            # Find available worker
-            available_workers = [
-                w for w in self._workers.values()
-                if w.state == WorkerState.IDLE
-            ]
-            
-            if not available_workers:
-                # Try to create a new worker
-                worker_id = self.create_worker()
-                if worker_id is None:
-                    return None
-                worker = self._workers[worker_id]
-            else:
-                worker = available_workers[0]
-                worker_id = worker.worker_id
+            # Always create a new dedicated worker for this task
+            worker_id = self.create_worker()
+            if worker_id is None:
+                return None
+            worker = self._workers[worker_id]
             
             # Assign task
             worker.state = WorkerState.ASSIGNED

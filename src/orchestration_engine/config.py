@@ -16,7 +16,7 @@ class QueueConfig(BaseModel):
     """Queue management configuration."""
     max_workers: int = Field(default=8, ge=1, le=32, description="Maximum concurrent workers")
     poll_interval_seconds: int = Field(default=2, ge=1, le=60, description="Queue polling interval")
-    stale_worker_timeout_minutes: int = Field(default=5, ge=1, le=60, description="Stale worker detection timeout")
+    stale_worker_timeout_minutes: float = Field(default=5, gt=0, le=60, description="Stale worker detection timeout")
 
 
 class RetryConfig(BaseModel):
