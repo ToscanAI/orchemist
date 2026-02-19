@@ -8,7 +8,7 @@ import os
 import toml
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from decimal import Decimal
 
 
@@ -83,6 +83,8 @@ class LoggingConfig(BaseModel):
 
 class EngineConfig(BaseModel):
     """Complete orchestration engine configuration."""
+    model_config = ConfigDict(validate_assignment=True, extra="ignore")
+
     queue: QueueConfig = Field(default_factory=QueueConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
@@ -94,11 +96,6 @@ class EngineConfig(BaseModel):
     environment: str = Field(default="production", description="Environment: development/production")
     debug_mode: bool = Field(default=False, description="Enable debug features")
     dry_run: bool = Field(default=False, description="Dry run mode - don't execute tasks")
-
-    class Config:
-        """Pydantic model configuration."""
-        validate_assignment = True
-        extra = "ignore"  # Ignore unknown keys in TOML
 
 
 def load_toml_config(config_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
