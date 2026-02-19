@@ -53,6 +53,46 @@ orch health                    # System health check
 - Queue lifecycle tests (submit → pickup → complete/fail → retry → dead letter)
 - All passing on Python 3.12 with pytest
 
+## Project Status (Updated 2026-02-19)
+
+### ✅ Completed
+| Issue | Title | Notes |
+|-------|-------|-------|
+| #1 | Task Queue (SQLite-backed) | Phase 1 — persistent, concurrent, priority-based |
+| #3 | Structured Output Schemas | Phase 1 — Pydantic V2 models for all types |
+| #7 | Configuration System (TOML) | 23 tests passing, env var overrides, model tier mappings |
+| — | Task Runner (partial) | Execution layer on `phase2/task-runner` branch |
+
+### 🔵 Next Up (Toscan builds — no input needed)
+| Issue | Title | Priority | Est. Complexity |
+|-------|-------|----------|-----------------|
+| #4 | Error Recovery — retry + model escalation | HIGH | Medium |
+| #5 | Concurrency Manager — parallel workers | HIGH | Medium |
+| #6 | Progress Streaming — real-time status | MEDIUM | Low |
+| #34-40 | CLI commands (submit, status, run, history, metrics, health, config) | MEDIUM | Medium |
+| #30-32 | Metrics tracking (per-model, cost, report gen) | LOW | Medium |
+| #41-43 | Documentation (Getting Started, Template Guide, API Ref) | LOW | Low |
+
+### ⚠️ Needs René's Input (design decisions)
+| Issue | Title | What's Needed |
+|-------|-------|---------------|
+| #48 | Spec-First Orchestra Templates | Template format/spec decisions |
+| #49 | Digital Twin / Mock Service Layer | Testing strategy without real APIs |
+
+### 🔴 Blocked
+| Issue | Title | Blocker |
+|-------|-------|---------|
+| #33 (old) | OpenClaw Error Hooks | Needs OpenClaw-level work — error events our engine can hook into |
+
+### 📊 Issue Totals
+- **Open:** 39 | **Closed:** 3 | **Total:** 42
+- **Labels:** core, cli, quality, templates, metrics, memory, mcp, documentation
+
+### 🅿️ Status: PARKED
+Core infrastructure (queue + schemas + config) is solid. Phase 2 branch has partial Task Runner. Resuming when prioritized.
+
+---
+
 ## What's Next (Phase 2)
 
 The Task Runner connects the queue to OpenClaw's `sessions_spawn()`, making tasks actually execute:
@@ -61,7 +101,7 @@ The Task Runner connects the queue to OpenClaw's `sessions_spawn()`, making task
 - **Error Recovery** (#4) — Exponential backoff + model escalation
 - **Concurrency Manager** (#5) — Max 8 parallel workers
 - **Progress Streaming** (#6) — Real-time status updates
-- **Config System** (#7) — TOML configuration
+- **Config System** (#7) — ✅ COMPLETE (TOML configuration)
 
 ## Architecture
 
