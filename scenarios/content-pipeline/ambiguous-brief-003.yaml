@@ -1,0 +1,62 @@
+id: content-pipeline-ambiguous-brief-003
+version: 1
+pipeline: content-pipeline
+name: "Vague brief — should produce reasonable article without hallucinating details"
+created: 2026-02-20
+tags: [edge-case, robustness]
+
+input:
+  brief: "Write something about AI and coding"
+  # Deliberately minimal — no audience, no word count, no tone specified
+
+acceptance:
+  - id: not_empty
+    type: assertion
+    check: "len(output.get('article', '')) > 100"
+    weight: 0
+
+  - id: reasonable_length
+    type: assertion
+    check: "300 <= len(output.get('article', '').split()) <= 2000"
+    weight: 0
+
+  - id: coherent_despite_vague_input
+    type: llm_judge
+    judge_model: claude-sonnet-4-6
+    rubric: |
+      This article was produced from a deliberately vague brief:
+      "Write something about AI and coding."
+
+      Rate how well the article handles the ambiguity (0.0 to 1.0):
+      - 1.0: Picks a clear angle, executes it well, doesn't overreach
+      - 0.7: Reasonable article but tries to cover too much ground
+      - 0.4: Rambling, no clear thesis, reads like filler
+      - 0.0: Hallucinated a specific brief that wasn't given, or
+              produced nonsensical output
+    threshold: 0.60
+    weight: 2
+
+  - id: no_fabrication
+    type: llm_judge
+    judge_model: claude-sonnet-4-6
+    rubric_file: shared/rubrics/no-fabrication.md
+    threshold: 0.80
+    weight: 3
+
+  - id: has_some_structure
+    type: llm_judge
+    judge_model: claude-haiku-4-5-20251001
+    rubric: |
+      Does this article have basic structure? (0.0 to 1.0)
+      - Has a title/headline
+      - Has some form of introduction
+      - Has at least 2 substantive sections
+      - Has some form of conclusion
+      Score based on how many of these are present and coherent.
+    threshold: 0.50
+    weight: 1
+
+scoring:
+  method: weighted_average
+  pass_threshold: 0.65
+  gate_mode: all_or_nothing
