@@ -1,5 +1,9 @@
 # Orchestra Templates
 
+> ⚠️ **Template Engine Status: NOT BUILT YET** — The `OrchestraTemplate`, `Phase`, and phase sequencer described below are **planned for Week 3**. No template engine code exists yet. This document defines the template format and serves as the Week 3 implementation spec.
+>
+> ✅ **What IS documented and stable:** The Content Pipeline v2.3 (8 phases) is the authoritative template spec. The `orchestra-templates.md` was updated to v2.3 on 2026-02-20. Code Sprint and Deep Research templates are drafts.
+
 Orchestra templates are **reusable multi-agent coordination patterns** that encode proven workflows for complex tasks. Each template defines phases, dependencies, quality gates, and coordination logic.
 
 ## Template Architecture
@@ -80,30 +84,30 @@ class OrchestraTemplate(BaseModel):
 ```python
 CONTENT_PIPELINE_TEMPLATE = OrchestraTemplate(
     id="content-pipeline",
-    name="Content Creation Pipeline",
-    description="5-phase content creation: Research → Write → Fact-Check → Fix → Human Review",
-    version="1.0.0",
+    name="Content Creation Pipeline v2.3",
+    description="8-phase content creation: Research → Write → Fact-Check → Logical Flow → Red Team → Consistency → Apply Fixes → Human Review",
+    version="2.3.0",
     phases=[
         Phase(
             id="research",
-            name="Research & Fact Gathering",
-            description="Gather sources, facts, and supporting evidence",
+            name="Phase 1: Research & Source Gathering",
+            description="Deep research with 30+ sources, verified citations, structured brief",
             type=PhaseType.SEQUENTIAL,
             task_type="research",
-            model_tier="haiku",
+            model_tier="sonnet",
             thinking_level="low",
             timeout_minutes=30,
             min_confidence=0.7,
-            quality_gates=["research_quality"]
+            quality_gates=["research_quality", "source_count"]
         ),
         Phase(
-            id="write", 
-            name="Content Creation",
-            description="Generate initial content based on research",
+            id="write",
+            name="Phase 2: Content Creation",
+            description="Generate article + companion post from research brief",
             type=PhaseType.SEQUENTIAL,
             task_type="content",
             model_tier="sonnet",
-            thinking_level="medium",
+            thinking_level="low",
             depends_on=["research"],
             timeout_minutes=45,
             min_confidence=0.6,
@@ -111,55 +115,95 @@ CONTENT_PIPELINE_TEMPLATE = OrchestraTemplate(
         ),
         Phase(
             id="fact_check",
-            name="Fact Verification",
-            description="Verify claims and citations in content", 
-            type=PhaseType.SEQUENTIAL,
+            name="Phase 3: Fact Verification",
+            description="Independent agent verifies claims, citations, and source accuracy. MUST be a different agent than writer.",
+            type=PhaseType.PARALLEL,
             task_type="review",
             model_tier="sonnet",
-            thinking_level="high",
+            thinking_level="low",
             depends_on=["write"],
             timeout_minutes=30,
             min_confidence=0.8,
-            quality_gates=["fact_accuracy", "citation_verification"]
+            quality_gates=["fact_accuracy", "citation_verification", "source_accuracy"]
         ),
         Phase(
-            id="revision",
-            name="Content Revision",
-            description="Fix issues found in fact-checking",
-            type=PhaseType.CONDITIONAL,
-            task_type="content",
-            model_tier="sonnet", 
-            thinking_level="medium",
-            depends_on=["fact_check"],
-            run_condition="fact_check.result.decision == 'revise'",
+            id="logical_flow",
+            name="Phase 4: Logical Flow Review",
+            description="Independent agent reviews argument structure, thesis clarity, transitions, and narrative arc",
+            type=PhaseType.PARALLEL,
+            task_type="review",
+            model_tier="sonnet",
+            thinking_level="low",
+            depends_on=["write"],
             timeout_minutes=30,
-            min_confidence=0.8
+            min_confidence=0.7,
+            quality_gates=["thesis_present", "transitions_smooth", "sections_flow"]
+        ),
+        Phase(
+            id="red_team",
+            name="Phase 5: Red Team / Backlash Review",
+            description="Independent agent adversarially reviews for backlash risk, tone issues, outsider-writing problems. Cross-domain articles REQUIRE practitioner persona.",
+            type=PhaseType.PARALLEL,
+            task_type="review",
+            model_tier="sonnet",
+            thinking_level="low",
+            depends_on=["write"],
+            timeout_minutes=30,
+            min_confidence=0.7,
+            quality_gates=["backlash_score", "tone_check", "outsider_writing"]
+        ),
+        Phase(
+            id="consistency",
+            name="Phase 6: Cross-Phase Consistency Check",
+            description="Verify all review findings are consistent, no contradictions between phases 3-5",
+            type=PhaseType.SEQUENTIAL,
+            task_type="review",
+            model_tier="sonnet",
+            thinking_level="low",
+            depends_on=["fact_check", "logical_flow", "red_team"],
+            timeout_minutes=15,
+            min_confidence=0.7
+        ),
+        Phase(
+            id="apply_fixes",
+            name="Phase 7: Apply Fixes (7a mechanical + 7b tone + 7c companion red team)",
+            description="Apply all corrections from phases 3-6. 7a: mechanical fixes. 7b: tone/framing rewrites (requires editorial judgment — use Sonnet+). 7c: companion post red team against corrected article.",
+            type=PhaseType.SEQUENTIAL,
+            task_type="content",
+            model_tier="sonnet",
+            thinking_level="low",
+            depends_on=["consistency"],
+            timeout_minutes=45,
+            min_confidence=0.8,
+            quality_gates=["all_fixes_applied", "companion_backlash_check"]
         ),
         Phase(
             id="human_review",
-            name="Human Review & Approval",
-            description="Final human review before publication",
+            name="Phase 8: Human Review & 24h Cool-Down",
+            description="Final human review before publication. MANDATORY 24-hour cool-down period.",
             type=PhaseType.HUMAN_GATE,
             task_type="review",
-            depends_on=["revision", "fact_check"],
-            success_condition="any([revision.status == 'success', fact_check.result.decision == 'approve'])",
+            depends_on=["apply_fixes"],
             human_approval_required=True,
-            human_timeout_minutes=1440  # 24 hours
+            human_timeout_minutes=2880  # 48 hours (includes 24h cool-down)
         )
     ],
-    max_duration_hours=4,
+    parallel_groups=[["fact_check", "logical_flow", "red_team"]],
+    max_duration_hours=8,
     overall_confidence_threshold=0.8,
     config_schema={
         "type": "object",
         "properties": {
-            "topic": {"type": "string", "description": "Content topic"},
+            "topic": {"type": "string", "description": "Content topic or brief"},
             "word_count": {"type": "integer", "minimum": 500, "maximum": 5000},
-            "target_audience": {"type": "string", "enum": ["general", "technical", "academic"]},
-            "tone": {"type": "string", "enum": ["formal", "casual", "conversational"]},
-            "seo_keywords": {"type": "array", "items": {"type": "string"}},
+            "target_audience": {"type": "string", "description": "Who is this for"},
+            "tone": {"type": "string", "description": "e.g. practitioner sharing experience"},
+            "author": {"type": "string", "description": "Author name for byline"},
+            "include_companion": {"type": "boolean", "default": True, "description": "Generate companion social post"},
+            "cross_domain": {"type": "boolean", "default": False, "description": "If true, Phase 5 uses practitioner persona"},
             "publication_deadline": {"type": "string", "format": "date-time"}
         },
-        "required": ["topic", "word_count", "target_audience"]
+        "required": ["topic", "target_audience"]
     }
 )
 ```

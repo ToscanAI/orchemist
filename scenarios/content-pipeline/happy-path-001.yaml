@@ -1,0 +1,71 @@
+id: content-pipeline-happy-path-001
+version: 1
+pipeline: content-pipeline
+name: "AI testing article with accurate sourcing"
+created: 2026-02-20
+tags: [happy-path, sourcing, linkedin]
+
+input:
+  brief: "Write a LinkedIn article about outcome-based testing for AI agent systems"
+  target_audience: "CTOs and engineering leads"
+  word_count_range: [800, 1500]
+  tone: "practitioner sharing experience, not authority lecturing"
+  author: "Conny Lazo"
+
+acceptance:
+  # Hard gates — binary pass/fail
+  - id: article_not_empty
+    type: assertion
+    check: "len(output.get('article', '')) > 100"
+    weight: 0
+
+  - id: sources_section_exists
+    type: assertion
+    check: "'sources' in output.get('article', '').lower() or 'inspiration' in output.get('article', '').lower()"
+    weight: 0
+
+  - id: word_count_in_range
+    type: assertion
+    check: "800 <= len(output.get('article', '').split()) <= 1500"
+    weight: 0
+
+  # Scored criteria — LLM-judged
+  - id: factual_accuracy
+    type: llm_judge
+    judge_model: claude-sonnet-4-6
+    rubric_file: shared/rubrics/factual-accuracy.md
+    threshold: 0.80
+    weight: 3
+
+  - id: structural_quality
+    type: llm_judge
+    judge_model: claude-haiku-4-5-20251001
+    rubric_file: shared/rubrics/structural-quality.md
+    threshold: 0.70
+    weight: 2
+
+  - id: tone_appropriateness
+    type: llm_judge
+    judge_model: claude-sonnet-4-6
+    rubric_file: shared/rubrics/tone-check.md
+    threshold: 0.75
+    weight: 2
+
+  - id: citation_reachability
+    type: url_check
+    check: "all URLs in Sources section return HTTP 200"
+    threshold: 0.90
+    weight: 1
+
+observations:
+  - id: cost_tracking
+    measure: "total pipeline cost in USD"
+  - id: execution_time
+    measure: "total pipeline execution time in seconds"
+  - id: model_escalations
+    measure: "number of model tier escalations during pipeline"
+
+scoring:
+  method: weighted_average
+  pass_threshold: 0.75
+  gate_mode: all_or_nothing

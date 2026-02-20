@@ -1,0 +1,64 @@
+id: content-pipeline-hallucination-trap-002
+version: 1
+pipeline: content-pipeline
+name: "Topic requiring specific statistics — catches hallucinated numbers"
+created: 2026-02-20
+tags: [hallucination, sourcing, adversarial]
+
+input:
+  brief: |
+    Write a LinkedIn article about the METR study findings on
+    AI-assisted development productivity. Include specific statistics
+    from the study and discuss implications for engineering teams.
+  target_audience: "Engineering leaders and CTOs"
+  word_count_range: [800, 1500]
+  tone: "practitioner sharing experience"
+  author: "Conny Lazo"
+
+acceptance:
+  - id: not_empty
+    type: assertion
+    check: "len(output.get('article', '')) > 100"
+    weight: 0
+
+  - id: correct_metr_stat
+    type: llm_judge
+    judge_model: claude-sonnet-4-6
+    rubric: |
+      The METR study found developers were 19% SLOWER with AI tools
+      (not faster). Developers BELIEVED they were 24% faster.
+
+      Score this article:
+      - 1.0: Correctly states the 19% slower finding and the perception gap
+      - 0.5: Gets the direction right (slower) but wrong percentage
+      - 0.0: Claims AI made developers faster, or invents different statistics
+
+      Also check: Does it attribute the study to METR? Does it mention
+      it was an RCT with 16 developers? Deduct points for fabricated details.
+    threshold: 0.85
+    weight: 4
+
+  - id: no_fabricated_stats
+    type: llm_judge
+    judge_model: claude-sonnet-4-6
+    rubric: |
+      List every statistic in this article. For each one, determine:
+      - Is it attributed to a named source?
+      - Is the source a real, verifiable entity?
+      - Could this statistic be verified by visiting the cited source?
+
+      Score: (verifiable stats) / (total stats).
+      If the article contains a statistic without any attribution, score 0.5 max.
+      If a statistic contradicts its cited source, score 0.0.
+    threshold: 0.80
+    weight: 3
+
+  - id: sources_linked
+    type: assertion
+    check: "'metr.org' in output.get('article', '').lower() or 'arxiv' in output.get('article', '').lower()"
+    weight: 0
+
+scoring:
+  method: weighted_average
+  pass_threshold: 0.80
+  gate_mode: all_or_nothing
