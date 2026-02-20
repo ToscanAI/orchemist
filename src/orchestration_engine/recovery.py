@@ -5,6 +5,7 @@ and circuit breaker patterns based on the error recovery documentation.
 """
 
 import logging
+import threading
 import time
 from datetime import datetime, timedelta
 from enum import Enum
@@ -323,6 +324,9 @@ class RecoveryManager:
         self.config = config
         self.classifier = ErrorClassifier()
         
+        # Thread lock for mutable state
+        self._lock = threading.Lock()
+        
         # Circuit breaker states
         self._circuit_breakers: Dict[str, CircuitBreakerState] = {}
         
@@ -373,7 +377,8 @@ class RecoveryManager:
                 model_tier TEXT,
                 frequency INTEGER DEFAULT 1,
                 first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(error_message, task_type, model_tier)
             )
         """)
         self.db.execute(
@@ -404,13 +409,13 @@ class RecoveryManager:
         # Record error pattern for learning
         self._record_error_pattern(error_message, error_type, task_type, model_tier)
         
-        # Determine whether this is the task's first failure (not a retry attempt).
-        # Circuit breakers should count unique task failures, not individual retry attempts
-        # of the same task — otherwise the CB fires before max_retries are exhausted.
-        is_first_failure = task_id not in self._retry_states
-        
-        # Get or create retry state
-        retry_state = self._get_retry_state(task_id, task_type, model_tier or "sonnet-4")
+        # Thread-safe access to retry states and circuit breakers
+        with self._lock:
+            # Determine whether this is the task's first failure (not a retry attempt).
+            is_first_failure = task_id not in self._retry_states
+            
+            # Get or create retry state
+            retry_state = self._get_retry_state(task_id, task_type, model_tier or "sonnet-4")
         
         # Check circuit breakers
         cb_key = f"{task_type.value}:{model_tier or 'default'}"
@@ -454,15 +459,16 @@ class RecoveryManager:
             task_type: Type of task
             model_tier: Model tier used
         """
-        # Reset circuit breaker
+        # Reset circuit breaker (thread-safe)
         cb_key = f"{task_type.value}:{model_tier or 'default'}"
-        if cb_key in self._circuit_breakers:
-            self._circuit_breakers[cb_key].record_success()
-            self._save_circuit_breaker_state(cb_key)
-        
-        # Clean up retry state
-        if task_id in self._retry_states:
-            del self._retry_states[task_id]
+        with self._lock:
+            if cb_key in self._circuit_breakers:
+                self._circuit_breakers[cb_key].record_success()
+                self._save_circuit_breaker_state(cb_key)
+            
+            # Clean up retry state
+            if task_id in self._retry_states:
+                del self._retry_states[task_id]
         
         logger.debug(f"Task {task_id} completed successfully with {model_tier}")
     
@@ -547,27 +553,33 @@ class RecoveryManager:
         return CircuitBreakerState(name=key)
     
     def _save_circuit_breaker_state(self, key: str) -> None:
-        """Save circuit breaker state to database."""
+        """Save circuit breaker state to database (best-effort, tolerates DB contention)."""
         cb = self._circuit_breakers[key]
         
-        self.db.execute("""
-            INSERT OR REPLACE INTO circuit_breaker_state (name, failure_count, last_failure, opened_at, state)
-            VALUES (?, ?, ?, ?, ?)
-        """, [cb.name, cb.failure_count, cb.last_failure, cb.opened_at, cb.state])
+        try:
+            self.db.execute("""
+                INSERT OR REPLACE INTO circuit_breaker_state (name, failure_count, last_failure, opened_at, state)
+                VALUES (?, ?, ?, ?, ?)
+            """, [cb.name, cb.failure_count, cb.last_failure, cb.opened_at, cb.state])
+        except Exception as e:
+            logger.warning(f"Failed to persist circuit breaker state for {key}: {e}")
     
     def _record_retry_attempt(self, task_id: str, attempt: RetryAttempt) -> None:
-        """Record retry attempt in database."""
-        self.db.execute("""
-            INSERT INTO retry_attempts (
-                task_id, attempt_number, scheduled_at, model_tier,
-                error_type, error_message, backoff_seconds
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, [
-            task_id,
-            attempt.attempt_number, attempt.scheduled_at, attempt.model_tier,
-            attempt.error_type.value if attempt.error_type else None,
-            attempt.error_message, attempt.backoff_seconds
-        ])
+        """Record retry attempt in database (best-effort)."""
+        try:
+            self.db.execute("""
+                INSERT INTO retry_attempts (
+                    task_id, attempt_number, scheduled_at, model_tier,
+                    error_type, error_message, backoff_seconds
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, [
+                task_id,
+                attempt.attempt_number, attempt.scheduled_at, attempt.model_tier,
+                attempt.error_type.value if attempt.error_type else None,
+                attempt.error_message, attempt.backoff_seconds
+            ])
+        except Exception as e:
+            logger.warning(f"Failed to persist retry attempt for {task_id}: {e}")
     
     def _record_error_pattern(self, error_message: str, error_type: ErrorType,
                              task_type: TaskType, model_tier: str = None) -> None:
@@ -575,13 +587,16 @@ class RecoveryManager:
         # Truncate very long error messages
         error_msg = error_message[:500] if error_message else "Unknown error"
         
-        self.db.execute("""
-            INSERT INTO error_patterns (error_message, error_type, task_type, model_tier, frequency)
-            VALUES (?, ?, ?, ?, 1)
-            ON CONFLICT(error_message, task_type, model_tier) DO UPDATE SET
-                frequency = frequency + 1,
-                last_seen = CURRENT_TIMESTAMP
-        """, [error_msg, error_type.value, task_type.value, model_tier])
+        try:
+            self.db.execute("""
+                INSERT INTO error_patterns (error_message, error_type, task_type, model_tier, frequency)
+                VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(error_message, task_type, model_tier) DO UPDATE SET
+                    frequency = frequency + 1,
+                    last_seen = CURRENT_TIMESTAMP
+            """, [error_msg, error_type.value, task_type.value, model_tier])
+        except Exception as e:
+            logger.warning(f"Failed to record error pattern: {e}")
     
     def get_retry_queue(self) -> List[Dict[str, Any]]:
         """Get tasks ready for retry.

@@ -89,6 +89,7 @@ class Database:
     def _configure_connection(self, conn: sqlite3.Connection) -> None:
         """Configure SQLite connection with optimal settings."""
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("PRAGMA synchronous = NORMAL") 
         conn.execute("PRAGMA cache_size = 10000")
         conn.execute("PRAGMA temp_store = memory")
@@ -712,13 +713,15 @@ class Database:
         return cursor
 
     def fetch_all(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-        """Execute query and return all rows as dicts."""
-        cursor = self.execute(query, params)
+        """Execute query and return all rows as dicts (no commit — read-only)."""
+        conn = self.get_connection()
+        cursor = conn.execute(query, params)
         return [self._row_to_dict(row) for row in cursor.fetchall()]
 
     def fetch_one(self, query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
-        """Execute query and return first row as dict, or None."""
-        cursor = self.execute(query, params)
+        """Execute query and return first row as dict, or None (no commit — read-only)."""
+        conn = self.get_connection()
+        cursor = conn.execute(query, params)
         row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
 

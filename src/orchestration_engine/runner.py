@@ -151,15 +151,21 @@ class LocalExecutor(TaskExecutor):
             if not command:
                 raise ValueError("No 'command' specified in task payload")
             
-            # Security check
-            cmd_parts = command.split()
-            if not any(command.startswith(allowed) for allowed in self.allowed_commands):
-                raise ValueError(f"Command not allowed: {cmd_parts[0] if cmd_parts else 'empty'}")
+            # Parse command safely — no shell interpretation
+            import shlex
+            cmd_parts = shlex.split(command)
+            if not cmd_parts:
+                raise ValueError("Empty command after parsing")
             
-            # Execute command
+            # Security check: validate the executable (first token only)
+            executable = cmd_parts[0]
+            if not any(executable == allowed for allowed in self.allowed_commands):
+                raise ValueError(f"Command not allowed: {executable}")
+            
+            # Execute command without shell — prevents injection
             result = subprocess.run(
-                command,
-                shell=True,
+                cmd_parts,
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=task.timeout_seconds or 300
@@ -454,11 +460,22 @@ class OpenClawExecutor(TaskExecutor):
         4. On subprocess timeout mark the task as timed-out.
         """
         task_id = task.id if hasattr(task, "id") else str(uuid4())
+        
+        # Sanitize task_id to prevent path traversal
+        import re as _re
+        if not _re.match(r'^[a-zA-Z0-9_-]+$', task_id):
+            task_id = str(uuid4())  # Replace unsafe IDs with a fresh UUID
+        
         prompt = self._format_task_prompt(task)
 
         # 1. Create task directory & write input
-        task_dir = Path.home() / ".orchestration-engine" / "tasks" / task_id
+        tasks_root = Path.home() / ".orchestration-engine" / "tasks"
+        task_dir = tasks_root / task_id
         task_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Verify resolved path is under tasks_root (defense in depth)
+        if not task_dir.resolve().is_relative_to(tasks_root.resolve()):
+            raise ValueError(f"Task directory escaped root: {task_id}")
 
         input_file = task_dir / "input.json"
         output_file = task_dir / "output.json"
