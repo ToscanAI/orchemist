@@ -1,82 +1,88 @@
-# Phase 1 Usage Examples
+# Orchestration Engine — Usage Guide
 
-This document demonstrates the completed Phase 1 functionality: Task Queue and Structured Schemas.
+This document covers the complete implemented feature set as of Week 2.
+
+> **Legacy note:** This file was originally called `PHASE1_USAGE.md`. Phase 1 is complete; we're now in Week 2. The CLI, task queue, task runner, error recovery, concurrency, progress tracking, and scenario runner are all implemented and tested (214 tests passing).
 
 ## Installation
 
 ```bash
-# Set up environment
-export PYTHONPATH=./src
+cd /home/toscan/orchestration-engine
 
-# Or install in development mode (requires venv)
+# Activate venv
+source venv/bin/activate
+
+# Or install in development mode
 pip install -e .
+
+# Set PYTHONPATH if needed
+export PYTHONPATH=./src
 ```
 
 ## CLI Usage
+
+All commands use the `orch` entrypoint (or `python -m orchestration_engine.cli`).
 
 ### Submit Tasks
 
 ```bash
 # Submit a content generation task
-python -m orchestration_engine.cli submit \
+orch submit \
   --type content \
-  --payload '{"topic": "AI orchestration", "word_count": 1000, "audience": "developers"}' \
+  --payload '{"topic": "AI orchestration", "word_count": 1000}' \
   --priority high \
   --tag "blog" --tag "ai"
 
 # Submit a code task with custom settings
-python -m orchestration_engine.cli submit \
+orch submit \
   --type code \
   --payload '{"language": "python", "task": "create REST API"}' \
   --priority normal \
   --max-retries 2 \
   --timeout 7200 \
   --min-confidence 0.9
+
+# Available task types: content, code, research, translation, review
+# Available priorities: critical, high, normal, low
 ```
 
-### Check Queue Status
+### Check Status
 
 ```bash
 # Overall queue statistics
-python -m orchestration_engine.cli status
+orch status
 
 # Specific task status
-python -m orchestration_engine.cli status <task-id>
+orch status <task-id>
 ```
 
 ### List Tasks
 
 ```bash
-# List all tasks
-python -m orchestration_engine.cli list
+# All tasks
+orch list
 
-# List only queued tasks
-python -m orchestration_engine.cli list --state queued
+# Filter by state
+orch list --state queued
+orch list --state running
 
-# List content tasks with high priority
-python -m orchestration_engine.cli list --type content --priority high
+# Filter by type and priority
+orch list --type content --priority high
 
-# List tasks in JSON format
-python -m orchestration_engine.cli list --format json
+# JSON output
+orch list --format json
 
-# List with pagination
-python -m orchestration_engine.cli list --limit 10 --offset 20
+# Pagination
+orch list --limit 10 --offset 20
 ```
 
 ### Manage Tasks
 
 ```bash
-# Cancel a task
-python -m orchestration_engine.cli cancel <task-id>
-
-# Retry a failed task
-python -m orchestration_engine.cli retry <task-id>
-
-# View dead letter queue
-python -m orchestration_engine.cli dead-letter
-
-# Check system health
-python -m orchestration_engine.cli health
+orch cancel <task-id>       # Cancel queued or running task
+orch retry <task-id>        # Manually retry a failed task
+orch dead-letter            # List permanently failed tasks
+orch health                 # System health check
 ```
 
 ## Programmatic Usage
@@ -85,14 +91,13 @@ python -m orchestration_engine.cli health
 from orchestration_engine import TaskQueue, TaskSpec, TaskType, Priority
 from decimal import Decimal
 
-# Initialize queue
 queue = TaskQueue()
 
 # Submit a task
-task_spec = TaskSpec(
+task_id = queue.submit_task(TaskSpec(
     type=TaskType.RESEARCH,
     payload={
-        "query": "machine learning trends 2024",
+        "query": "machine learning trends 2025",
         "sources": 10,
         "depth": "comprehensive"
     },
@@ -101,102 +106,212 @@ task_spec = TaskSpec(
     min_confidence=0.8,
     cost_limit_usd=Decimal("25.00"),
     tags=["research", "ml", "trends"]
-)
+))
 
-task_id = queue.submit_task(task_spec)
 print(f"Task submitted: {task_id}")
 
 # Check task status
 status = queue.get_task_status(task_id)
-print(f"Task state: {status.state.value}")
+print(f"State: {status.state.value}")
 print(f"Priority: {status.priority.name}")
 print(f"Created: {status.created_at}")
 
 # List tasks with filters
 from orchestration_engine.schemas import TaskFilters, TaskState
 
-filters = TaskFilters(
+tasks = queue.list_tasks(TaskFilters(
     states=[TaskState.QUEUED, TaskState.RUNNING],
     types=[TaskType.RESEARCH],
     limit=50
-)
-
-tasks = queue.list_tasks(filters)
+))
 print(f"Found {len(tasks)} matching tasks")
 
-# Get queue statistics
+# Queue health
 stats = queue.get_queue_stats()
 print(f"Queued: {stats.queued}")
-print(f"Running: {stats.running}")  
-print(f"Total: {stats.total_tasks}")
-print(f"Worker utilization: {stats.worker_utilization:.1f}%")
+print(f"Running: {stats.running}")
+print(f"Worker utilization: {stats.worker_utilization:.0f}%")
 ```
 
-## Database Schema
+## Task Runner
 
-Tasks are stored in SQLite with the following structure:
+The task runner polls the queue and executes tasks via one of three executors.
 
-- `~/.orchestration-engine/engine.db` (default location)
-- WAL mode enabled for better concurrency
-- Proper indexes for performance
-- Foreign key constraints enforced
+```python
+from orchestration_engine.runner import TaskRunner
+from orchestration_engine.config import get_global_config
 
-### Core Tables
+config = get_global_config()
+runner = TaskRunner(config=config)
 
-- **tasks**: Main task queue with state management
-- **task_runs**: Individual execution attempts with results
-- **orchestras**: Multi-task workflow coordination
-- **dead_letter_queue**: Permanently failed tasks
+# Start the runner (non-blocking, runs in background thread)
+runner.start()
 
-## Task Lifecycle
+# Execute a specific task immediately
+runner.execute_task_immediately(task_id)
 
-```
-[queued] → [running] → [success]
-    ↑          ↓
-    ←── [retry] ←─── [failed]
-                        ↓
-              [permanently_failed] → [dead_letter_queue]
+# Get runner status
+status = runner.get_status()
+
+# Stop cleanly
+runner.stop()
 ```
 
-## Features Implemented
+### Executors
 
-✅ **Task Queue**
-- SQLite-backed persistent storage
-- Priority-based scheduling
-- State machine with retry logic
-- Dead letter queue
-- Worker concurrency support
+| Executor | When used |
+|----------|----------|
+| `DryRunExecutor` | Testing — returns mock results |
+| `LocalExecutor` | Run shell commands (shlex-safe) |
+| `OpenClawExecutor` | File-based contract with OpenClaw sub-agents |
 
-✅ **Structured Schemas** 
-- Pydantic models for all data structures
-- Type safety and validation
-- JSON serialization/deserialization
-- Confidence level auto-calculation
+## Error Recovery
 
-✅ **CLI Interface**
-- Complete command set
-- JSON and table output formats
-- Filtering and pagination
-- Health monitoring
+Error recovery is automatic — the `RecoveryManager` handles all failure cases.
 
-✅ **Database Layer**
-- Connection pooling
-- Transaction management
-- Proper indexing
-- Migration support
+```python
+from orchestration_engine.recovery import RecoveryManager
+from orchestration_engine.config import get_global_config
+from orchestration_engine.db import Database
+from orchestration_engine.schemas import TaskType
 
-✅ **Comprehensive Tests**
-- 28 schema validation tests
-- Full task lifecycle coverage
-- Database integration tests
-- Error condition handling
+db = Database()
+config = get_global_config()
+recovery = RecoveryManager(db, config)
 
-## Next Steps (Phase 2+)
+# Handle a failure (called automatically by TaskRunner)
+should_retry, retry_at, next_model = recovery.handle_task_failure(
+    task_id="...",
+    task_type=TaskType.CONTENT,
+    error_message="timeout: task exceeded limit",
+    model_tier="haiku-4-5"
+)
 
-- Task execution engine with OpenClaw integration
-- Orchestra templates and workflows
-- Quality gates and verification
-- Worker process management
-- Metrics and monitoring dashboard
+# Get error statistics
+stats = recovery.get_error_statistics()
+print(stats["circuit_breakers"])
+print(stats["retry_statistics"])
+```
 
-The foundation is solid and ready for building the execution layer on top!
+## Progress Tracking
+
+```python
+from orchestration_engine.progress import ProgressTracker
+from orchestration_engine.db import Database
+
+db = Database()
+tracker = ProgressTracker(db)
+
+# Get task progress
+progress = tracker.get_task_progress(task_id)
+print(progress.current_state)
+print(progress.events)  # full event log
+
+# Stream events (generator)
+for event in tracker.stream_task_events(task_id):
+    print(f"{event.event_type}: {event.message}")
+
+# Get all active tasks
+active = tracker.get_active_tasks()
+```
+
+## Scenario Runner
+
+Evaluate pipeline output against YAML-defined acceptance criteria.
+
+```python
+from pathlib import Path
+from scenario_runner import ScenarioRunner
+
+runner = ScenarioRunner(scenarios_dir=Path("scenarios/content-pipeline"))
+
+# Run a single scenario
+scenario = runner.load_scenario(Path("scenarios/content-pipeline/happy-path-001.yaml"))
+result = runner.run_scenario(
+    scenario,
+    pipeline_output={"article": "Full article text here..."}
+)
+
+print(f"Passed: {result.passed}")
+print(f"Score: {result.weighted_score:.2f}")
+print(f"Gates passed: {result.gates_passed}")
+
+# Run all scenarios in a directory
+suite = runner.run_suite(
+    suite_dir=Path("scenarios/content-pipeline"),
+    pipeline_outputs={
+        "content-pipeline-happy-path-001": {"article": "..."},
+        "content-pipeline-hallucination-trap-002": {"article": "..."},
+    }
+)
+print(f"Pass rate: {suite.satisfaction_rate:.0%} ({suite.total_scenarios} scenarios)")
+```
+
+See `scenario_runner/README.md` and `scenarios/README.md` for details.
+
+## Configuration
+
+Configuration is loaded from `~/.orchestration-engine/config.toml` with environment variable overrides.
+
+```toml
+[engine]
+max_workers = 4
+log_level = "INFO"
+
+[retry]
+backoff_base = 1
+backoff_max = 60
+max_retries_default = 3
+circuit_breaker_threshold = 5
+circuit_breaker_reset_minutes = 30
+
+[models]
+escalation_enabled = true
+```
+
+Key environment variables:
+- `ORCH_MAX_WORKERS`
+- `ORCH_DB_PATH`
+- `ORCH_LOG_LEVEL`
+
+## Database
+
+Default location: `~/.orchestration-engine/engine.db`
+
+Core tables: `tasks`, `task_runs`, `orchestras`, `dead_letter_queue`, `workers`
+Recovery tables: `retry_attempts`, `circuit_breaker_state`, `error_patterns`
+Progress tables: `progress_events`, `task_progress_summary`
+
+## Running Tests
+
+```bash
+cd /home/toscan/orchestration-engine
+source venv/bin/activate
+pytest                        # all 214 tests
+pytest tests/test_schemas.py  # schemas only
+pytest -v --tb=short          # verbose
+```
+
+## What's Implemented (Week 2)
+
+✅ SQLite task queue (WAL mode, priority, retry, dead letter)  
+✅ Pydantic V2 schemas (TaskSpec, TaskResult, TaskStatus, etc.)  
+✅ CLI (`orch submit/status/list/cancel/retry/dead-letter/health`)  
+✅ TOML configuration with env var overrides  
+✅ Task Runner with 3 executors: DryRun, Local, OpenClaw  
+✅ Error Recovery: classification, exponential backoff, circuit breakers  
+✅ Concurrency: configurable worker pool with heartbeat monitoring  
+✅ Progress tracking: event recording, task summaries  
+✅ Scenario Runner: YAML scenarios, weighted scoring, gates  
+✅ 3 graders: assertion (restricted eval), LLM judge, URL check  
+✅ 3 content pipeline scenarios + 4 shared rubrics  
+
+## What's NOT Implemented Yet
+
+❌ MCP integration (deferred — v1.0+)  
+❌ Memory system (deferred — v1.0+)  
+❌ Advanced metrics/analytics (deferred — Week 4-5)  
+❌ Template engine / phase sequencer (Week 3)  
+❌ Scenario runner CLI (Week 6)  
+❌ Digital twin / mock service layer  
+❌ LangGraph integration  

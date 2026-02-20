@@ -1,5 +1,9 @@
 # Orchestra Templates
 
+> ⚠️ **Template Engine Status: NOT BUILT YET** — The `OrchestraTemplate`, `Phase`, and phase sequencer described below are **planned for Week 3**. No template engine code exists yet. This document defines the template format and serves as the Week 3 implementation spec.
+>
+> ✅ **What IS documented and stable:** The Content Pipeline v2.3 (8 phases) is the authoritative template spec. The `orchestra-templates.md` was updated to v2.3 on 2026-02-20. Code Sprint and Deep Research templates are drafts.
+
 Orchestra templates are **reusable multi-agent coordination patterns** that encode proven workflows for complex tasks. Each template defines phases, dependencies, quality gates, and coordination logic.
 
 ## Template Architecture
