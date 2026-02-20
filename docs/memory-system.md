@@ -1,5 +1,7 @@
 # Agent Memory System
 
+> ⚠️ **Status: DEFERRED** — Memory system is planned for post-MVP. No code exists yet. Related issues #19–23 are all deferred. This document describes the intended design only.
+
 The orchestration engine features a **persistent, multi-layered memory system** that enables agents to learn from past executions, accumulate knowledge, and improve performance across sessions.
 
 ## Memory Architecture

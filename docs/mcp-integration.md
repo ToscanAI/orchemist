@@ -1,5 +1,7 @@
 # MCP Integration
 
+> ⚠️ **Status: DEFERRED** — MCP integration is planned for post-MVP (v1.0+). This document describes the intended design. No MCP code exists in the codebase. Related issues #24–27 are all deferred.
+
 The orchestration engine integrates with the **Model Context Protocol (MCP)** to enable structured tool sharing, capability discovery, and coordinated context between sub-agents.
 
 ## MCP Architecture Overview

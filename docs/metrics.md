@@ -1,5 +1,7 @@
 # Metrics and Analytics
 
+> ⚠️ **Status: DEFERRED** — Advanced metrics are planned for Week 4-5+. Related issues #28–30, #32–33 are deferred. Basic cost tracking exists in the `task_runs` table (`cost_usd`, `tokens_used`). This document describes the intended advanced design only.
+
 The orchestration engine provides **comprehensive metrics collection and analysis** for tasks, orchestras, models, and system performance to enable data-driven optimization and monitoring.
 
 ## Metrics Architecture

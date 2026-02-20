@@ -1,479 +1,243 @@
 # System Architecture
 
-The Orchestration Engine is a **meta-coordination layer** that sits on top of OpenClaw to provide robust, scalable, and reliable multi-agent workflows.
+The Orchestration Engine is a **meta-coordination layer** that sits on top of OpenClaw to provide a reliable, observable task queue and scenario-based quality evaluation for multi-agent workflows.
 
-## Core Philosophy
+## Component Overview
 
-- **OpenClaw**: Provides the musicians (sub-agents, models, tools)
-- **Orchestration Engine**: Provides the conductor's score (queue, retry, quality, templates)
-- **Integration**: Seamless coordination via `sessions_spawn()` and structured communication
-
-## High-Level Architecture
-
-```ascii
+```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    ORCHESTRATION ENGINE                        │
+│                    ORCHESTRATION ENGINE (Week 2)               │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
-│  │ CLI Layer   │  │ REST API    │  │ Templates   │            │
-│  │ orch submit │  │ /tasks      │  │ Content     │            │
-│  │ orch status │  │ /orchestras │  │ Code Sprint │            │
-│  │ orch run    │  │ /metrics    │  │ Research    │            │
-│  └─────────────┘  └─────────────┘  └─────────────┘            │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │                  CLI (cli.py)                           │   │
+│  │  orch submit / status / list / cancel / retry          │   │
+│  │  orch dead-letter / health                             │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                           │                                     │
+│  ┌────────────┐  ┌─────────────────────┐  ┌────────────────┐   │
+│  │ Config     │  │   Task Queue        │  │ Progress       │   │
+│  │ (config.py)│  │   (queue.py)        │  │ Tracking       │   │
+│  │ TOML+env   │  │   submit/list/cancel│  │ (progress.py)  │   │
+│  └────────────┘  └─────────────────────┘  └────────────────┘   │
+│                           │                        │            │
+│  ┌────────────────────────▼────────────────────────▼────────┐   │
+│  │                  Database (db.py)                        │   │
+│  │  SQLite • WAL mode • Thread-safe • Foreign keys          │   │
+│  │  Tables: tasks, task_runs, orchestras, dead_letter_queue │   │
+│  │          workers, retry_attempts, circuit_breaker_state  │   │
+│  │          error_patterns, progress_events                 │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                           │                                     │
+│  ┌────────────────────────▼─────────────────────────────────┐  │
+│  │              Task Runner (runner.py)                      │  │
+│  │  Polls queue • Assigns workers • Manages lifecycle        │  │
+│  │                                                           │  │
+│  │  ┌─────────────┐  ┌──────────────┐  ┌─────────────────┐  │  │
+│  │  │ DryRun      │  │ Local        │  │ OpenClaw        │  │  │
+│  │  │ Executor    │  │ Executor     │  │ Executor        │  │  │
+│  │  │ (mock/test) │  │ (shlex-safe  │  │ (file-based     │  │  │
+│  │  │             │  │  subprocess) │  │  contract)      │  │  │
+│  │  └─────────────┘  └──────────────┘  └─────────────────┘  │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  ┌─────────────────────┐  ┌─────────────────────────────────┐  │
+│  │ Worker Pool         │  │ Recovery Manager                 │  │
+│  │ (concurrency.py)    │  │ (recovery.py)                   │  │
+│  │ • Thread-safe       │  │ • Error classification          │  │
+│  │ • Heartbeat monitor │  │ • Exponential backoff           │  │
+│  │ • Stale detection   │  │ • Circuit breakers              │  │
+│  │ • Resource limits   │  │ • Model tier escalation         │  │
+│  └─────────────────────┘  └─────────────────────────────────┘  │
 │                                                                 │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
-│  │ Task Queue  │  │ Quality     │  │ Progress    │            │
-│  │ SQLite      │  │ Gates       │  │ Streaming   │            │
-│  │ Persistent  │  │ Validators  │  │ Real-time   │            │
-│  │ Concurrent  │  │ Thresholds  │  │ Updates     │            │
-│  └─────────────┘  └─────────────┘  └─────────────┘            │
-│                                                                 │
+│              SCENARIO RUNNER (scenario_runner/)                 │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
-│  │ Agent       │  │ Error       │  │ Metrics &   │            │
-│  │ Memory      │  │ Recovery    │  │ Analytics   │            │
-│  │ Episodic    │  │ Retry Logic │  │ Cost Track  │            │
-│  │ Semantic    │  │ Escalation  │  │ Performance │            │
-│  └─────────────┘  └─────────────┘  └─────────────┘            │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  ScenarioRunner — loads YAML, grades pipeline output    │   │
+│  │                                                         │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │   │
+│  │  │ Assertion    │  │ LLM Judge    │  │ URL Check    │  │   │
+│  │  │ Grader       │  │ Grader       │  │ Grader       │  │   │
+│  │  │ restricted   │  │ holdout      │  │ HTTP 200     │  │   │
+│  │  │ eval         │  │ enforced     │  │ checks       │  │   │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  scenarios/content-pipeline/  — 3 YAML scenario files          │
+│  scenarios/shared/rubrics/    — 4 shared rubric markdown files  │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
-                                   │
-                   ┌───────────────▼───────────────┐
-                   │           OpenClaw            │
-                   │  ┌─────────┐  ┌─────────────┐ │
-                   │  │Sub-Agent│  │Tool Access  │ │
-                   │  │Spawning │  │web_search   │ │
-                   │  │sessions_│  │web_fetch    │ │
-                   │  │spawn()  │  │exec         │ │
-                   │  └─────────┘  │message      │ │
-                   │               │browser      │ │
-                   │  ┌─────────┐  │...          │ │
-                   │  │Model    │  └─────────────┘ │
-                   │  │Tiers    │                  │
-                   │  │Haiku 4.5│  ┌─────────────┐ │
-                   │  │Sonnet 4 │  │Session      │ │
-                   │  │Opus 4.6 │  │Management   │ │
-                   │  └─────────┘  └─────────────┘ │
-                   └───────────────────────────────┘
 ```
 
 ## Component Details
 
-### 1. Task Queue (SQLite-Backed)
+### Database Layer (`db.py`)
 
-**Purpose**: Persistent, concurrent task scheduling with state management
+SQLite-backed persistent storage. All connections use WAL mode for concurrency.
 
-**Database Schema**:
+**Pragmas applied per connection:**
 ```sql
--- Core tables
-CREATE TABLE tasks (
-    id TEXT PRIMARY KEY,
-    type TEXT NOT NULL,          -- 'content', 'code', 'research', 'translation'
-    priority INTEGER DEFAULT 3,  -- 1=critical, 2=high, 3=normal, 4=low
-    status TEXT DEFAULT 'queued',-- 'queued', 'running', 'success', 'failed', 'retry'
-    payload JSON NOT NULL,       -- Task-specific data
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    retry_count INTEGER DEFAULT 0,
-    max_retries INTEGER DEFAULT 3,
-    orchestra_id TEXT            -- Parent orchestra workflow
-);
-
-CREATE TABLE task_runs (
-    id TEXT PRIMARY KEY,
-    task_id TEXT REFERENCES tasks(id),
-    attempt_number INTEGER,
-    model TEXT,                  -- 'haiku-4-5', 'sonnet-4', 'opus-4-6'
-    session_id TEXT,             -- OpenClaw session ID
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP,
-    status TEXT,                 -- 'running', 'success', 'failed'
-    result JSON,                 -- Structured output
-    error_message TEXT,
-    tokens_used INTEGER,
-    cost_usd DECIMAL(10,4)
-);
-
-CREATE TABLE orchestras (
-    id TEXT PRIMARY KEY,
-    template TEXT NOT NULL,      -- 'content-pipeline', 'code-sprint', etc.
-    status TEXT DEFAULT 'running',
-    config JSON NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    completed_at TIMESTAMP,
-    total_tasks INTEGER DEFAULT 0,
-    completed_tasks INTEGER DEFAULT 0,
-    failed_tasks INTEGER DEFAULT 0
-);
+PRAGMA journal_mode = WAL
+PRAGMA synchronous = NORMAL
+PRAGMA cache_size = 10000
+PRAGMA temp_store = memory
+PRAGMA foreign_keys = ON
+PRAGMA busy_timeout = 5000
 ```
 
-**State Transitions**:
-- `queued` → `running` (worker picks up task)
-- `running` → `success` (task completes successfully)  
-- `running` → `failed` (task fails, no more retries)
-- `running` → `retry` (task fails, will retry with backoff)
-- `retry` → `queued` (after backoff delay)
+**Core tables:**
+- `tasks` — main queue (id, type, priority, status, payload, retry_count, etc.)
+- `task_runs` — individual execution attempts with results
+- `orchestras` — multi-task workflow groups
+- `dead_letter_queue` — permanently failed tasks
 
-**Concurrency Control**: Max 8 concurrent workers (configurable)
+**Recovery tables (created by RecoveryManager):**
+- `retry_attempts` — scheduled retry history
+- `circuit_breaker_state` — per-(task_type:model_tier) breaker state
+- `error_patterns` — frequency-tracked error message patterns
 
-### 2. Structured Output Schemas (Pydantic Models)
+**Progress tables (created by ProgressTracker):**
+- `progress_events` — per-task event log
+- `task_progress_summary` — current state snapshot
 
-**Purpose**: Type-safe, validated responses from all agent tasks
+### Task Queue (`queue.py`)
 
-**Base Schema**:
+High-level queue operations on top of the database.
+
+**Key operations:**
+- `submit_task(TaskSpec) → str` — enqueue and return task ID
+- `get_task_status(task_id) → TaskStatus`
+- `list_tasks(TaskFilters) → List[TaskSummary]`
+- `cancel_task(task_id) → bool`
+- `retry_task(task_id) → bool`
+- `get_queue_stats() → QueueStats`
+- `get_dead_letter_tasks() → List[DeadLetterTask]`
+
+**Task state machine:**
+```
+[queued] → [running] → [success]
+    ↑           ↓
+    ←── [retry] ←── [failed]
+                        ↓
+           [permanently_failed] → [dead_letter_queue]
+                        ↓
+                    [cancelled]
+```
+
+### Task Runner (`runner.py`)
+
+Central execution loop. Polls queue, assigns workers, runs tasks, handles outcomes.
+
+**Three executors:**
+
+| Executor | Purpose |
+|----------|---------|
+| `DryRunExecutor` | Testing — returns mock results with configurable failure rate |
+| `LocalExecutor` | Runs shell commands via `shlex`-safe subprocess |
+| `OpenClawExecutor` | File-based contract with OpenClaw sub-agents |
+
+**OpenClaw execution contract:**
+1. Write task prompt to `{workdir}/task_{id}.txt`
+2. Write status to `{workdir}/status_{id}.json`
+3. Poll for result at `{workdir}/result_{id}.json`
+4. Parse structured JSON result
+
+### Worker Pool (`concurrency.py`)
+
+Thread-safe worker lifecycle management.
+
+**Key classes:**
+- `WorkerPool` — creates, assigns, tracks, and terminates workers
+- `ResourceLimits` — enforces max session count and daily cost budget
+- `WorkerInfo` — per-worker state (idle/assigned/running/stale/terminated)
+
+**Configurable limits (from TOML config):**
+- `max_workers` — max concurrent tasks (default: 4)
+- `max_sessions` — max OpenClaw sessions open at once
+- `daily_budget_usd` — hard spending cap per day
+
+### Recovery Manager (`recovery.py`)
+
+Intelligent failure handling with thread-safe state.
+
+**Components:**
+- `ErrorClassifier` — keyword-pattern matching → `(ErrorType, ErrorSeverity)`
+- `CircuitBreakerState` — per `task_type:model_tier` key, stored in DB
+- `TaskRetryState` — in-memory retry tracking per task
+- `RecoveryManager` — coordinates all of the above, uses `threading.Lock`
+
+**Error types:** `TRANSIENT | PERMANENT | QUALITY | RESOURCE | TIMEOUT | RATE_LIMIT`
+
+**Escalation paths (per task type):**
 ```python
-class TaskResult(BaseModel):
-    task_id: str
-    status: Literal["success", "failed", "partial"]
-    confidence: float = Field(ge=0.0, le=1.0)  # 0.0-1.0 quality score
-    result: Any  # Task-specific payload
-    metadata: Dict[str, Any] = {}
-    errors: List[str] = []
-    created_at: datetime
-    model_used: str
-    tokens_consumed: int
+CONTENT:     haiku → sonnet → opus
+CODE:        sonnet → opus → opus
+RESEARCH:    haiku → sonnet → opus
+TRANSLATION: sonnet → opus → opus
+REVIEW:      sonnet → opus → opus
 ```
 
-**Task-Specific Schemas**:
-- `CodeTaskResult`: Contains code, build status, test results, lint issues
-- `ResearchTaskResult`: Contains findings, sources, citations, confidence per claim
-- `ContentTaskResult`: Contains text, word count, readability score, fact-check status
-- `TranslationTaskResult`: Contains translated text, back-translation, divergence score
-- `ReviewTaskResult`: Contains feedback, score, approval status, suggested changes
+See `docs/error-recovery.md` for full details.
 
-### 3. Progress Streaming (Real-Time Updates)
+### Progress Tracker (`progress.py`)
 
-**Methods**:
-1. **File-based**: Workers update JSON progress files, main process polls
-2. **sessions_send**: Direct updates to OpenClaw main session via API
+SQLite-backed event log for all task lifecycle transitions.
 
-**Progress Schema**:
-```python
-class ProgressUpdate(BaseModel):
-    task_id: str
-    orchestra_id: Optional[str]
-    stage: str                   # "queued", "running", "validating", "complete"
-    progress: float             # 0.0-1.0 completion percentage
-    message: str                # Human-readable status
-    timestamp: datetime
-    metadata: Dict[str, Any] = {}
-```
+**Event types:** `queued | started | progress_update | model_selected | session_created | session_ended | retry_scheduled | escalated | completed | failed | cancelled | timeout | resource_limit | circuit_breaker`
 
-**Checkpoints**: Long-running tasks emit progress at 25%, 50%, 75%, completion
+**Helper methods:** `task_queued()`, `task_started()`, `task_progress()`, `task_completed()`, `task_failed()`, `task_retry_scheduled()`, `model_escalated()`
 
-### 4. Error Recovery + Retry Logic
+### Configuration (`config.py`)
 
-**Retry Strategy**:
-- Exponential backoff: 1s, 2s, 4s, 8s, max 60s
-- Max retries per task type (configurable)
-- Dead letter queue for permanent failures
+TOML-based configuration with environment variable overrides.
 
-**Model Tier Escalation**:
-1. **First attempt**: Haiku 4.5 (fast, cheap)
-2. **First retry**: Sonnet 4 (better reasoning)
-3. **Final retry**: Opus 4.6 (highest capability)
+- Default config file: `~/.orchestration-engine/config.toml`
+- Env vars: `ORCH_MAX_WORKERS`, `ORCH_DB_PATH`, `ORCH_LOG_LEVEL`, etc.
+- Config sections: `[engine]`, `[retry]`, `[models]`, `[logging]`
 
-**Failure Classification**:
-- **Transient**: Network errors, rate limits → retry
-- **Permanent**: Invalid input, unsupported operation → dead letter queue
-- **Quality**: Low confidence score → escalate model tier
+### Pydantic V2 Schemas (`schemas.py`)
 
-### 5. Confidence Scoring (Per-Output Quality Assessment)
+Type-safe models for all data structures. Uses **Pydantic V2** API.
 
-**Scoring Framework**:
-```python
-class ConfidenceScorer:
-    def score_content(self, result: ContentTaskResult) -> float:
-        # Fact-check accuracy, citation count, readability
-        return weighted_average([fact_score, citation_score, readability_score])
-    
-    def score_code(self, result: CodeTaskResult) -> float:
-        # Build success, test coverage, lint cleanliness
-        return weighted_average([build_score, test_score, lint_score])
-    
-    def score_research(self, result: ResearchTaskResult) -> float:
-        # Source diversity, citation validity, claim confidence
-        return weighted_average([source_score, citation_score, claim_score])
-```
+**Key differences from V1:**
+- `@model_validator(mode='after')` instead of `@validator`
+- `model_dump()` instead of `.dict()`
+- `ConfigDict` for model configuration
 
-**Thresholds**:
-- Content: 0.8+ for publication
-- Code: 0.9+ for production
-- Research: 0.75+ for citation
-- Translation: 0.85+ for back-translation match
+See `docs/structured-schemas.md` for full schema catalog.
 
-### 6. Quality Gates (Task-Type Verification)
+### Scenario Runner (`scenario_runner/`)
 
-**Gate Definitions**:
+Standalone quality evaluation system. Loads YAML scenario files and grades pipeline output against acceptance criteria.
 
-**Code Quality Gate**:
-- Build passes (`exit code 0`)
-- Tests pass (coverage ≥ 80%)
-- Lint clean (0 errors, <5 warnings)
-- Security scan passes
-
-**Content Quality Gate**:
-- Fact-check agent verification
-- Citation verification (URLs accessible)
-- Word count within range
-- Readability score acceptable
-
-**Research Quality Gate**:
-- Source count ≥ minimum threshold
-- Citation URLs valid (HTTP 200)
-- Confidence levels ≥ threshold
-- No conflicting claims without acknowledgment
-
-**Translation Quality Gate**:
-- Back-translation divergence < 0.2
-- Reviewer score ≥ threshold
-- No untranslated segments
-- Cultural context preserved
-
-### 7. Critic/Reviewer Loops (Iterative Refinement)
-
-**Loop Structure**:
-1. **Generate**: Initial output from primary agent
-2. **Review**: Critic agent evaluates output
-3. **Feedback**: Structured critique with specific issues
-4. **Refine**: Original agent incorporates feedback
-5. **Validate**: Quality gate check
-6. **Iterate**: Repeat until passes or max iterations reached
-
-**Max Iterations**: 3 (configurable per task type)
-
-### 8. Orchestra Templates (Reusable Patterns)
-
-**Template Engine**:
-```python
-class OrchestraTemplate:
-    name: str
-    description: str
-    phases: List[Phase]
-    parallel_phases: List[List[str]]  # Phases that can run in parallel
-    quality_gates: Dict[str, QualityGate]
-    max_duration: timedelta
-    cost_budget: Optional[Decimal]
-```
-
-**Built-in Templates**:
-
-**Content Pipeline** (5 phases):
-1. Research (web_search, fact collection)
-2. Write (content generation)
-3. Fact-Check (verification agent)
-4. Fix (incorporate corrections)
-5. Human Review (final approval gate)
-
-**Code Sprint** (parallel workers):
-- Multiple developers work on different features
-- Git integration (branches, PRs, merges)
-- Continuous testing and validation
-- Integration testing at completion
-
-**Deep Research** (multi-source synthesis):
-- Parallel search across multiple sources
-- Source credibility assessment
-- Claim extraction and verification
-- Synthesis with citation tracking
-- Conflict resolution
-
-### 9. Persistent Agent Memory
-
-**Memory Types**:
-
-**Episodic Memory**: Past task executions
-```sql
-CREATE TABLE memory_episodes (
-    id TEXT PRIMARY KEY,
-    task_id TEXT,
-    orchestra_id TEXT,
-    outcome TEXT,              -- 'success', 'failure'
-    lessons_learned JSON,      -- What went well/wrong
-    context_tags TEXT[],       -- Searchable keywords
-    similarity_embedding BLOB, -- Vector embedding for similarity search
-    created_at TIMESTAMP
-);
-```
-
-**Semantic Memory**: Facts and knowledge
-```sql
-CREATE TABLE memory_facts (
-    id TEXT PRIMARY KEY,
-    fact_text TEXT,
-    confidence FLOAT,
-    source TEXT,
-    domain TEXT,              -- 'code', 'content', 'research'
-    last_verified TIMESTAMP,
-    embedding BLOB
-);
-```
-
-**Procedural Memory**: Learned patterns
-```sql
-CREATE TABLE memory_procedures (
-    id TEXT PRIMARY KEY,
-    task_type TEXT,
-    pattern_name TEXT,
-    success_rate FLOAT,
-    avg_tokens INTEGER,
-    avg_duration INTERVAL,
-    best_model TEXT,
-    created_at TIMESTAMP
-);
-```
-
-### 10. MCP Integration (Model Context Protocol)
-
-**Purpose**: Structured tool sharing and context between sub-agents
-
-**MCP Server Setup**:
-- Orchestration engine runs MCP server
-- Sub-agents connect as MCP clients
-- Shared context, tools, and state
-
-**Capabilities**:
-- Tool discovery across agents
-- Shared memory access
-- Cross-agent communication
-- Capability advertisement
-
-**Authentication**: Session-based tokens for sub-agent access
-
-### 11. Metrics Dashboard
-
-**Tracked Metrics**:
-
-**Per-Task Metrics**:
-- Tokens consumed
-- Runtime duration
-- Model used
-- Success/failure rate
-- Cost in USD
-- Retry count
-
-**Per-Orchestra Metrics**:
-- Total cost
-- Total duration
-- Success rate
-- Task distribution
-- Bottleneck identification
-
-**Per-Model Metrics**:
-- Average tokens per task type
-- Average runtime
-- Failure rate
-- Cost efficiency
-
-**Storage Schema**:
-```sql
-CREATE TABLE metrics (
-    id TEXT PRIMARY KEY,
-    metric_type TEXT,          -- 'task', 'orchestra', 'model'
-    entity_id TEXT,            -- Task ID, orchestra ID, or model name
-    metric_name TEXT,
-    metric_value DECIMAL,
-    timestamp TIMESTAMP,
-    metadata JSON
-);
-```
-
-### 12. Cost Tracking
-
-**Granular Cost Tracking**:
-- Per-task cost calculation
-- Per-orchestra cost aggregation
-- Per-model cost analysis
-- Monthly/daily cost summaries
-
-**Cost Alerts**:
-- Budget thresholds per orchestra
-- Daily/monthly spend limits
-- Cost spike detection
-
-## Integration with OpenClaw
-
-### Session Management
-```python
-# Spawn sub-agent for task execution
-session_id = sessions_spawn(
-    model=selected_model_tier,
-    thinking=thinking_level,
-    label=f"orch-task-{task.id}"
-)
-
-# Send task to sub-agent
-sessions_send(session_id, task_prompt)
-
-# Monitor progress
-while not complete:
-    status = sessions_status(session_id)
-    update_progress(task.id, status)
-```
-
-### Tool Access
-Sub-agents inherit full OpenClaw tool access:
-- `web_search`, `web_fetch` for research tasks
-- `exec`, `process` for code tasks
-- `write`, `edit`, `read` for content tasks
-- `message` for communication tasks
-
-### Model Selection
-Orchestration engine selects appropriate model tier:
-- **Haiku 4.5**: Simple, mechanical tasks
-- **Sonnet 4**: Complex reasoning, synthesis
-- **Opus 4.6**: Creative, high-stakes tasks
-
-## Deployment Architecture
-
-```ascii
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   CLI Client    │    │  Web Dashboard  │    │   REST API      │
-│   orch submit   │    │   Status View   │    │   /api/v1/      │
-│   orch status   │    │   Metrics       │    │   tasks         │
-│   orch run      │    │   Logs          │    │   orchestras    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-        │                       │                       │
-        └───────────────────────┼───────────────────────┘
-                                │
-                ┌───────────────▼────────────────┐
-                │      Orchestration Engine      │
-                │                                │
-                │  ┌──────────┐  ┌──────────┐   │
-                │  │Task Queue│  │Quality   │   │
-                │  │Worker    │  │Gates     │   │
-                │  │Pool      │  │Validator │   │
-                │  └──────────┘  └──────────┘   │
-                │                                │
-                │  ┌──────────┐  ┌──────────┐   │
-                │  │Progress  │  │Memory    │   │
-                │  │Monitor   │  │Manager   │   │
-                │  └──────────┘  └──────────┘   │
-                └───────────────┬────────────────┘
-                                │
-                    ┌───────────▼────────────────┐
-                    │        OpenClaw             │
-                    │                             │
-                    │  Sub-Agent Orchestration    │
-                    │  Model Tier Management      │
-                    │  Tool Access Layer          │
-                    │  Session Management         │
-                    └─────────────────────────────┘
-```
+See `scenario_runner/README.md` for full details.
 
 ## Data Flow
 
-1. **Task Submission**: CLI/API → Task Queue (SQLite)
-2. **Task Pickup**: Worker → OpenClaw session spawn
-3. **Execution**: Sub-agent → Tools → Results
-4. **Quality Check**: Results → Quality Gates → Pass/Fail
-5. **Retry/Success**: Fail → Retry Logic | Pass → Complete
-6. **Metrics**: All stages → Metrics collection
-7. **Memory**: Outcomes → Memory storage
+1. **CLI** → `TaskQueue.submit_task(TaskSpec)` → SQLite `tasks` table
+2. **TaskRunner** polls `tasks` for `queued` or ready-to-retry tasks
+3. **WorkerPool** assigns a worker thread
+4. **Executor** runs the task (DryRun / Local / OpenClaw)
+5. **ProgressTracker** records events at each lifecycle step
+6. On success → `task_runs` updated, task marked `success`
+7. On failure → **RecoveryManager** classifies error, schedules retry or dead-letters
+8. **Circuit breakers** trip after N consecutive unique-task failures per `task_type:model_tier`
 
-This architecture ensures **reliable, scalable, and observable multi-agent coordination** with comprehensive error handling, quality assurance, and learning capabilities.
+## What Is NOT Implemented
+
+The following are designed/documented but have **no code yet**:
+
+| Feature | Status | Planned |
+|---------|--------|---------|
+| MCP integration | Deferred | v1.0+ |
+| Memory system (episodic/semantic/procedural) | Deferred | v1.0+ |
+| Advanced metrics dashboard | Deferred | Week 4-5 |
+| Template engine / phase sequencer | Not started | Week 3 |
+| Scenario runner CLI (`orch scenario run`) | Not started | Week 6 |
+| Digital twin / mock service layer | Deferred | TBD |
+| LangGraph integration | Deferred | TBD |
+| CI/CD scenario integration | Deferred | TBD |
+| REST API | Not planned (MVP) | TBD |
+| Web dashboard | Not planned (MVP) | TBD |

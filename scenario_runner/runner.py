@@ -160,9 +160,11 @@ class ScenarioRunner:
                     sum(cr.grade.score * cr.weight for cr in scored) / total_weight
                 )
             else:
-                weighted_score = 0.0
+                weighted_score = 1.0  # All scored criteria have weight 0 — treat as pass
         else:
-            weighted_score = 0.0
+            # Gates-only scenario: no scored criteria, so weighted score is N/A
+            # Pass if all gates passed
+            weighted_score = 1.0 if gates_passed else 0.0
 
         # --- Overall pass decision ---
         if gate_mode == "all_or_nothing" and not gates_passed:
@@ -262,7 +264,15 @@ class ScenarioRunner:
         if "rubric_file" in criterion:
             # rubric_file is relative to the scenarios root, e.g.
             # "shared/rubrics/factual-accuracy.md" → scenarios/shared/rubrics/...
-            rubric_path = self.scenarios_dir.parent / criterion["rubric_file"]
+            scenarios_root = self.scenarios_dir.parent
+            rubric_path = (scenarios_root / criterion["rubric_file"]).resolve()
+            
+            # Prevent path traversal — rubric must stay within scenarios directory
+            if not rubric_path.is_relative_to(scenarios_root.resolve()):
+                raise ValueError(
+                    f"Rubric path escapes scenarios directory: {criterion['rubric_file']}"
+                )
+            
             with open(rubric_path, "r", encoding="utf-8") as fh:
                 return fh.read()
         return criterion.get("rubric", "")

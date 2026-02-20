@@ -232,11 +232,11 @@ class TestAssertionGrader:
         assert "Blocked" in result.details
 
     def test_malicious_exec_blocked(self, assertion_grader: AssertionGrader):
-        """Expression containing 'exec(' is blocked before eval."""
+        """Expression containing 'exec(' is blocked — either by AST or namespace restriction."""
         output = {}
         result = assertion_grader.grade("exec('import os')", output)
         assert result.passed is False
-        assert "Blocked" in result.details
+        assert result.score == 0.0
 
     def test_malicious_builtins_attribute_blocked(self, assertion_grader: AssertionGrader):
         """Expression trying to access __builtins__ is blocked."""
@@ -591,18 +591,20 @@ class TestRunScenario:
         assert result.weighted_score == pytest.approx(expected_score)
         assert result.passed is True  # 0.75 >= 0.70
 
-    def test_no_scored_criteria_score_is_zero(self, tmp_path: Path):
-        """When all criteria are gates, weighted_score defaults to 0.0."""
+    def test_no_scored_criteria_gates_only_passes(self, tmp_path: Path):
+        """When all criteria are gates and all pass, scenario passes with score 1.0."""
         scenario = self._make_scenario(
             gates=[
                 {"id": "g1", "type": "assertion", "check": "True"},
             ],
-            pass_threshold=0.0,  # would pass if scoring worked
+            pass_threshold=0.75,
         )
         runner = ScenarioRunner(scenarios_dir=tmp_path)
         result = runner.run_scenario(scenario, {"article": "Content"})
 
-        assert result.weighted_score == pytest.approx(0.0)
+        assert result.gates_passed is True
+        assert result.weighted_score == pytest.approx(1.0)
+        assert result.passed is True
 
     def test_observations_collected(self, tmp_path: Path):
         """ScenarioResult.observations contains keys from scenario['observations']."""
