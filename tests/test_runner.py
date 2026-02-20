@@ -29,37 +29,6 @@ def test_config():
 def test_db():
     """Create test database."""
     db = Database(":memory:")
-    
-    # Add execute method to support older code paths
-    def execute_sql(sql, params=None):
-        conn = db.get_connection()
-        sql_cleaned = sql
-        import re
-        # Remove SQL comments (-- style)
-        sql_cleaned = re.sub(r'--[^\n]*', '', sql_cleaned)
-        # Remove INDEX declarations (with or without preceding comma)
-        sql_cleaned = re.sub(r',?\s*INDEX\s+\w+\s*\([^)]*\)', '', sql_cleaned)
-        # Remove trailing commas before closing parens
-        sql_cleaned = re.sub(r',\s*\)', ')', sql_cleaned)
-        # Remove ON CONFLICT clauses (not supported without unique constraints)
-        sql_cleaned = re.sub(r'\s+ON\s+CONFLICT[^;]*$', '', sql_cleaned, flags=re.MULTILINE | re.DOTALL)
-        
-        if params:
-            conn.execute(sql_cleaned, params)
-        else:
-            conn.execute(sql_cleaned)
-        conn.commit()
-    
-    def fetch_all_sql(sql, params=None):
-        conn = db.get_connection()
-        if params:
-            cursor = conn.execute(sql, params)
-        else:
-            cursor = conn.execute(sql)
-        return [dict(row) for row in cursor.fetchall()]
-    
-    db.execute = execute_sql
-    db.fetch_all = fetch_all_sql
     return db
 
 
@@ -663,13 +632,13 @@ class TestTaskRunnerIntegration:
         runner.start()
         
         try:
-            # Let it process
-            time.sleep(1)
+            # Let it process (DryRunExecutor defaults to 2s delay)
+            time.sleep(4)
             
             # Check task status
             status = runner.queue.get_task_status(task_id)
             
-            # Task should have been processed (success or failure)
+            # Task should have been processed (success or failure) or at least running
             assert status.state in [TaskState.SUCCESS, TaskState.FAILED, TaskState.RUNNING]
         
         finally:

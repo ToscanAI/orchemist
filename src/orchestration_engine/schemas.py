@@ -71,25 +71,31 @@ class ModelTier(str, Enum):
 
 class TaskSpec(BaseModel):
     """Input specification for submitting a new task."""
+    # Auto-generated unique ID (set here so callers can override for testing)
+    id: str = Field(default_factory=lambda: str(uuid4()))
+
     type: TaskType
     payload: Dict[str, Any]
     priority: Priority = Priority.NORMAL
-    
+
+    # Execution tracking
+    retry_count: int = 0
+
     # Orchestra integration
     orchestra_id: Optional[str] = None
     orchestra_phase: Optional[str] = None
-    
+
     # Retry configuration
     max_retries: int = 3
     timeout_seconds: int = 3600
-    
+
     # Quality requirements
     min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
     preferred_model: Optional[ModelTier] = None
-    
+
     # Resource limits
     cost_limit_usd: Optional[Decimal] = None
-    
+
     # Metadata
     created_by: Optional[str] = None
     tags: List[str] = []
@@ -210,15 +216,17 @@ class TaskSummary(BaseModel):
 
 class OrchestraSpec(BaseModel):
     """Input specification for creating a new orchestra workflow."""
-    template: str  # Template name like "content-pipeline", "code-sprint"
+    template: str = ""  # Template name like "content-pipeline", "code-sprint"
     name: Optional[str] = None
-    config: Dict[str, Any]  # Template-specific parameters
+    description: Optional[str] = None  # Human-readable description
+    phases: List[str] = []             # Ordered list of phase names
+    config: Dict[str, Any] = Field(default_factory=dict)  # Template-specific parameters
     priority: Priority = Priority.NORMAL
-    
+
     # Resource limits
     cost_budget_usd: Optional[Decimal] = None
     time_budget_hours: Optional[int] = None
-    
+
     # Metadata
     created_by: Optional[str] = None
     tags: List[str] = []

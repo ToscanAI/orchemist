@@ -12,6 +12,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, Any, Optional, List, Callable
 from uuid import uuid4
 
@@ -21,7 +22,7 @@ from .queue import TaskQueue
 from .schemas import TaskSpec, TaskResult, TaskState, TaskType, Priority
 from .concurrency import WorkerPool
 from .recovery import RecoveryManager, ErrorType
-from .progress import ProgressTracker, ProgressEventType
+from .progress import ProgressTracker, ProgressEventType, ProgressEvent
 
 
 logger = logging.getLogger(__name__)
@@ -247,14 +248,18 @@ class LocalExecutor(TaskExecutor):
 
 class OpenClawExecutor(TaskExecutor):
     """Executor that formats tasks for OpenClaw sub-agents."""
-    
-    def __init__(self, config: EngineConfig):
+
+    def __init__(self, config: EngineConfig, dry_run: bool = True):
         """Initialize OpenClaw executor.
-        
+
         Args:
             config: Engine configuration
+            dry_run: When True (default), use the built-in simulation for
+                testing and development.  Set to False in production to invoke
+                the real _execute_via_openclaw() path.
         """
         self.config = config
+        self.dry_run = dry_run
     
     def execute(self, task: TaskSpec, worker_id: str, model_tier: str = None,
                 thinking_level: str = None) -> TaskResult:
@@ -295,11 +300,12 @@ class OpenClawExecutor(TaskExecutor):
             cmd.append(prompt)
             
             logger.info(f"Executing task {task_id} with OpenClaw: model={model_name}, thinking={thinking}")
-            
-            # Execute OpenClaw command
-            # NOTE: In production, this would call the actual sessions_spawn
-            # For now, we simulate the interface
-            result = self._simulate_openclaw_execution(cmd, task, timeout_seconds)
+
+            # Execute via real OpenClaw interface (or simulation if dry_run)
+            if self.dry_run:
+                result = self._simulate_openclaw_execution(cmd, task, timeout_seconds)
+            else:
+                result = self._execute_via_openclaw(task, model_name, thinking or "low", timeout_seconds)
             
             return TaskResult(
                 task_id=task_id,
@@ -375,8 +381,44 @@ class OpenClawExecutor(TaskExecutor):
         
         return "\n".join(prompt_parts)
     
-    def _simulate_openclaw_execution(self, cmd: List[str], task: TaskSpec, 
-                                   timeout: int) -> Dict[str, Any]:
+    def _execute_via_openclaw(self, task: TaskSpec, model_name: str,
+                              thinking: str, timeout: int) -> Dict[str, Any]:
+        """Execute task via OpenClaw by writing task file and spawning agent.
+
+        Writes the task to a structured input file under
+        ~/.orchestration-engine/tasks/<task_id>/input.json so a real
+        sessions_spawn call (or external orchestrator) can pick it up.
+
+        Raises:
+            NotImplementedError: Always — real subprocess wiring is a future step.
+        """
+        task_id = task.id if hasattr(task, "id") else str(uuid4())
+        prompt = self._format_task_prompt(task)
+
+        task_dir = Path.home() / ".orchestration-engine" / "tasks" / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+
+        task_file = task_dir / "input.json"
+        task_file.write_text(json.dumps({
+            "task_id": task_id,
+            "prompt": prompt,
+            "model": model_name,
+            "thinking": thinking,
+            "timeout": timeout,
+            "task_type": task.type.value,
+            "payload": task.payload,
+        }, indent=2))
+
+        logger.info(f"Task {task_id} written to {task_file}")
+
+        raise NotImplementedError(
+            f"Real OpenClaw execution not yet wired. "
+            f"Task written to {task_file}. "
+            f"Next step: wire sessions_spawn subprocess call."
+        )
+
+    def _simulate_openclaw_execution(self, cmd: List[str], task: TaskSpec,
+                                     timeout: int) -> Dict[str, Any]:
         """Simulate OpenClaw execution for development/testing.
         
         In production, this would be replaced with actual subprocess.run()
@@ -487,10 +529,10 @@ class TaskRunner:
             self.executors.append(DryRunExecutor())
             logger.info("Added DryRunExecutor (dry run mode)")
         else:
-            # Production executors
+            # Production executors — OpenClawExecutor with real execution enabled
             self.executors.extend([
                 LocalExecutor(),
-                OpenClawExecutor(self.config)
+                OpenClawExecutor(self.config, dry_run=False)
             ])
             logger.info("Added LocalExecutor and OpenClawExecutor")
     
@@ -649,14 +691,14 @@ class TaskRunner:
             session_id = f"session-{uuid4().hex[:8]}"
             self.worker_pool.start_task_execution(worker_id, session_id)
             
-            self.progress_tracker.record_event({
-                "task_id": task_id,
-                "event_type": ProgressEventType.MODEL_SELECTED,
-                "message": f"Selected model tier: {model_tier}",
-                "model_tier": model_tier,
-                "worker_id": worker_id,
-                "attempt_number": task.retry_count + 1 if hasattr(task, 'retry_count') else 1
-            })
+            self.progress_tracker.record_event(ProgressEvent(
+                task_id=task_id,
+                event_type=ProgressEventType.MODEL_SELECTED,
+                message=f"Selected model tier: {model_tier}",
+                model_tier=model_tier,
+                worker_id=worker_id,
+                attempt_number=task.retry_count + 1 if hasattr(task, 'retry_count') else 1
+            ))
             
             # Execute task
             result = executor.execute(task, worker_id, model_tier, thinking_level)
@@ -728,20 +770,32 @@ class TaskRunner:
         )
         
         # Notify recovery manager
-        self.recovery_manager.handle_task_success(task.type, model_tier)
+        self.recovery_manager.handle_task_success(task_id, task.type, model_tier)
         
-        logger.info(f"Task {task_id} completed successfully (model: {model_tier}, "
-                   f"confidence: {result.confidence:.2f}, cost: ${result.cost_usd or 0:.4f})")
+        try:
+            confidence_str = f"{float(result.confidence):.2f}"
+            cost_str = f"{float(result.cost_usd or 0):.4f}"
+        except (TypeError, ValueError):
+            confidence_str = str(result.confidence)
+            cost_str = str(result.cost_usd)
+        logger.info(
+            f"Task {task_id} completed successfully (model: {model_tier}, "
+            f"confidence: {confidence_str}, cost: ${cost_str})"
+        )
     
     def _handle_task_failure(self, task: TaskSpec, result: TaskResult,
                            worker_id: str, model_tier: str) -> None:
         """Handle task failure and determine retry strategy."""
         task_id = task.id if hasattr(task, 'id') else result.task_id
         
-        # Extract error message
+        # Extract error message — errors may be TaskError objects or raw dicts
         error_message = "Unknown error"
         if result.errors:
-            error_message = result.errors[0].get('message', error_message)
+            first = result.errors[0]
+            if isinstance(first, dict):
+                error_message = first.get('message', error_message)
+            else:
+                error_message = getattr(first, 'message', error_message)
         
         # Handle with recovery manager
         should_retry, retry_at, next_model = self.recovery_manager.handle_task_failure(

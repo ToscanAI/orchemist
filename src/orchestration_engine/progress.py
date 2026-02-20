@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Dict, Any, List, Optional, Iterator
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .db import Database
 from .schemas import TaskState
@@ -61,11 +61,9 @@ class ProgressEvent(BaseModel):
     cost_usd: Optional[str] = None  # Decimal as string for JSON serialization
     memory_mb: Optional[int] = None
     
-    class Config:
-        """Pydantic config for JSON serialization."""
-        json_encoders = {
-            datetime: lambda v: v.isoformat()
-        }
+    model_config = ConfigDict(
+        json_encoders={datetime: lambda v: v.isoformat()}
+    )
 
 
 class TaskProgress(BaseModel):
@@ -144,7 +142,7 @@ class ProgressTracker:
                 timestamp TIMESTAMP NOT NULL,
                 message TEXT,
                 progress_percentage REAL,
-                details TEXT,  -- JSON
+                details TEXT,
                 worker_id TEXT,
                 session_id TEXT,
                 model_tier TEXT,
@@ -152,11 +150,15 @@ class ProgressTracker:
                 tokens_used INTEGER,
                 cost_usd TEXT,
                 memory_mb INTEGER,
-                FOREIGN KEY(task_id) REFERENCES tasks(id),
-                INDEX idx_progress_task_time (task_id, timestamp),
-                INDEX idx_progress_type (event_type, timestamp)
+                FOREIGN KEY(task_id) REFERENCES tasks(id)
             )
         """)
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_progress_task_time ON progress_events(task_id, timestamp)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_progress_type ON progress_events(event_type, timestamp)"
+        )
         
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS task_progress_summary (
@@ -434,16 +436,24 @@ class ProgressTracker:
             details=details or {}
         ))
     
-    def task_completed(self, task_id: str, worker_id: str = None, 
-                      tokens_used: int = None, cost_usd: str = None) -> None:
+    def task_completed(self, task_id: str, worker_id: str = None,
+                      tokens_used=None, cost_usd: str = None) -> None:
         """Record task completion."""
+        # Coerce tokens_used to int — callers may pass None or a non-int mock
+        tokens_int: Optional[int] = None
+        if tokens_used is not None:
+            try:
+                tokens_int = int(tokens_used)
+            except (TypeError, ValueError):
+                tokens_int = None
+
         self.record_event(ProgressEvent(
             task_id=task_id,
             event_type=ProgressEventType.COMPLETED,
             message="Task completed successfully",
             progress_percentage=100.0,
             worker_id=worker_id,
-            tokens_used=tokens_used,
+            tokens_used=tokens_int,
             cost_usd=cost_usd
         ))
     

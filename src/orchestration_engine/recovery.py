@@ -344,12 +344,16 @@ class RecoveryManager:
                 error_type TEXT,
                 error_message TEXT,
                 backoff_seconds INTEGER,
-                success BOOLEAN,
-                INDEX idx_retry_task (task_id),
-                INDEX idx_retry_schedule (scheduled_at)
+                success BOOLEAN
             )
         """)
-        
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_retry_task ON retry_attempts(task_id)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_retry_schedule ON retry_attempts(scheduled_at)"
+        )
+
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS circuit_breaker_state (
                 name TEXT PRIMARY KEY,
@@ -359,7 +363,7 @@ class RecoveryManager:
                 state TEXT DEFAULT 'closed'
             )
         """)
-        
+
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS error_patterns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -369,11 +373,15 @@ class RecoveryManager:
                 model_tier TEXT,
                 frequency INTEGER DEFAULT 1,
                 first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_error_message (error_message),
-                INDEX idx_error_type (error_type)
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_error_message ON error_patterns(error_message)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_error_type ON error_patterns(error_type)"
+        )
     
     def handle_task_failure(self, task_id: str, task_type: TaskType, 
                           error_message: str, model_tier: str = None,

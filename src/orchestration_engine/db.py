@@ -384,7 +384,7 @@ class Database:
                 updates.append("retry_count = retry_count + 1")
             elif key == 'metadata':
                 updates.append("metadata = ?")
-                values.append(json.dumps(value))
+                values.append(json.dumps(value, default=str))
         
         values.append(task_id)
         
@@ -695,6 +695,33 @@ class Database:
             'max_workers': 8,
         }
     
+    # Generic Query Methods
+
+    def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Execute a SQL query and return the cursor.
+
+        Auto-commits after execution so callers (concurrency.py, progress.py,
+        recovery.py) don't have to manage transactions explicitly.  DDL
+        statements (CREATE TABLE, etc.) already have implicit commit semantics
+        in SQLite; DML (INSERT/UPDATE/DELETE) is committed here so the write
+        is durable from the caller's perspective.
+        """
+        conn = self.get_connection()
+        cursor = conn.execute(query, params)
+        conn.commit()
+        return cursor
+
+    def fetch_all(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        """Execute query and return all rows as dicts."""
+        cursor = self.execute(query, params)
+        return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def fetch_one(self, query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
+        """Execute query and return first row as dict, or None."""
+        cursor = self.execute(query, params)
+        row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
     # Utility Methods
     
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:

@@ -149,23 +149,31 @@ class WorkerPool:
                 session_id TEXT,
                 created_at TIMESTAMP NOT NULL,
                 last_heartbeat TIMESTAMP NOT NULL,
-                last_activity TEXT,
-                INDEX idx_worker_state (state),
-                INDEX idx_worker_heartbeat (last_heartbeat)
+                last_activity TEXT
             )
         """)
-        
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_worker_state ON workers(state)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_worker_heartbeat ON workers(last_heartbeat)"
+        )
+
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS resource_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 metric_name TEXT NOT NULL,
                 metric_value REAL NOT NULL,
-                details TEXT,  -- JSON
-                INDEX idx_resource_time (timestamp),
-                INDEX idx_resource_metric (metric_name)
+                details TEXT
             )
         """)
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_resource_time ON resource_usage(timestamp)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_resource_metric ON resource_usage(metric_name)"
+        )
     
     def start(self) -> None:
         """Start the worker pool background threads."""
@@ -239,18 +247,30 @@ class WorkerPool:
     
     def assign_task(self, task_id: str) -> Optional[str]:
         """Assign a task to an available worker.
-        
+
+        Creates a new worker for each task (or reuses one from the pool when
+        at the worker limit).  Workers are terminated after task completion so
+        the pool stays within bounds.
+
         Args:
             task_id: Task to assign
-            
+
         Returns:
             Worker ID if assigned, None if no workers available
         """
         with self._lock:
-            # Always create a new dedicated worker for this task
+            # Try to create a new dedicated worker for this task
             worker_id = self.create_worker()
             if worker_id is None:
-                return None
+                # At the worker limit — try to reuse an idle worker
+                idle_workers = [
+                    w for w in self._workers.values()
+                    if w.state == WorkerState.IDLE
+                ]
+                if not idle_workers:
+                    return None
+                worker = idle_workers[0]
+                worker_id = worker.worker_id
             worker = self._workers[worker_id]
             
             # Assign task

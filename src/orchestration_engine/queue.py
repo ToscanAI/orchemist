@@ -14,6 +14,7 @@ from .db import Database
 from .schemas import (
     TaskSpec, TaskStatus, TaskResult, TaskSummary, QueueStats,
     TaskState, Priority, TaskType, TaskFilters, TaskRunResult,
+    OrchestraSpec,
     generate_task_id, generate_orchestra_id, calculate_retry_delay,
     select_model_tier, DEFAULT_MAX_RETRIES, DeadLetterTask
 )
@@ -280,7 +281,7 @@ class TaskQueue:
             final_state.value,
             completed_at=datetime.now(),
             metadata={
-                'result': result.dict(),
+                'result': result.model_dump(),
                 'worker_id': worker_id,
                 'completion_timestamp': datetime.now().isoformat()
             }
@@ -517,6 +518,107 @@ class TaskQueue:
         
         logger.info(f"Scheduled task {task_id} for retry #{retry_count} in {delay_seconds}s")
     
+    # Runner-facing methods
+
+    def get_task(self, task_id: str) -> Optional[TaskSpec]:
+        """Get a task as a TaskSpec by ID (used by TaskRunner for immediate execution).
+
+        Args:
+            task_id: Unique task identifier
+
+        Returns:
+            TaskSpec or None if not found
+        """
+        task_data = self.db.get_task(task_id)
+        if not task_data:
+            return None
+        return self._task_data_to_spec(task_data)
+
+    def get_ready_tasks(self, limit: int = 10) -> List[TaskSpec]:
+        """Get tasks that are ready to be executed (queued or due-for-retry).
+
+        Args:
+            limit: Maximum number of tasks to return
+
+        Returns:
+            List of TaskSpec objects ordered by priority
+        """
+        tasks_data = self.db.list_tasks(
+            states=[TaskState.QUEUED.value, TaskState.RETRY.value],
+            limit=limit
+        )
+        return [self._task_data_to_spec(t) for t in tasks_data]
+
+    def schedule_retry(self, task_id: str, retry_at: datetime,
+                       next_model: str = None) -> None:
+        """Schedule a task for retry at a specific time.
+
+        Args:
+            task_id: Task to retry
+            retry_at: When the retry should be attempted
+            next_model: Optional model tier override for the retry attempt
+        """
+        self.db.update_task_status(
+            task_id,
+            TaskState.RETRY.value,
+            retry_count=True,   # triggers `retry_count = retry_count + 1`
+            next_retry_at=retry_at,
+        )
+        logger.info(
+            f"Scheduled task {task_id} for retry at {retry_at}"
+            + (f" with model {next_model}" if next_model else "")
+        )
+
+    def submit_orchestra(self, orchestra: OrchestraSpec) -> str:
+        """Submit a new orchestra workflow.
+
+        Args:
+            orchestra: Orchestra specification
+
+        Returns:
+            Orchestra ID
+        """
+        orchestra_id = generate_orchestra_id()
+        orchestra_data = {
+            'id': orchestra_id,
+            'template': orchestra.template or "default",
+            'name': orchestra.name,
+            'config': orchestra.config,
+            'priority': orchestra.priority.value,
+            'cost_budget_usd': float(orchestra.cost_budget_usd) if orchestra.cost_budget_usd else None,
+            'time_budget_hours': orchestra.time_budget_hours,
+            'created_by': orchestra.created_by,
+            'tags': orchestra.tags,
+        }
+        self.db.insert_orchestra(orchestra_data)
+        logger.info(f"Submitted orchestra {orchestra_id} (template={orchestra_data['template']})")
+        return orchestra_id
+
+    # Helpers
+
+    def _task_data_to_spec(self, task_data: Dict[str, Any]) -> TaskSpec:
+        """Convert a raw task dict from the database into a TaskSpec."""
+        from decimal import Decimal as _Decimal
+        from .schemas import ModelTier
+        preferred = task_data.get('preferred_model')
+        return TaskSpec(
+            id=task_data['id'],
+            type=TaskType(task_data['type']),
+            payload=task_data.get('payload') or {},
+            priority=Priority(task_data.get('priority', Priority.NORMAL.value)),
+            retry_count=task_data.get('retry_count', 0),
+            orchestra_id=task_data.get('orchestra_id'),
+            orchestra_phase=task_data.get('orchestra_phase'),
+            max_retries=task_data.get('max_retries', 3),
+            timeout_seconds=task_data.get('timeout_seconds', 3600),
+            min_confidence=task_data.get('min_confidence', 0.7),
+            preferred_model=ModelTier(preferred) if preferred else None,
+            cost_limit_usd=_Decimal(str(task_data['cost_limit_usd']))
+                if task_data.get('cost_limit_usd') is not None else None,
+            created_by=task_data.get('created_by'),
+            tags=task_data.get('tags') or [],
+        )
+
     def close(self) -> None:
         """Close database connections and cleanup resources."""
         self.db.close()
