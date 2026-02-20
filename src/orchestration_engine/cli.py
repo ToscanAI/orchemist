@@ -6,6 +6,7 @@ Uses Click for command structure and rich formatting for output.
 
 import json
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -478,6 +479,218 @@ def health() -> None:
     
     except Exception as e:
         click.echo(f"Error checking health: {e}", err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.argument('task_id', required=True)
+@click.option('--force', is_flag=True, help='Force execution even if worker pool is full')
+@click.option('--model', type=str, help='Override model tier (haiku-4-5, sonnet-4, opus-4-6)')
+@click.option('--timeout', type=int, help='Override timeout in seconds')
+def run(task_id: str, force: bool, model: Optional[str], timeout: Optional[int]) -> None:
+    """Execute a specific task immediately."""
+    try:
+        # Import here to avoid circular imports during CLI parsing
+        from .runner import TaskRunner
+        from .config import get_global_config
+        
+        config = get_global_config()
+        runner = TaskRunner(config=config)
+        
+        # Check if runner is already running
+        if not runner._running:
+            click.echo("Starting task runner...")
+            runner.start()
+            time.sleep(2)  # Give it a moment to start
+        
+        # Execute the task
+        success = runner.execute_task_immediately(task_id)
+        
+        if success:
+            click.echo(f"✅ Task {task_id} started successfully")
+            click.echo(f"Use 'orch watch {task_id}' to monitor progress")
+        else:
+            click.echo(f"❌ Failed to start task {task_id}")
+            sys.exit(1)
+    
+    except Exception as e:
+        click.echo(f"Error executing task: {e}", err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.argument('task_id', required=True)
+@click.option('--follow', '-f', is_flag=True, help='Follow progress in real-time')
+@click.option('--refresh', default=2, help='Refresh interval in seconds (with --follow)')
+def watch(task_id: str, follow: bool, refresh: int) -> None:
+    """Watch task progress in real-time."""
+    try:
+        # Import here to avoid circular imports
+        from .progress import ProgressTracker
+        from .db import Database
+        
+        db = Database()
+        tracker = ProgressTracker(db)
+        
+        def display_progress():
+            progress = tracker.get_task_progress(task_id, include_events=True)
+            if not progress:
+                click.echo(f"❌ Task {task_id} not found")
+                return False
+            
+            # Clear screen for follow mode
+            if follow:
+                click.clear()
+            
+            # Display task header
+            click.echo(f"📊 Task Progress: {task_id}")
+            click.echo("=" * 60)
+            
+            # Status overview
+            status_emoji = {
+                "queued": "⏳",
+                "running": "🔄", 
+                "success": "✅",
+                "failed": "❌",
+                "retry": "🔁",
+                "permanently_failed": "💀",
+                "cancelled": "🚫"
+            }
+            
+            emoji = status_emoji.get(progress.current_state.value, "❓")
+            click.echo(f"Status: {emoji} {progress.current_state.value.upper()}")
+            
+            if progress.current_message:
+                click.echo(f"Message: {progress.current_message}")
+            
+            click.echo(f"Progress: {progress.progress_percentage:.1f}%")
+            
+            if progress.execution_time_seconds:
+                click.echo(f"Runtime: {progress.execution_time_seconds:.1f}s")
+            
+            if progress.current_model:
+                click.echo(f"Model: {progress.current_model}")
+            
+            click.echo(f"Attempt: {progress.attempt_number}")
+            
+            if progress.retry_count > 0:
+                click.echo(f"Retries: {progress.retry_count}")
+            
+            # Resource usage
+            if progress.total_tokens > 0 or float(progress.total_cost_usd) > 0:
+                click.echo("\n💰 Resource Usage:")
+                if progress.total_tokens > 0:
+                    click.echo(f"  Tokens: {progress.total_tokens:,}")
+                if float(progress.total_cost_usd) > 0:
+                    click.echo(f"  Cost: ${progress.total_cost_usd}")
+            
+            # Recent events
+            click.echo(f"\n📋 Recent Events ({len(progress.events)}):")
+            for event in progress.events[-5:]:  # Show last 5 events
+                timestamp = event.timestamp.strftime("%H:%M:%S")
+                click.echo(f"  {timestamp} - {event.event_type}: {event.message or 'N/A'}")
+            
+            # Return whether task is still active
+            return progress.is_active
+        
+        # Display progress
+        is_active = display_progress()
+        
+        # Follow mode
+        if follow and is_active:
+            click.echo(f"\n🔄 Following progress (refresh every {refresh}s, Ctrl+C to stop)...")
+            
+            try:
+                while is_active:
+                    time.sleep(refresh)
+                    is_active = display_progress()
+                
+                click.echo("\n✅ Task completed - stopped following")
+            
+            except KeyboardInterrupt:
+                click.echo("\n👋 Stopped following progress")
+    
+    except Exception as e:
+        click.echo(f"Error watching task: {e}", err=True)
+        sys.exit(1)
+
+
+@main.command()
+@click.option('--detailed', '-d', is_flag=True, help='Show detailed worker information')
+def workers(detailed: bool) -> None:
+    """Show active worker status."""
+    try:
+        # Import here to avoid circular imports
+        from .concurrency import WorkerPool
+        from .config import get_global_config
+        from .db import Database
+        
+        config = get_global_config()
+        db = Database()
+        worker_pool = WorkerPool(db, config)
+        
+        status = worker_pool.get_worker_status()
+        
+        if not status:
+            click.echo("No worker status available")
+            return
+        
+        # Summary
+        click.echo(f"👥 Worker Pool Status")
+        click.echo("=" * 40)
+        click.echo(f"Total Workers: {status['total_workers']}")
+        click.echo(f"Max Workers: {status['max_workers']}")
+        
+        # Resource status
+        if 'resource_status' in status:
+            resources = status['resource_status']
+            click.echo(f"\n💻 Resource Usage:")
+            click.echo(f"  Sessions: {resources['current_sessions']}/{resources['max_sessions']} "
+                      f"({resources['session_utilization']:.1f}%)")
+            
+            if resources.get('daily_budget_usd'):
+                click.echo(f"  Budget: ${resources['daily_cost_usd']:.2f}/"
+                          f"${resources['daily_budget_usd']:.2f} "
+                          f"({resources['budget_utilization']:.1f}%)")
+            else:
+                click.echo(f"  Daily Cost: ${resources['daily_cost_usd']:.2f}")
+        
+        # Workers by state
+        if 'workers_by_state' in status and status['workers_by_state']:
+            click.echo(f"\n📊 Workers by State:")
+            
+            for state, workers in status['workers_by_state'].items():
+                count = len(workers)
+                state_emoji = {
+                    'idle': '😴',
+                    'assigned': '📝',
+                    'running': '🏃',
+                    'stale': '💀',
+                    'terminated': '🚫'
+                }
+                
+                emoji = state_emoji.get(state, '❓')
+                click.echo(f"  {emoji} {state.capitalize()}: {count}")
+                
+                if detailed and workers:
+                    for worker in workers[:3]:  # Show first 3 workers
+                        worker_id = worker['worker_id'][:12] + "..." if len(worker['worker_id']) > 15 else worker['worker_id']
+                        age = worker.get('heartbeat_age_seconds', 0)
+                        
+                        task_info = ""
+                        if worker.get('assigned_task_id'):
+                            task_id = worker['assigned_task_id'][:8] + "..."
+                            task_info = f" (task: {task_id})"
+                        
+                        click.echo(f"    • {worker_id} - {age:.0f}s ago{task_info}")
+                    
+                    if len(workers) > 3:
+                        click.echo(f"    ... and {len(workers) - 3} more")
+        else:
+            click.echo("No active workers")
+    
+    except Exception as e:
+        click.echo(f"Error getting worker status: {e}", err=True)
         sys.exit(1)
 
 

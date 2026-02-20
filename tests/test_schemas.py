@@ -141,7 +141,7 @@ class TestTaskSpec:
         )
         
         # Should serialize to JSON without error
-        json_data = spec.json()
+        json_data = spec.model_dump_json()
         parsed_data = json.loads(json_data)
         
         assert parsed_data["type"] == "research"
@@ -506,10 +506,10 @@ class TestSerialization:
         )
         
         # Serialize to JSON
-        json_data = spec.json()
-        
+        json_data = spec.model_dump_json()
+
         # Deserialize from JSON
-        parsed_spec = TaskSpec.parse_raw(json_data)
+        parsed_spec = TaskSpec.model_validate_json(json_data)
         
         assert parsed_spec.type == spec.type
         assert parsed_spec.payload == spec.payload
@@ -534,10 +534,10 @@ class TestSerialization:
         )
         
         # Serialize to JSON
-        json_data = result.json()
-        
+        json_data = result.model_dump_json()
+
         # Deserialize from JSON
-        parsed_result = TaskResult.parse_raw(json_data)
+        parsed_result = TaskResult.model_validate_json(json_data)
         
         assert parsed_result.task_id == result.task_id
         assert parsed_result.task_type == result.task_type

@@ -71,25 +71,31 @@ class ModelTier(str, Enum):
 
 class TaskSpec(BaseModel):
     """Input specification for submitting a new task."""
+    # Auto-generated unique ID (set here so callers can override for testing)
+    id: str = Field(default_factory=lambda: str(uuid4()))
+
     type: TaskType
     payload: Dict[str, Any]
     priority: Priority = Priority.NORMAL
-    
+
+    # Execution tracking
+    retry_count: int = 0
+
     # Orchestra integration
     orchestra_id: Optional[str] = None
     orchestra_phase: Optional[str] = None
-    
+
     # Retry configuration
     max_retries: int = 3
     timeout_seconds: int = 3600
-    
+
     # Quality requirements
     min_confidence: float = Field(default=0.7, ge=0.0, le=1.0)
     preferred_model: Optional[ModelTier] = None
-    
+
     # Resource limits
     cost_limit_usd: Optional[Decimal] = None
-    
+
     # Metadata
     created_by: Optional[str] = None
     tags: List[str] = []
@@ -210,15 +216,17 @@ class TaskSummary(BaseModel):
 
 class OrchestraSpec(BaseModel):
     """Input specification for creating a new orchestra workflow."""
-    template: str  # Template name like "content-pipeline", "code-sprint"
+    template: str = ""  # Template name like "content-pipeline", "code-sprint"
     name: Optional[str] = None
-    config: Dict[str, Any]  # Template-specific parameters
+    description: Optional[str] = None  # Human-readable description
+    phases: List[str] = []             # Ordered list of phase names
+    config: Dict[str, Any] = Field(default_factory=dict)  # Template-specific parameters
     priority: Priority = Priority.NORMAL
-    
+
     # Resource limits
     cost_budget_usd: Optional[Decimal] = None
     time_budget_hours: Optional[int] = None
-    
+
     # Metadata
     created_by: Optional[str] = None
     tags: List[str] = []
@@ -426,3 +434,166 @@ DEFAULT_MAX_RETRIES = {
     TaskType.TRANSLATION: 4,
     TaskType.REVIEW: 2,
 }
+
+
+# Phase 2 Schemas - Task Runner, Workers, Progress, Recovery
+
+class WorkerStatus(BaseModel):
+    """Status information for a worker."""
+    worker_id: str
+    state: Literal["idle", "assigned", "running", "stale", "terminated"]
+    assigned_task_id: Optional[str] = None
+    session_id: Optional[str] = None
+    created_at: datetime
+    last_heartbeat: datetime
+    last_activity: Optional[str] = None
+    heartbeat_age_seconds: float = 0.0
+    
+    @property
+    def is_active(self) -> bool:
+        """Check if worker is actively processing."""
+        return self.state in ["assigned", "running"]
+    
+    @property
+    def is_stale(self) -> bool:
+        """Check if worker appears stale."""
+        return self.heartbeat_age_seconds > 300  # 5 minutes
+
+
+class ProgressEvent(BaseModel):
+    """Individual progress event for task tracking."""
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    task_id: str
+    event_type: Literal[
+        "queued", "started", "progress_update", "model_selected", 
+        "session_created", "session_ended", "retry_scheduled", 
+        "escalated", "completed", "failed", "cancelled", "timeout",
+        "resource_limit", "circuit_breaker"
+    ]
+    timestamp: datetime = Field(default_factory=datetime.now)
+    
+    # Event-specific data
+    message: Optional[str] = None
+    progress_percentage: Optional[float] = Field(None, ge=0.0, le=100.0)
+    details: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Context information
+    worker_id: Optional[str] = None
+    session_id: Optional[str] = None
+    model_tier: Optional[str] = None
+    attempt_number: int = 1
+    
+    # Resource metrics
+    tokens_used: Optional[int] = None
+    cost_usd: Optional[str] = None  # Decimal as string for JSON serialization
+    memory_mb: Optional[int] = None
+
+
+class CircuitBreakerState(BaseModel):
+    """Circuit breaker state for error recovery."""
+    name: str                              # Circuit breaker identifier (e.g., "content:haiku")
+    failure_count: int = 0                 # Consecutive failures
+    last_failure: Optional[datetime] = None # Last failure timestamp
+    opened_at: Optional[datetime] = None   # When circuit was opened
+    state: Literal["closed", "open", "half_open"] = "closed"
+    
+    def is_open(self, threshold: int = 5, reset_timeout_minutes: int = 30) -> bool:
+        """Check if circuit breaker is open."""
+        if self.state == "open" and self.opened_at:
+            # Check if reset timeout has passed
+            reset_time = self.opened_at + timedelta(minutes=reset_timeout_minutes)
+            if datetime.now() >= reset_time:
+                return False  # Allow half-open state
+            return True
+        
+        return self.failure_count >= threshold
+    
+    @property
+    def can_execute(self) -> bool:
+        """Check if circuit allows execution."""
+        return self.state in ["closed", "half_open"]
+
+
+class TaskExecutionRequest(BaseModel):
+    """Request to execute a specific task immediately."""
+    task_id: str
+    force: bool = False          # Force execution even if worker pool is full
+    model_tier: Optional[str] = None    # Override model tier
+    timeout_override: Optional[int] = None  # Override timeout seconds
+
+
+class WorkerPoolStatus(BaseModel):
+    """Comprehensive worker pool status."""
+    total_workers: int
+    active_workers: int
+    idle_workers: int
+    stale_workers: int
+    max_workers: int
+    
+    # Resource utilization
+    worker_utilization: float = Field(ge=0.0, le=100.0)  # Percentage
+    session_utilization: float = Field(ge=0.0, le=100.0)  # Percentage
+    
+    # Resource limits
+    current_sessions: int
+    max_sessions: int
+    daily_cost_usd: float
+    daily_budget_usd: Optional[float] = None
+    budget_utilization: float = Field(default=0.0, ge=0.0, le=100.0)
+    
+    # Worker details by state
+    workers_by_state: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
+    
+    @property
+    def available_capacity(self) -> int:
+        """Number of tasks that can be assigned immediately."""
+        return max(0, min(
+            self.max_workers - self.active_workers,
+            self.max_sessions - self.current_sessions
+        ))
+
+
+class RunnerStatus(BaseModel):
+    """Comprehensive task runner status."""
+    running: bool
+    uptime_seconds: Optional[float] = None
+    
+    # Component status
+    worker_pool_status: WorkerPoolStatus
+    queue_depth: int
+    active_tasks: int
+    pending_retries: int
+    
+    # Performance metrics
+    tasks_completed_today: int = 0
+    tasks_failed_today: int = 0
+    avg_execution_time_seconds: Optional[float] = None
+    throughput_tasks_per_hour: Optional[float] = None
+    
+    # Error recovery status
+    circuit_breakers_open: int = 0
+    total_retries_today: int = 0
+    retry_success_rate: Optional[float] = None
+    
+    # Resource usage
+    total_cost_today_usd: float = 0.0
+    total_tokens_consumed_today: int = 0
+    
+    @property
+    def health_status(self) -> Literal["healthy", "degraded", "unhealthy"]:
+        """Overall health assessment."""
+        if not self.running:
+            return "unhealthy"
+        
+        # Check various health indicators
+        if (self.circuit_breakers_open > 3 or 
+            self.worker_pool_status.worker_utilization > 90 or
+            (self.retry_success_rate and self.retry_success_rate < 0.5)):
+            return "degraded"
+        
+        return "healthy"
+
+
+# Configuration Import (from config.py)
+# Note: EngineConfig is defined in config.py to avoid circular imports
+# Import it when needed: from .config import EngineConfig

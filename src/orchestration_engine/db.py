@@ -7,6 +7,7 @@ connection management, and schema migrations.
 import json
 import sqlite3
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,23 +30,47 @@ class Database:
             default_dir.mkdir(exist_ok=True)
             db_path = default_dir / "engine.db"
         
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
         # Thread-local storage for connections
         self._local = threading.local()
+        
+        # Detect :memory: databases — each raw ":memory:" connection is isolated
+        # per connection, so threads would see empty databases.  Instead we use
+        # SQLite's shared-cache in-memory URI so every thread-local connection
+        # attaches to the same in-memory database while still having its own
+        # connection object (avoiding multi-thread write races).
+        self._shared_connection: Optional[sqlite3.Connection] = None
+        if str(db_path) == ":memory:":
+            db_name = uuid.uuid4().hex[:12]
+            self._db_uri: Optional[str] = f"file:memdb_{db_name}?mode=memory&cache=shared"
+            self.db_path = Path(":memory:")
+        else:
+            self._db_uri = None
+            self.db_path = Path(db_path)
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Initialize database schema
         self._initialize_database()
     
     def get_connection(self) -> sqlite3.Connection:
-        """Get thread-local database connection."""
+        """Get a thread-local database connection.
+        
+        For :memory: databases we use a shared-cache URI so every thread sees
+        the same data while keeping its own connection object.
+        """
         if not hasattr(self._local, 'connection'):
-            self._local.connection = sqlite3.connect(
-                str(self.db_path),
-                check_same_thread=False,
-                timeout=30.0
-            )
+            if self._db_uri is not None:
+                self._local.connection = sqlite3.connect(
+                    self._db_uri,
+                    uri=True,
+                    check_same_thread=False,
+                    timeout=30.0
+                )
+            else:
+                self._local.connection = sqlite3.connect(
+                    str(self.db_path),
+                    check_same_thread=False,
+                    timeout=30.0
+                )
             self._configure_connection(self._local.connection)
         
         return self._local.connection
@@ -64,6 +89,7 @@ class Database:
     def _configure_connection(self, conn: sqlite3.Connection) -> None:
         """Configure SQLite connection with optimal settings."""
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("PRAGMA synchronous = NORMAL") 
         conn.execute("PRAGMA cache_size = 10000")
         conn.execute("PRAGMA temp_store = memory")
@@ -359,7 +385,7 @@ class Database:
                 updates.append("retry_count = retry_count + 1")
             elif key == 'metadata':
                 updates.append("metadata = ?")
-                values.append(json.dumps(value))
+                values.append(json.dumps(value, default=str))
         
         values.append(task_id)
         
@@ -670,6 +696,35 @@ class Database:
             'max_workers': 8,
         }
     
+    # Generic Query Methods
+
+    def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Execute a SQL query and return the cursor.
+
+        Auto-commits after execution so callers (concurrency.py, progress.py,
+        recovery.py) don't have to manage transactions explicitly.  DDL
+        statements (CREATE TABLE, etc.) already have implicit commit semantics
+        in SQLite; DML (INSERT/UPDATE/DELETE) is committed here so the write
+        is durable from the caller's perspective.
+        """
+        conn = self.get_connection()
+        cursor = conn.execute(query, params)
+        conn.commit()
+        return cursor
+
+    def fetch_all(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        """Execute query and return all rows as dicts (no commit — read-only)."""
+        conn = self.get_connection()
+        cursor = conn.execute(query, params)
+        return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def fetch_one(self, query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
+        """Execute query and return first row as dict, or None (no commit — read-only)."""
+        conn = self.get_connection()
+        cursor = conn.execute(query, params)
+        row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
     # Utility Methods
     
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
