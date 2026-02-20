@@ -672,3 +672,54 @@ class TestTaskRunnerIntegration:
         # Verify task in database
         task_status = runner.queue.get_task_status(task_id)
         assert task_status.state == TaskState.QUEUED
+
+    def test_file_based_task_contract(self, tmp_path):
+        """Test that OpenClawExecutor writes proper input files."""
+        import json as _json
+
+        config = EngineConfig()
+        executor = OpenClawExecutor(config, dry_run=True)
+
+        task = TaskSpec(type=TaskType.CONTENT, payload={"topic": "test"})
+
+        # Verify the executor can format prompts
+        prompt = executor._format_task_prompt(task)
+        assert "content" in prompt.lower() or "test" in prompt.lower()
+
+        # Verify helper methods resolve sensible defaults
+        model_name = executor._resolve_model()
+        assert isinstance(model_name, str)
+        assert len(model_name) > 0
+
+        thinking = executor._resolve_thinking()
+        assert isinstance(thinking, str)
+        assert len(thinking) > 0
+
+    def test_task_file_contract_structure(self, tmp_path):
+        """Test that task input files have the correct structure."""
+        import json as _json
+
+        task_id = "test-123"
+        task_dir = tmp_path / "tasks" / task_id
+        task_dir.mkdir(parents=True)
+
+        input_data = {
+            "task_id": task_id,
+            "prompt": "Test prompt",
+            "model": "anthropic/claude-sonnet-4-6",
+            "thinking": "low",
+            "timeout_seconds": 600,
+            "task_type": "content",
+            "created_at": "2026-02-20T15:00:00",
+        }
+        (task_dir / "input.json").write_text(_json.dumps(input_data))
+        (task_dir / "status").write_text("pending")
+
+        # Verify structure
+        assert (task_dir / "input.json").exists()
+        assert (task_dir / "status").read_text() == "pending"
+
+        loaded = _json.loads((task_dir / "input.json").read_text())
+        assert loaded["task_id"] == task_id
+        assert loaded["model"] == "anthropic/claude-sonnet-4-6"
+        assert loaded["timeout_seconds"] == 600

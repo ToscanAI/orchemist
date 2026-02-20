@@ -381,41 +381,140 @@ class OpenClawExecutor(TaskExecutor):
         
         return "\n".join(prompt_parts)
     
+    def _resolve_model(self, model_tier: str = None) -> str:
+        """Resolve model name from tier, falling back to configured default."""
+        return self.config.models.tier_mappings.get(
+            model_tier or self.config.models.default_tier,
+            "anthropic/claude-sonnet-4-6"
+        )
+
+    def _resolve_thinking(self, model_tier: str = None,
+                          thinking_level: str = None) -> str:
+        """Resolve thinking level from tier or explicit override."""
+        return (
+            thinking_level
+            or self.config.models.thinking_levels.get(
+                model_tier or self.config.models.default_tier
+            )
+            or "low"
+        )
+
+    def _build_success_dict(self, output_data: Dict[str, Any],
+                             model_name: str) -> Dict[str, Any]:
+        """Build a success result dict from parsed output_data."""
+        return {
+            "success": True,
+            "confidence": output_data.get("confidence", 0.75),
+            "output": output_data.get("output", output_data),
+            "tokens_used": output_data.get("tokens_used", 0),
+            "cost_usd": output_data.get("cost_usd", 0.0),
+        }
+
+    def _build_failure_dict(self, message: str) -> Dict[str, Any]:
+        """Build a failure result dict."""
+        return {
+            "success": False,
+            "confidence": 0.0,
+            "output": {},
+            "errors": [{"code": "openclaw_error", "message": message,
+                        "severity": "error"}],
+            "tokens_used": 0,
+            "cost_usd": 0.0,
+        }
+
+    def _poll_for_result(self, output_file: Path, status_file: Path,
+                          model_name: str, timeout: int) -> Dict[str, Any]:
+        """Poll for output.json until it appears or timeout expires."""
+        poll_interval = 2.0
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            if output_file.exists():
+                try:
+                    output_data = json.loads(output_file.read_text())
+                    status_file.write_text("completed")
+                    return self._build_success_dict(output_data, model_name)
+                except (json.JSONDecodeError, OSError) as exc:
+                    logger.warning(f"Error reading output file: {exc}")
+
+            time.sleep(poll_interval)
+
+        status_file.write_text("timeout")
+        return self._build_failure_dict("Timed out waiting for output file")
+
     def _execute_via_openclaw(self, task: TaskSpec, model_name: str,
                               thinking: str, timeout: int) -> Dict[str, Any]:
-        """Execute task via OpenClaw by writing task file and spawning agent.
+        """Execute task via OpenClaw file-based contract.
 
-        Writes the task to a structured input file under
-        ~/.orchestration-engine/tasks/<task_id>/input.json so a real
-        sessions_spawn call (or external orchestrator) can pick it up.
-
-        Raises:
-            NotImplementedError: Always — real subprocess wiring is a future step.
+        Strategy:
+        1. Write input.json + status file to ~/.orchestration-engine/tasks/<id>/
+        2. Try to run the ``openclaw agent run`` CLI command.
+        3. If the CLI isn't installed (FileNotFoundError) fall back to polling
+           for output.json — another process (OpenClaw itself) will produce it.
+        4. On subprocess timeout mark the task as timed-out.
         """
         task_id = task.id if hasattr(task, "id") else str(uuid4())
         prompt = self._format_task_prompt(task)
 
+        # 1. Create task directory & write input
         task_dir = Path.home() / ".orchestration-engine" / "tasks" / task_id
         task_dir.mkdir(parents=True, exist_ok=True)
 
-        task_file = task_dir / "input.json"
-        task_file.write_text(json.dumps({
+        input_file = task_dir / "input.json"
+        output_file = task_dir / "output.json"
+        status_file = task_dir / "status"
+
+        input_data = {
             "task_id": task_id,
             "prompt": prompt,
             "model": model_name,
             "thinking": thinking,
-            "timeout": timeout,
+            "timeout_seconds": timeout,
             "task_type": task.type.value,
-            "payload": task.payload,
-        }, indent=2))
+            "created_at": datetime.now().isoformat(),
+        }
+        input_file.write_text(json.dumps(input_data, indent=2, default=str))
+        status_file.write_text("pending")
 
-        logger.info(f"Task {task_id} written to {task_file}")
+        logger.info(f"Task {task_id} written to {input_file}")
 
-        raise NotImplementedError(
-            f"Real OpenClaw execution not yet wired. "
-            f"Task written to {task_file}. "
-            f"Next step: wire sessions_spawn subprocess call."
-        )
+        # 2. Try OpenClaw CLI
+        try:
+            cli_result = subprocess.run(
+                [
+                    "openclaw", "agent", "run",
+                    "--model", model_name,
+                    "--prompt", prompt[:10000],  # CLI arg limit
+                    "--output", str(output_file),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(task_dir),
+            )
+
+            if output_file.exists():
+                output_data = json.loads(output_file.read_text())
+                status_file.write_text("completed")
+                return self._build_success_dict(output_data, model_name)
+            else:
+                status_file.write_text("failed")
+                return self._build_failure_dict(
+                    f"No output file produced. stderr: {cli_result.stderr[:500]}"
+                )
+
+        except FileNotFoundError:
+            # OpenClaw CLI not installed — poll for output.json written by
+            # an external OpenClaw process that monitors the task directory.
+            logger.info(
+                f"openclaw CLI not found; falling back to file polling for task {task_id}"
+            )
+            status_file.write_text("waiting")
+            return self._poll_for_result(output_file, status_file, model_name, timeout)
+
+        except subprocess.TimeoutExpired:
+            status_file.write_text("timeout")
+            return self._build_failure_dict("Execution timed out")
 
     def _simulate_openclaw_execution(self, cmd: List[str], task: TaskSpec,
                                      timeout: int) -> Dict[str, Any]:
