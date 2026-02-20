@@ -4,7 +4,7 @@ This is the primary executor for users who have an Anthropic API key.
 No OpenClaw dependency required. Works with any Claude model.
 
 Usage:
-    executor = AnthropicExecutor(api_key="sk-ant-...")
+    executor = AnthropicExecutor(api_key="your-api-key-here")
     # or set ANTHROPIC_API_KEY environment variable
 """
 

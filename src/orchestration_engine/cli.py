@@ -487,8 +487,8 @@ def health() -> None:
 @click.option('--force', is_flag=True, help='Force execution even if worker pool is full')
 @click.option('--model', type=str, help='Override model tier (haiku-4-5, sonnet-4, opus-4-6)')
 @click.option('--timeout', type=int, help='Override timeout in seconds')
-def run(task_id: str, force: bool, model: Optional[str], timeout: Optional[int]) -> None:
-    """Execute a specific task immediately."""
+def execute(task_id: str, force: bool, model: Optional[str], timeout: Optional[int]) -> None:
+    """Execute a specific queued task immediately by task ID."""
     try:
         # Import here to avoid circular imports during CLI parsing
         from .runner import TaskRunner
@@ -691,6 +691,100 @@ def workers(detailed: bool) -> None:
     
     except Exception as e:
         click.echo(f"Error getting worker status: {e}", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Template-based pipeline commands
+# ---------------------------------------------------------------------------
+
+@main.command("run")
+@click.argument('template_file', type=click.Path(exists=True, path_type=Path))
+def run_template(template_file: Path) -> None:
+    """Run a pipeline template (placeholder — prints phase count).
+
+    TEMPLATE_FILE is the path to a YAML pipeline template.
+    """
+    try:
+        from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
+
+        engine = TemplateEngine()
+        template: PipelineTemplate = engine.load_template(template_file)
+        n_phases = len(template.phases)
+        click.echo(f"Loaded template: {template.name!r} (id={template.id})")
+        click.echo(f"Would execute {n_phases} phase{'s' if n_phases != 1 else ''}")
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+@main.command("validate")
+@click.argument('template_file', type=click.Path(exists=True, path_type=Path))
+def validate_template(template_file: Path) -> None:
+    """Validate a pipeline template and report any structural errors.
+
+    TEMPLATE_FILE is the path to a YAML pipeline template.
+    """
+    try:
+        from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
+
+        engine = TemplateEngine()
+        template: PipelineTemplate = engine.load_template(template_file)
+        errors = engine.validate_template(template)
+
+        if errors:
+            click.echo(f"✗ Template {template_file!r} has {len(errors)} error(s):", err=True)
+            for err in errors:
+                click.echo(f"  • {err}", err=True)
+            sys.exit(1)
+        else:
+            click.echo(f"✓ Template {template_file!r} is valid ({len(template.phases)} phases)")
+    except (KeyError, ValueError) as exc:
+        click.echo(f"✗ Invalid template: {exc}", err=True)
+        sys.exit(1)
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+
+@main.command("list-phases")
+@click.argument('template_file', type=click.Path(exists=True, path_type=Path))
+def list_phases(template_file: Path) -> None:
+    """Show execution order and model tiers for a pipeline template.
+
+    TEMPLATE_FILE is the path to a YAML pipeline template.
+    """
+    try:
+        from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
+
+        engine = TemplateEngine()
+        template: PipelineTemplate = engine.load_template(template_file)
+        waves = engine.get_execution_order(template)
+
+        # Build a lookup from phase id → PhaseDefinition
+        phase_map = {p.id: p for p in template.phases}
+
+        click.echo(f"Pipeline: {template.name!r}  (v{template.version})")
+        click.echo(f"Phases: {len(template.phases)}  |  Waves: {len(waves)}\n")
+
+        for wave_idx, wave in enumerate(waves, start=1):
+            parallel = len(wave) > 1
+            label = f"Wave {wave_idx}" + ("  [parallel]" if parallel else "")
+            click.echo(f"  {label}")
+            for phase_id in wave:
+                phase = phase_map.get(phase_id)
+                if phase:
+                    deps = ", ".join(phase.depends_on) if phase.depends_on else "none"
+                    click.echo(
+                        f"    ├─ {phase_id:30s}  model={phase.model_tier:8s}"
+                        f"  thinking={phase.thinking_level:6s}  deps=[{deps}]"
+                    )
+                else:
+                    click.echo(f"    ├─ {phase_id} (unknown)")
+            click.echo()
+
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
 

@@ -4,30 +4,33 @@ build-backend = "hatchling.build"
 
 [project]
 name = "orchestration-engine"
-version = "0.1.0"
-description = "Local orchestration engine for AI agent coordination — task queue, retry logic, quality gates, orchestra templates"
+version = "0.3.0"
+description = "A scenario-driven orchestration engine for multi-agent AI pipelines"
 authors = [
-    {name = "Toscan Rivera", email = "toscan@example.com"},
+    {name = "Conny Lazo", email = "contact@renerivera.net"},
 ]
 readme = "README.md"
-requires-python = ">=3.11"
+license = {text = "MIT"}
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
     "click>=8.0.0",
-    "pydantic>=2.0.0",
     "toml>=0.10.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
+    "pytest>=7.0",
     "pytest-asyncio",
     "pytest-cov",
     "black",
@@ -40,13 +43,12 @@ dev = [
 orch = "orchestration_engine.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/ToscanRivera/orchestration-engine"
-Repository = "https://github.com/ToscanRivera/orchestration-engine"
-Documentation = "https://github.com/ToscanRivera/orchestration-engine/docs"
-Issues = "https://github.com/ToscanRivera/orchestration-engine/issues"
+Homepage = "https://github.com/connylazo/orchestration-engine"
+Repository = "https://github.com/connylazo/orchestration-engine"
+Issues = "https://github.com/connylazo/orchestration-engine/issues"
 
-[tool.hatch.version]
-path = "src/orchestration_engine/__init__.py"
+[tool.hatch.build.targets.wheel]
+packages = ["src/orchestration_engine"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -55,19 +57,16 @@ include = [
     "/docs",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/orchestration_engine"]
-
 [tool.black]
 line-length = 100
-target-version = ['py311']
+target-version = ['py310']
 
 [tool.isort]
 profile = "black"
 line_length = 100
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
