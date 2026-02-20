@@ -539,6 +539,51 @@ class TestPhaseSequencerExecution:
 
         assert execution_log == ["first", "second", "third"]
 
+    def test_pipeline_aborts_on_phase_failure(self):
+        """Pipeline stops and returns aborted=True when a phase fails."""
+        from orchestration_engine.runner import DryRunExecutor, TaskRunner
+        from orchestration_engine.db import Database
+        from orchestration_engine.config import EngineConfig
+
+        db = Database(":memory:")
+        config = EngineConfig(dry_run=True)
+        runner = TaskRunner(db, config)
+        # Replace executor with one that always fails
+        runner.executors = [DryRunExecutor(delay_seconds=0.0, failure_rate=1.0)]
+
+        tpl = _simple_template("a", "b", depends_on_map={"b": ["a"]})
+        seq = PhaseSequencer(tpl, runner)
+        result = seq.execute({"brief": "test"})
+
+        assert result.get("aborted") is True
+        assert result.get("failed_phase") == "a"
+        # Phase b should NOT have been executed
+        assert "b" not in result["phase_outputs"]
+
+    def test_config_missing_key_uses_placeholder(self):
+        """Missing config keys produce SafeDict placeholders, not crashes."""
+        from orchestration_engine.runner import DryRunExecutor, TaskRunner
+        from orchestration_engine.db import Database
+        from orchestration_engine.config import EngineConfig
+
+        db = Database(":memory:")
+        config = EngineConfig(dry_run=True)
+        runner = TaskRunner(db, config)
+        runner.executors = [DryRunExecutor(delay_seconds=0.0, failure_rate=0.0)]
+
+        phase = PhaseDefinition(
+            id="test",
+            name="Test",
+            prompt_template="Config value: {config[missing_key]}",
+        )
+        tpl = PipelineTemplate(id="test", name="Test", version="1.0", phases=[phase])
+        seq = PhaseSequencer(tpl, runner, config={})
+        result = seq.execute({})
+
+        # Should complete without error — missing key becomes placeholder
+        assert "test" in result["phase_outputs"]
+        assert result.get("aborted") is not True
+
 
 # ===========================================================================
 # 6. _SafeDict helper

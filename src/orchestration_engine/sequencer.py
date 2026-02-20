@@ -88,10 +88,24 @@ class PhaseSequencer:
                 result = self._execute_and_wait(task_id, phase)
                 self.phase_outputs[phase_id] = result
 
+                phase_state = result.get('state', 'unknown')
                 logger.info(
                     f"Pipeline {self.template.id}: phase '{phase_id}' completed "
-                    f"(state={result.get('state', 'unknown')})"
+                    f"(state={phase_state})"
                 )
+
+                # Stop pipeline on phase failure — don't feed errors downstream
+                if phase_state in ('failed', 'permanently_failed'):
+                    logger.error(
+                        f"Pipeline {self.template.id}: phase '{phase_id}' failed, "
+                        f"aborting pipeline."
+                    )
+                    return {
+                        "phase_outputs": self.phase_outputs,
+                        "final_output": result,
+                        "failed_phase": phase_id,
+                        "aborted": True,
+                    }
 
         # Determine the final output (last phase of the last wave)
         last_phase_id = execution_order[-1][-1]
@@ -137,12 +151,13 @@ class PhaseSequencer:
         # Wrap dicts in a safe mapping that returns a placeholder for missing keys
         safe_input = _SafeDict(initial_input)
         safe_outputs = _SafeDict(self.phase_outputs)
+        safe_config = _SafeDict(self.config)
 
         try:
             prompt = phase.prompt_template.format(
                 input=safe_input,
                 previous_output=safe_outputs,
-                config=self.config,
+                config=safe_config,
             )
         except (KeyError, IndexError, AttributeError) as exc:
             logger.warning(
