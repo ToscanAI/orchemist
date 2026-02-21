@@ -5,8 +5,8 @@ Provides task queuing, retry logic, quality gates, and reusable orchestra templa
 """
 
 __version__ = "0.1.0"
-__author__ = "Toscan Rivera"
-__email__ = "toscan@example.com"
+__author__ = "Conny Lazo"
+__email__ = "contact@renerivera.net"
 
 from .schemas import (
     TaskSpec,

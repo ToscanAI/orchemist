@@ -1,0 +1,187 @@
+id: content-pipeline-mvp
+name: "Content Pipeline MVP"
+version: "1.0.0"
+description: "Simplified content pipeline: Research → Write → Fact-Check → Apply Fixes → Final Output"
+
+config_schema:
+  type: object
+  properties:
+    brief:
+      type: string
+      description: "Article topic or brief"
+    target_audience:
+      type: string
+      description: "Intended readership"
+    word_count_range:
+      type: string
+      description: "Target word count range, e.g. '800-1200 words'"
+    tone:
+      type: string
+      description: "Writing tone, e.g. 'professional', 'conversational'"
+    author:
+      type: string
+      description: "Byline name"
+
+phases:
+  - id: research
+    name: "Research & Source Gathering"
+    description: "Gather credible sources, key facts, and statistics for the article topic."
+    task_type: research
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: []
+    timeout_minutes: 30
+    prompt_template: |
+      Research the following topic thoroughly. Find 10+ credible sources.
+
+      Topic: {input[brief]}
+      Target audience: {input[target_audience]}
+
+      Output a structured research brief with:
+      - At least 10 source citations (title, URL or publication, date)
+      - Key facts and claims supported by those sources
+      - Relevant statistics and data points
+    output_schema:
+      type: object
+      properties:
+        sources:
+          type: array
+          items:
+            type: object
+        key_facts:
+          type: array
+          items:
+            type: string
+        statistics:
+          type: array
+          items:
+            type: string
+
+  - id: write
+    name: "Content Creation"
+    description: "Write the LinkedIn article based on the research brief."
+    task_type: content
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: [research]
+    timeout_minutes: 45
+    prompt_template: |
+      Write a LinkedIn article based on this research brief:
+
+      {previous_output[research]}
+
+      Requirements:
+      - Word count: {input[word_count_range]}
+      - Tone: {input[tone]}
+      - Author: {input[author]}
+
+      Structure the article with:
+        1. A compelling headline
+        2. An introduction with a clear thesis
+        3. At least 3 substantive sections
+        4. A conclusion with a call-to-action
+        5. A Sources section at the end
+    output_schema:
+      type: object
+      properties:
+        article_text:
+          type: string
+        word_count:
+          type: integer
+        headline:
+          type: string
+
+  - id: fact_check
+    name: "Fact Verification"
+    description: "Verify every factual claim in the draft article against the research sources."
+    task_type: review
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: [write, research]
+    timeout_minutes: 30
+    prompt_template: |
+      Fact-check the following article against the provided research sources.
+      For each claim or statistic in the article, verify whether it is supported
+      by the research brief.
+
+      Article to fact-check:
+      {previous_output[write]}
+
+      Research sources and facts:
+      {previous_output[research]}
+
+      Output:
+      - A numbered list of every factual issue found (claim, problem, suggested correction)
+      - An overall accuracy score from 0 (completely wrong) to 100 (fully accurate)
+    output_schema:
+      type: object
+      properties:
+        issues:
+          type: array
+          items:
+            type: object
+        accuracy_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+
+  - id: apply_fixes
+    name: "Apply Corrections"
+    description: "Rewrite the article incorporating all fact-check corrections."
+    task_type: content
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: [write, fact_check]
+    timeout_minutes: 30
+    prompt_template: |
+      Apply the following fact-check corrections to the article.
+      Keep the original tone, structure, and word count range intact;
+      only change content that was flagged as inaccurate.
+
+      Original article:
+      {previous_output[write]}
+
+      Fact-check issues to fix:
+      {previous_output[fact_check]}
+
+      Output the fully corrected article text.
+    output_schema:
+      type: object
+      properties:
+        corrected_article:
+          type: string
+        changes_made:
+          type: array
+          items:
+            type: string
+
+  - id: final_output
+    name: "Final Assembly"
+    description: "Format and polish the corrected article for publication."
+    task_type: content
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: [apply_fixes]
+    timeout_minutes: 15
+    prompt_template: |
+      Format the following article for publication on LinkedIn.
+
+      {previous_output[apply_fixes]}
+
+      Ensure the final article has:
+        - A compelling headline
+        - An introduction with a clear thesis statement
+        - At least 3 well-structured sections with sub-headings
+        - A conclusion that includes a call-to-action
+        - A properly formatted Sources section
+
+      Output only the final, publication-ready article text.
+    output_schema:
+      type: object
+      properties:
+        final_article:
+          type: string
+        headline:
+          type: string
+        section_count:
+          type: integer

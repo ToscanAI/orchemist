@@ -1,25 +1,53 @@
-# Python
+# Python byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*$py.class
+*.pyo
+
+# Distribution / packaging
+*.egg
 *.egg-info/
+.eggs/
 dist/
 build/
-*.egg
+wheels/
+sdist/
+MANIFEST
 
 # Virtual environments
 venv/
 .venv/
 env/
+ENV/
+env.bak/
+venv.bak/
 
-# IDE
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+
+# IDEs
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
 # OS
 .DS_Store
+Thumbs.db
 
 # Database (local)
 *.db
 
 # Config (local secrets)
 config.toml
+
+# Hatch / build artifacts
+.hatch/
