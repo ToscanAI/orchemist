@@ -700,22 +700,183 @@ def workers(detailed: bool) -> None:
 
 @main.command("run")
 @click.argument('template_file', type=click.Path(exists=True, path_type=Path))
-def run_template(template_file: Path) -> None:
-    """Run a pipeline template (placeholder — prints phase count).
+@click.option(
+    '--mode',
+    type=click.Choice(['standalone', 'openclaw', 'dry-run']),
+    default='standalone',
+    show_default=True,
+    help='Execution mode: standalone (direct API), openclaw (sub-agent), dry-run (mock).',
+)
+@click.option(
+    '--api-key',
+    envvar='ANTHROPIC_API_KEY',
+    default=None,
+    help='Anthropic API key for standalone mode (or set ANTHROPIC_API_KEY).',
+)
+@click.option(
+    '--input', 'input_json',
+    default=None,
+    help='Pipeline input as a JSON string, e.g. \'{"brief": "AI safety"}\'.',
+)
+@click.option(
+    '--input-file',
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help='Path to a JSON file containing pipeline input.',
+)
+@click.option(
+    '--output-dir',
+    type=click.Path(path_type=Path),
+    default=None,
+    help='Directory to write phase outputs as JSON files. Created if missing.',
+)
+@click.option(
+    '--dry-run-delay',
+    type=float,
+    default=0.0,
+    hidden=True,
+    help='(dry-run mode only) Simulated per-phase delay in seconds.',
+)
+@click.option(
+    '--dry-run-failure-rate',
+    type=float,
+    default=0.0,
+    hidden=True,
+    help='(dry-run mode only) Probability [0.0-1.0] of simulated phase failure.',
+)
+def run_template(
+    template_file: Path,
+    mode: str,
+    api_key: Optional[str],
+    input_json: Optional[str],
+    input_file: Optional[Path],
+    output_dir: Optional[Path],
+    dry_run_delay: float,
+    dry_run_failure_rate: float,
+) -> None:
+    """Execute a pipeline template end-to-end.
 
     TEMPLATE_FILE is the path to a YAML pipeline template.
-    """
-    try:
-        from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
 
+    Examples:
+
+      # Standalone with inline input:
+      orch run pipeline.yaml --mode standalone \\
+        --api-key sk-ant-... \\
+        --input '{"brief": "AI safety"}'
+
+      # Standalone reading input from file:
+      orch run pipeline.yaml --input-file brief.json \\
+        --output-dir ./results/
+
+      # OpenClaw sub-agent mode:
+      orch run pipeline.yaml --mode openclaw
+
+      # Dry-run (no API calls):
+      orch run pipeline.yaml --mode dry-run
+    """
+    import json as _json
+
+    from .templates import TemplateEngine
+    from .pipeline_runner import PipelineRunner
+    from .sequencer import PhaseSequencer
+
+    verbose = False  # verbose is a group-level flag; not threaded to sub-commands
+
+    # --- 1. Load and validate template --------------------------------
+    try:
         engine = TemplateEngine()
-        template: PipelineTemplate = engine.load_template(template_file)
-        n_phases = len(template.phases)
-        click.echo(f"Loaded template: {template.name!r} (id={template.id})")
-        click.echo(f"Would execute {n_phases} phase{'s' if n_phases != 1 else ''}")
-    except Exception as exc:
-        click.echo(f"Error: {exc}", err=True)
+        template = engine.load_template(template_file)
+    except FileNotFoundError as exc:
+        click.echo(f"✗ Template file not found: {exc}", err=True)
         sys.exit(1)
+    except (KeyError, ValueError) as exc:
+        click.echo(f"✗ Invalid template: {exc}", err=True)
+        sys.exit(1)
+
+    errors = engine.validate_template(template)
+    if errors:
+        click.echo(f"✗ Template has {len(errors)} structural error(s):", err=True)
+        for err in errors:
+            click.echo(f"  • {err}", err=True)
+        sys.exit(1)
+
+    # --- 2. Resolve pipeline input ------------------------------------
+    initial_input: Dict[str, Any] = {}
+    if input_file:
+        try:
+            initial_input = _json.loads(input_file.read_text())
+        except (_json.JSONDecodeError, OSError) as exc:
+            click.echo(f"✗ Could not read input file: {exc}", err=True)
+            sys.exit(1)
+    elif input_json:
+        try:
+            initial_input = _json.loads(input_json)
+        except _json.JSONDecodeError as exc:
+            click.echo(f"✗ Invalid JSON in --input: {exc}", err=True)
+            sys.exit(1)
+
+    # --- 3. Build PipelineRunner based on mode -----------------------
+    try:
+        if mode == 'standalone':
+            runner = PipelineRunner.standalone(api_key=api_key)
+        elif mode == 'openclaw':
+            runner = PipelineRunner.openclaw()
+        else:  # dry-run
+            runner = PipelineRunner.dry_run(
+                delay_seconds=dry_run_delay,
+                failure_rate=dry_run_failure_rate,
+            )
+    except ValueError as exc:
+        click.echo(f"✗ {exc}", err=True)
+        sys.exit(1)
+
+    # --- 4. Execute pipeline -----------------------------------------
+    n_phases = len(template.phases)
+    click.echo(f"Pipeline: {template.name!r}  ({n_phases} phase{'s' if n_phases != 1 else ''})")
+    click.echo(f"Mode:     {mode}")
+    click.echo()
+
+    with runner:
+        sequencer = PhaseSequencer(template, runner, config=initial_input)
+
+        try:
+            result = sequencer.execute(initial_input)
+        except Exception as exc:
+            click.echo(f"✗ Pipeline execution crashed: {exc}", err=True)
+            if verbose:
+                import traceback; traceback.print_exc()
+            sys.exit(1)
+
+    # --- 5. Report result --------------------------------------------
+    if result.get('aborted'):
+        failed_phase = result.get('failed_phase', 'unknown')
+        click.echo(f"✗ Pipeline aborted at phase '{failed_phase}'", err=True)
+        click.echo(f"  Completed phases: {[*result['phase_outputs'].keys()]}", err=True)
+        sys.exit(2)
+
+    completed_phases = [*result['phase_outputs'].keys()]
+    click.echo(f"✓ Pipeline completed  ({len(completed_phases)} phases)")
+    for phase_id in completed_phases:
+        out = result['phase_outputs'][phase_id]
+        _state = out.get('state', 'unknown')
+        state = _state.value if hasattr(_state, 'value') else str(_state)
+        tokens = out.get('tokens_consumed', 0)
+        cost = out.get('cost_usd', 0)
+        cost_str = f"${float(cost):.4f}" if cost else "n/a"
+        click.echo(f"  ✓ {phase_id:30s}  state={state}  tokens={tokens}  cost={cost_str}")
+
+    # --- 6. Write outputs to disk (optional) -------------------------
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for phase_id, phase_out in result['phase_outputs'].items():
+            out_file = output_dir / f"{phase_id}.json"
+            out_file.write_text(_json.dumps(phase_out, indent=2, default=str))
+        final_file = output_dir / "_final_output.json"
+        final_file.write_text(
+            _json.dumps(result.get('final_output', {}), indent=2, default=str)
+        )
+        click.echo(f"\nOutputs written to: {output_dir}/")
 
 
 @main.command("validate")

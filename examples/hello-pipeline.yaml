@@ -1,0 +1,33 @@
+# hello-pipeline.yaml — Minimal two-phase example for testing orch run E2E
+id: hello-pipeline
+name: "Hello Pipeline"
+version: "1.0.0"
+description: "Two-phase example: Greet → Summarize. Good for smoke-testing orch run."
+
+phases:
+  - id: greet
+    name: "Greeting Phase"
+    description: "Generate a short greeting for the given name."
+    task_type: content
+    model_tier: haiku
+    thinking_level: off
+    depends_on: []
+    timeout_minutes: 5
+    prompt_template: |
+      Write a single warm, friendly sentence greeting someone named {input[name]}.
+      Output ONLY the greeting sentence — no extra commentary.
+
+  - id: summarize
+    name: "Summary Phase"
+    description: "Summarize what was just done."
+    task_type: content
+    model_tier: haiku
+    thinking_level: off
+    depends_on: [greet]
+    timeout_minutes: 5
+    prompt_template: |
+      The previous greeting was:
+
+      {previous_output[greet]}
+
+      In one sentence, describe what the greeting accomplished.
