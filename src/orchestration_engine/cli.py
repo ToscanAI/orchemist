@@ -5,11 +5,14 @@ Uses Click for command structure and rich formatting for output.
 """
 
 import json
+import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+import yaml
 
 import click
 from decimal import Decimal
@@ -781,8 +784,6 @@ def run_template(
     from .pipeline_runner import PipelineRunner
     from .sequencer import PhaseSequencer
 
-    verbose = False  # verbose is a group-level flag; not threaded to sub-commands
-
     # --- 1. Load and validate template --------------------------------
     try:
         engine = TemplateEngine()
@@ -790,7 +791,7 @@ def run_template(
     except FileNotFoundError as exc:
         click.echo(f"✗ Template file not found: {exc}", err=True)
         sys.exit(1)
-    except (KeyError, ValueError) as exc:
+    except (KeyError, ValueError, yaml.YAMLError) as exc:
         click.echo(f"✗ Invalid template: {exc}", err=True)
         sys.exit(1)
 
@@ -802,6 +803,9 @@ def run_template(
         sys.exit(1)
 
     # --- 2. Resolve pipeline input ------------------------------------
+    if input_file and input_json:
+        click.echo("⚠ Both --input and --input-file provided; using --input-file", err=True)
+
     initial_input: Dict[str, Any] = {}
     if input_file:
         try:
@@ -844,8 +848,6 @@ def run_template(
             result = sequencer.execute(initial_input)
         except Exception as exc:
             click.echo(f"✗ Pipeline execution crashed: {exc}", err=True)
-            if verbose:
-                import traceback; traceback.print_exc()
             sys.exit(1)
 
     # --- 5. Report result --------------------------------------------
@@ -858,19 +860,21 @@ def run_template(
     completed_phases = [*result['phase_outputs'].keys()]
     click.echo(f"✓ Pipeline completed  ({len(completed_phases)} phases)")
     for phase_id in completed_phases:
+        safe_id = re.sub(r'[^\w\-]', '_', phase_id)
         out = result['phase_outputs'][phase_id]
         _state = out.get('state', 'unknown')
         state = _state.value if hasattr(_state, 'value') else str(_state)
         tokens = out.get('tokens_consumed', 0)
         cost = out.get('cost_usd', 0)
         cost_str = f"${float(cost):.4f}" if cost else "n/a"
-        click.echo(f"  ✓ {phase_id:30s}  state={state}  tokens={tokens}  cost={cost_str}")
+        click.echo(f"  ✓ {safe_id:30s}  state={state}  tokens={tokens}  cost={cost_str}")
 
     # --- 6. Write outputs to disk (optional) -------------------------
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
         for phase_id, phase_out in result['phase_outputs'].items():
-            out_file = output_dir / f"{phase_id}.json"
+            safe_id = re.sub(r'[^\w\-]', '_', phase_id)
+            out_file = output_dir / f"{safe_id}.json"
             out_file.write_text(_json.dumps(phase_out, indent=2, default=str))
         final_file = output_dir / "_final_output.json"
         final_file.write_text(

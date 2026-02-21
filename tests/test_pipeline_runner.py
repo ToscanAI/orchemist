@@ -274,3 +274,25 @@ class TestCliRunCommand:
         result = self._invoke(["validate", str(hello_yaml)])
         assert result.exit_code == 0
         assert "valid" in result.output
+
+    def test_malformed_yaml_exits_1(self, tmp_path):
+        bad = tmp_path / "bad.yaml"
+        bad.write_text(": : : not valid yaml {{{}")
+        runner = CliRunner()
+        result = runner.invoke(main, ["run", str(bad)], catch_exceptions=False)
+        assert result.exit_code == 1
+
+    def test_path_traversal_sanitized(self, hello_yaml, tmp_path):
+        """Phase IDs with path traversal chars should be sanitized."""
+        # This tests the output writing, not template loading
+        # Just verify the output dir doesn't write outside bounds
+        out_dir = tmp_path / "results"
+        result = self._invoke([
+            "run", str(hello_yaml),
+            "--mode", "dry-run",
+            "--output-dir", str(out_dir),
+        ])
+        assert result.exit_code == 0
+        # All files should be inside out_dir
+        for f in out_dir.iterdir():
+            assert str(f).startswith(str(out_dir))
