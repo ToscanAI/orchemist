@@ -19,18 +19,22 @@ class PhaseSequencer:
     via the prompt template formatting mechanism.
     """
 
-    def __init__(self, template: PipelineTemplate, runner, config: dict = None) -> None:
+    def __init__(self, template: PipelineTemplate, runner, config: dict = None,
+                 on_phase_complete=None) -> None:
         """Initialise the sequencer.
 
         Args:
-            template: The pipeline template to execute.
-            runner:   A TaskRunner instance (must have ``.queue`` and ``.executors``).
-            config:   Optional pipeline-level configuration dict (passed to templates).
+            template:            The pipeline template to execute.
+            runner:              A TaskRunner instance (must have ``.queue`` and ``.executors``).
+            config:              Optional pipeline-level configuration dict (passed to templates).
+            on_phase_complete:   Optional callable(phase_id: str, result: dict) → None.
+                                 Called after each phase completes (success or failure).
         """
         self.template = template
         self.runner = runner
         self.config = config or {}
         self.phase_outputs: Dict[str, Any] = {}
+        self.on_phase_complete = on_phase_complete
 
     # ------------------------------------------------------------------
     # Public API
@@ -87,6 +91,13 @@ class PhaseSequencer:
                 # Execute synchronously and store output
                 result = self._execute_and_wait(task_id, phase)
                 self.phase_outputs[phase_id] = result
+
+                # Notify caller (e.g. CLI progress display)
+                if self.on_phase_complete is not None:
+                    try:
+                        self.on_phase_complete(phase_id, result)
+                    except Exception:
+                        pass  # Never let a callback crash the pipeline
 
                 phase_state = result.get('state', 'unknown')
                 logger.info(

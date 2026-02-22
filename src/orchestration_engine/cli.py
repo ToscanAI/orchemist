@@ -85,6 +85,29 @@ def print_table(headers: List[str], rows: List[List[str]]) -> None:
         click.echo(row_line)
 
 
+def _extract_output_text(phase_out: Dict[str, Any]) -> str:
+    """Extract human-readable text from a serialised phase output dict.
+
+    Tries common keys used by different executors:
+      - ``result.output``  — explicit output key (future executors)
+      - ``result.text``    — AnthropicExecutor plain-text response
+      - ``result.content`` — alternative content key
+      - ``result.message`` — DryRunExecutor mock message
+    Falls back to a JSON representation of the ``result`` sub-dict.
+    """
+    import json as _json
+
+    inner = phase_out.get('result', {})
+    if not isinstance(inner, dict):
+        return str(inner)
+    for key in ('output', 'text', 'content', 'message'):
+        if key in inner:
+            return str(inner[key])
+    if inner:
+        return _json.dumps(inner, indent=2, default=str)
+    return ""
+
+
 @click.group()
 @click.option('--db-path', type=click.Path(path_type=Path), help='Database file path')
 @click.option('--verbose', '-v', is_flag=True, help='Verbose output')
@@ -731,7 +754,8 @@ def workers(detailed: bool) -> None:
     '--output-dir',
     type=click.Path(path_type=Path),
     default=None,
-    help='Directory to write phase outputs as JSON files. Created if missing.',
+    help='Directory to write phase outputs. Created if missing. '
+         'Defaults to ./output/<template-id>-<YYYYMMDD-HHMMSS>/',
 )
 @click.option(
     '--dry-run-delay',
@@ -780,9 +804,15 @@ def run_template(
     """
     import json as _json
 
+    from rich.console import Console
+    from rich.table import Table
+
     from .templates import TemplateEngine
     from .pipeline_runner import PipelineRunner
     from .sequencer import PhaseSequencer
+
+    console = Console(highlight=False)
+    run_start = time.time()
 
     # --- 1. Load and validate template --------------------------------
     try:
@@ -801,6 +831,12 @@ def run_template(
         for err in errors:
             click.echo(f"  • {err}", err=True)
         sys.exit(1)
+
+    # --- 1b. Default output directory (Feature #72) ------------------
+    if output_dir is None:
+        output_dir = Path(
+            f"./output/{re.sub(r'[^\w\-]', '_', template.id)}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        )
 
     # --- 2. Resolve pipeline input ------------------------------------
     if input_file and input_json:
@@ -837,12 +873,38 @@ def run_template(
 
     # --- 4. Execute pipeline -----------------------------------------
     n_phases = len(template.phases)
-    click.echo(f"Pipeline: {template.name!r}  ({n_phases} phase{'s' if n_phases != 1 else ''})")
-    click.echo(f"Mode:     {mode}")
-    click.echo()
+    console.print(
+        f"[bold]Pipeline:[/bold] {template.name!r}  "
+        f"({n_phases} phase{'s' if n_phases != 1 else ''})"
+    )
+    console.print(f"[bold]Mode:[/bold]     {mode}")
+    console.print(f"[bold]Output:[/bold]   {output_dir}/")
+    console.print()
+
+    # Live phase-completion callback (Feature #70)
+    def _on_phase_complete(phase_id: str, phase_result: dict) -> None:
+        _st = phase_result.get('state', 'unknown')
+        state_val = _st.value if hasattr(_st, 'value') else str(_st)
+        tokens = phase_result.get('tokens_consumed', 0)
+        cost = phase_result.get('cost_usd', 0)
+        cost_str = f"${float(cost):.4f}" if cost else "n/a"
+        safe_pid = re.sub(r'[^\w\-]', '_', phase_id)
+        if state_val in ('failed', 'permanently_failed'):
+            console.print(
+                f"  [red]✗[/red] {safe_pid:30s}  state={state_val}  "
+                f"tokens={tokens}  cost={cost_str}"
+            )
+        else:
+            console.print(
+                f"  [green]✓[/green] {safe_pid:30s}  state={state_val}  "
+                f"tokens={tokens}  cost={cost_str}"
+            )
 
     with runner:
-        sequencer = PhaseSequencer(template, runner, config=initial_input)
+        sequencer = PhaseSequencer(
+            template, runner, config=initial_input,
+            on_phase_complete=_on_phase_complete,
+        )
 
         try:
             result = sequencer.execute(initial_input)
@@ -850,7 +912,7 @@ def run_template(
             click.echo(f"✗ Pipeline execution crashed: {exc}", err=True)
             sys.exit(1)
 
-    # --- 5. Report result --------------------------------------------
+    # --- 5. Report result (Feature #70 — rich summary table) ---------
     if result.get('aborted'):
         failed_phase = result.get('failed_phase', 'unknown')
         click.echo(f"✗ Pipeline aborted at phase '{failed_phase}'", err=True)
@@ -858,7 +920,21 @@ def run_template(
         sys.exit(2)
 
     completed_phases = [*result['phase_outputs'].keys()]
-    click.echo(f"✓ Pipeline completed  ({len(completed_phases)} phases)")
+    elapsed = time.time() - run_start
+
+    # Build rich summary table
+    table = Table(
+        title=f"Pipeline completed — {len(completed_phases)} phases in {elapsed:.1f}s",
+        show_header=True,
+        header_style="bold cyan",
+    )
+    table.add_column("Phase", style="cyan", no_wrap=True)
+    table.add_column("State", justify="center")
+    table.add_column("Tokens", justify="right")
+    table.add_column("Cost", justify="right")
+
+    total_tokens = 0
+    total_cost = 0.0
     for phase_id in completed_phases:
         safe_id = re.sub(r'[^\w\-]', '_', phase_id)
         out = result['phase_outputs'][phase_id]
@@ -866,21 +942,90 @@ def run_template(
         state = _state.value if hasattr(_state, 'value') else str(_state)
         tokens = out.get('tokens_consumed', 0)
         cost = out.get('cost_usd', 0)
-        cost_str = f"${float(cost):.4f}" if cost else "n/a"
-        click.echo(f"  ✓ {safe_id:30s}  state={state}  tokens={tokens}  cost={cost_str}")
-
-    # --- 6. Write outputs to disk (optional) -------------------------
-    if output_dir:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        for phase_id, phase_out in result['phase_outputs'].items():
-            safe_id = re.sub(r'[^\w\-]', '_', phase_id)
-            out_file = output_dir / f"{safe_id}.json"
-            out_file.write_text(_json.dumps(phase_out, indent=2, default=str))
-        final_file = output_dir / "_final_output.json"
-        final_file.write_text(
-            _json.dumps(result.get('final_output', {}), indent=2, default=str)
+        cost_float = float(cost) if cost else 0.0
+        cost_str = f"${cost_float:.4f}" if cost else "n/a"
+        total_tokens += tokens
+        total_cost += cost_float
+        state_display = (
+            f"[green]✓ {state}[/green]"
+            if state == 'success'
+            else f"[red]✗ {state}[/red]"
         )
-        click.echo(f"\nOutputs written to: {output_dir}/")
+        table.add_row(safe_id, state_display, str(tokens), cost_str)
+
+    table.add_section()
+    table.add_row(
+        "[bold]TOTAL[/bold]", "",
+        f"[bold]{total_tokens}[/bold]",
+        f"[bold]${total_cost:.4f}[/bold]",
+    )
+    console.print()
+    console.print(table)
+
+    # --- 6. Write outputs to disk (always — default dir if not specified) ---
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        console.print(f"[yellow]⚠ Could not create output directory: {exc}[/yellow]", stderr=True)
+        sys.exit(0)  # Pipeline succeeded, just can't write
+
+    for phase_id, phase_out in result['phase_outputs'].items():
+        safe_id = re.sub(r'[^\w\-]', '_', phase_id)
+
+        # JSON (existing behaviour)
+        (output_dir / f"{safe_id}.json").write_text(
+            _json.dumps(phase_out, indent=2, default=str)
+        )
+
+        # Markdown per phase (Feature #71)
+        phase_text = _extract_output_text(phase_out)
+        (output_dir / f"{safe_id}.md").write_text(
+            f"# Phase: {phase_id}\n\n{phase_text}\n"
+        )
+
+    # _final_output.json
+    (output_dir / "_final_output.json").write_text(
+        _json.dumps(result.get('final_output', {}), indent=2, default=str)
+    )
+
+    # _final_output.md (Feature #71)
+    final_text = _extract_output_text(result.get('final_output', {}))
+    (output_dir / "_final_output.md").write_text(f"# Final Output\n\n{final_text}\n")
+
+    # _summary.md (Feature #71)
+    run_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    summary_lines = [
+        f"# Run Summary: {template.name}",
+        "",
+        f"**Date:** {run_date}",
+        f"**Template ID:** {template.id}",
+        f"**Mode:** {mode}",
+        f"**Elapsed:** {elapsed:.1f}s",
+        "",
+        "## Phases Completed",
+        "",
+        "| Phase | State | Tokens | Cost |",
+        "|-------|-------|--------|------|",
+    ]
+    for phase_id in completed_phases:
+        out = result['phase_outputs'][phase_id]
+        _state = out.get('state', 'unknown')
+        state = _state.value if hasattr(_state, 'value') else str(_state)
+        tokens = out.get('tokens_consumed', 0)
+        cost = out.get('cost_usd', 0)
+        cost_float = float(cost) if cost else 0.0
+        cost_str = f"${cost_float:.4f}" if cost else "n/a"
+        safe_id = re.sub(r'[^\w\-]', '_', phase_id)
+        summary_lines.append(f"| {safe_id} | {state} | {tokens} | {cost_str} |")
+    summary_lines += [
+        "",
+        f"**Total Tokens:** {total_tokens}",
+        f"**Total Cost:** ${total_cost:.4f}",
+        "",
+    ]
+    (output_dir / "_summary.md").write_text("\n".join(summary_lines))
+
+    console.print(f"\n[bold]Outputs written to:[/bold] {output_dir}/")
 
 
 @main.command("validate")

@@ -51,3 +51,5 @@ config.toml
 
 # Hatch / build artifacts
 .hatch/
+output/
+my-first-run/
