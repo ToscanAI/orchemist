@@ -13,6 +13,11 @@ Built by [Conny Lazo](https://connylazo.com) and [Toscan](https://github.com/Tos
 
 > **Linux/Mac note:** Use `python3` instead of `python` if your system doesn't alias it.
 
+> **Ubuntu/Debian note:** You may need to install the venv package first:
+> ```bash
+> sudo apt install python3.12-venv  # adjust version to match your python3 --version
+> ```
+
 ### Install
 
 ```bash
