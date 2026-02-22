@@ -118,7 +118,7 @@ class TestTemplateLoading:
 
         assert tpl.id == "content-pipeline-mvp"
         assert tpl.name == "Content Pipeline MVP"
-        assert tpl.version == "1.0.0"
+        assert tpl.version == "2.1.0"
         assert len(tpl.phases) == 5
 
     def test_load_phase_fields(self, engine, content_pipeline_yaml):
