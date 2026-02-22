@@ -1,6 +1,6 @@
 id: content-pipeline-mvp
 name: "Content Pipeline MVP"
-version: "0.3.0"
+version: "2.3.0"
 description: "Simplified content pipeline: Research → Write → Fact-Check → Apply Fixes → Final Output"
 
 config_schema:
