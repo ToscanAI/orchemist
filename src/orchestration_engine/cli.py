@@ -835,7 +835,7 @@ def run_template(
     # --- 1b. Default output directory (Feature #72) ------------------
     if output_dir is None:
         output_dir = Path(
-            f"./output/{template.id}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            f"./output/{re.sub(r'[^\w\-]', '_', template.id)}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         )
 
     # --- 2. Resolve pipeline input ------------------------------------
@@ -963,7 +963,11 @@ def run_template(
     console.print(table)
 
     # --- 6. Write outputs to disk (always — default dir if not specified) ---
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        console.print(f"[yellow]⚠ Could not create output directory: {exc}[/yellow]", stderr=True)
+        sys.exit(0)  # Pipeline succeeded, just can't write
 
     for phase_id, phase_out in result['phase_outputs'].items():
         safe_id = re.sub(r'[^\w\-]', '_', phase_id)
@@ -986,7 +990,7 @@ def run_template(
 
     # _final_output.md (Feature #71)
     final_text = _extract_output_text(result.get('final_output', {}))
-    (output_dir / "_final_output.md").write_text(final_text + "\n")
+    (output_dir / "_final_output.md").write_text(f"# Final Output\n\n{final_text}\n")
 
     # _summary.md (Feature #71)
     run_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
