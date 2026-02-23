@@ -46,8 +46,11 @@ class TestEnums:
         assert TaskType.TRANSLATION == "translation"
         assert TaskType.REVIEW == "review"
         
-        # Test all expected types are present
-        expected_types = {"content", "code", "research", "translation", "review"}
+        # Test all expected types are present (original + knowledge-work types from #123)
+        expected_types = {
+            "content", "code", "research", "translation", "review",
+            "triage", "analysis", "compliance", "financial", "sales", "support",
+        }
         actual_types = {t.value for t in TaskType}
         assert actual_types == expected_types
     
