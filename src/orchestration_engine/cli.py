@@ -1081,9 +1081,16 @@ def _apply_fixes(template_file: Path, raw_data: Dict[str, Any]) -> Dict[str, Any
                 changed = True
 
     if changed:
-        with open(template_file, "w") as fh:
-            yaml.dump(raw_data, fh, default_flow_style=False, allow_unicode=True,
-                      sort_keys=False)
+        try:
+            with open(template_file, "w") as fh:
+                yaml.dump(raw_data, fh, default_flow_style=False, allow_unicode=True,
+                          sort_keys=False)
+            click.echo(click.style("⚠", fg="yellow") +
+                       " Note: --fix rewrites YAML; comments may not be preserved.")
+        except PermissionError:
+            click.echo(click.style("✗", fg="red") +
+                       f" Cannot write --fix changes: permission denied on {template_file}",
+                       err=True)
 
     return raw_data
 
