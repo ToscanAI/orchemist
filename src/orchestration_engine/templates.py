@@ -14,6 +14,18 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+def _is_within_dir(path: Path, directory: Path) -> bool:
+    """Return True if *path* is the same as, or a descendant of, *directory*.
+
+    Both arguments should already be resolved (absolute, symlink-free) paths.
+    """
+    try:
+        path.relative_to(directory)
+        return True
+    except ValueError:
+        return False
+
+
 @dataclass
 class PhaseDefinition:
     """A single phase in a pipeline template."""
@@ -29,6 +41,7 @@ class PhaseDefinition:
     human_review: bool = False
     prompt_template: str = ""       # Python str.format()-style with {input}, {previous_output}
     output_schema: Dict[str, Any] = field(default_factory=dict)
+    skill_refs: List[str] = field(default_factory=list)  # paths to external skill files
 
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
@@ -40,6 +53,8 @@ class PhaseDefinition:
             self.description = ""
         if self.prompt_template is None:
             self.prompt_template = ""
+        if self.skill_refs is None:
+            self.skill_refs = []
 
 
 @dataclass
@@ -58,6 +73,7 @@ class PipelineTemplate:
     phases: List[PhaseDefinition] = field(default_factory=list)
     config_schema: Dict[str, Any] = field(default_factory=dict)
     fallback: Optional[Dict[str, Any]] = None
+    template_path: Optional[Path] = field(default=None, repr=False)  # set by load_template
 
     def __post_init__(self) -> None:
         if self.phases is None:
@@ -315,6 +331,7 @@ class TemplateEngine:
                 "id", "name", "description", "task_type", "model_tier",
                 "thinking_level", "depends_on", "timeout_minutes",
                 "human_review", "prompt_template", "output_schema",
+                "skill_refs",
             }
             cleaned = {k: v for k, v in phase_data.items() if k in known_fields}
             phases.append(PhaseDefinition(**cleaned))
@@ -332,6 +349,7 @@ class TemplateEngine:
             phases=phases,
             config_schema=data.get("config_schema") or {},
             fallback=data.get("fallback") or None,
+            template_path=Path(template_path).resolve(),
         )
 
     def get_execution_order(self, template: PipelineTemplate) -> List[List[str]]:
@@ -429,6 +447,57 @@ class TemplateEngine:
                     f"Cycle detected involving phase(s): "
                     f"{sorted(missing_from_order)}"
                 )
+
+        # Check that all skill_ref files exist (with path traversal protection)
+        template_dir = (
+            template.template_path.parent
+            if template.template_path is not None
+            else None
+        )
+        global_skills_dir = (Path.home() / ".orch" / "skills").resolve()
+        for phase in template.phases:
+            for skill_ref in phase.skill_refs:
+                skill_path = Path(skill_ref)
+
+                # Build allowed directories for this ref (mirrors _load_skill logic).
+                # Absolute paths → only global skills dir.
+                # Relative paths → global skills dir + template_dir (if set).
+                if skill_path.is_absolute():
+                    allowed_dirs = [global_skills_dir]
+                else:
+                    allowed_dirs = [global_skills_dir]
+                    if template_dir is not None:
+                        allowed_dirs.append(template_dir.resolve())
+
+                # Resolve relative paths against template dir first, then global skills dir
+                resolved = None
+                if skill_path.is_absolute() and skill_path.exists():
+                    resolved = skill_path.resolve()
+                elif template_dir is not None:
+                    candidate = template_dir / skill_path
+                    if candidate.exists():
+                        resolved = candidate.resolve()
+                if resolved is None:
+                    candidate_global = global_skills_dir / skill_path
+                    if candidate_global.exists():
+                        resolved = candidate_global
+
+                if resolved is None:
+                    errors.append(
+                        f"Phase '{phase.id}': skill_ref file not found: '{skill_ref}' "
+                        f"(looked in template dir and ~/.orch/skills/)"
+                    )
+                    continue
+
+                # Path traversal protection: reject refs that escape allowed dirs
+                resolved_real = resolved.resolve()
+                if not any(_is_within_dir(resolved_real, d) for d in allowed_dirs):
+                    errors.append(
+                        f"Phase '{phase.id}': skill_ref '{skill_ref}' resolves to "
+                        f"'{resolved_real}', which is outside the allowed directories "
+                        f"({[str(d) for d in allowed_dirs]}). "
+                        f"Path traversal is not permitted."
+                    )
 
         return errors
 
