@@ -49,6 +49,7 @@ id: test-tpl
 name: Test Template
 version: "1.0.0"
 description: "A test template"
+author: "Test Author"
 {extra_top}
 phases:
   - id: phase_a
@@ -137,8 +138,12 @@ class TestVariableReferenceCheck:
         template = engine.load_template(p)
         raw_data = yaml.safe_load(p.read_text())
         _, warnings = engine.validate_template_extended(template, raw_data)
-        # No warnings about input or previous_output
-        var_warnings = [w for w in warnings if "input" in w or "previous_output" in w]
+        # No variable-reference warnings about the built-in {input} or {previous_output} refs
+        var_warnings = [
+            w for w in warnings
+            if ("references unknown phase" in w)
+            and ("input" in w or "previous_output" in w)
+        ]
         assert var_warnings == [], f"Unexpected warnings: {var_warnings}"
 
 

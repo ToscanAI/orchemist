@@ -2,6 +2,23 @@ id: content-pipeline-mvp
 name: "Content Pipeline MVP"
 version: "2.1.0"
 description: "Simplified content pipeline: Research → Write → Fact-Check → Apply Fixes → Final Output"
+author: "Orchestration Engine Team"
+category: "content"
+tags:
+  - content
+  - research
+  - fact-checking
+  - linkedin
+use_cases:
+  - "Generate long-form LinkedIn articles with automatic fact-checking"
+  - "Produce research-backed blog posts on any topic"
+  - "Create structured content with source citations"
+example_input:
+  brief: "The impact of AI agents on software development workflows"
+  target_audience: "Software engineers and tech leads"
+  word_count_range: "800-1200 words"
+  tone: "professional"
+  author: "Jane Smith"
 
 config_schema:
   type: object

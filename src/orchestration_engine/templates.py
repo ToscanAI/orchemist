@@ -49,6 +49,11 @@ class PipelineTemplate:
     name: str
     version: str = "1.0.0"
     description: str = ""
+    author: str = ""
+    use_cases: List[str] = field(default_factory=list)
+    example_input: Dict[str, Any] = field(default_factory=dict)
+    tags: List[str] = field(default_factory=list)
+    category: str = ""
     phases: List[PhaseDefinition] = field(default_factory=list)
     config_schema: Dict[str, Any] = field(default_factory=dict)
 
@@ -59,6 +64,16 @@ class PipelineTemplate:
             self.config_schema = {}
         if self.description is None:
             self.description = ""
+        if self.author is None:
+            self.author = ""
+        if self.use_cases is None:
+            self.use_cases = []
+        if self.example_input is None:
+            self.example_input = {}
+        if self.tags is None:
+            self.tags = []
+        if self.category is None:
+            self.category = ""
 
 
 class TemplateNotFoundError(FileNotFoundError):
@@ -307,6 +322,11 @@ class TemplateEngine:
             name=data["name"],
             version=data.get("version", "1.0.0"),
             description=data.get("description", ""),
+            author=data.get("author", ""),
+            use_cases=data.get("use_cases") or [],
+            example_input=data.get("example_input") or {},
+            tags=data.get("tags") or [],
+            category=data.get("category", ""),
             phases=phases,
             config_schema=data.get("config_schema") or {},
         )
@@ -495,5 +515,25 @@ class TemplateEngine:
                 warnings.append(
                     "config_schema has type='object' but is missing 'properties'"
                 )
+
+        # ---- documentation field checks (#78) -----------------------
+        # Required: description, author, version
+        if not (raw_data.get("description") or "").strip():
+            errors.append("Missing required documentation field: 'description'")
+        if not (raw_data.get("author") or "").strip():
+            errors.append("Missing required documentation field: 'author'")
+        if "version" not in raw_data or not (raw_data.get("version") or "").strip():
+            errors.append("Missing required documentation field: 'version'")
+        elif not re.match(r'^\d+\.\d+\.\d+$', str(raw_data["version"]).strip()):
+            warnings.append(
+                f"Field 'version' value {raw_data['version']!r} does not match "
+                "semver pattern (expected X.Y.Z, e.g. '1.0.0')"
+            )
+
+        # Recommended: use_cases, example_input
+        if not raw_data.get("use_cases"):
+            warnings.append("Recommended documentation field 'use_cases' is missing or empty")
+        if not raw_data.get("example_input"):
+            warnings.append("Recommended documentation field 'example_input' is missing or empty")
 
         return errors, warnings

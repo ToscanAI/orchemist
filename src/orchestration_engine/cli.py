@@ -1476,6 +1476,25 @@ def templates_info(name_or_path: str) -> None:
         console.print(template.description)
     console.print()
 
+    # ---- Documentation fields (#78) ----
+    doc_lines = []
+    if template.author:
+        doc_lines.append(f"[bold]Author:[/bold]   {template.author}")
+    if template.category:
+        doc_lines.append(f"[bold]Category:[/bold] {template.category}")
+    if template.tags:
+        doc_lines.append(f"[bold]Tags:[/bold]     {', '.join(template.tags)}")
+    if template.use_cases:
+        doc_lines.append("[bold]Use Cases:[/bold]")
+        for uc in template.use_cases:
+            doc_lines.append(f"  • {uc}")
+    if template.example_input:
+        doc_lines.append(f"[bold]Example Input:[/bold] {json.dumps(template.example_input)}")
+    if doc_lines:
+        for line in doc_lines:
+            console.print(line)
+        console.print()
+
     # ---- Config Schema ----
     props: Dict[str, Any] = {}
     required_fields: set = set()
@@ -2400,8 +2419,8 @@ def new_template(
     # ── 2. Collect template metadata ─────────────────────────────────────────
     if yes:
         raw_name: str = (base_data or {}).get("name", "my-pipeline")
-        description: str = (base_data or {}).get("description", "") or ""
-        author: str = (base_data or {}).get("author", "") or ""
+        description: str = (base_data or {}).get("description", "") or "My pipeline description"
+        author: str = (base_data or {}).get("author", "") or "Unknown"
     else:
         click.echo("── Template Metadata " + "─" * 50)
         default_name = (base_data or {}).get("name", "my-pipeline")

@@ -3,6 +3,17 @@ id: hello-pipeline
 name: "Hello Pipeline"
 version: "1.0.0"
 description: "Two-phase example: Greet → Summarize. Good for smoke-testing orch run."
+author: "Orchestration Engine Team"
+category: "example"
+tags:
+  - example
+  - hello-world
+  - smoke-test
+use_cases:
+  - "Smoke-test the orch run pipeline executor end-to-end"
+  - "Minimal example to demonstrate two-phase dependency chaining"
+example_input:
+  name: "World"
 
 phases:
   - id: greet

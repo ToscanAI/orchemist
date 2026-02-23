@@ -32,6 +32,8 @@ MINIMAL_YAML = """\
 id: test-template
 name: Test Template
 version: "1.0.0"
+description: "Minimal template for testing."
+author: "Test Author"
 phases:
   - id: greet
     name: Greet
