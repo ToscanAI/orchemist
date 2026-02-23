@@ -1336,6 +1336,229 @@ def templates_info(name_or_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Feature #69 — orch templates install / uninstall
+# ---------------------------------------------------------------------------
+
+_USER_TEMPLATES_DIR = Path.home() / ".orch" / "templates"
+
+
+def _is_github_shorthand(source: str) -> bool:
+    """Check if source looks like 'user/repo' (GitHub shorthand)."""
+    parts = source.split("/")
+    return (
+        len(parts) == 2
+        and all(p and not p.startswith(".") for p in parts)
+        and not source.startswith("http")
+        and not source.endswith(".yaml")
+        and not source.endswith(".yml")
+    )
+
+
+def _install_from_git(url: str, name: str, force: bool) -> Path:
+    """Clone a git repo into ~/.orch/templates/<name>/.
+
+    Returns the install directory.
+    Raises click.ClickException on failure.
+    """
+    import subprocess
+
+    dest = _USER_TEMPLATES_DIR / re.sub(r'[^\w\-]', '_', name)
+
+    if dest.exists():
+        if not force:
+            raise click.ClickException(
+                f"Template '{name}' already installed at {dest}.\n"
+                f"  Use --force to overwrite."
+            )
+        import shutil
+        shutil.rmtree(dest)
+
+    _USER_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        subprocess.run(
+            ["git", "clone", "--depth", "1", url, str(dest)],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError:
+        raise click.ClickException("git is not installed. Install git and try again.")
+    except subprocess.TimeoutExpired:
+        raise click.ClickException(f"Git clone timed out after 60s: {url}")
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(f"Git clone failed: {exc.stderr.strip()}")
+
+    return dest
+
+
+def _find_yaml_in_dir(directory: Path) -> Optional[Path]:
+    """Find the first .yaml/.yml template file in a directory."""
+    for pattern in ("*.yaml", "*.yml"):
+        files = sorted(directory.glob(pattern))
+        for f in files:
+            if not f.name.startswith("."):
+                return f
+    # Check subdirectories (templates/, examples/)
+    for subdir in ("templates", "examples"):
+        sub = directory / subdir
+        if sub.exists():
+            for pattern in ("*.yaml", "*.yml"):
+                files = sorted(sub.glob(pattern))
+                for f in files:
+                    if not f.name.startswith("."):
+                        return f
+    return None
+
+
+def _validate_installed_template(yaml_path: Path) -> None:
+    """Validate an installed template. Raises click.ClickException on failure."""
+    from .templates import TemplateEngine
+
+    engine = TemplateEngine()
+    try:
+        template = engine.load_template(yaml_path)
+    except Exception as exc:
+        raise click.ClickException(f"Installed template is not valid YAML: {exc}")
+
+    errors = engine.validate_template(template)
+    if errors:
+        err_str = "\n".join(f"  • {e}" for e in errors)
+        raise click.ClickException(
+            f"Installed template has {len(errors)} validation error(s):\n{err_str}"
+        )
+
+
+@templates.command("install")
+@click.argument("source")
+@click.option("--force", is_flag=True, help="Overwrite existing installation.")
+@click.option("--name", default=None, help="Override the install directory name.")
+def templates_install(source: str, force: bool, name: Optional[str]) -> None:
+    """Install a template from a git URL, GitHub shorthand, or local path.
+
+    SOURCE can be:
+
+      - A git URL: https://github.com/user/repo
+      - GitHub shorthand: user/repo
+      - A local .yaml file path (copied to ~/.orch/templates/)
+
+    Examples:
+
+      orch templates install user/my-pipeline
+      orch templates install https://github.com/user/my-pipeline
+      orch templates install ./my-template.yaml --name my-pipeline
+    """
+    from rich.console import Console
+    import shutil
+
+    console = Console(highlight=False)
+
+    # Determine source type
+    is_url = source.startswith("http://") or source.startswith("https://")
+    is_shorthand = _is_github_shorthand(source)
+    is_local = source.endswith(".yaml") or source.endswith(".yml")
+
+    if is_url:
+        # Git URL
+        install_name = name or source.rstrip("/").split("/")[-1].removesuffix(".git")
+        console.print(f"[bold]Installing from git:[/bold] {source}")
+        dest = _install_from_git(source, install_name, force)
+
+    elif is_shorthand:
+        # GitHub shorthand → https://github.com/user/repo
+        url = f"https://github.com/{source}.git"
+        install_name = name or source.split("/")[-1]
+        console.print(f"[bold]Installing from GitHub:[/bold] {source}")
+        dest = _install_from_git(url, install_name, force)
+
+    elif is_local:
+        # Local YAML file — copy to ~/.orch/templates/
+        local_path = Path(source)
+        if not local_path.exists():
+            raise click.ClickException(f"File not found: {source}")
+
+        install_name = name or local_path.stem
+        safe_name = re.sub(r'[^\w\-]', '_', install_name)
+        dest = _USER_TEMPLATES_DIR / safe_name
+
+        if dest.exists():
+            if not force:
+                raise click.ClickException(
+                    f"Template '{install_name}' already installed at {dest}.\n"
+                    f"  Use --force to overwrite."
+                )
+            shutil.rmtree(dest)
+
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(local_path, dest / local_path.name)
+        console.print(f"[bold]Installing local file:[/bold] {source}")
+
+    else:
+        raise click.ClickException(
+            f"Unknown source format: '{source}'\n"
+            f"  Expected: git URL, GitHub shorthand (user/repo), or .yaml file path.\n"
+            f"  Community index lookup is not yet available."
+        )
+
+    # Validate the installed template
+    yaml_path = _find_yaml_in_dir(dest)
+    if yaml_path is None:
+        console.print(
+            f"[yellow]⚠ No .yaml template found in {dest}. "
+            f"The repo may need a templates/ or examples/ directory.[/yellow]"
+        )
+    else:
+        _validate_installed_template(yaml_path)
+        from .templates import TemplateEngine
+        tmpl = TemplateEngine().load_template(yaml_path)
+        console.print(
+            f"\n[green]✓ Installed:[/green] [bold]{tmpl.name}[/bold] "
+            f"(v{tmpl.version}, {len(tmpl.phases)} phases)"
+        )
+
+    console.print(f"[dim]Location: {dest}[/dim]")
+    console.print()
+    console.print("[bold]Next steps:[/bold]")
+    console.print("  [cyan]orch templates list[/cyan]          See all installed templates")
+    if yaml_path:
+        console.print(
+            f"  [cyan]orch start {install_name}[/cyan]"
+            f"          Run it interactively"
+        )
+    console.print()
+
+
+@templates.command("uninstall")
+@click.argument("name")
+@click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt.")
+def templates_uninstall(name: str, force: bool) -> None:
+    """Remove an installed template from ~/.orch/templates/.
+
+    NAME is the template directory name (as shown in `orch templates list`).
+    """
+    import shutil
+
+    safe_name = re.sub(r'[^\w\-]', '_', name)
+    dest = _USER_TEMPLATES_DIR / safe_name
+
+    if not dest.exists():
+        # Try exact name too
+        dest = _USER_TEMPLATES_DIR / name
+        if not dest.exists():
+            click.echo(f"✗ Template '{name}' not found in {_USER_TEMPLATES_DIR}", err=True)
+            sys.exit(1)
+
+    if not force:
+        if not click.confirm(f"Remove template '{name}' from {dest}?"):
+            click.echo("Aborted.")
+            return
+
+    shutil.rmtree(dest)
+    click.echo(f"✓ Template '{name}' uninstalled.")
+
+
+# ---------------------------------------------------------------------------
 # Feature #65 — orch quickstart
 # ---------------------------------------------------------------------------
 
