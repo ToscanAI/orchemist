@@ -2,7 +2,7 @@
 
 ### Like Docker Compose for AI pipelines — define phases in YAML, the engine handles the rest.
 
-[![Tests](https://img.shields.io/badge/tests-889%20passing-brightgreen)](https://github.com/ToscanRivera/orchestration-engine/actions)
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](https://github.com/ToscanRivera/orchestration-engine/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![Pi Tested](https://img.shields.io/badge/Raspberry%20Pi-tested-red)](https://www.raspberrypi.com/)
@@ -39,21 +39,21 @@ phases:
 
 ```bash
 pip install orchestration-engine
-orch new my-pipeline
-orch run my-pipeline
+orch new --yes --output templates/my-pipeline.yaml
+orch run templates/my-pipeline.yaml --mode dry-run
 ```
 
 No API key needed for a dry run:
 
 ```bash
-orch run my-pipeline --mode dry-run --input '{"brief": "AI safety"}'
+orch run templates/my-pipeline.yaml --mode dry-run --input '{"brief": "AI safety"}'
 ```
 
 Live run against Claude:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-orch run my-pipeline --mode standalone --input '{"brief": "AI safety"}'
+orch run templates/my-pipeline.yaml --mode standalone --input '{"brief": "AI safety"}'
 ```
 
 ---
@@ -92,9 +92,9 @@ Each use case is a template. Browse them with `orch templates list` or search wi
 | Feature | Orchestration Engine | LangGraph | CrewAI | Autogen | Dify |
 |---------|:-------------------:|:---------:|:------:|:-------:|:----:|
 | YAML-first | ✅ | ❌ | ❌ | ❌ | Partial |
-| Visual builder | 🔜 | ❌ | ❌ | ❌ | ✅ |
+| Visual builder | 🔜 | ⚠️ | ❌ | ❌ | ✅ |
 | Template library | ✅ | ❌ | ❌ | ❌ | ✅ |
-| Testing / grading | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Testing / grading | ✅ | ❌ | ⚠️ | ❌ | ❌ |
 | Raspberry Pi support | ✅ | ⚠️ | ⚠️ | ⚠️ | ❌ |
 
 > ✅ full support · ⚠️ partial/unofficial · ❌ not supported · 🔜 planned
@@ -247,14 +247,14 @@ pytest
 - 🔌 **Executors** — add support for new model providers (Gemini, Mistral, local models)
 - 📖 **Documentation** — improve examples, add tutorials, translate docs
 
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) (coming soon) for code style and PR guidelines.
+Please read CONTRIBUTING.md (coming soon) for code style and PR guidelines.
 
 ---
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) — detailed setup guide
-- [Architecture](ARCHITECTURE.md) — system design
+- [Getting Started](docs/GETTING_STARTED.md) — detailed setup guide
+- [Architecture](docs/ARCHITECTURE.md) — system design
 - [API Reference](docs/api-reference.md) — CLI commands + Python classes
 - [Tech Stack](docs/tech-stack.md) — dependencies and choices
 
@@ -268,4 +268,4 @@ See [LICENSE](LICENSE) for the full text.
 
 ---
 
-**889 tests. 3 execution modes. Zero vendor lock-in.**
+**Tests passing. 3 execution modes. Zero vendor lock-in.**
