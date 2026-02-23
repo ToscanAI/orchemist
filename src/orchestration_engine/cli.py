@@ -1121,13 +1121,14 @@ def _template_resolution_paths() -> List[tuple]:
     3. ~/.orch/templates/ → label "user"
     """
     user_dir = Path.home() / ".orch" / "templates"
-    user_dir.mkdir(parents=True, exist_ok=True)
-
-    return [
+    # Don't create ~/.orch/templates/ just for scanning — only include if it exists
+    paths = [
         (Path("./templates"), "templates"),
         (Path("./examples"), "examples"),
-        (user_dir, "user"),
     ]
+    if user_dir.exists():
+        paths.append((user_dir, "user"))
+    return paths
 
 
 def _scan_templates(resolution_paths: Optional[List[tuple]] = None) -> List[tuple]:
