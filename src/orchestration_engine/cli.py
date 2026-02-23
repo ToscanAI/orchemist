@@ -1239,7 +1239,6 @@ def templates_list(json_output: bool) -> None:
 @click.argument("name_or_path")
 def templates_info(name_or_path: str) -> None:
     """Show detailed info about a template (by name, ID, or file path)."""
-    import os as _os
     from rich.console import Console
     from rich.table import Table
     from .templates import TemplateEngine
@@ -1247,57 +1246,8 @@ def templates_info(name_or_path: str) -> None:
     console = Console(highlight=False)
     engine = TemplateEngine()
 
-    # Determine: is this a file path or a name?
-    is_path = (
-        name_or_path.endswith(".yaml")
-        or name_or_path.endswith(".yml")
-        or _os.sep in name_or_path
-        or "/" in name_or_path
-    )
-
-    template = None
-    template_path = None
-
-    if is_path:
-        p = Path(name_or_path)
-        try:
-            template = engine.load_template(p)
-            template_path = p
-        except FileNotFoundError:
-            click.echo(f"✗ Template file not found: {name_or_path}", err=True)
-            sys.exit(1)
-        except Exception as exc:
-            click.echo(f"✗ Could not load template: {exc}", err=True)
-            sys.exit(1)
-    else:
-        # Search resolution paths
-        found_all = _scan_templates()
-        search = name_or_path.lower()
-
-        for filepath, _source, tmpl in found_all:
-            if tmpl.id.lower() == search or tmpl.name.lower() == search:
-                template = tmpl
-                template_path = filepath
-                break
-
-        if template is None:
-            # Suggest similar templates
-            candidates = [
-                tmpl.name
-                for _, _, tmpl in found_all
-                if search in tmpl.id.lower() or search in tmpl.name.lower()
-            ]
-            click.echo(f"✗ Template '{name_or_path}' not found.", err=True)
-            if candidates:
-                click.echo("\nDid you mean one of these?", err=True)
-                for c in candidates:
-                    click.echo(f"  • {c}", err=True)
-            else:
-                click.echo(
-                    "\nNo similar templates found. Run 'orch templates list' to see all.",
-                    err=True,
-                )
-            sys.exit(1)
+    # Reuse shared template resolution logic
+    template_path, template = _find_template(name_or_path)
 
     # ---- Header ----
     console.print(
@@ -1383,6 +1333,338 @@ def templates_info(name_or_path: str) -> None:
             f"  orch run {template_path} --mode dry-run --input '{input_str}'"
         )
         console.print()
+
+
+# ---------------------------------------------------------------------------
+# Feature #65 — orch quickstart
+# ---------------------------------------------------------------------------
+
+@main.command("quickstart")
+@click.pass_context
+def quickstart(ctx: click.Context) -> None:
+    """Give new users a working pipeline in 30 seconds with zero configuration.
+
+    Runs the bundled hello-pipeline.yaml in dry-run mode so you can see what
+    the engine does without any API key or config.
+    """
+    from rich.console import Console
+
+    console = Console(highlight=False)
+
+    # Locate hello-pipeline.yaml — try multiple locations for both
+    # repo-based development and pip-installed packages.
+    _pkg_dir = Path(__file__).parent          # src/orchestration_engine/
+    _repo_root = _pkg_dir.parent.parent       # repo root (when running from source)
+    candidates = [
+        _repo_root / "examples" / "hello-pipeline.yaml",
+        Path("./examples/hello-pipeline.yaml"),
+        _pkg_dir / "examples" / "hello-pipeline.yaml",      # package data
+        Path.home() / ".orch" / "templates" / "hello-pipeline.yaml",  # user dir
+    ]
+    hello_yaml: Optional[Path] = None
+    for candidate in candidates:
+        if candidate.exists():
+            hello_yaml = candidate.resolve()
+            break
+
+    if hello_yaml is None:
+        click.echo(
+            "✗ Could not find hello-pipeline.yaml.\n"
+            "  Looked in:\n"
+            f"    • {_repo_root / 'examples/'}\n"
+            f"    • ./examples/\n"
+            f"    • {_pkg_dir / 'examples/'}\n"
+            f"    • ~/.orch/templates/\n"
+            "  Copy hello-pipeline.yaml to one of these locations, or run from the repo root.",
+            err=True,
+        )
+        sys.exit(1)
+
+    # ---- Header ----
+    console.print()
+    console.print("[bold]🚀 Orchestration Engine — Quick Start[/bold]")
+    console.print()
+    console.print("Running a sample pipeline [dim](dry-run, no API key needed)[/dim]...")
+    console.print()
+
+    # ---- Execute via the existing run command ----
+    ctx.invoke(
+        run_template,
+        template_file=hello_yaml,
+        mode="dry-run",
+        api_key=None,
+        input_json=None,
+        input_file=None,
+        output_dir=None,
+        dry_run_delay=0.0,
+        dry_run_failure_rate=0.0,
+    )
+
+    # ---- Footer ----
+    from .templates import TemplateEngine as _TE
+    _tmpl = _TE().load_template(hello_yaml)
+    n_phases = len(_tmpl.phases)
+
+    console.print()
+    console.print(
+        f"[bold green]✓ That's it![/bold green] "
+        f"You just ran a {n_phases}-phase AI pipeline."
+    )
+    console.print()
+    console.print("[bold]Next steps:[/bold]")
+    console.print(
+        "  [cyan]orch templates list[/cyan]"
+        "                        See all available templates"
+    )
+    console.print(
+        "  [cyan]orch templates info content-pipeline-mvp[/cyan]"
+        "   Explore a real pipeline"
+    )
+    console.print(
+        "  [cyan]orch start content-pipeline-mvp[/cyan]"
+        "            Run interactively (needs API key)"
+    )
+    console.print()
+
+
+# ---------------------------------------------------------------------------
+# Feature #66 — orch start (interactive wizard)
+# ---------------------------------------------------------------------------
+
+def _find_template(name_or_path: str):
+    """Locate a template by file path OR by name/ID.
+
+    Returns:
+        (template_path: Path, template: PipelineTemplate)
+
+    Raises SystemExit on failure.
+    """
+    import os as _os
+    from .templates import TemplateEngine
+
+    engine = TemplateEngine()
+
+    is_path = (
+        name_or_path.endswith(".yaml")
+        or name_or_path.endswith(".yml")
+        or _os.sep in name_or_path
+        or "/" in name_or_path
+    )
+
+    if is_path:
+        p = Path(name_or_path)
+        try:
+            template = engine.load_template(p)
+            return p, template
+        except FileNotFoundError:
+            click.echo(f"✗ Template file not found: {name_or_path}", err=True)
+            sys.exit(1)
+        except Exception as exc:
+            click.echo(f"✗ Could not load template: {exc}", err=True)
+            sys.exit(1)
+
+    # Name / ID lookup
+    found_all = _scan_templates()
+    search = name_or_path.lower()
+    for filepath, _source, tmpl in found_all:
+        if tmpl.id.lower() == search or tmpl.name.lower() == search:
+            return filepath, tmpl
+
+    # Not found — suggest similar
+    candidates = [
+        tmpl.name
+        for _, _, tmpl in found_all
+        if search in tmpl.id.lower() or search in tmpl.name.lower()
+    ]
+    click.echo(f"✗ Template '{name_or_path}' not found.", err=True)
+    if candidates:
+        click.echo("\nDid you mean one of these?", err=True)
+        for c in candidates:
+            click.echo(f"  • {c}", err=True)
+    else:
+        click.echo(
+            "\nNo similar templates found. Run 'orch templates list' to see all.",
+            err=True,
+        )
+    sys.exit(1)
+
+
+def _prompt_for_field(
+    field_name: str,
+    field_info: Dict[str, Any],
+    required_fields: set,
+    yes: bool,
+) -> Optional[str]:
+    """Prompt the user for a single config-schema field.
+
+    When *yes* is True, skip the prompt and return the field's default (or "").
+    Returns None if the field is optional and the user leaves it blank.
+    """
+    field_info = field_info or {}
+    field_type = field_info.get("type", "string")
+    field_desc = field_info.get("description", "")
+    field_default = field_info.get("default", None)
+    field_enum = field_info.get("enum", None)
+    is_required = field_name in required_fields
+
+    # Build label
+    req_tag = ", required" if is_required else ""
+    label = f"  {field_name} ({field_type}{req_tag})"
+    if field_desc:
+        label += f": {field_desc}"
+
+    if yes:
+        # Non-interactive: use default or empty string
+        return str(field_default) if field_default is not None else (None if not is_required else "")
+
+    click.echo(label)
+
+    prompt_text = "  > "
+    if field_enum:
+        choice = click.Choice(field_enum)
+        value = click.prompt(
+            prompt_text,
+            default=field_default or "",
+            type=choice,
+            prompt_suffix="",
+        )
+    elif field_default is not None:
+        # Show default in brackets
+        click.echo(f"  [default: {field_default}]")
+        value = click.prompt(
+            prompt_text,
+            default=str(field_default),
+            show_default=False,
+            prompt_suffix="",
+        )
+    else:
+        if is_required:
+            value = click.prompt(prompt_text, prompt_suffix="")
+        else:
+            value = click.prompt(prompt_text, default="", show_default=False, prompt_suffix="")
+
+    click.echo()
+    return value if value != "" else (None if not is_required else "")
+
+
+@main.command("start")
+@click.argument("template_name_or_path")
+@click.option(
+    "--mode",
+    type=click.Choice(["standalone", "openclaw", "dry-run"]),
+    default="dry-run",
+    show_default=True,
+    help="Execution mode (dry-run is safe — no API calls).",
+)
+@click.option(
+    "--api-key",
+    envvar="ANTHROPIC_API_KEY",
+    default=None,
+    help="Anthropic API key for standalone mode (or set ANTHROPIC_API_KEY).",
+)
+@click.option(
+    "--yes", "-y",
+    is_flag=True,
+    default=False,
+    help="Skip prompts and use default values for all fields.",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory to write phase outputs.",
+)
+@click.pass_context
+def start_wizard(
+    ctx: click.Context,
+    template_name_or_path: str,
+    mode: str,
+    api_key: Optional[str],
+    yes: bool,
+    output_dir: Optional[Path],
+) -> None:
+    """Interactive wizard to fill in a template's inputs and run it.
+
+    TEMPLATE_NAME_OR_PATH can be a template name/ID (e.g. content-pipeline-mvp)
+    or a path to a .yaml file.
+
+    Examples:
+
+      # Interactive wizard with defaults:
+      orch start content-pipeline-mvp
+
+      # Non-interactive (use all defaults), standalone mode:
+      orch start content-pipeline-mvp --mode standalone --yes
+
+      # Point at a local file:
+      orch start ./my-template.yaml --mode dry-run
+    """
+    import json as _json
+    from rich.console import Console
+
+    console = Console(highlight=False)
+
+    # ---- 1. Find and load template ----
+    template_path, template = _find_template(template_name_or_path)
+
+    # ---- 2. Show header ----
+    console.print()
+    console.print(
+        f"[bold cyan]{template.name}[/bold cyan] "
+        f"[dim](v{template.version})[/dim]"
+    )
+    if template.description:
+        console.print(template.description)
+    console.print()
+
+    # ---- 3. Collect inputs from config_schema ----
+    config_schema: Dict[str, Any] = template.config_schema or {}
+    props: Dict[str, Any] = config_schema.get("properties", {}) or {}
+    required_fields: set = set(config_schema.get("required", []))
+
+    collected: Dict[str, str] = {}
+
+    try:
+        if props:
+            if not yes:
+                console.print("[bold]Fill in the pipeline inputs:[/bold]")
+                console.print()
+
+            for field_name, field_info in props.items():
+                value = _prompt_for_field(field_name, field_info, required_fields, yes)
+                if value is not None:
+                    collected[field_name] = value
+        elif not yes:
+            console.print("[dim]This template has no configurable inputs.[/dim]")
+            console.print()
+
+        # ---- 4. Summary + confirmation ----
+        if collected and not yes:
+            console.print("[bold]Summary:[/bold]")
+            for k, v in collected.items():
+                console.print(f"  {k}: {v}")
+            console.print()
+            if not click.confirm("Proceed?", default=True):
+                click.echo("Aborted.")
+                return
+    except (click.Abort, KeyboardInterrupt):
+        console.print("\n[dim]Aborted.[/dim]")
+        return
+
+    # ---- 5. Run via the existing run_template command ----
+    input_json_str = _json.dumps(collected) if collected else None
+
+    ctx.invoke(
+        run_template,
+        template_file=template_path,
+        mode=mode,
+        api_key=api_key,
+        input_json=input_json_str,
+        input_file=None,
+        output_dir=output_dir,
+        dry_run_delay=0.0,
+        dry_run_failure_rate=0.0,
+    )
 
 
 if __name__ == '__main__':
