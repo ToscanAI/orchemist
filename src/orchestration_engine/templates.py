@@ -1,7 +1,9 @@
 """Template engine — loads YAML pipeline templates and creates execution plans."""
 
+import difflib
 import logging
 import os
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -406,3 +408,92 @@ class TemplateEngine:
                 )
 
         return errors
+
+    # ------------------------------------------------------------------
+    # Extended / linting validation  (Feature #74)
+    # ------------------------------------------------------------------
+
+    #: Known valid model tier names.
+    KNOWN_MODEL_TIERS: List[str] = ["haiku", "sonnet", "opus"]
+
+    #: Known valid thinking level values.
+    KNOWN_THINKING_LEVELS: List[str] = ["off", "low", "medium", "high"]
+
+    def validate_template_extended(
+        self,
+        template: "PipelineTemplate",
+        raw_data: Dict[str, Any],
+    ) -> Tuple[List[str], List[str]]:
+        """Perform deep linting checks on a loaded template.
+
+        Checks performed:
+        - Variable references in ``prompt_template`` fields point to existing
+          phase IDs  (``{phase_id.output}`` pattern).
+        - ``model_tier`` values are in :attr:`KNOWN_MODEL_TIERS`.
+        - ``thinking_level`` values are in :attr:`KNOWN_THINKING_LEVELS`.
+        - ``config_schema`` (if present) has at least a ``type`` key; when
+          ``type`` is ``"object"`` it should also have ``properties``.
+
+        Args:
+            template: Already-loaded :class:`PipelineTemplate`.
+            raw_data:  The raw ``dict`` returned by ``yaml.safe_load`` so we
+                       can inspect fields that are normalised away by the
+                       dataclass constructors.
+
+        Returns:
+            ``(errors, warnings)`` — each a list of human-readable strings.
+            *errors* indicate definite problems; *warnings* are advisory.
+        """
+        errors: List[str] = []
+        warnings: List[str] = []
+
+        phase_ids = {p.id for p in template.phases}
+
+        for phase in template.phases:
+            # ---- variable reference check ----------------------------
+            prompt = phase.prompt_template or ""
+            # Match {some_identifier.output} or {some_identifier.something}
+            # but NOT built-ins {input}, {previous_output}, {input[key]}
+            for match in re.finditer(r"\{([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\}", prompt):
+                ref_phase = match.group(1)
+                if ref_phase not in phase_ids:
+                    warnings.append(
+                        f"Phase '{phase.id}' references unknown phase "
+                        f"'{ref_phase}' in prompt_template ('{match.group(0)}')"
+                    )
+
+            # ---- model_tier check ------------------------------------
+            tier = phase.model_tier or ""
+            if tier and tier not in self.KNOWN_MODEL_TIERS:
+                suggestion = difflib.get_close_matches(
+                    tier, self.KNOWN_MODEL_TIERS, n=1, cutoff=0.4
+                )
+                hint = f"; did you mean '{suggestion[0]}'?" if suggestion else ""
+                warnings.append(
+                    f"Phase '{phase.id}' has unknown model_tier='{tier}'{hint}"
+                )
+
+            # ---- thinking_level check --------------------------------
+            level = phase.thinking_level or ""
+            if level and level not in self.KNOWN_THINKING_LEVELS:
+                suggestion = difflib.get_close_matches(
+                    level, self.KNOWN_THINKING_LEVELS, n=1, cutoff=0.4
+                )
+                hint = f"; did you mean '{suggestion[0]}'?" if suggestion else ""
+                warnings.append(
+                    f"Phase '{phase.id}' has unknown thinking_level='{level}'{hint}"
+                )
+
+        # ---- config_schema check -------------------------------------
+        schema = template.config_schema
+        if schema:
+            if "type" not in schema:
+                errors.append(
+                    "config_schema is missing required 'type' field"
+                )
+            elif schema["type"] == "object" and "properties" not in schema:
+                warnings.append(
+                    "config_schema has type='object' but is missing 'properties'"
+                )
+
+        return errors, warnings

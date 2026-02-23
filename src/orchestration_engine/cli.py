@@ -1036,32 +1036,144 @@ def run_template(
     console.print(f"\n[bold]Outputs written to:[/bold] {output_dir}/")
 
 
+def _check_yaml_syntax(template_file: Path) -> Optional[str]:
+    """Try raw YAML parse and return a formatted error string or None if OK."""
+    try:
+        with open(template_file) as fh:
+            yaml.safe_load(fh)
+        return None
+    except yaml.YAMLError as exc:
+        if hasattr(exc, "problem_mark"):
+            mark = exc.problem_mark
+            line = mark.line + 1
+            col = mark.column + 1
+            problem = exc.problem or "syntax error"
+            return f"YAML syntax error at line {line}:{col} — {problem}"
+        return f"YAML syntax error — {exc}"
+
+
+def _apply_fixes(template_file: Path, raw_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply auto-corrections to *raw_data* in-place and rewrite the file.
+
+    Corrections applied:
+    - Add missing ``version`` (default ``"1.0.0"``)
+    - Add missing ``description`` (default ``""``)
+    - Normalize ``model_tier`` to lowercase for every phase
+
+    Returns the modified ``raw_data`` dict.
+    """
+    changed = False
+
+    if "version" not in raw_data or raw_data["version"] is None:
+        raw_data["version"] = "1.0.0"
+        changed = True
+
+    if "description" not in raw_data or raw_data["description"] is None:
+        raw_data["description"] = ""
+        changed = True
+
+    for phase in raw_data.get("phases") or []:
+        tier = phase.get("model_tier")
+        if tier and isinstance(tier, str):
+            normalised = tier.lower()
+            if normalised != tier:
+                phase["model_tier"] = normalised
+                changed = True
+
+    if changed:
+        with open(template_file, "w") as fh:
+            yaml.dump(raw_data, fh, default_flow_style=False, allow_unicode=True,
+                      sort_keys=False)
+
+    return raw_data
+
+
 @main.command("validate")
 @click.argument('template_name_or_file')
-def validate_template(template_name_or_file: str) -> None:
+@click.option('--fix', is_flag=True, default=False,
+              help='Auto-correct simple issues (missing version/description, model tier casing).')
+def validate_template(template_name_or_file: str, fix: bool) -> None:
     """Validate a pipeline template and report any structural errors.
 
     TEMPLATE_NAME_OR_FILE is a template name (e.g. content-pipeline) or a
     path to a YAML file.  Template names are resolved using the search order:
     ORCH_TEMPLATES_PATH → ./templates/ → ~/.orch/templates/ → bundled.
+
+    Exit code 0 = valid (warnings only).  Exit code 1 = errors found.
     """
+    OK  = click.style("✓", fg="green")
+    ERR = click.style("✗", fg="red")
+    WRN = click.style("⚠", fg="yellow")
+
     try:
         from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
 
         template_file = _resolve_template_arg(template_name_or_file)
+
+        # ── 1. YAML syntax check ──────────────────────────────────────
+        yaml_error = _check_yaml_syntax(template_file)
+        if yaml_error:
+            click.echo(f"{ERR} YAML syntax:  {yaml_error}", err=True)
+            sys.exit(1)
+        click.echo(f"{OK} YAML syntax")
+
+        # ── 2. Load raw data (for --fix and extended checks) ──────────
+        with open(template_file) as fh:
+            raw_data: Dict[str, Any] = yaml.safe_load(fh)
+
+        # ── 3. Apply fixes before structural validation ───────────────
+        if fix:
+            raw_data = _apply_fixes(template_file, raw_data)
+            click.echo(f"{OK} --fix applied (version, description, model tier casing)")
+
+        # ── 4. Structural validation via engine ───────────────────────
         engine = TemplateEngine()
         template: PipelineTemplate = engine.load_template(template_file)
-        errors = engine.validate_template(template)
+        structural_errors = engine.validate_template(template)
 
-        if errors:
-            click.echo(f"✗ Template {template_file!r} has {len(errors)} error(s):", err=True)
-            for err in errors:
-                click.echo(f"  • {err}", err=True)
-            sys.exit(1)
+        if structural_errors:
+            click.echo(f"{ERR} Structural checks ({len(structural_errors)} error(s)):")
+            for err in structural_errors:
+                click.echo(f"    • {err}")
         else:
-            click.echo(f"✓ Template {template_file!r} is valid ({len(template.phases)} phases)")
+            click.echo(f"{OK} Structural checks  ({len(template.phases)} phases, deps OK)")
+
+        # ── 5. Extended / linting checks ─────────────────────────────
+        ext_errors, ext_warnings = engine.validate_template_extended(template, raw_data)
+
+        if ext_errors:
+            click.echo(f"{ERR} Extended checks ({len(ext_errors)} error(s)):")
+            for err in ext_errors:
+                click.echo(f"    • {err}")
+        elif ext_warnings:
+            click.echo(f"{WRN} Extended checks ({len(ext_warnings)} warning(s)):")
+            for w in ext_warnings:
+                click.echo(f"    • {w}")
+        else:
+            click.echo(f"{OK} Extended checks  (model tiers, thinking levels, variable refs, config_schema)")
+
+        # ── 6. Summary ────────────────────────────────────────────────
+        total_errors = len(structural_errors) + len(ext_errors)
+        total_warnings = len(ext_warnings)
+
+        if total_errors:
+            click.echo(
+                f"\n{ERR} Template {str(template_file)!r}: "
+                f"{total_errors} error(s), {total_warnings} warning(s)"
+            )
+            sys.exit(1)
+        elif total_warnings:
+            click.echo(
+                f"\n{WRN} Template {str(template_file)!r}: "
+                f"valid with {total_warnings} warning(s)"
+            )
+        else:
+            click.echo(
+                f"\n{OK} Template {str(template_file)!r} is valid"
+            )
+
     except (KeyError, ValueError) as exc:
-        click.echo(f"✗ Invalid template: {exc}", err=True)
+        click.echo(f"{ERR} Invalid template: {exc}", err=True)
         sys.exit(1)
     except Exception as exc:
         click.echo(f"Error: {exc}", err=True)
