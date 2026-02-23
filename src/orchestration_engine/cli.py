@@ -725,7 +725,7 @@ def workers(detailed: bool) -> None:
 # ---------------------------------------------------------------------------
 
 @main.command("run")
-@click.argument('template_file', type=click.Path(exists=True, path_type=Path))
+@click.argument('template_name_or_file')
 @click.option(
     '--mode',
     type=click.Choice(['standalone', 'openclaw', 'dry-run']),
@@ -772,7 +772,7 @@ def workers(detailed: bool) -> None:
     help='(dry-run mode only) Probability [0.0-1.0] of simulated phase failure.',
 )
 def run_template(
-    template_file: Path,
+    template_name_or_file: str,
     mode: str,
     api_key: Optional[str],
     input_json: Optional[str],
@@ -783,11 +783,16 @@ def run_template(
 ) -> None:
     """Execute a pipeline template end-to-end.
 
-    TEMPLATE_FILE is the path to a YAML pipeline template.
+    TEMPLATE_NAME_OR_FILE is a template name (e.g. content-pipeline) or a
+    path to a YAML file.  Template names are resolved using the search order:
+    ORCH_TEMPLATES_PATH → ./templates/ → ~/.orch/templates/ → bundled.
 
     Examples:
 
-      # Standalone with inline input:
+      # By name (resolved automatically):
+      orch run content-pipeline --mode dry-run
+
+      # By path:
       orch run pipeline.yaml --mode standalone \\
         --api-key sk-ant-... \\
         --input '{"brief": "AI safety"}'
@@ -814,7 +819,10 @@ def run_template(
     console = Console(highlight=False)
     run_start = time.time()
 
-    # --- 1. Load and validate template --------------------------------
+    # --- 1. Resolve template path (name or path) ----------------------
+    template_file = _resolve_template_arg(template_name_or_file)
+
+    # --- 2. Load and validate template --------------------------------
     try:
         engine = TemplateEngine()
         template = engine.load_template(template_file)
@@ -1029,15 +1037,18 @@ def run_template(
 
 
 @main.command("validate")
-@click.argument('template_file', type=click.Path(exists=True, path_type=Path))
-def validate_template(template_file: Path) -> None:
+@click.argument('template_name_or_file')
+def validate_template(template_name_or_file: str) -> None:
     """Validate a pipeline template and report any structural errors.
 
-    TEMPLATE_FILE is the path to a YAML pipeline template.
+    TEMPLATE_NAME_OR_FILE is a template name (e.g. content-pipeline) or a
+    path to a YAML file.  Template names are resolved using the search order:
+    ORCH_TEMPLATES_PATH → ./templates/ → ~/.orch/templates/ → bundled.
     """
     try:
         from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
 
+        template_file = _resolve_template_arg(template_name_or_file)
         engine = TemplateEngine()
         template: PipelineTemplate = engine.load_template(template_file)
         errors = engine.validate_template(template)
@@ -1058,15 +1069,18 @@ def validate_template(template_file: Path) -> None:
 
 
 @main.command("list-phases")
-@click.argument('template_file', type=click.Path(exists=True, path_type=Path))
-def list_phases(template_file: Path) -> None:
+@click.argument('template_name_or_file')
+def list_phases(template_name_or_file: str) -> None:
     """Show execution order and model tiers for a pipeline template.
 
-    TEMPLATE_FILE is the path to a YAML pipeline template.
+    TEMPLATE_NAME_OR_FILE is a template name (e.g. content-pipeline) or a
+    path to a YAML file.  Template names are resolved using the search order:
+    ORCH_TEMPLATES_PATH → ./templates/ → ~/.orch/templates/ → bundled.
     """
     try:
         from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
 
+        template_file = _resolve_template_arg(template_name_or_file)
         engine = TemplateEngine()
         template: PipelineTemplate = engine.load_template(template_file)
         waves = engine.get_execution_order(template)
@@ -1115,19 +1129,37 @@ def _yaml_str(val: Any) -> str:
 def _template_resolution_paths() -> List[tuple]:
     """Return list of (Path, source_label) for template scanning.
 
-    Scanned in order:
-    1. ./templates/  → label "templates"
-    2. ./examples/   → label "examples"
-    3. ~/.orch/templates/ → label "user"
+    Scanned in order (each directory may or may not exist):
+    1. Paths from ``ORCH_TEMPLATES_PATH`` env var (colon-separated)  → "custom"
+    2. ``./templates/``   (project-local)                            → "templates"
+    3. ``./examples/``    (project examples — backward compat)       → "examples"
+    4. ``~/.orch/templates/`` (user-global, if it exists)            → "user"
+
+    Note: bundled/package templates are handled by TemplateEngine.resolve_template()
+    for name-based lookup but are not displayed here to keep the list focused on
+    user-visible template sources.
     """
+    import os as _os
+
+    paths: List[tuple] = []
+
+    # 1. ORCH_TEMPLATES_PATH (colon-separated)
+    env_raw = _os.environ.get("ORCH_TEMPLATES_PATH", "")
+    if env_raw:
+        for part in env_raw.split(":"):
+            part = part.strip()
+            if part:
+                paths.append((Path(part), "custom"))
+
+    # 2+3. Project-local dirs
+    paths.append((Path("./templates"), "templates"))
+    paths.append((Path("./examples"), "examples"))
+
+    # 4. User-global (only if it exists, to avoid creating it on scan)
     user_dir = Path.home() / ".orch" / "templates"
-    # Don't create ~/.orch/templates/ just for scanning — only include if it exists
-    paths = [
-        (Path("./templates"), "templates"),
-        (Path("./examples"), "examples"),
-    ]
     if user_dir.exists():
         paths.append((user_dir, "user"))
+
     return paths
 
 
@@ -1144,23 +1176,75 @@ def _scan_templates(resolution_paths: Optional[List[tuple]] = None) -> List[tupl
 
     engine = TemplateEngine()
     found = []
-    seen_paths: set = set()
+    seen_stems: dict = {}  # stem → first source label
 
     for search_path, source_label in resolution_paths:
         if not search_path.exists():
             continue
-        for filepath in sorted(search_path.glob("*.yaml")) + sorted(search_path.glob("*.yml")):
-            resolved = filepath.resolve()
-            if resolved in seen_paths:
+        for filepath in sorted(search_path.glob("*.yaml")) + sorted(
+            search_path.glob("*.yml")
+        ):
+            stem = filepath.stem
+            if stem in seen_stems:
                 continue
-            seen_paths.add(resolved)
             try:
                 template = engine.load_template(filepath)
+                seen_stems[stem] = source_label
                 found.append((filepath, source_label, template))
             except Exception as exc:
                 click.echo(f"[warn] Skipping {filepath}: {exc}", err=True)
 
     return found
+
+
+def _resolve_template_arg(name_or_path) -> Path:
+    """Resolve a CLI template argument to a :class:`Path`.
+
+    Accepts:
+    * A :class:`Path` object → returned directly (already resolved, e.g. from
+      ``ctx.invoke``).
+    * A direct file path string (absolute or relative) → existence-checked.
+    * A bare template name (e.g. ``content-pipeline``) → resolved via
+      :meth:`TemplateEngine.resolve_template`.
+
+    Exits with an error message on failure.
+    """
+    import os as _os
+    from .templates import TemplateEngine, TemplateNotFoundError
+
+    # Already a Path — accept directly
+    if isinstance(name_or_path, Path):
+        if not name_or_path.exists():
+            click.echo(f"✗ Template file not found: {name_or_path}", err=True)
+            sys.exit(1)
+        return name_or_path
+
+    # Heuristic: treat as a path when it has a path separator or YAML extension
+    looks_like_path = (
+        name_or_path.endswith(".yaml")
+        or name_or_path.endswith(".yml")
+        or _os.sep in name_or_path
+        or "/" in name_or_path
+    )
+
+    if looks_like_path:
+        p = Path(name_or_path)
+        if not p.exists():
+            click.echo(f"✗ Template file not found: {name_or_path}", err=True)
+            sys.exit(1)
+        return p
+
+    # Name-based resolution
+    engine = TemplateEngine()
+    try:
+        return engine.resolve_template(name_or_path)
+    except TemplateNotFoundError as exc:
+        click.echo(f"✗ {exc}", err=True)
+        click.echo(
+            "\nTip: run 'orch templates list' to see all available templates.",
+            err=True,
+        )
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -1179,7 +1263,19 @@ def templates() -> None:
 @templates.command("list")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
 def templates_list(json_output: bool) -> None:
-    """List available pipeline templates from all resolution paths."""
+    """List available pipeline templates from all resolution paths.
+
+    Templates are discovered in the following order (first match wins when
+    names collide):
+
+    \b
+    1. Paths in ORCH_TEMPLATES_PATH (colon-separated env var) — labelled "custom"
+    2. ./templates/                  (project-local)           — labelled "project"
+    3. ~/.orch/templates/            (user-global)             — labelled "user"
+    4. <package>/../../templates/    (bundled with the engine) — labelled "bundled"
+
+    The Source column shows where each template was found.
+    """
     from rich.console import Console
     from rich.table import Table
 
@@ -1619,7 +1715,7 @@ def quickstart(ctx: click.Context) -> None:
     # ---- Execute via the existing run command ----
     ctx.invoke(
         run_template,
-        template_file=hello_yaml,
+        template_name_or_file=hello_yaml,
         mode="dry-run",
         api_key=None,
         input_json=None,
@@ -1663,13 +1759,21 @@ def quickstart(ctx: click.Context) -> None:
 def _find_template(name_or_path: str):
     """Locate a template by file path OR by name/ID.
 
+    Resolution strategy:
+    1. If the argument looks like a path (has separators or .yaml/.yml), load
+       it directly.
+    2. Try :meth:`TemplateEngine.resolve_template` for stem-based lookup across
+       all search paths (respects ORCH_TEMPLATES_PATH, project, user, bundled).
+    3. Fall back to scanning all templates by template ID / display name, with
+       partial/slug matching.
+
     Returns:
         (template_path: Path, template: PipelineTemplate)
 
     Raises SystemExit on failure.
     """
     import os as _os
-    from .templates import TemplateEngine
+    from .templates import TemplateEngine, TemplateNotFoundError
 
     engine = TemplateEngine()
 
@@ -1692,7 +1796,15 @@ def _find_template(name_or_path: str):
             click.echo(f"✗ Could not load template: {exc}", err=True)
             sys.exit(1)
 
-    # Name / ID lookup — exact match first, then partial/slug match
+    # 2. Stem-based resolution via resolve_template (respects all search paths)
+    try:
+        resolved_path = engine.resolve_template(name_or_path)
+        template = engine.load_template(resolved_path)
+        return resolved_path, template
+    except TemplateNotFoundError:
+        pass  # fall through to ID/name matching below
+
+    # 3. Name / ID lookup — exact match first, then partial/slug match
     found_all = _scan_templates()
     search = name_or_path.lower()
     for filepath, _source, tmpl in found_all:
@@ -1894,7 +2006,7 @@ def start_wizard(
 
     ctx.invoke(
         run_template,
-        template_file=template_path,
+        template_name_or_file=template_path,
         mode=mode,
         api_key=api_key,
         input_json=input_json_str,

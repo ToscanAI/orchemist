@@ -1,10 +1,11 @@
 """Template engine — loads YAML pipeline templates and creates execution plans."""
 
 import logging
+import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -58,15 +59,194 @@ class PipelineTemplate:
             self.description = ""
 
 
-class TemplateEngine:
-    """Loads YAML templates and creates execution plans."""
+class TemplateNotFoundError(FileNotFoundError):
+    """Raised when a template name cannot be resolved in any search path."""
 
-    def __init__(self, templates_dir: Path = None) -> None:
-        self.templates_dir = (
-            templates_dir
-            or Path.home() / ".orchestration-engine" / "templates"
+    def __init__(self, name: str, searched: List[Path]) -> None:
+        self.name = name
+        self.searched = searched
+        paths_str = ", ".join(str(p) for p in searched)
+        super().__init__(
+            f"Template '{name}' not found. Searched: [{paths_str}]"
         )
-        self.templates_dir.mkdir(parents=True, exist_ok=True)
+
+
+class TemplateEngine:
+    """Loads YAML templates and creates execution plans.
+
+    Template search order (first match wins):
+    1. Paths from ``ORCH_TEMPLATES_PATH`` env var (colon-separated) — prepended
+    2. ``project_dir`` (default: ``./templates/``)
+    3. ``user_dir``    (default: ``~/.orch/templates/``)
+    4. Bundled package templates (``<package>/../../templates/``)
+
+    Pass ``project_dir`` or ``user_dir`` to the constructor to override the
+    defaults — useful in tests.
+    """
+
+    _SOURCE_CUSTOM = "custom"
+    _SOURCE_PROJECT = "project"
+    _SOURCE_USER = "user"
+    _SOURCE_BUNDLED = "bundled"
+
+    def __init__(
+        self,
+        templates_dir: Optional[Path] = None,
+        project_dir: Optional[Path] = None,
+        user_dir: Optional[Path] = None,
+    ) -> None:
+        # --- backward-compat: templates_dir sets the project dir -----------
+        if templates_dir is not None:
+            # Existing callers that pass templates_dir= still work.
+            self._project_dir: Path = templates_dir
+        else:
+            self._project_dir = (
+                project_dir if project_dir is not None
+                else Path.cwd() / "templates"
+            )
+
+        self._user_dir: Path = (
+            user_dir if user_dir is not None
+            else Path.home() / ".orch" / "templates"
+        )
+
+        # Package-bundled templates live two levels up from this file:
+        # src/orchestration_engine/ → src/ → repo-root/ → templates/
+        self._bundled_dir: Path = Path(__file__).parent.parent.parent / "templates"
+
+        # Keep the old attribute for code that accessed engine.templates_dir
+        self.templates_dir = self._project_dir
+
+    # ------------------------------------------------------------------
+    # Search-path helpers
+    # ------------------------------------------------------------------
+
+    def get_search_paths(self) -> List[Tuple[Path, str]]:
+        """Return the ordered list of ``(path, source_label)`` pairs.
+
+        Order:
+        1. Paths from ``ORCH_TEMPLATES_PATH`` (labelled "custom")
+        2. Project-local   (labelled "project")
+        3. User-global     (labelled "user")
+        4. Bundled          (labelled "bundled")
+        """
+        paths: List[Tuple[Path, str]] = []
+
+        # 1. ORCH_TEMPLATES_PATH
+        env_raw = os.environ.get("ORCH_TEMPLATES_PATH", "")
+        if env_raw:
+            for part in env_raw.split(":"):
+                part = part.strip()
+                if part:
+                    paths.append((Path(part), self._SOURCE_CUSTOM))
+
+        # 2. Project-local
+        paths.append((self._project_dir, self._SOURCE_PROJECT))
+
+        # 3. User-global
+        paths.append((self._user_dir, self._SOURCE_USER))
+
+        # 4. Bundled
+        paths.append((self._bundled_dir, self._SOURCE_BUNDLED))
+
+        return paths
+
+    # ------------------------------------------------------------------
+    # Name-based resolution
+    # ------------------------------------------------------------------
+
+    def resolve_template(self, name: str) -> Path:
+        """Resolve a template *name* to an absolute :class:`Path`.
+
+        Searches ``get_search_paths()`` in order.  The *name* is matched
+        against ``<stem>.yaml`` and ``<stem>.yml`` files in each directory.
+
+        Args:
+            name: Bare template name (e.g. ``"content-pipeline"``).
+                  ``.yaml`` / ``.yml`` extensions are stripped before matching.
+
+        Returns:
+            Absolute :class:`Path` to the first matching file.
+
+        Raises:
+            TemplateNotFoundError: When no match is found in any directory.
+        """
+        # Strip extension so callers can pass "foo.yaml" or just "foo"
+        stem = Path(name).stem if name.endswith((".yaml", ".yml")) else name
+
+        searched: List[Path] = []
+        for directory, _label in self.get_search_paths():
+            if not directory.exists():
+                searched.append(directory)
+                continue
+            for ext in (".yaml", ".yml"):
+                candidate = directory / f"{stem}{ext}"
+                if candidate.exists():
+                    logger.debug("resolve_template(%r) → %s", name, candidate)
+                    return candidate.resolve()
+            searched.append(directory)
+
+        raise TemplateNotFoundError(name, searched)
+
+    # ------------------------------------------------------------------
+    # Template listing
+    # ------------------------------------------------------------------
+
+    def list_templates(self) -> List[Dict[str, Any]]:
+        """Return all discoverable templates with metadata.
+
+        Scans every directory in ``get_search_paths()``.  Each entry is a
+        ``dict`` with the keys:
+
+        * ``name``      — template display name
+        * ``id``        — template id
+        * ``version``   — template version string
+        * ``phases``    — number of phases (int)
+        * ``description`` — template description
+        * ``source``    — source label (project / user / bundled / custom)
+        * ``path``      — absolute path as ``str``
+
+        A template file is included **only once** — the first time it is
+        encountered (first-wins rule mirrors ``resolve_template``).  Files in
+        later directories with the same *stem* are silently skipped.
+        """
+        results: List[Dict[str, Any]] = []
+        seen_stems: Dict[str, str] = {}  # stem → first source
+
+        for directory, source_label in self.get_search_paths():
+            if not directory.exists():
+                continue
+            for filepath in sorted(directory.glob("*.yaml")) + sorted(
+                directory.glob("*.yml")
+            ):
+                stem = filepath.stem
+                if stem in seen_stems:
+                    logger.debug(
+                        "list_templates: skipping %s (shadowed by %s)",
+                        filepath,
+                        seen_stems[stem],
+                    )
+                    continue
+                try:
+                    template = self.load_template(filepath)
+                except Exception as exc:
+                    logger.warning("list_templates: skipping %s — %s", filepath, exc)
+                    continue
+
+                seen_stems[stem] = source_label
+                results.append(
+                    {
+                        "name": template.name,
+                        "id": template.id,
+                        "version": template.version,
+                        "phases": len(template.phases),
+                        "description": template.description,
+                        "source": source_label,
+                        "path": str(filepath.resolve()),
+                    }
+                )
+
+        return results
 
     # ------------------------------------------------------------------
     # Public API
