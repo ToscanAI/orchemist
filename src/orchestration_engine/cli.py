@@ -1692,16 +1692,25 @@ def _find_template(name_or_path: str):
             click.echo(f"✗ Could not load template: {exc}", err=True)
             sys.exit(1)
 
-    # Name / ID lookup
+    # Name / ID lookup — exact match first, then partial/slug match
     found_all = _scan_templates()
     search = name_or_path.lower()
     for filepath, _source, tmpl in found_all:
         if tmpl.id.lower() == search or tmpl.name.lower() == search:
             return filepath, tmpl
 
+    # Partial match: search string appears in ID or name
+    partial_matches = [
+        (filepath, tmpl)
+        for filepath, _source, tmpl in found_all
+        if search in tmpl.id.lower() or search in tmpl.name.lower()
+    ]
+    if len(partial_matches) == 1:
+        return partial_matches[0]
+
     # Not found — suggest similar
     candidates = [
-        tmpl.name
+        f"{tmpl.name} (id: {tmpl.id})"
         for _, _, tmpl in found_all
         if search in tmpl.id.lower() or search in tmpl.name.lower()
     ]
