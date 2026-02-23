@@ -20,7 +20,7 @@ import urllib.request
 import pytest
 from click.testing import CliRunner
 
-from orchestration_engine.executor import TaskResult, TaskState
+from orchestration_engine.executor import ExecutorResult, TaskState
 from orchestration_engine.openai_executor import OpenAICompatibleExecutor
 from orchestration_engine.fallback import FallbackHandler, RETRIABLE_ERRORS
 from orchestration_engine.pipeline_runner import PipelineRunner
@@ -328,7 +328,7 @@ class TestOpenAIExecutorConfiguration:
 class TestFallbackHandler:
     def _make_primary(self, state=TaskState.SUCCESS, error_code=""):
         primary = MagicMock()
-        primary.execute.return_value = TaskResult(
+        primary.execute.return_value = ExecutorResult(
             state=state,
             output="primary output",
             worker_id="primary",

@@ -5,7 +5,7 @@ import urllib.request
 import urllib.error
 from typing import Optional
 
-from .executor import TaskResult, TaskState
+from .executor import ExecutorResult, TaskState
 
 
 class OpenAICompatibleExecutor:
@@ -25,7 +25,18 @@ class OpenAICompatibleExecutor:
         self.timeout_seconds = timeout_seconds
         self.dry_run = dry_run
 
-    def execute(self, task: str, worker_id: str = "fallback", **kwargs) -> TaskResult:
+    def __repr__(self) -> str:
+        masked_key = f"{self.api_key[:4]}***" if len(self.api_key) >= 4 else "***"
+        return (
+            f"OpenAICompatibleExecutor("
+            f"base_url={self.base_url!r}, "
+            f"model={self.model!r}, "
+            f"api_key={masked_key!r}, "
+            f"timeout_seconds={self.timeout_seconds!r}, "
+            f"dry_run={self.dry_run!r})"
+        )
+
+    def execute(self, task: str, worker_id: str = "fallback", **kwargs) -> ExecutorResult:
         """Execute a task against the OpenAI-compatible endpoint.
 
         Args:
@@ -34,10 +45,10 @@ class OpenAICompatibleExecutor:
             **kwargs:  Accepted but ignored (for interface compatibility).
 
         Returns:
-            TaskResult with SUCCESS state on success, FAILED on any error.
+            ExecutorResult with SUCCESS state on success, FAILED on any error.
         """
         if self.dry_run:
-            return TaskResult(
+            return ExecutorResult(
                 state=TaskState.SUCCESS,
                 output=f"[DRY RUN] Fallback: {task[:100]}...",
                 worker_id=worker_id,
@@ -74,14 +85,14 @@ class OpenAICompatibleExecutor:
             )
 
             if not output:
-                return TaskResult(
+                return ExecutorResult(
                     state=TaskState.FAILED,
                     output="Empty response from fallback",
                     worker_id=worker_id,
                     error_code="empty_response",
                 )
 
-            return TaskResult(
+            return ExecutorResult(
                 state=TaskState.SUCCESS,
                 output=output,
                 worker_id=worker_id,
@@ -89,21 +100,21 @@ class OpenAICompatibleExecutor:
             )
 
         except urllib.error.URLError as e:
-            return TaskResult(
+            return ExecutorResult(
                 state=TaskState.FAILED,
                 output=f"Connection error: {e}",
                 worker_id=worker_id,
                 error_code="connection_error",
             )
         except TimeoutError:
-            return TaskResult(
+            return ExecutorResult(
                 state=TaskState.FAILED,
                 output="Fallback executor timed out",
                 worker_id=worker_id,
                 error_code="timeout",
             )
         except (json.JSONDecodeError, KeyError, IndexError) as e:
-            return TaskResult(
+            return ExecutorResult(
                 state=TaskState.FAILED,
                 output=f"Invalid response: {e}",
                 worker_id=worker_id,

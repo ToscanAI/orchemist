@@ -1,7 +1,7 @@
 """Fallback retry logic for rate-limited or timed-out phases."""
 from typing import Optional
 
-from .executor import TaskResult, TaskState
+from .executor import ExecutorResult, TaskState
 from .openai_executor import OpenAICompatibleExecutor
 
 #: Error codes that are safe to retry via the fallback executor.
@@ -18,7 +18,7 @@ class FallbackHandler:
 
     Args:
         primary_executor: Any executor with an ``execute(task, worker_id, **kwargs)``
-                          method that returns a :class:`~executor.TaskResult`.
+                          method that returns a :class:`~executor.ExecutorResult`.
         fallback_config:  Optional dict with keys accepted by
                           :class:`OpenAICompatibleExecutor`'s constructor:
                           ``base_url``, ``model``, ``api_key``,
@@ -56,7 +56,7 @@ class FallbackHandler:
 
     def execute(
         self, task: str, worker_id: str = "primary", **kwargs
-    ) -> TaskResult:
+    ) -> ExecutorResult:
         """Execute *task* via the primary executor, falling back on retriable errors.
 
         Args:
@@ -65,7 +65,7 @@ class FallbackHandler:
             **kwargs:  Forwarded to the primary executor's ``execute`` call.
 
         Returns:
-            :class:`~executor.TaskResult` from either the primary or fallback executor.
+            :class:`~executor.ExecutorResult` from either the primary or fallback executor.
         """
         result = self.primary.execute(task, worker_id=worker_id, **kwargs)
 

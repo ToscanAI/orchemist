@@ -9,11 +9,11 @@ from typing import Optional
 
 from .schemas import TaskState
 
-__all__ = ["TaskResult", "TaskState"]
+__all__ = ["ExecutorResult", "TaskState"]
 
 
 @dataclass
-class TaskResult:
+class ExecutorResult:
     """Lightweight task result for simple/fallback executors."""
 
     state: TaskState
