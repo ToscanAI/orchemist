@@ -1,5 +1,7 @@
 # Structured Output Schemas
 
+> ⚠️ **Partially outdated:** This file documents `schemas.py` classes but is missing `TaskStats`, `TaskRunResult`, and `TaskExecutionRequest`. It also doesn't cover the template engine classes (`PhaseDefinition`, `PipelineTemplate`, `TemplateEngine` in `templates.py`) or `PhaseSequencer` in `sequencer.py`. Update planned for Week 2.
+
 All data in the orchestration engine flows through **strict, validated Pydantic V2 schemas** defined in `schemas.py`. This ensures type safety, consistent interfaces, and reliable quality assessment.
 
 ## Pydantic V2 Migration Notes

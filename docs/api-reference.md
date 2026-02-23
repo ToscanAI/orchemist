@@ -225,13 +225,46 @@ Displays total/max workers, session utilisation, daily cost, and workers grouped
 
 ---
 
+### `orch quickstart` — Zero-config first pipeline
+
+```bash
+orch quickstart
+```
+
+Creates a `hello-pipeline.yaml` in the current directory and runs it immediately. Designed for new users to see a working pipeline in 30 seconds with zero configuration beyond an API key.
+
+---
+
+### `orch start` — Interactive wizard
+
+```bash
+orch start
+```
+
+Interactive wizard that lists installed templates, lets you pick one, fills in required inputs via prompts (driven by the template's `config_schema`), and runs the pipeline. The guided alternative to `orch run`.
+
+---
+
+### `orch templates` — Browse and manage templates
+
+```bash
+orch templates list          # Show installed templates
+orch templates info <name>   # Show template details, phases, inputs
+orch templates install <src> # Install from file or URL
+orch templates uninstall <n> # Remove an installed template
+```
+
+Browse, inspect, install, and remove pipeline templates. `list` shows name, version, phase count, and description. `info` shows the full phase execution plan and config schema.
+
+---
+
 ### `orch run` — Run a pipeline template
 
 ```bash
-orch run path/to/template.yaml
+orch run path/to/template.yaml [--input key=value ...]
 ```
 
-Loads a YAML template and prints how many phases it contains. This is the entry point for full pipeline execution. Currently prints a summary rather than executing (sequencer integration in progress).
+Loads a YAML template, resolves dependencies, and executes all phases end-to-end via the AnthropicExecutor. Outputs are saved to `output/<template>-<timestamp>/`. Supports `--dry-run` to preview without executing.
 
 ---
 
