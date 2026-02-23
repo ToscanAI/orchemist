@@ -758,6 +758,18 @@ def workers(detailed: bool) -> None:
          'Defaults to ./output/<template-id>-<YYYYMMDD-HHMMSS>/',
 )
 @click.option(
+    '--gateway-url',
+    envvar='OPENCLAW_GATEWAY_URL',
+    default=None,
+    help='OpenClaw gateway URL for openclaw mode (or set OPENCLAW_GATEWAY_URL).',
+)
+@click.option(
+    '--gateway-token',
+    envvar='OPENCLAW_GATEWAY_TOKEN',
+    default=None,
+    help='OpenClaw gateway bearer token for openclaw mode (or set OPENCLAW_GATEWAY_TOKEN).',
+)
+@click.option(
     '--dry-run-delay',
     type=float,
     default=0.0,
@@ -778,6 +790,8 @@ def run_template(
     input_json: Optional[str],
     input_file: Optional[Path],
     output_dir: Optional[Path],
+    gateway_url: Optional[str],
+    gateway_token: Optional[str],
     dry_run_delay: float,
     dry_run_failure_rate: float,
 ) -> None:
@@ -869,7 +883,10 @@ def run_template(
         if mode == 'standalone':
             runner = PipelineRunner.standalone(api_key=api_key)
         elif mode == 'openclaw':
-            runner = PipelineRunner.openclaw()
+            runner = PipelineRunner.openclaw(
+                gateway_url=gateway_url,
+                gateway_token=gateway_token,
+            )
         else:  # dry-run
             runner = PipelineRunner.dry_run(
                 delay_seconds=dry_run_delay,

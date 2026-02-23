@@ -103,20 +103,31 @@ class PipelineRunner:
     @classmethod
     def openclaw(
         cls,
-        config=None,
+        gateway_url: Optional[str] = None,
+        gateway_token: Optional[str] = None,
+        timeout_seconds: int = 600,
+        dry_run: bool = False,
         db_path: str = ":memory:",
     ) -> "PipelineRunner":
         """Create a PipelineRunner using OpenClawExecutor (sub-agent spawning).
 
         Args:
-            config:  EngineConfig instance. Uses get_global_config() if None.
-            db_path: SQLite path.
+            gateway_url:       OpenClaw gateway URL (default http://localhost:4444,
+                               or ``OPENCLAW_GATEWAY_URL`` env var).
+            gateway_token:     Optional bearer token (or ``OPENCLAW_GATEWAY_TOKEN``
+                               env var).
+            timeout_seconds:   Max seconds per phase session (default 600).
+            dry_run:           Skip real HTTP calls and return mock output.
+            db_path:           SQLite path.
         """
-        from .runner import OpenClawExecutor
-        from .config import get_global_config
+        from .openclaw_executor import OpenClawExecutor
 
-        cfg = config or get_global_config()
-        executor = OpenClawExecutor(cfg, dry_run=False)
+        executor = OpenClawExecutor(
+            gateway_url=gateway_url,
+            gateway_token=gateway_token,
+            timeout_seconds=timeout_seconds,
+            dry_run=dry_run,
+        )
         return cls(executors=[executor], db_path=db_path)
 
     @classmethod
