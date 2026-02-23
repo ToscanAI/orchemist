@@ -29,6 +29,7 @@ class PhaseDefinition:
     human_review: bool = False
     prompt_template: str = ""       # Python str.format()-style with {input}, {previous_output}
     output_schema: Dict[str, Any] = field(default_factory=dict)
+    skill_refs: List[str] = field(default_factory=list)  # paths to external skill files
 
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
@@ -40,6 +41,8 @@ class PhaseDefinition:
             self.description = ""
         if self.prompt_template is None:
             self.prompt_template = ""
+        if self.skill_refs is None:
+            self.skill_refs = []
 
 
 @dataclass
@@ -58,6 +61,7 @@ class PipelineTemplate:
     phases: List[PhaseDefinition] = field(default_factory=list)
     config_schema: Dict[str, Any] = field(default_factory=dict)
     fallback: Optional[Dict[str, Any]] = None
+    template_path: Optional[Path] = field(default=None, repr=False)  # set by load_template
 
     def __post_init__(self) -> None:
         if self.phases is None:
@@ -315,6 +319,7 @@ class TemplateEngine:
                 "id", "name", "description", "task_type", "model_tier",
                 "thinking_level", "depends_on", "timeout_minutes",
                 "human_review", "prompt_template", "output_schema",
+                "skill_refs",
             }
             cleaned = {k: v for k, v in phase_data.items() if k in known_fields}
             phases.append(PhaseDefinition(**cleaned))
@@ -332,6 +337,7 @@ class TemplateEngine:
             phases=phases,
             config_schema=data.get("config_schema") or {},
             fallback=data.get("fallback") or None,
+            template_path=Path(template_path).resolve(),
         )
 
     def get_execution_order(self, template: PipelineTemplate) -> List[List[str]]:
@@ -429,6 +435,34 @@ class TemplateEngine:
                     f"Cycle detected involving phase(s): "
                     f"{sorted(missing_from_order)}"
                 )
+
+        # Check that all skill_ref files exist
+        template_dir = (
+            template.template_path.parent
+            if template.template_path is not None
+            else None
+        )
+        global_skills_dir = Path.home() / ".orch" / "skills"
+        for phase in template.phases:
+            for skill_ref in phase.skill_refs:
+                skill_path = Path(skill_ref)
+                # Resolve relative paths against template dir first, then global skills dir
+                resolved = None
+                if skill_path.is_absolute() and skill_path.exists():
+                    resolved = skill_path
+                elif template_dir is not None:
+                    candidate = template_dir / skill_path
+                    if candidate.exists():
+                        resolved = candidate
+                if resolved is None:
+                    candidate_global = global_skills_dir / skill_path
+                    if candidate_global.exists():
+                        resolved = candidate_global
+                if resolved is None:
+                    errors.append(
+                        f"Phase '{phase.id}': skill_ref file not found: '{skill_ref}' "
+                        f"(looked in template dir and ~/.orch/skills/)"
+                    )
 
         return errors
 

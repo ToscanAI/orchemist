@@ -1,9 +1,11 @@
 """Phase sequencer — executes pipeline phases in order, passing outputs forward."""
 
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from .schemas import Priority, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
@@ -152,6 +154,7 @@ class PhaseSequencer:
         - ``{previous_output}`` — all accumulated phase outputs so far
         - ``{previous_output[phase_id]}`` — output of a specific previous phase
         - ``{config}``          — the pipeline config dict
+        - ``{skill_context[name]}`` — content of a loaded skill file (from skill_refs)
 
         Missing keys produce a ``<MISSING:key>`` placeholder (via SafeDict)
         rather than raising ``KeyError``.
@@ -164,11 +167,32 @@ class PhaseSequencer:
         safe_outputs = _SafeDict(self.phase_outputs)
         safe_config = _SafeDict(self.config)
 
+        # Load skill_refs and build skill_context dict
+        skill_context: Dict[str, str] = {}
+        if phase.skill_refs:
+            template_dir = (
+                self.template.template_path.parent
+                if self.template.template_path is not None
+                else None
+            )
+            for skill_ref in phase.skill_refs:
+                try:
+                    skill_name, skill_content = self._load_skill(skill_ref, template_dir)
+                    skill_context[skill_name] = skill_content
+                except Exception as exc:
+                    logger.warning(
+                        f"Phase '{phase.id}': failed to load skill_ref '{skill_ref}' — {exc}"
+                    )
+                    skill_context[Path(skill_ref).stem] = f"<SKILL_LOAD_ERROR:{skill_ref}>"
+
+        safe_skills = _SafeDict(skill_context)
+
         try:
             prompt = phase.prompt_template.format(
                 input=safe_input,
                 previous_output=safe_outputs,
                 config=safe_config,
+                skill_context=safe_skills,
             )
         except (KeyError, IndexError, AttributeError) as exc:
             logger.warning(
@@ -178,6 +202,75 @@ class PhaseSequencer:
             prompt = phase.prompt_template
 
         return prompt
+
+    @staticmethod
+    def _load_skill(skill_ref: str, template_dir: Optional[Path] = None) -> Tuple[str, str]:
+        """Load a skill file, stripping YAML frontmatter.
+
+        Resolves ``skill_ref`` in this order:
+        1. Absolute path (if given)
+        2. Relative to ``template_dir`` (if provided)
+        3. ``~/.orch/skills/``
+
+        Args:
+            skill_ref:    Path string from the ``skill_refs`` list.
+            template_dir: Directory of the template file (for relative resolution).
+
+        Returns:
+            ``(skill_name, skill_content)`` where ``skill_name`` comes from the
+            frontmatter ``name:`` field or the filename stem, and
+            ``skill_content`` is the body text with frontmatter stripped.
+
+        Raises:
+            FileNotFoundError: If the skill file cannot be located.
+        """
+        skill_path = Path(skill_ref)
+
+        # Resolve to an existing file
+        resolved: Optional[Path] = None
+        if skill_path.is_absolute():
+            if skill_path.exists():
+                resolved = skill_path
+        else:
+            if template_dir is not None:
+                candidate = template_dir / skill_path
+                if candidate.exists():
+                    resolved = candidate
+            if resolved is None:
+                candidate_global = Path.home() / ".orch" / "skills" / skill_path
+                if candidate_global.exists():
+                    resolved = candidate_global
+
+        if resolved is None:
+            raise FileNotFoundError(
+                f"Skill file '{skill_ref}' not found "
+                f"(template_dir={template_dir}, ~/.orch/skills/)"
+            )
+
+        raw = resolved.read_text(encoding="utf-8")
+
+        # Strip YAML frontmatter: text between --- delimiters at start of file
+        frontmatter_data: Dict[str, Any] = {}
+        body = raw
+        if raw.startswith("---"):
+            # Find closing ---
+            end_match = re.search(r"\n---[ \t]*(?:\n|$)", raw[3:])
+            if end_match:
+                fm_text = raw[3 : 3 + end_match.start()]
+                body = raw[3 + end_match.end() :]
+                try:
+                    import yaml
+                    frontmatter_data = yaml.safe_load(fm_text) or {}
+                except Exception:
+                    frontmatter_data = {}
+
+        # Skill name: prefer frontmatter 'name:', else filename stem
+        skill_name: str = (
+            str(frontmatter_data.get("name", "")).strip()
+            or resolved.stem
+        )
+
+        return skill_name, body.strip()
 
     def _execute_and_wait(self, task_id: str, phase: PhaseDefinition) -> dict:
         """Execute a queued task synchronously and return its result as a dict.
