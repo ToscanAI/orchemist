@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from contextlib import contextmanager
 
+# Explicit datetime adapters — required for Python 3.12+ which deprecated
+# the built-in sqlite3 datetime adapter/converter.
+sqlite3.register_adapter(datetime, lambda val: val.isoformat())
+sqlite3.register_converter(
+    "timestamp", lambda val: datetime.fromisoformat(val.decode())
+)
+
 from .schemas import TaskState, OrchestraState, Priority, TaskType
 
 
@@ -63,13 +70,15 @@ class Database:
                     self._db_uri,
                     uri=True,
                     check_same_thread=False,
-                    timeout=30.0
+                    timeout=30.0,
+                    detect_types=sqlite3.PARSE_DECLTYPES,
                 )
             else:
                 self._local.connection = sqlite3.connect(
                     str(self.db_path),
                     check_same_thread=False,
-                    timeout=30.0
+                    timeout=30.0,
+                    detect_types=sqlite3.PARSE_DECLTYPES,
                 )
             self._configure_connection(self._local.connection)
         
@@ -739,6 +748,14 @@ class Database:
                     data[field] = json.loads(data[field])
                 except (json.JSONDecodeError, TypeError):
                     pass  # Keep original value if JSON parsing fails
+
+        # Normalise datetime objects → ISO strings so callers (queue.py etc.)
+        # that do datetime.fromisoformat(value) continue to work unchanged.
+        # PARSE_DECLTYPES converts TIMESTAMP columns to datetime objects; we
+        # convert them back to strings here to preserve the public contract.
+        for key, value in data.items():
+            if isinstance(value, datetime):
+                data[key] = value.isoformat()
         
         return data
     

@@ -632,13 +632,17 @@ class TestTaskRunnerIntegration:
         runner.start()
         
         try:
-            # Let it process (DryRunExecutor defaults to 2s delay)
-            time.sleep(4)
-            
-            # Check task status
-            status = runner.queue.get_task_status(task_id)
-            
+            # Poll until the task reaches a terminal/running state (timeout 10s)
+            deadline = time.time() + 10
+            status = None
+            while time.time() < deadline:
+                status = runner.queue.get_task_status(task_id)
+                if status.state in [TaskState.SUCCESS, TaskState.FAILED]:
+                    break
+                time.sleep(0.25)
+
             # Task should have been processed (success or failure) or at least running
+            assert status is not None
             assert status.state in [TaskState.SUCCESS, TaskState.FAILED, TaskState.RUNNING]
         
         finally:
