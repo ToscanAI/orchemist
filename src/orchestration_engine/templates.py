@@ -26,6 +26,7 @@ class PhaseDefinition:
     thinking_level: str = "low"     # off, low, medium, high
     depends_on: List[str] = field(default_factory=list)
     timeout_minutes: int = 30
+    human_review: bool = False
     prompt_template: str = ""       # Python str.format()-style with {input}, {previous_output}
     output_schema: Dict[str, Any] = field(default_factory=dict)
 
@@ -312,7 +313,7 @@ class TemplateEngine:
             known_fields = {
                 "id", "name", "description", "task_type", "model_tier",
                 "thinking_level", "depends_on", "timeout_minutes",
-                "prompt_template", "output_schema",
+                "human_review", "prompt_template", "output_schema",
             }
             cleaned = {k: v for k, v in phase_data.items() if k in known_fields}
             phases.append(PhaseDefinition(**cleaned))

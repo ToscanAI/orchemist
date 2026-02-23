@@ -1883,12 +1883,12 @@ def quickstart(ctx: click.Context) -> None:
         "                        See all available templates"
     )
     console.print(
-        "  [cyan]orch templates info content-pipeline-mvp[/cyan]"
-        "   Explore a real pipeline"
+        "  [cyan]orch templates info content-pipeline[/cyan]"
+        "      Explore a real pipeline"
     )
     console.print(
-        "  [cyan]orch start content-pipeline-mvp[/cyan]"
-        "            Run interactively (needs API key)"
+        "  [cyan]orch start content-pipeline[/cyan]"
+        "               Run interactively (needs API key)"
     )
     console.print()
 
@@ -1959,7 +1959,8 @@ def _find_template(name_or_path: str):
     try:
         resolved_path = engine.resolve_template(name_or_path)
         template = engine.load_template(resolved_path)
-        if template.id.lower() == search or template.name.lower() == search:
+        if (template.id.lower() == search or template.name.lower() == search
+                or template.id.lower().startswith(search + "-")):
             return resolved_path, template
     except TemplateNotFoundError:
         pass

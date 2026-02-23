@@ -116,26 +116,26 @@ class TestTemplateLoading:
         """Loading the real content-pipeline.yaml succeeds."""
         tpl = engine.load_template(content_pipeline_yaml)
 
-        assert tpl.id == "content-pipeline-mvp"
-        assert tpl.name == "Content Pipeline MVP"
-        assert tpl.version == "2.1.0"
-        assert len(tpl.phases) == 5
+        assert tpl.id == "content-pipeline-v23"
+        assert tpl.name == "Content Pipeline v2.3"
+        assert tpl.version == "2.3.0"
+        assert len(tpl.phases) == 10
 
     def test_load_phase_fields(self, engine, content_pipeline_yaml):
         """Each phase has all required fields populated correctly."""
         tpl = engine.load_template(content_pipeline_yaml)
         phase_ids = [p.id for p in tpl.phases]
         assert "research" in phase_ids
-        assert "write" in phase_ids
-        assert "fact_check" in phase_ids
-        assert "apply_fixes" in phase_ids
-        assert "final_output" in phase_ids
+        assert "outline" in phase_ids
+        assert "draft" in phase_ids
+        assert "red-team" in phase_ids
+        assert "select-best" in phase_ids
 
     def test_load_phase_depends_on(self, engine, content_pipeline_yaml):
         """depends_on is correctly parsed from YAML lists."""
         tpl = engine.load_template(content_pipeline_yaml)
-        write_phase = next(p for p in tpl.phases if p.id == "write")
-        assert "research" in write_phase.depends_on
+        draft_phase = next(p for p in tpl.phases if p.id == "draft")
+        assert "research" in draft_phase.depends_on
 
     def test_load_phase_prompt_template(self, engine, content_pipeline_yaml):
         """Prompt templates are non-empty strings."""
@@ -278,10 +278,11 @@ class TestExecutionOrder:
 
         # Flatten for easy checking
         flat = [pid for wave in order for pid in wave]
-        assert flat.index("research") < flat.index("write")
-        assert flat.index("write") < flat.index("fact_check")
-        assert flat.index("fact_check") < flat.index("apply_fixes")
-        assert flat.index("apply_fixes") < flat.index("final_output")
+        assert flat.index("research") < flat.index("outline")
+        assert flat.index("outline") < flat.index("draft")
+        assert flat.index("draft") < flat.index("red-team")
+        assert flat.index("red-team") < flat.index("final-7b")
+        assert flat.index("final-7b") < flat.index("select-best")
 
     def test_cycle_produces_incomplete_order(self, engine):
         """A cycle means not all phases appear in the execution order."""
@@ -477,7 +478,8 @@ class TestPhaseSequencerExecution:
         })
 
         assert set(result["phase_outputs"].keys()) == {
-            "research", "write", "fact_check", "apply_fixes", "final_output"
+            "research", "outline", "draft", "flow-review", "red-team",
+            "consistency", "final-7a", "final-7b", "final-7c", "select-best"
         }
 
     def test_phase_output_forwarded_to_next(self, fast_runner):

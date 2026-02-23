@@ -1,204 +1,123 @@
-id: content-pipeline-mvp
-name: "Content Pipeline MVP"
-version: "2.1.0"
-description: "Simplified content pipeline: Research → Write → Fact-Check → Apply Fixes → Final Output"
-author: "Orchestration Engine Team"
+id: content-pipeline-v23
+name: "Content Pipeline v2.3"
+description: "Full content production pipeline with research, drafting, multi-reviewer feedback, parallel final drafts, and best-selection."
+author: "Toscan"
+version: "2.3.0"
 category: "content"
-tags:
-  - content
-  - research
-  - fact-checking
-  - linkedin
+tags: [content, writing, articles, fact-checking, red-team]
 use_cases:
-  - "Generate long-form LinkedIn articles with automatic fact-checking"
-  - "Produce research-backed blog posts on any topic"
-  - "Create structured content with source citations"
+  - "Blog articles with fact-checking"
+  - "LinkedIn newsletter content"
+  - "Technical writing with peer review"
 example_input:
-  brief: "The impact of AI agents on software development workflows"
-  target_audience: "Software engineers and tech leads"
-  word_count_range: "800-1200 words"
+  topic: "AI agents in production"
+  audience: "technical leaders"
   tone: "professional"
-  author: "Jane Smith"
+  word_count: 1500
+  publication: "blog"
 
 config_schema:
   type: object
+  required: [topic]
   properties:
-    brief:
+    topic:
       type: string
-      description: "Article topic or brief"
-    target_audience:
+      description: "What to write about"
+    audience:
       type: string
-      description: "Intended readership"
-    word_count_range:
-      type: string
-      description: "Target word count range, e.g. '800-1200 words'"
+      default: "general"
+      description: "Target audience"
     tone:
       type: string
-      description: "Writing tone, e.g. 'professional', 'conversational'"
-    author:
+      default: "professional"
+      description: "Writing tone"
+    word_count:
+      type: integer
+      default: 1500
+      description: "Target word count"
+    publication:
       type: string
-      description: "Byline name"
+      default: "blog"
+      description: "Where this will be published"
 
 phases:
   - id: research
-    name: "Research & Source Gathering"
-    description: "Gather credible sources, key facts, and statistics for the article topic."
-    task_type: research
+    name: "Research"
+    description: "Gather sources on the topic"
     model_tier: sonnet
     thinking_level: low
-    depends_on: []
-    timeout_minutes: 30
-    prompt_template: |
-      Research the following topic thoroughly. Find 10+ credible sources.
+    prompt_template: "Research the topic '{config.topic}' for a {config.audience} audience. Find 5-10 credible sources. For each source provide: title, URL, key findings, and relevance. Focus on recent data and expert opinions."
 
-      Topic: {input[brief]}
-      Target audience: {input[target_audience]}
-
-      Output a structured research brief with:
-      - At least 10 source citations (title, URL or publication, date)
-      - Key facts and claims supported by those sources
-      - Relevant statistics and data points
-    output_schema:
-      type: object
-      properties:
-        sources:
-          type: array
-          items:
-            type: object
-        key_facts:
-          type: array
-          items:
-            type: string
-        statistics:
-          type: array
-          items:
-            type: string
-
-  - id: write
-    name: "Content Creation"
-    description: "Write the LinkedIn article based on the research brief."
-    task_type: content
+  - id: outline
+    name: "Outline"
+    description: "Create article structure"
     model_tier: sonnet
-    thinking_level: low
+    thinking_level: medium
     depends_on: [research]
-    timeout_minutes: 45
-    prompt_template: |
-      Write a LinkedIn article based on this research brief:
+    human_review: true
+    prompt_template: "Based on the research:\n\n{research.output}\n\nCreate a detailed outline for a {config.word_count}-word {config.tone} article about '{config.topic}' for {config.audience}. Include: headline, subheadings, key points per section, and suggested quotes/data points."
 
-      {previous_output[research]}
+  - id: draft
+    name: "Draft"
+    description: "Write full article"
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on: [research, outline]
+    prompt_template: "Write a {config.word_count}-word {config.tone} article for {config.publication} about '{config.topic}' targeting {config.audience}.\n\nResearch:\n{research.output}\n\nOutline:\n{outline.output}\n\nWrite the complete article following the outline. Use data and quotes from research. Match the tone throughout."
 
-      Requirements:
-      - Word count: {input[word_count_range]}
-      - Tone: {input[tone]}
-      - Author: {input[author]}
-
-      Structure the article with:
-        1. A compelling headline
-        2. An introduction with a clear thesis
-        3. At least 3 substantive sections
-        4. A conclusion with a call-to-action
-        5. A Sources section at the end
-    output_schema:
-      type: object
-      properties:
-        article_text:
-          type: string
-        word_count:
-          type: integer
-        headline:
-          type: string
-
-  - id: fact_check
-    name: "Fact Verification"
-    description: "Verify every factual claim in the draft article against the research sources."
-    task_type: review
+  - id: flow-review
+    name: "Flow Review"
+    description: "Check logical flow and readability"
     model_tier: sonnet
     thinking_level: low
-    depends_on: [write, research]
-    timeout_minutes: 30
-    prompt_template: |
-      Fact-check the following article against the provided research sources.
-      For each claim or statistic in the article, verify whether it is supported
-      by the research brief.
+    depends_on: [draft]
+    prompt_template: "Review this article for logical flow and readability:\n\n{draft.output}\n\nCheck: argument progression, paragraph transitions, section coherence, conclusion strength. List specific issues with line references and suggested fixes."
 
-      Article to fact-check:
-      {previous_output[write]}
+  - id: red-team
+    name: "Red Team"
+    description: "Adversarial review for claims and tone"
+    model_tier: opus
+    thinking_level: medium
+    depends_on: [draft]
+    human_review: true
+    prompt_template: "You are an adversarial reviewer. Critically analyze this article:\n\n{draft.output}\n\nCheck for: unsupported claims, logical fallacies, tone issues, potential backlash from practitioners, missing counterarguments. Score backlash risk 0-100. List every problematic phrase with explanation."
 
-      Research sources and facts:
-      {previous_output[research]}
-
-      Output:
-      - A numbered list of every factual issue found (claim, problem, suggested correction)
-      - An overall accuracy score from 0 (completely wrong) to 100 (fully accurate)
-    output_schema:
-      type: object
-      properties:
-        issues:
-          type: array
-          items:
-            type: object
-        accuracy_score:
-          type: integer
-          minimum: 0
-          maximum: 100
-
-  - id: apply_fixes
-    name: "Apply Corrections"
-    description: "Rewrite the article incorporating all fact-check corrections."
-    task_type: content
+  - id: consistency
+    name: "Consistency Check"
+    description: "Verify factual consistency"
     model_tier: sonnet
     thinking_level: low
-    depends_on: [write, fact_check]
-    timeout_minutes: 30
-    prompt_template: |
-      Apply the following fact-check corrections to the article.
-      Keep the original tone, structure, and word count range intact;
-      only change content that was flagged as inaccurate.
+    depends_on: [draft]
+    prompt_template: "Check this article for factual consistency:\n\n{draft.output}\n\nVerify: numbers match across sections, claims align with cited sources, no contradictions between paragraphs, technical terms used consistently. List any inconsistencies found."
 
-      Original article:
-      {previous_output[write]}
+  - id: final-7a
+    name: "Final Draft 7a - Flow Fixes"
+    description: "Apply flow review fixes"
+    model_tier: haiku
+    thinking_level: low
+    depends_on: [draft, flow-review]
+    prompt_template: "Apply these flow fixes to the article:\n\nOriginal:\n{draft.output}\n\nFlow issues:\n{flow-review.output}\n\nRewrite the article incorporating all flow fixes. Preserve the original voice and content."
 
-      Fact-check issues to fix:
-      {previous_output[fact_check]}
-
-      Output the fully corrected article text.
-    output_schema:
-      type: object
-      properties:
-        corrected_article:
-          type: string
-        changes_made:
-          type: array
-          items:
-            type: string
-
-  - id: final_output
-    name: "Final Assembly"
-    description: "Format and polish the corrected article for publication."
-    task_type: content
+  - id: final-7b
+    name: "Final Draft 7b - Red Team Fixes"
+    description: "Apply red team fixes"
     model_tier: sonnet
     thinking_level: low
-    depends_on: [apply_fixes]
-    timeout_minutes: 15
-    prompt_template: |
-      Format the following article for publication on LinkedIn.
+    depends_on: [draft, red-team]
+    prompt_template: "Apply these red team fixes to the article:\n\nOriginal:\n{draft.output}\n\nRed team issues:\n{red-team.output}\n\nRewrite addressing all concerns. Soften problematic claims, add nuance, remove unsupported statements. Keep the core argument intact."
 
-      {previous_output[apply_fixes]}
+  - id: final-7c
+    name: "Final Draft 7c - Consistency Fixes"
+    description: "Apply consistency fixes"
+    model_tier: haiku
+    thinking_level: low
+    depends_on: [draft, consistency]
+    prompt_template: "Apply these consistency fixes to the article:\n\nOriginal:\n{draft.output}\n\nConsistency issues:\n{consistency.output}\n\nFix all inconsistencies. Ensure numbers, terms, and claims are consistent throughout."
 
-      Ensure the final article has:
-        - A compelling headline
-        - An introduction with a clear thesis statement
-        - At least 3 well-structured sections with sub-headings
-        - A conclusion that includes a call-to-action
-        - A properly formatted Sources section
-
-      Output only the final, publication-ready article text.
-    output_schema:
-      type: object
-      properties:
-        final_article:
-          type: string
-        headline:
-          type: string
-        section_count:
-          type: integer
+  - id: select-best
+    name: "Select Best Draft"
+    description: "Compare three drafts and select the best"
+    model_tier: opus
+    thinking_level: medium
+    depends_on: [final-7a, final-7b, final-7c]
+    prompt_template: "Compare these three final drafts and select the best one:\n\nDraft A (flow-focused):\n{final-7a.output}\n\nDraft B (red-team-hardened):\n{final-7b.output}\n\nDraft C (consistency-fixed):\n{final-7c.output}\n\nEvaluate each on: accuracy, readability, tone, argument strength, backlash risk. Select the best and output it in full. Explain your choice briefly at the top."

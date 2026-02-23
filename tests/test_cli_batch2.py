@@ -53,7 +53,7 @@ class TestTemplatesList:
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["templates", "list"])
         assert result.exit_code == 0, result.output
-        assert "Content Pipeline MVP" in result.output
+        assert "Content Pipeline v2.3" in result.output
 
     def test_list_finds_hello_pipeline(self, monkeypatch):
         """templates list finds hello-pipeline in ./examples/."""
@@ -67,15 +67,15 @@ class TestTemplatesList:
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["templates", "list"])
         assert result.exit_code == 0
-        assert "2.1.0" in result.output  # content-pipeline version
+        assert "2.3.0" in result.output  # content-pipeline version
 
     def test_list_shows_phase_count(self, monkeypatch):
         """templates list shows phase count."""
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["templates", "list"])
         assert result.exit_code == 0
-        # content-pipeline has 5 phases, hello has 2
-        assert "5" in result.output
+        # content-pipeline has 10 phases, hello has 2
+        assert "10" in result.output
         assert "2" in result.output
 
     def test_list_shows_source(self, monkeypatch):
@@ -117,7 +117,7 @@ class TestTemplatesList:
         result = _invoke(["templates", "list", "--json"])
         data = json.loads(result.output)
         names = [e["name"] for e in data]
-        assert "Content Pipeline MVP" in names
+        assert "Content Pipeline v2.3" in names
         assert "Hello Pipeline" in names
 
     def test_list_json_phases_is_integer(self, monkeypatch):
@@ -159,7 +159,7 @@ class TestTemplatesList:
         assert result.exit_code == 0
         # The full description of content-pipeline is >60 chars; it should be truncated.
         full_desc = (
-            "Simplified content pipeline: Research → Write → Fact-Check → Apply Fixes → Final Output"
+            "An 11-phase content creation pipeline implementing the v2.3 protocol."
         )
         # Full desc should NOT appear verbatim (it's too long)
         assert full_desc not in result.output
@@ -224,23 +224,23 @@ class TestTemplatesInfo:
         assert "Config Schema" in result.output
 
     def test_info_content_pipeline_shows_fields(self):
-        """templates info shows config fields (brief, target_audience, etc.)."""
+        """templates info shows config fields (topic, audience, etc.)."""
         result = _invoke(["templates", "info", str(CONTENT_YAML)])
-        assert "brief" in result.output
-        assert "target_audience" in result.output
+        assert "topic" in result.output
+        assert "audience" in result.output
 
     def test_info_content_pipeline_shows_phases_table(self):
-        """templates info shows all 5 phase IDs for content-pipeline."""
+        """templates info shows key phase IDs for content-pipeline v2.3."""
         result = _invoke(["templates", "info", str(CONTENT_YAML)])
-        for phase_id in ("research", "write", "fact_check", "apply_fixes", "final_output"):
+        for phase_id in ("research", "outline", "draft", "red-team", "select-best"):
             assert phase_id in result.output, (
                 f"Phase '{phase_id}' not found in output:\n{result.output}"
             )
 
-    def test_info_content_pipeline_execution_order_5_waves(self):
-        """content-pipeline has 5 sequential phases → 5 waves."""
+    def test_info_content_pipeline_execution_order_6_waves(self):
+        """content-pipeline v2.3 has 10 phases across 6 waves."""
         result = _invoke(["templates", "info", str(CONTENT_YAML)])
-        assert "Wave 5" in result.output
+        assert "Wave 6" in result.output
 
     def test_info_content_pipeline_shows_model_tiers(self):
         """templates info shows model tiers in phases table."""
@@ -250,11 +250,11 @@ class TestTemplatesInfo:
     # ---- Name-based lookup ----
 
     def test_info_name_lookup_by_id(self, monkeypatch):
-        """templates info finds template by ID (e.g. 'content-pipeline-mvp')."""
+        """templates info finds template by ID (e.g. 'content-pipeline')."""
         monkeypatch.chdir(REPO_ROOT)
-        result = _invoke(["templates", "info", "content-pipeline-mvp"])
+        result = _invoke(["templates", "info", "content-pipeline"])
         assert result.exit_code == 0, result.output
-        assert "Content Pipeline MVP" in result.output
+        assert "Content Pipeline v2.3" in result.output
 
     def test_info_name_lookup_by_name(self, monkeypatch):
         """templates info finds template by name (case-insensitive)."""
@@ -289,16 +289,16 @@ class TestTemplatesInfo:
     def test_info_suggests_similar_names(self, monkeypatch):
         """templates info suggests similar templates on partial match.
 
-        "content-pipeline" is a substring of the real template id
-        "content-pipeline-mvp", so it should appear in suggestions.
+        "content-pipe" is a substring of the real template id
+        "content-pipeline", so it should appear in suggestions.
         """
         monkeypatch.chdir(REPO_ROOT)
-        # "content-pipeline" doesn't exactly match "content-pipeline-mvp"
+        # "content-pipe" doesn't exactly match "content-pipeline"
         # but IS a substring of it → should show as suggestion
-        result = _invoke(["templates", "info", "content-pipeline"])
-        # Should suggest "Content Pipeline MVP"
+        result = _invoke(["templates", "info", "content-pipe"])
+        # Should suggest "Content Pipeline v2.3"
         assert result.exit_code != 0
-        assert "Content Pipeline MVP" in result.output or "content-pipeline-mvp" in result.output
+        assert "Content Pipeline v2.3" in result.output or "content-pipeline" in result.output
 
     def test_info_missing_file_path_exits_nonzero(self):
         """templates info with a non-existent .yaml path exits with error."""
