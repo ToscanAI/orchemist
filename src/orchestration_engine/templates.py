@@ -169,8 +169,16 @@ class TemplateEngine:
             Absolute :class:`Path` to the first matching file.
 
         Raises:
+            ValueError: If *name* contains path separators or ``..`` (path
+                        traversal attempt).
             TemplateNotFoundError: When no match is found in any directory.
         """
+        # Security: reject path traversal attempts before touching the filesystem
+        if os.sep in name or "/" in name or "\\" in name or ".." in name:
+            raise ValueError(
+                f"Template name must not contain path separators or '..': {name!r}"
+            )
+
         # Strip extension so callers can pass "foo.yaml" or just "foo"
         stem = Path(name).stem if name.endswith((".yaml", ".yml")) else name
 

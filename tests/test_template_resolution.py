@@ -420,3 +420,111 @@ class TestCLINameResolution:
             "--mode", "dry-run",
         ])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# 9. Additional edge-case tests (review feedback #75)
+# ---------------------------------------------------------------------------
+
+class TestYmlExtension:
+    """.yml extension resolution and .yaml vs .yml precedence."""
+
+    def test_yml_extension_resolves(self, project_dir, user_dir, bundled_dir, monkeypatch):
+        """.yml template files are discovered and resolvable by stem."""
+        monkeypatch.delenv("ORCH_TEMPLATES_PATH", raising=False)
+        # Write a .yml (not .yaml) file
+        yml_path = project_dir / "my-workflow.yml"
+        yml_path.write_text(MINIMAL_YAML)
+        e = engine_with_dirs(project_dir, user_dir, bundled_dir)
+        resolved = e.resolve_template("my-workflow")
+        assert resolved.exists()
+        assert resolved.suffix == ".yml"
+
+    def test_yml_listed_in_list_templates(self, project_dir, user_dir, bundled_dir, monkeypatch):
+        """.yml templates appear in list_templates() results."""
+        monkeypatch.delenv("ORCH_TEMPLATES_PATH", raising=False)
+        (project_dir / "yml-only.yml").write_text(MINIMAL_YAML)
+        e = engine_with_dirs(project_dir, user_dir, bundled_dir)
+        results = e.list_templates()
+        assert any(r["path"].endswith(".yml") for r in results)
+
+    def test_yaml_wins_over_yml_same_dir(self, project_dir, user_dir, bundled_dir, monkeypatch):
+        """.yaml takes precedence over .yml when both exist in the same directory."""
+        monkeypatch.delenv("ORCH_TEMPLATES_PATH", raising=False)
+        # Write both .yaml and .yml with distinct ids so we can tell them apart
+        (project_dir / "competing.yaml").write_text(
+            "id: from-yaml\nname: From YAML\nversion: '1.0'\nphases: []\n"
+        )
+        (project_dir / "competing.yml").write_text(
+            "id: from-yml\nname: From YML\nversion: '1.0'\nphases: []\n"
+        )
+        e = engine_with_dirs(project_dir, user_dir, bundled_dir)
+        resolved = e.resolve_template("competing")
+        tpl = e.load_template(resolved)
+        # .yaml should be found first (glob("*.yaml") runs before glob("*.yml"))
+        assert tpl.id == "from-yaml", f"Expected from-yaml but got {tpl.id}"
+
+
+class TestPathTraversalRejection:
+    """resolve_template() must reject names containing path separators or '..'."""
+
+    def test_dotdot_raises_value_error(self, project_dir, user_dir, bundled_dir):
+        e = engine_with_dirs(project_dir, user_dir, bundled_dir)
+        with pytest.raises(ValueError, match="path separators"):
+            e.resolve_template("../../etc/passwd")
+
+    def test_forward_slash_raises_value_error(self, project_dir, user_dir, bundled_dir):
+        e = engine_with_dirs(project_dir, user_dir, bundled_dir)
+        with pytest.raises(ValueError):
+            e.resolve_template("subdir/template")
+
+    def test_backslash_raises_value_error(self, project_dir, user_dir, bundled_dir):
+        e = engine_with_dirs(project_dir, user_dir, bundled_dir)
+        with pytest.raises(ValueError):
+            e.resolve_template("subdir\\template")
+
+    def test_safe_name_is_not_rejected(self, project_dir, user_dir, bundled_dir):
+        """A normal template name must not raise ValueError (even if not found)."""
+        e = engine_with_dirs(project_dir, user_dir, bundled_dir)
+        with pytest.raises(Exception) as exc_info:
+            e.resolve_template("safe-template-name")
+        # Must raise TemplateNotFoundError, NOT ValueError
+        from src.orchestration_engine.templates import TemplateNotFoundError
+        assert isinstance(exc_info.value, TemplateNotFoundError)
+
+
+class TestMalformedYamlSkipped:
+    """list_templates() must skip malformed YAML files gracefully, not crash."""
+
+    def test_malformed_yaml_skipped_in_list(self, project_dir, user_dir, bundled_dir, monkeypatch):
+        monkeypatch.delenv("ORCH_TEMPLATES_PATH", raising=False)
+        # Write a valid template alongside a broken one
+        make_template(project_dir, "valid-template")
+        (project_dir / "broken.yaml").write_text("id: [\nthis is: not: valid: yaml\n")
+        e = engine_with_dirs(project_dir, user_dir, bundled_dir)
+        # Should NOT raise; broken file silently skipped
+        results = e.list_templates()
+        ids = [r["id"] for r in results]
+        assert "test-template" in ids, "Valid template should still be listed"
+        # broken.yaml has no valid id, so it won't appear
+        assert all(r["id"] != "broken" for r in results)
+
+    def test_empty_yaml_skipped_in_list(self, project_dir, user_dir, bundled_dir, monkeypatch):
+        monkeypatch.delenv("ORCH_TEMPLATES_PATH", raising=False)
+        # An empty file raises ValueError in load_template — must be skipped
+        (project_dir / "empty.yaml").write_text("")
+        e = engine_with_dirs(project_dir, user_dir, bundled_dir)
+        results = e.list_templates()
+        assert all(r.get("id") != "empty" for r in results)
+
+    def test_malformed_yaml_does_not_prevent_valid_templates(
+        self, project_dir, user_dir, bundled_dir, monkeypatch
+    ):
+        monkeypatch.delenv("ORCH_TEMPLATES_PATH", raising=False)
+        # Mix: broken first (alphabetically), valid second
+        (project_dir / "aaa-broken.yaml").write_text(": this is not valid yaml :\n")
+        make_template(project_dir, "zzz-valid")
+        e = engine_with_dirs(project_dir, user_dir, bundled_dir)
+        results = e.list_templates()
+        # The valid template must still appear despite the broken one
+        assert any(r["path"].endswith("zzz-valid.yaml") for r in results)

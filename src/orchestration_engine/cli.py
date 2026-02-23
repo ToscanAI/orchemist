@@ -1131,12 +1131,15 @@ def _template_resolution_paths() -> List[tuple]:
 
     Scanned in order (each directory may or may not exist):
     1. Paths from ``ORCH_TEMPLATES_PATH`` env var (colon-separated)  → "custom"
-    2. ``./templates/``   (project-local)                            → "templates"
+    2. ``./templates/``   (project-local)                            → "project"
     3. ``./examples/``    (project examples — backward compat)       → "examples"
     4. ``~/.orch/templates/`` (user-global, if it exists)            → "user"
 
+    Labels are consistent with :meth:`TemplateEngine.get_search_paths` (e.g.
+    ``"project"`` for ``./templates/`` rather than the old ``"templates"``).
+
     Note: bundled/package templates are handled by TemplateEngine.resolve_template()
-    for name-based lookup but are not displayed here to keep the list focused on
+    for name-based lookup but are not listed here to keep the scan focused on
     user-visible template sources.
     """
     import os as _os
@@ -1151,8 +1154,8 @@ def _template_resolution_paths() -> List[tuple]:
             if part:
                 paths.append((Path(part), "custom"))
 
-    # 2+3. Project-local dirs
-    paths.append((Path("./templates"), "templates"))
+    # 2+3. Project-local dirs — use "project" to match TemplateEngine.get_search_paths()
+    paths.append((Path("./templates"), "project"))
     paths.append((Path("./examples"), "examples"))
 
     # 4. User-global (only if it exists, to avoid creating it on scan)
@@ -1197,7 +1200,7 @@ def _scan_templates(resolution_paths: Optional[List[tuple]] = None) -> List[tupl
     return found
 
 
-def _resolve_template_arg(name_or_path) -> Path:
+def _resolve_template_arg(name_or_path: str) -> Path:
     """Resolve a CLI template argument to a :class:`Path`.
 
     Accepts:
@@ -1762,10 +1765,12 @@ def _find_template(name_or_path: str):
     Resolution strategy:
     1. If the argument looks like a path (has separators or .yaml/.yml), load
        it directly.
-    2. Try :meth:`TemplateEngine.resolve_template` for stem-based lookup across
-       all search paths (respects ORCH_TEMPLATES_PATH, project, user, bundled).
-    3. Fall back to scanning all templates by template ID / display name, with
-       partial/slug matching.
+    2. Exact template ID match (scanning all search paths).
+    3. Exact template display-name match (case-insensitive).
+    4. :meth:`TemplateEngine.resolve_template` stem-based lookup — only returns
+       when the resolved template's ID or name also matches the query exactly
+       (prevents false positives when file stem differs from template ID).
+    5. Partial/slug matching with suggestions on ambiguous or no match.
 
     Returns:
         (template_path: Path, template: PipelineTemplate)
@@ -1796,32 +1801,40 @@ def _find_template(name_or_path: str):
             click.echo(f"✗ Could not load template: {exc}", err=True)
             sys.exit(1)
 
-    # 2. Stem-based resolution via resolve_template (respects all search paths)
+    search = name_or_path.lower()
+    found_all = _scan_templates()
+
+    # 1. Exact ID match
+    for filepath, _source, tmpl in found_all:
+        if tmpl.id.lower() == search:
+            return filepath, tmpl
+
+    # 2. Exact name match
+    for filepath, _source, tmpl in found_all:
+        if tmpl.name.lower() == search:
+            return filepath, tmpl
+
+    # 3. Stem-based resolution via resolve_template (respects all search paths).
+    #    Only accept the result when the resolved template's ID or display name
+    #    also matches the query — avoids returning an unrelated template whose
+    #    file stem happens to equal the query but whose logical ID differs.
     try:
         resolved_path = engine.resolve_template(name_or_path)
         template = engine.load_template(resolved_path)
-        return resolved_path, template
+        if template.id.lower() == search or template.name.lower() == search:
+            return resolved_path, template
     except TemplateNotFoundError:
-        pass  # fall through to ID/name matching below
+        pass
 
-    # 3. Name / ID lookup — exact match first, then partial/slug match
-    found_all = _scan_templates()
-    search = name_or_path.lower()
-    for filepath, _source, tmpl in found_all:
-        if tmpl.id.lower() == search or tmpl.name.lower() == search:
-            return filepath, tmpl
-
-    # Partial match: search string appears in ID or name
+    # 4. Partial match: search string appears in ID or name — suggest, don't auto-resolve
     partial_matches = [
-        (filepath, tmpl)
-        for filepath, _source, tmpl in found_all
+        f"{tmpl.name} (id: {tmpl.id})"
+        for _, _source, tmpl in found_all
         if search in tmpl.id.lower() or search in tmpl.name.lower()
     ]
-    if len(partial_matches) == 1:
-        return partial_matches[0]
 
     # Not found — suggest similar
-    candidates = [
+    candidates = partial_matches or [
         f"{tmpl.name} (id: {tmpl.id})"
         for _, _, tmpl in found_all
         if search in tmpl.id.lower() or search in tmpl.name.lower()
