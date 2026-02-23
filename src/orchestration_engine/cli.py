@@ -1239,7 +1239,6 @@ def templates_list(json_output: bool) -> None:
 @click.argument("name_or_path")
 def templates_info(name_or_path: str) -> None:
     """Show detailed info about a template (by name, ID, or file path)."""
-    import os as _os
     from rich.console import Console
     from rich.table import Table
     from .templates import TemplateEngine
@@ -1247,57 +1246,8 @@ def templates_info(name_or_path: str) -> None:
     console = Console(highlight=False)
     engine = TemplateEngine()
 
-    # Determine: is this a file path or a name?
-    is_path = (
-        name_or_path.endswith(".yaml")
-        or name_or_path.endswith(".yml")
-        or _os.sep in name_or_path
-        or "/" in name_or_path
-    )
-
-    template = None
-    template_path = None
-
-    if is_path:
-        p = Path(name_or_path)
-        try:
-            template = engine.load_template(p)
-            template_path = p
-        except FileNotFoundError:
-            click.echo(f"✗ Template file not found: {name_or_path}", err=True)
-            sys.exit(1)
-        except Exception as exc:
-            click.echo(f"✗ Could not load template: {exc}", err=True)
-            sys.exit(1)
-    else:
-        # Search resolution paths
-        found_all = _scan_templates()
-        search = name_or_path.lower()
-
-        for filepath, _source, tmpl in found_all:
-            if tmpl.id.lower() == search or tmpl.name.lower() == search:
-                template = tmpl
-                template_path = filepath
-                break
-
-        if template is None:
-            # Suggest similar templates
-            candidates = [
-                tmpl.name
-                for _, _, tmpl in found_all
-                if search in tmpl.id.lower() or search in tmpl.name.lower()
-            ]
-            click.echo(f"✗ Template '{name_or_path}' not found.", err=True)
-            if candidates:
-                click.echo("\nDid you mean one of these?", err=True)
-                for c in candidates:
-                    click.echo(f"  • {c}", err=True)
-            else:
-                click.echo(
-                    "\nNo similar templates found. Run 'orch templates list' to see all.",
-                    err=True,
-                )
-            sys.exit(1)
+    # Reuse shared template resolution logic
+    template_path, template = _find_template(name_or_path)
 
     # ---- Header ----
     console.print(
@@ -1401,12 +1351,15 @@ def quickstart(ctx: click.Context) -> None:
 
     console = Console(highlight=False)
 
-    # Locate hello-pipeline.yaml — try repo source first, then CWD-relative
+    # Locate hello-pipeline.yaml — try multiple locations for both
+    # repo-based development and pip-installed packages.
     _pkg_dir = Path(__file__).parent          # src/orchestration_engine/
     _repo_root = _pkg_dir.parent.parent       # repo root (when running from source)
     candidates = [
         _repo_root / "examples" / "hello-pipeline.yaml",
         Path("./examples/hello-pipeline.yaml"),
+        _pkg_dir / "examples" / "hello-pipeline.yaml",      # package data
+        Path.home() / ".orch" / "templates" / "hello-pipeline.yaml",  # user dir
     ]
     hello_yaml: Optional[Path] = None
     for candidate in candidates:
@@ -1416,8 +1369,13 @@ def quickstart(ctx: click.Context) -> None:
 
     if hello_yaml is None:
         click.echo(
-            "✗ Could not find examples/hello-pipeline.yaml.\n"
-            "  Make sure you are running from the orchestration-engine repo root.",
+            "✗ Could not find hello-pipeline.yaml.\n"
+            "  Looked in:\n"
+            f"    • {_repo_root / 'examples/'}\n"
+            f"    • ./examples/\n"
+            f"    • {_pkg_dir / 'examples/'}\n"
+            f"    • ~/.orch/templates/\n"
+            "  Copy hello-pipeline.yaml to one of these locations, or run from the repo root.",
             err=True,
         )
         sys.exit(1)
@@ -1666,28 +1624,32 @@ def start_wizard(
 
     collected: Dict[str, str] = {}
 
-    if props:
-        if not yes:
-            console.print("[bold]Fill in the pipeline inputs:[/bold]")
+    try:
+        if props:
+            if not yes:
+                console.print("[bold]Fill in the pipeline inputs:[/bold]")
+                console.print()
+
+            for field_name, field_info in props.items():
+                value = _prompt_for_field(field_name, field_info, required_fields, yes)
+                if value is not None:
+                    collected[field_name] = value
+        elif not yes:
+            console.print("[dim]This template has no configurable inputs.[/dim]")
             console.print()
 
-        for field_name, field_info in props.items():
-            value = _prompt_for_field(field_name, field_info, required_fields, yes)
-            if value is not None:
-                collected[field_name] = value
-    elif not yes:
-        console.print("[dim]This template has no configurable inputs.[/dim]")
-        console.print()
-
-    # ---- 4. Summary + confirmation ----
-    if collected and not yes:
-        console.print("[bold]Summary:[/bold]")
-        for k, v in collected.items():
-            console.print(f"  {k}: {v}")
-        console.print()
-        if not click.confirm("Proceed?", default=True):
-            click.echo("Aborted.")
-            return
+        # ---- 4. Summary + confirmation ----
+        if collected and not yes:
+            console.print("[bold]Summary:[/bold]")
+            for k, v in collected.items():
+                console.print(f"  {k}: {v}")
+            console.print()
+            if not click.confirm("Proceed?", default=True):
+                click.echo("Aborted.")
+                return
+    except (click.Abort, KeyboardInterrupt):
+        console.print("\n[dim]Aborted.[/dim]")
+        return
 
     # ---- 5. Run via the existing run_template command ----
     input_json_str = _json.dumps(collected) if collected else None
