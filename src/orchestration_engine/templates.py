@@ -14,6 +14,18 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+def _is_within_dir(path: Path, directory: Path) -> bool:
+    """Return True if *path* is the same as, or a descendant of, *directory*.
+
+    Both arguments should already be resolved (absolute, symlink-free) paths.
+    """
+    try:
+        path.relative_to(directory)
+        return True
+    except ValueError:
+        return False
+
+
 @dataclass
 class PhaseDefinition:
     """A single phase in a pipeline template."""
@@ -436,32 +448,55 @@ class TemplateEngine:
                     f"{sorted(missing_from_order)}"
                 )
 
-        # Check that all skill_ref files exist
+        # Check that all skill_ref files exist (with path traversal protection)
         template_dir = (
             template.template_path.parent
             if template.template_path is not None
             else None
         )
-        global_skills_dir = Path.home() / ".orch" / "skills"
+        global_skills_dir = (Path.home() / ".orch" / "skills").resolve()
         for phase in template.phases:
             for skill_ref in phase.skill_refs:
                 skill_path = Path(skill_ref)
+
+                # Build allowed directories for this ref (mirrors _load_skill logic).
+                # Absolute paths → only global skills dir.
+                # Relative paths → global skills dir + template_dir (if set).
+                if skill_path.is_absolute():
+                    allowed_dirs = [global_skills_dir]
+                else:
+                    allowed_dirs = [global_skills_dir]
+                    if template_dir is not None:
+                        allowed_dirs.append(template_dir.resolve())
+
                 # Resolve relative paths against template dir first, then global skills dir
                 resolved = None
                 if skill_path.is_absolute() and skill_path.exists():
-                    resolved = skill_path
+                    resolved = skill_path.resolve()
                 elif template_dir is not None:
                     candidate = template_dir / skill_path
                     if candidate.exists():
-                        resolved = candidate
+                        resolved = candidate.resolve()
                 if resolved is None:
                     candidate_global = global_skills_dir / skill_path
                     if candidate_global.exists():
                         resolved = candidate_global
+
                 if resolved is None:
                     errors.append(
                         f"Phase '{phase.id}': skill_ref file not found: '{skill_ref}' "
                         f"(looked in template dir and ~/.orch/skills/)"
+                    )
+                    continue
+
+                # Path traversal protection: reject refs that escape allowed dirs
+                resolved_real = resolved.resolve()
+                if not any(_is_within_dir(resolved_real, d) for d in allowed_dirs):
+                    errors.append(
+                        f"Phase '{phase.id}': skill_ref '{skill_ref}' resolves to "
+                        f"'{resolved_real}', which is outside the allowed directories "
+                        f"({[str(d) for d in allowed_dirs]}). "
+                        f"Path traversal is not permitted."
                     )
 
         return errors

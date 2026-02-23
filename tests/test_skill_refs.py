@@ -95,11 +95,11 @@ class TestLoadSkill:
     """Tests for PhaseSequencer._load_skill."""
 
     def test_load_skill_without_frontmatter(self, skills_dir):
-        """A plain text file is loaded as-is."""
+        """A plain text file is loaded as-is (relative path within template_dir)."""
         skill_file = skills_dir / "plain.md"
         skill_file.write_text("You are an expert researcher.\nBe concise.")
 
-        name, content = PhaseSequencer._load_skill(str(skill_file))
+        name, content = PhaseSequencer._load_skill("plain.md", template_dir=skills_dir)
         assert name == "plain"
         assert content == "You are an expert researcher.\nBe concise."
 
@@ -115,7 +115,7 @@ class TestLoadSkill:
             Focus on numbers.
         """))
 
-        name, content = PhaseSequencer._load_skill(str(skill_file))
+        name, content = PhaseSequencer._load_skill("analyst.md", template_dir=skills_dir)
         assert name == "data_analyst"
         assert "You are a skilled data analyst." in content
         assert "---" not in content
@@ -131,7 +131,7 @@ class TestLoadSkill:
             Skill body.
         """))
 
-        name, _ = PhaseSequencer._load_skill(str(skill_file))
+        name, _ = PhaseSequencer._load_skill("my_file.md", template_dir=skills_dir)
         assert name == "custom_skill_name"
 
     def test_filename_stem_used_when_no_name_in_frontmatter(self, skills_dir):
@@ -144,7 +144,7 @@ class TestLoadSkill:
             Write in an engaging style.
         """))
 
-        name, _ = PhaseSequencer._load_skill(str(skill_file))
+        name, _ = PhaseSequencer._load_skill("writing_style.md", template_dir=skills_dir)
         assert name == "writing_style"
 
     def test_relative_path_resolved_against_template_dir(self, skills_dir):
@@ -161,21 +161,60 @@ class TestLoadSkill:
         with pytest.raises(FileNotFoundError, match="no_such_skill.md"):
             PhaseSequencer._load_skill("no_such_skill.md", template_dir=skills_dir)
 
-    def test_absolute_path(self, skills_dir):
-        """An absolute path is loaded directly."""
+    def test_absolute_path_outside_skills_dir_raises(self, skills_dir):
+        """Absolute path to a file outside ~/.orch/skills/ is rejected (path traversal)."""
         skill_file = skills_dir / "abs_skill.md"
         skill_file.write_text("Absolute skill content.")
 
-        name, content = PhaseSequencer._load_skill(str(skill_file.resolve()))
-        assert name == "abs_skill"
-        assert content == "Absolute skill content."
+        with pytest.raises(ValueError, match="outside the allowed directories"):
+            PhaseSequencer._load_skill(str(skill_file.resolve()))
+
+    # --- NEW security tests (path traversal protection) -------------------
+
+    def test_path_traversal_relative_raises_value_error(self, tmp_path):
+        """skill_ref '../../etc/passwd' must raise ValueError, not leak file contents."""
+        # Create a real passwd-like file two levels up so resolution doesn't fail
+        # on file-not-found before the traversal check fires.
+        target = tmp_path / "fake_passwd"
+        target.write_text("root:x:0:0:root:/root:/bin/bash")
+
+        # Build a template_dir two levels below tmp_path so the traversal leads
+        # back up to the target.
+        template_subdir = tmp_path / "a" / "b"
+        template_subdir.mkdir(parents=True)
+        # Write the target where ../../fake_passwd would resolve relative to a/b/
+        target2 = tmp_path / "fake_passwd2"
+        target2.write_text("secret")
+        escape_ref = "../../fake_passwd2"
+
+        with pytest.raises(ValueError, match="outside the allowed directories"):
+            PhaseSequencer._load_skill(escape_ref, template_dir=template_subdir)
+
+    def test_absolute_path_outside_allowed_raises_value_error(self, tmp_path):
+        """Absolute path not under ~/.orch/skills/ raises ValueError."""
+        evil_file = tmp_path / "evil.md"
+        evil_file.write_text("evil content")
+
+        with pytest.raises(ValueError, match="outside the allowed directories"):
+            PhaseSequencer._load_skill(str(evil_file.resolve()))
+
+    def test_valid_relative_path_within_template_dir_works(self, tmp_path):
+        """A relative path that stays within template_dir is permitted."""
+        template_dir = tmp_path / "templates"
+        template_dir.mkdir()
+        skill_file = template_dir / "legit_skill.md"
+        skill_file.write_text("---\nname: legit\n---\nLegit skill content.")
+
+        name, content = PhaseSequencer._load_skill("legit_skill.md", template_dir=template_dir)
+        assert name == "legit"
+        assert "Legit skill content." in content
 
     def test_empty_frontmatter_body_returned(self, skills_dir):
         """Empty frontmatter (just ---) still returns the body correctly."""
         skill_file = skills_dir / "minimal.md"
         skill_file.write_text("---\n---\nJust the body.")
 
-        name, content = PhaseSequencer._load_skill(str(skill_file))
+        name, content = PhaseSequencer._load_skill("minimal.md", template_dir=skills_dir)
         assert content == "Just the body."
 
     def test_body_stripped_of_leading_trailing_whitespace(self, skills_dir):
@@ -183,7 +222,7 @@ class TestLoadSkill:
         skill_file = skills_dir / "padded.md"
         skill_file.write_text("---\nname: padded\n---\n\n\n  Some content.  \n\n")
 
-        _, content = PhaseSequencer._load_skill(str(skill_file))
+        _, content = PhaseSequencer._load_skill("padded.md", template_dir=skills_dir)
         assert content == "Some content."
 
 
@@ -297,15 +336,15 @@ class TestValidateTemplateSkillRefs:
         assert any("nonexistent_skill.md" in e for e in errors)
         assert any("skill_ref" in e.lower() for e in errors)
 
-    def test_existing_skill_ref_passes_validation(self, template_dir, skills_dir):
-        """validate_template passes when skill_ref files exist."""
-        skill_file = skills_dir / "existing_skill.md"
+    def test_existing_skill_ref_passes_validation(self, template_dir):
+        """validate_template passes when skill_ref files exist (relative path)."""
+        skill_file = template_dir / "existing_skill.md"
         skill_file.write_text("Skill content.")
 
         phase = PhaseDefinition(
             id="p1",
             name="Phase 1",
-            skill_refs=[str(skill_file)],  # absolute path
+            skill_refs=["existing_skill.md"],  # relative path within template_dir
         )
         template = _make_template([phase], template_path=template_dir / "fake.yaml")
 
@@ -450,22 +489,28 @@ class TestBuildPhaseInputSkillContext:
         result = seq._build_phase_input(phase, {})
         assert "SKILL_LOAD_ERROR" in result or "<MISSING" in result
 
-    def test_skill_context_without_template_path(self, template_dir, fast_runner):
-        """Absolute path skill_refs work even when template_path is None."""
+    def test_skill_context_absolute_path_outside_skills_dir_produces_error_placeholder(
+        self, template_dir, fast_runner
+    ):
+        """Absolute path outside ~/.orch/skills/ is blocked; prompt gets error placeholder."""
         skill_file = template_dir / "abs.md"
         skill_file.write_text("---\nname: abs_skill\n---\nAbsolute content.")
 
         phase = PhaseDefinition(
             id="p1",
             name="P1",
-            prompt_template="{skill_context[abs_skill]}",
+            prompt_template="Context: {skill_context[abs]}",
             skill_refs=[str(skill_file.resolve())],
         )
         template = _make_template([phase], template_path=None)
         seq = _make_sequencer(template, fast_runner)
 
+        # _load_skill raises ValueError (caught by _build_phase_input) → placeholder
         result = seq._build_phase_input(phase, {})
-        assert "Absolute content." in result
+        # File contents must NOT appear in the prompt
+        assert "Absolute content." not in result
+        # An error placeholder is inserted instead
+        assert "SKILL_LOAD_ERROR" in result or "<MISSING" in result
 
     def test_no_prompt_template_returns_empty(self, template_dir, fast_runner):
         """Phases without prompt_template still return empty string (compat)."""

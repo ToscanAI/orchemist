@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
+
 from .schemas import Priority, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
 
@@ -208,9 +210,13 @@ class PhaseSequencer:
         """Load a skill file, stripping YAML frontmatter.
 
         Resolves ``skill_ref`` in this order:
-        1. Absolute path (if given)
+        1. Absolute path (if given) — must be under ``~/.orch/skills/``
         2. Relative to ``template_dir`` (if provided)
         3. ``~/.orch/skills/``
+
+        Path traversal protection: the resolved path must lie within one of the
+        permitted directories.  Absolute paths are restricted to ``~/.orch/skills/``
+        only; relative paths may also resolve within ``template_dir``.
 
         Args:
             skill_ref:    Path string from the ``skill_refs`` list.
@@ -223,21 +229,34 @@ class PhaseSequencer:
 
         Raises:
             FileNotFoundError: If the skill file cannot be located.
+            ValueError: If the resolved path escapes the allowed directories
+                        (path traversal protection).
         """
         skill_path = Path(skill_ref)
+        global_skills_dir = (Path.home() / ".orch" / "skills").resolve()
+
+        # Build the set of allowed root directories.
+        # Absolute skill_refs are only permitted under the global skills dir.
+        # Relative skill_refs may also resolve within template_dir.
+        if skill_path.is_absolute():
+            allowed_dirs = [global_skills_dir]
+        else:
+            allowed_dirs = [global_skills_dir]
+            if template_dir is not None:
+                allowed_dirs.append(template_dir.resolve())
 
         # Resolve to an existing file
         resolved: Optional[Path] = None
         if skill_path.is_absolute():
             if skill_path.exists():
-                resolved = skill_path
+                resolved = skill_path.resolve()
         else:
             if template_dir is not None:
                 candidate = template_dir / skill_path
                 if candidate.exists():
-                    resolved = candidate
+                    resolved = candidate.resolve()
             if resolved is None:
-                candidate_global = Path.home() / ".orch" / "skills" / skill_path
+                candidate_global = global_skills_dir / skill_path
                 if candidate_global.exists():
                     resolved = candidate_global
 
@@ -247,7 +266,18 @@ class PhaseSequencer:
                 f"(template_dir={template_dir}, ~/.orch/skills/)"
             )
 
-        raw = resolved.read_text(encoding="utf-8")
+        # --- Path traversal protection -----------------------------------
+        resolved_real = resolved.resolve()
+        if not any(_is_within_dir(resolved_real, d) for d in allowed_dirs):
+            raise ValueError(
+                f"Skill path '{skill_ref}' resolves to '{resolved_real}', which is "
+                f"outside the allowed directories: "
+                f"{[str(d) for d in allowed_dirs]}. "
+                f"Relative skill_refs must stay within the template directory or "
+                f"~/.orch/skills/; absolute paths must be under ~/.orch/skills/."
+            )
+
+        raw = resolved_real.read_text(encoding="utf-8")
 
         # Strip YAML frontmatter: text between --- delimiters at start of file
         frontmatter_data: Dict[str, Any] = {}
@@ -259,7 +289,6 @@ class PhaseSequencer:
                 fm_text = raw[3 : 3 + end_match.start()]
                 body = raw[3 + end_match.end() :]
                 try:
-                    import yaml
                     frontmatter_data = yaml.safe_load(fm_text) or {}
                 except Exception:
                     frontmatter_data = {}
@@ -267,7 +296,7 @@ class PhaseSequencer:
         # Skill name: prefer frontmatter 'name:', else filename stem
         skill_name: str = (
             str(frontmatter_data.get("name", "")).strip()
-            or resolved.stem
+            or resolved_real.stem
         )
 
         return skill_name, body.strip()
@@ -372,6 +401,18 @@ class PhaseSequencer:
         if resolved is None and model_tier_str:
             logger.debug(f"Unrecognised model_tier '{model_tier_str}'; using runner default")
         return resolved
+
+
+def _is_within_dir(path: Path, directory: Path) -> bool:
+    """Return True if *path* is the same as, or a descendant of, *directory*.
+
+    Both arguments should already be resolved (absolute, symlink-free) paths.
+    """
+    try:
+        path.relative_to(directory)
+        return True
+    except ValueError:
+        return False
 
 
 class _SafeDict(dict):
