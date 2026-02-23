@@ -1098,5 +1098,139 @@ def list_phases(template_file: Path) -> None:
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# Template discovery helpers
+# ---------------------------------------------------------------------------
+
+def _yaml_str(val: Any) -> str:
+    """Convert a YAML-parsed value to string, mapping YAML booleans back to their
+    original keyword (e.g. False → 'off', True → 'on')."""
+    if val is False:
+        return "off"
+    if val is True:
+        return "on"
+    return str(val) if val is not None else ""
+
+
+def _template_resolution_paths() -> List[tuple]:
+    """Return list of (Path, source_label) for template scanning.
+
+    Scanned in order:
+    1. ./templates/  → label "templates"
+    2. ./examples/   → label "examples"
+    3. ~/.orch/templates/ → label "user"
+    """
+    user_dir = Path.home() / ".orch" / "templates"
+    user_dir.mkdir(parents=True, exist_ok=True)
+
+    return [
+        (Path("./templates"), "templates"),
+        (Path("./examples"), "examples"),
+        (user_dir, "user"),
+    ]
+
+
+def _scan_templates(resolution_paths: Optional[List[tuple]] = None) -> List[tuple]:
+    """Scan resolution paths for YAML templates.
+
+    Returns:
+        List of (filepath, source_label, PipelineTemplate) tuples.
+    """
+    from .templates import TemplateEngine
+
+    if resolution_paths is None:
+        resolution_paths = _template_resolution_paths()
+
+    engine = TemplateEngine()
+    found = []
+    seen_paths: set = set()
+
+    for search_path, source_label in resolution_paths:
+        if not search_path.exists():
+            continue
+        for filepath in sorted(search_path.glob("*.yaml")) + sorted(search_path.glob("*.yml")):
+            resolved = filepath.resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            try:
+                template = engine.load_template(filepath)
+                found.append((filepath, source_label, template))
+            except Exception as exc:
+                click.echo(f"[warn] Skipping {filepath}: {exc}", err=True)
+
+    return found
+
+
+# ---------------------------------------------------------------------------
+# templates command group
+# ---------------------------------------------------------------------------
+
+@main.group()
+def templates() -> None:
+    """Browse and inspect pipeline templates."""
+
+
+# ---------------------------------------------------------------------------
+# Feature #67 — orch templates list
+# ---------------------------------------------------------------------------
+
+@templates.command("list")
+@click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
+def templates_list(json_output: bool) -> None:
+    """List available pipeline templates from all resolution paths."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console(highlight=False)
+    found = _scan_templates()
+
+    if json_output:
+        result = []
+        for filepath, source, tmpl in found:
+            result.append({
+                "id": tmpl.id,
+                "name": tmpl.name,
+                "version": tmpl.version,
+                "phases": len(tmpl.phases),
+                "description": tmpl.description,
+                "source": source,
+                "path": str(filepath),
+            })
+        click.echo(json.dumps(result, indent=2))
+        return
+
+    if not found:
+        click.echo("No templates found.")
+        click.echo("\nTemplate search paths:")
+        for path, source in _template_resolution_paths():
+            click.echo(f"  [{source}] {path.resolve()}")
+        click.echo("\nTip: add .yaml files to ./templates/ or ./examples/ to get started.")
+        return
+
+    table = Table(title="Available Templates", show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="cyan", no_wrap=True)
+    table.add_column("Version", justify="center")
+    table.add_column("Phases", justify="center")
+    table.add_column("Description")
+    table.add_column("Source", justify="center")
+
+    for _filepath, source, tmpl in found:
+        desc = tmpl.description or ""
+        if len(desc) > 60:
+            desc = desc[:57] + "..."
+        table.add_row(
+            tmpl.name,
+            tmpl.version,
+            str(len(tmpl.phases)),
+            desc,
+            source,
+        )
+
+    console.print(table)
+
+
+
+
 if __name__ == '__main__':
     main()
