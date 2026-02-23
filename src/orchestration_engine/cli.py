@@ -1342,16 +1342,14 @@ def templates_info(name_or_path: str) -> None:
 _USER_TEMPLATES_DIR = Path.home() / ".orch" / "templates"
 
 
+_GH_SHORTHAND_RE = re.compile(r'^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$')
+
+
 def _is_github_shorthand(source: str) -> bool:
     """Check if source looks like 'user/repo' (GitHub shorthand)."""
-    parts = source.split("/")
-    return (
-        len(parts) == 2
-        and all(p and not p.startswith(".") for p in parts)
-        and not source.startswith("http")
-        and not source.endswith(".yaml")
-        and not source.endswith(".yml")
-    )
+    if source.endswith(".yaml") or source.endswith(".yml"):
+        return False
+    return bool(_GH_SHORTHAND_RE.match(source)) and not source.startswith(".")
 
 
 def _install_from_git(url: str, name: str, force: bool) -> Path:
@@ -1361,6 +1359,9 @@ def _install_from_git(url: str, name: str, force: bool) -> Path:
     Raises click.ClickException on failure.
     """
     import subprocess
+
+    if url.startswith("-"):
+        raise click.ClickException(f"Invalid URL: {url}")
 
     dest = _USER_TEMPLATES_DIR / re.sub(r'[^\w\-]', '_', name)
 
@@ -1377,7 +1378,7 @@ def _install_from_git(url: str, name: str, force: bool) -> Path:
 
     try:
         subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(dest)],
+            ["git", "clone", "--depth", "1", "--", url, str(dest)],
             check=True,
             capture_output=True,
             text=True,
@@ -1412,8 +1413,11 @@ def _find_yaml_in_dir(directory: Path) -> Optional[Path]:
     return None
 
 
-def _validate_installed_template(yaml_path: Path) -> None:
-    """Validate an installed template. Raises click.ClickException on failure."""
+def _validate_installed_template(yaml_path: Path):
+    """Validate an installed template. Returns the PipelineTemplate on success.
+
+    Raises click.ClickException on failure.
+    """
     from .templates import TemplateEngine
 
     engine = TemplateEngine()
@@ -1428,6 +1432,7 @@ def _validate_installed_template(yaml_path: Path) -> None:
         raise click.ClickException(
             f"Installed template has {len(errors)} validation error(s):\n{err_str}"
         )
+    return template
 
 
 @templates.command("install")
@@ -1509,9 +1514,12 @@ def templates_install(source: str, force: bool, name: Optional[str]) -> None:
             f"The repo may need a templates/ or examples/ directory.[/yellow]"
         )
     else:
-        _validate_installed_template(yaml_path)
-        from .templates import TemplateEngine
-        tmpl = TemplateEngine().load_template(yaml_path)
+        try:
+            tmpl = _validate_installed_template(yaml_path)
+        except click.ClickException:
+            # Clean up broken install
+            shutil.rmtree(dest, ignore_errors=True)
+            raise
         console.print(
             f"\n[green]✓ Installed:[/green] [bold]{tmpl.name}[/bold] "
             f"(v{tmpl.version}, {len(tmpl.phases)} phases)"
@@ -1543,11 +1551,9 @@ def templates_uninstall(name: str, force: bool) -> None:
     dest = _USER_TEMPLATES_DIR / safe_name
 
     if not dest.exists():
-        # Try exact name too
-        dest = _USER_TEMPLATES_DIR / name
-        if not dest.exists():
-            click.echo(f"✗ Template '{name}' not found in {_USER_TEMPLATES_DIR}", err=True)
-            sys.exit(1)
+        raise click.ClickException(
+            f"Template '{name}' not found in {_USER_TEMPLATES_DIR}"
+        )
 
     if not force:
         if not click.confirm(f"Remove template '{name}' from {dest}?"):
