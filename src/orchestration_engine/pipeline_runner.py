@@ -15,6 +15,7 @@ from typing import List, Optional
 from .db import Database
 from .queue import TaskQueue
 from .runner import TaskExecutor  # ABC only — no heavy imports
+from .fallback import FallbackHandler
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class PipelineRunner:
         self,
         executors: List[TaskExecutor],
         db_path: str = ":memory:",
+        fallback_config: Optional[dict] = None,
     ) -> None:
         self._db_path = db_path
         self._tmp_dir = None  # set if we create a temp dir
@@ -65,6 +67,11 @@ class PipelineRunner:
         self.queue: TaskQueue = TaskQueue(self._db)
         self.executors: List[TaskExecutor] = executors
 
+        # Optional fallback config — supplied when template.fallback is set.
+        # Callers can retrieve this to construct a FallbackHandler wrapping any
+        # string-based primary executor.
+        self.fallback_config: Optional[dict] = fallback_config
+
     # ------------------------------------------------------------------
     # Factory class methods
     # ------------------------------------------------------------------
@@ -75,13 +82,18 @@ class PipelineRunner:
         api_key: Optional[str] = None,
         max_tokens: int = 4096,
         db_path: str = ":memory:",
+        fallback_config: Optional[dict] = None,
     ) -> "PipelineRunner":
         """Create a PipelineRunner using AnthropicExecutor (direct API calls).
 
         Args:
-            api_key:    Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
-            max_tokens: Maximum output tokens per API call.
-            db_path:    SQLite path (":memory:" for no-disk, "temp" for temp file).
+            api_key:        Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
+            max_tokens:     Maximum output tokens per API call.
+            db_path:        SQLite path (":memory:" for no-disk, "temp" for temp file).
+            fallback_config: Optional dict to configure a :class:`~fallback.FallbackHandler`
+                             for retriable errors (rate_limit, timeout, overloaded).
+                             Passed directly to :class:`~openai_executor.OpenAICompatibleExecutor`.
+                             Keys: ``base_url``, ``model``, ``api_key``, ``timeout_seconds``.
 
         Raises:
             ValueError: If no API key is found anywhere.
@@ -98,7 +110,39 @@ class PipelineRunner:
             )
 
         executor = AnthropicExecutor(api_key=resolved_key, max_tokens=max_tokens)
-        return cls(executors=[executor], db_path=db_path)
+        return cls(executors=[executor], db_path=db_path, fallback_config=fallback_config)
+
+    @classmethod
+    def from_template(
+        cls,
+        template,
+        api_key: Optional[str] = None,
+        max_tokens: int = 4096,
+        db_path: str = ":memory:",
+    ) -> "PipelineRunner":
+        """Create a PipelineRunner pre-configured from a :class:`~templates.PipelineTemplate`.
+
+        When ``template.fallback`` is set, the runner stores the fallback config so
+        callers can wrap string-based executors with a
+        :class:`~fallback.FallbackHandler`.
+
+        Args:
+            template:   Loaded :class:`~templates.PipelineTemplate` instance.
+            api_key:    Anthropic API key (or ``ANTHROPIC_API_KEY`` env var).
+            max_tokens: Maximum output tokens per API call.
+            db_path:    SQLite path.
+
+        Returns:
+            :class:`PipelineRunner` with ``fallback_config`` populated when
+            ``template.fallback`` is not ``None``.
+        """
+        fallback_config = getattr(template, "fallback", None) or None
+        return cls.standalone(
+            api_key=api_key,
+            max_tokens=max_tokens,
+            db_path=db_path,
+            fallback_config=fallback_config,
+        )
 
     @classmethod
     def openclaw(

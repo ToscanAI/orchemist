@@ -57,6 +57,7 @@ class PipelineTemplate:
     category: str = ""
     phases: List[PhaseDefinition] = field(default_factory=list)
     config_schema: Dict[str, Any] = field(default_factory=dict)
+    fallback: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.phases is None:
@@ -330,6 +331,7 @@ class TemplateEngine:
             category=data.get("category", ""),
             phases=phases,
             config_schema=data.get("config_schema") or {},
+            fallback=data.get("fallback") or None,
         )
 
     def get_execution_order(self, template: PipelineTemplate) -> List[List[str]]:
