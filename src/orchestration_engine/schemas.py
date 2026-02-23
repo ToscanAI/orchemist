@@ -30,6 +30,13 @@ class TaskType(str, Enum):
     RESEARCH = "research"
     TRANSLATION = "translation"
     REVIEW = "review"
+    # Knowledge-work task types (#123)
+    TRIAGE = "triage"
+    ANALYSIS = "analysis"
+    COMPLIANCE = "compliance"
+    FINANCIAL = "financial"
+    SALES = "sales"
+    SUPPORT = "support"
 
 
 class TaskState(str, Enum):
@@ -419,6 +426,13 @@ def select_model_tier(task_type: TaskType, attempt_number: int) -> ModelTier:
         TaskType.RESEARCH: [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS],
         TaskType.TRANSLATION: [ModelTier.SONNET, ModelTier.OPUS, ModelTier.OPUS],
         TaskType.REVIEW: [ModelTier.SONNET, ModelTier.OPUS, ModelTier.OPUS],
+        # Knowledge-work types (#123)
+        TaskType.TRIAGE: [ModelTier.SONNET, ModelTier.OPUS, ModelTier.OPUS],
+        TaskType.ANALYSIS: [ModelTier.SONNET, ModelTier.OPUS, ModelTier.OPUS],
+        TaskType.COMPLIANCE: [ModelTier.OPUS, ModelTier.OPUS, ModelTier.OPUS],
+        TaskType.FINANCIAL: [ModelTier.OPUS, ModelTier.OPUS, ModelTier.OPUS],
+        TaskType.SALES: [ModelTier.SONNET, ModelTier.OPUS, ModelTier.OPUS],
+        TaskType.SUPPORT: [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS],
     }
     
     path = escalation_paths.get(task_type, [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS])
@@ -433,6 +447,13 @@ DEFAULT_MAX_RETRIES = {
     TaskType.RESEARCH: 3,
     TaskType.TRANSLATION: 4,
     TaskType.REVIEW: 2,
+    # Knowledge-work types (#123)
+    TaskType.TRIAGE: 3,
+    TaskType.ANALYSIS: 3,
+    TaskType.COMPLIANCE: 2,
+    TaskType.FINANCIAL: 2,
+    TaskType.SALES: 3,
+    TaskType.SUPPORT: 3,
 }
 
 
