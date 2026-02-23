@@ -1385,5 +1385,90 @@ def templates_info(name_or_path: str) -> None:
         console.print()
 
 
+# ---------------------------------------------------------------------------
+# Feature #65 — orch quickstart
+# ---------------------------------------------------------------------------
+
+@main.command("quickstart")
+@click.pass_context
+def quickstart(ctx: click.Context) -> None:
+    """Give new users a working pipeline in 30 seconds with zero configuration.
+
+    Runs the bundled hello-pipeline.yaml in dry-run mode so you can see what
+    the engine does without any API key or config.
+    """
+    from rich.console import Console
+
+    console = Console(highlight=False)
+
+    # Locate hello-pipeline.yaml — try repo source first, then CWD-relative
+    _pkg_dir = Path(__file__).parent          # src/orchestration_engine/
+    _repo_root = _pkg_dir.parent.parent       # repo root (when running from source)
+    candidates = [
+        _repo_root / "examples" / "hello-pipeline.yaml",
+        Path("./examples/hello-pipeline.yaml"),
+    ]
+    hello_yaml: Optional[Path] = None
+    for candidate in candidates:
+        if candidate.exists():
+            hello_yaml = candidate.resolve()
+            break
+
+    if hello_yaml is None:
+        click.echo(
+            "✗ Could not find examples/hello-pipeline.yaml.\n"
+            "  Make sure you are running from the orchestration-engine repo root.",
+            err=True,
+        )
+        sys.exit(1)
+
+    # ---- Header ----
+    console.print()
+    console.print("[bold]🚀 Orchestration Engine — Quick Start[/bold]")
+    console.print()
+    console.print("Running a sample pipeline [dim](dry-run, no API key needed)[/dim]...")
+    console.print()
+
+    # ---- Execute via the existing run command ----
+    ctx.invoke(
+        run_template,
+        template_file=hello_yaml,
+        mode="dry-run",
+        api_key=None,
+        input_json=None,
+        input_file=None,
+        output_dir=None,
+        dry_run_delay=0.0,
+        dry_run_failure_rate=0.0,
+    )
+
+    # ---- Footer ----
+    from .templates import TemplateEngine as _TE
+    _tmpl = _TE().load_template(hello_yaml)
+    n_phases = len(_tmpl.phases)
+
+    console.print()
+    console.print(
+        f"[bold green]✓ That's it![/bold green] "
+        f"You just ran a {n_phases}-phase AI pipeline."
+    )
+    console.print()
+    console.print("[bold]Next steps:[/bold]")
+    console.print(
+        "  [cyan]orch templates list[/cyan]"
+        "                        See all available templates"
+    )
+    console.print(
+        "  [cyan]orch templates info content-pipeline-mvp[/cyan]"
+        "   Explore a real pipeline"
+    )
+    console.print(
+        "  [cyan]orch start content-pipeline-mvp[/cyan]"
+        "            Run interactively (needs API key)"
+    )
+    console.print()
+
+
+
 if __name__ == '__main__':
     main()
