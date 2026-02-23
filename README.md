@@ -1,42 +1,211 @@
 # Orchestration Engine
 
-A scenario-driven orchestration engine for multi-agent AI pipelines. Define workflows in YAML, execute with real AI models, grade results against acceptance criteria.
+### Like Docker Compose for AI pipelines — define phases in YAML, the engine handles the rest.
 
-Built by [Conny Lazo](https://connylazo.com) and [Toscan](https://github.com/ToscanRivera) (an AI agent).
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](https://github.com/ToscanRivera/orchestration-engine/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![Pi Tested](https://img.shields.io/badge/Raspberry%20Pi-tested-red)](https://www.raspberrypi.com/)
 
-## Quick Start
+---
 
-### Prerequisites
+## What Is It?
 
-- **Python 3.10+** required
-- Git
+**Orchestration Engine** is a YAML-first orchestration engine for multi-agent AI pipelines.
 
-> **Linux/Mac note:** Use `python3` instead of `python` if your system doesn't alias it.
+You declare your pipeline — phases, dependencies, model tiers, and acceptance criteria — in a single YAML file. The engine handles phase sequencing, dependency resolution, output forwarding, automatic retries, fallback executors, and scenario grading. No boilerplate. No vendor lock-in. Works standalone with the Anthropic API or via OpenClaw sub-agent spawning.
 
-> **Ubuntu/Debian note:** You may need to install the venv package first:
-> ```bash
-> sudo apt install python3.12-venv  # adjust version to match your python3 --version
-> ```
+```yaml
+name: content-pipeline
+phases:
+  research:
+    prompt: "Research the topic: {{brief}}"
+    model_tier: haiku
 
-### Install
+  draft:
+    prompt: "Write a 500-word article based on: {{research.output}}"
+    model_tier: sonnet
+    depends_on: [research]
+
+  edit:
+    prompt: "Polish and improve this draft: {{draft.output}}"
+    model_tier: sonnet
+    depends_on: [draft]
+```
+
+---
+
+## Quickstart
 
 ```bash
-# Clone the repo
+pip install orchestration-engine
+orch new --yes --output templates/my-pipeline.yaml
+orch run templates/my-pipeline.yaml --mode dry-run
+```
+
+No API key needed for a dry run:
+
+```bash
+orch run templates/my-pipeline.yaml --mode dry-run --input '{"brief": "AI safety"}'
+```
+
+Live run against Claude:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+orch run templates/my-pipeline.yaml --mode standalone --input '{"brief": "AI safety"}'
+```
+
+---
+
+## Use Cases
+
+| Use Case | What it does |
+|----------|-------------|
+| **Content Pipeline** | Research → Draft → Edit → SEO → Publish-ready output |
+| **Code Review** | Static analysis → Security scan → Architecture review → Summary report |
+| **Research Assistant** | Query expansion → Source gathering → Synthesis → Citation check |
+| **Translation Pipeline** | Translate → Back-translate → Consistency check → Final polish |
+| **Customer Support** | Intent classification → KB lookup → Response draft → Quality gate |
+| **Financial Analysis** | Data extraction → Trend analysis → Risk assessment → Executive summary |
+
+Each use case is a template. Browse them with `orch templates list` or search with `orch templates search <topic>`.
+
+---
+
+## Features
+
+- ✅ **YAML-first pipeline definitions** — version-controlled, diff-friendly, no code required
+- ✅ **Phase sequencing with dependency graphs** — topological sort, parallel wave execution
+- ✅ **Model tier selection per phase** — haiku / sonnet / opus, set per phase or pipeline-wide
+- ✅ **`skill_refs` injection** — pass tool contexts into prompts declaratively
+- ✅ **Fallback executors** — Gemini fallback when Anthropic is unavailable
+- ✅ **Template index & search** — community index, install by GitHub shorthand `user/repo`
+- ✅ **Scenario-based grading** — YAML acceptance criteria, LLM judges, assertion graders
+- ✅ **Human-in-the-loop** — pause phases for review, inject feedback, resume
+- ✅ **OpenClaw integration** — run phases as sub-agents with full tool access
+
+---
+
+## How It Compares
+
+| Feature | Orchestration Engine | LangGraph | CrewAI | Autogen | Dify |
+|---------|:-------------------:|:---------:|:------:|:-------:|:----:|
+| YAML-first | ✅ | ❌ | ❌ | ❌ | Partial |
+| Visual builder | 🔜 | ⚠️ | ❌ | ❌ | ✅ |
+| Template library | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Testing / grading | ✅ | ❌ | ⚠️ | ❌ | ❌ |
+| Raspberry Pi support | ✅ | ⚠️ | ⚠️ | ⚠️ | ❌ |
+
+> ✅ full support · ⚠️ partial/unofficial · ❌ not supported · 🔜 planned
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  YAML Templates   (community index / local / GitHub)        │
+│  content-pipeline.yaml  ·  code-review.yaml  ·  …          │
+└────────────────────────┬────────────────────────────────────┘
+                         │  orch run
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Pipeline Runner                                            │
+│  ┌─────────────┐   ┌──────────────────┐   ┌─────────────┐  │
+│  │ Template    │ → │ Phase Sequencer  │ → │  Executors  │  │
+│  │ Engine      │   │ (topo sort,      │   │             │  │
+│  │ (YAML parse │   │  output forward, │   │ Anthropic   │  │
+│  │  var interp)│   │  retry logic)    │   │ OpenClaw    │  │
+│  └─────────────┘   └──────────────────┘   │ Gemini      │  │
+│                                           │ Dry-Run     │  │
+│                                           └─────────────┘  │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Scenario Runner  (optional acceptance testing)             │
+│  Assertion Grader · LLM Judge · URL Check                   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Three execution modes:**
+
+| Mode | How it runs | API key? |
+|------|-------------|----------|
+| `standalone` | Direct Anthropic API (zero framework deps) | Yes |
+| `openclaw` | Sub-agent spawning via OpenClaw gateway | No |
+| `dry-run` | Mock executor for testing / CI | No |
+
+---
+
+## CLI Reference
+
+```bash
+# Create a new pipeline template (interactive wizard)
+orch new
+
+# Non-interactive scaffold with defaults
+orch new --yes --output ./templates/my-pipeline.yaml
+
+# Clone an existing template as a starting point
+orch new --from content-pipeline
+
+# Interactive wizard (config_schema-driven)
+orch start
+
+# Copy a starter pipeline to your project in one command
+orch quickstart
+
+# Execute a pipeline
+orch run <template-or-file> --mode standalone --input '{"brief": "..."}'
+orch run <template-or-file> --mode dry-run
+orch run <template-or-file> --mode openclaw
+
+# Validate a template (checks YAML syntax + structural rules)
+orch validate <template-or-file>
+orch validate <template-or-file> --fix    # auto-correct simple issues
+
+# Show execution order and model tiers
+orch list-phases <template-or-file>
+
+# Browse templates
+orch templates list
+orch templates info <name>
+orch templates search <query>
+
+# Install / remove templates
+orch templates install user/repo          # GitHub shorthand
+orch templates install https://github.com/user/repo
+orch templates install ./my-template.yaml --name my-pipeline
+orch templates uninstall <name>
+
+# Task queue (for async / long-running workflows)
+orch submit --type <type> --payload '{"key": "value"}'
+orch status [task-id]
+orch list [--state running] [--type llm_call]
+orch cancel <task-id>
+orch retry <task-id>
+orch watch <task-id> --follow
+orch health
+```
+
+---
+
+## Installation
+
+### From PyPI
+
+```bash
+pip install orchestration-engine
+```
+
+### From Source
+
+```bash
 git clone https://github.com/ToscanRivera/orchestration-engine.git
 cd orchestration-engine
-
-# Create a virtual environment (recommended)
-python3 -m venv .venv
-
-# Activate it
-# Linux/Mac:
-source .venv/bin/activate
-# Windows (cmd):
-.venv\Scripts\activate
-# Windows (PowerShell):
-.venv\Scripts\Activate.ps1
-
-# Install the engine
+python3 -m venv .venv && source .venv/bin/activate
 pip install .
 ```
 
@@ -46,222 +215,57 @@ pip install .
 orch --help
 ```
 
-You should see a list of commands: `run`, `quickstart`, `start`, `templates`, `submit`, `status`, `list`, `cancel`, `validate`.
-
-### Dry Run (no API key needed)
-
-```bash
-orch run examples/hello-pipeline.yaml --mode dry-run --input '{"name": "World"}'
-```
-
-On Windows, use double quotes for the JSON:
-```cmd
-orch run examples/hello-pipeline.yaml --mode dry-run --input "{\"name\": \"World\"}"
-```
-
-**Expected:** Pipeline loads → validates → completes 2 phases. No API calls made.
-
-### Real Run (requires Anthropic API key)
-
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-# Windows: set ANTHROPIC_API_KEY=sk-ant-...
-
-orch run examples/hello-pipeline.yaml --mode standalone --api-key $ANTHROPIC_API_KEY --input '{"name": "René"}'
-```
-
-This makes real API calls to Claude. Each phase runs sequentially, producing text output.
-
-### Explore Templates
-
-```bash
-# See what pipeline templates are available
-orch templates list
-
-# Get details on a specific template
-orch templates info content-pipeline
-
-# Copy a starter pipeline to your project
-orch quickstart
-
-# Or use the interactive wizard to build a custom pipeline
-orch start
-```
-
-### Run Tests
-
-```bash
-pip install -e ".[test]"
-pytest        # 442 tests
-pytest -v     # verbose output
-```
-
----
-
-## How It Works
-
-Define a pipeline in YAML → the engine loads it, resolves dependencies, and runs each phase through an AI model → output from one phase feeds into the next.
-
-**Example pipeline (`examples/hello-pipeline.yaml`):**
-
-```yaml
-name: hello-pipeline
-description: A simple 2-phase greeting pipeline
-
-phases:
-  greet:
-    prompt: "Say hello to {{name}} in a creative way."
-    model: sonnet
-
-  summarize:
-    prompt: "Summarize this greeting in one sentence: {{greet.output}}"
-    model: sonnet
-    depends_on: [greet]
-```
-
-**Three execution modes:**
-
-| Mode | What it does | API key needed? |
-|------|-------------|-----------------|
-| `dry-run` | Validates pipeline, no API calls | No |
-| `standalone` | Runs with Anthropic API directly | Yes |
-| `openclaw` | Runs via OpenClaw sub-agent spawning | No (uses OpenClaw) |
-
----
-
-## Status
-
-| Milestone | Status | PR | Description |
-|-----------|--------|-----|-------------|
-| **v0.1 — Engine Works** | ✅ Complete | [#62](https://github.com/ToscanRivera/orchestration-engine/pull/62) | DB API + Security hardening + 179 tests |
-| **v0.2 — Scenarios Grade** | ✅ Complete | [#63](https://github.com/ToscanRivera/orchestration-engine/pull/63) | Scenario runner + 3 graders + 3 scenarios + 214 tests |
-| **v0.3 — Pipeline Runs** | ✅ Complete | [#64](https://github.com/ToscanRivera/orchestration-engine/pull/64) | Template engine + Phase sequencer + `orch run` E2E + 308 tests |
-| **Week 1 — CLI & DX** | ✅ Complete | [#115](https://github.com/ToscanRivera/orchestration-engine/pull/115)–[#118](https://github.com/ToscanRivera/orchestration-engine/pull/118) | `orch quickstart`, `orch start` wizard, `orch templates list/info/install/uninstall`, rich progress, markdown output + 442 tests |
-| **Week 2 — Template Ecosystem** | 📋 In Progress | — | `orch new`, `orch validate`, skill_refs, example templates, Gemini fallback executor |
-| **Weeks 3-4 — Web UI** | 📋 Planned | — | `orch serve` with FastAPI + htmx, command transpiler, rubric generator |
-| **Weeks 5-8 — Visual Builder** | 📋 Planned | — | Drag-and-drop phase blocks, auto-YAML, domain template packs |
-
----
-
-## What's Built
-
-### CLI & Developer Experience (Week 1)
-
-- **`orch quickstart`** — Copy a working pipeline to your project in one command
-- **`orch start`** — Interactive wizard that asks questions and generates a custom pipeline from any template's `config_schema`
-- **`orch templates list`** — Browse available pipeline templates (built-in + installed)
-- **`orch templates info <name>`** — View template details, phases, config schema, and dependencies
-- **`orch templates install <source>`** — Install templates from GitHub URLs, shorthand (`user/repo`), or local paths
-- **`orch templates uninstall <name>`** — Clean removal of installed templates
-- **Rich progress display** — Live phase-by-phase progress with spinners and status
-- **Markdown output** — Pipeline results rendered as readable markdown reports
-- **Default output directory** — Results auto-saved to `./orch-output/` with timestamps
-
-### Pipeline Engine (v0.3)
-
-- **Template engine** — YAML pipeline definitions with `{{variable}}` interpolation and topological sort
-- **Phase sequencer** — Runs phases in dependency order, forwards output between phases, aborts on failure
-- **PipelineRunner** — 3 factory methods: `standalone()`, `openclaw()`, `dry_run()`
-- **AnthropicExecutor** — Real API executor, zero framework dependencies (stdlib `urllib` only)
-- **CLI** — `orch run <template> --mode standalone|openclaw|dry-run --api-key --input --output-dir`
-
-### Task Queue & Execution (v0.1–v0.2)
-
-- **SQLite task queue** — WAL mode, priority levels, retry with exponential backoff
-- **Error recovery** — Circuit breakers, model tier escalation (Haiku → Sonnet → Opus)
-- **3 executors** — DryRun, Local (shell), OpenClaw (file-based contract)
-
-### Scenario-Based Testing (v0.2)
-
-- **Scenario runner** — YAML definitions, weighted scoring, hard gates
-- **3 graders:** Assertion (restricted eval), LLM Judge (holdout-enforced), URL Check
-- **3 scenarios + 4 rubrics** for content pipeline testing
-
----
-
-## Architecture
-
-```
-CLI
-├── orch quickstart     ──▶ Copy template to project
-├── orch start          ──▶ Interactive wizard (config_schema-driven)
-├── orch templates      ──▶ list / info / install / uninstall
-└── orch run            ──▶ Execute pipeline
-        │
-        ▼
-    Template Engine ──▶ Phase Sequencer ──▶ Executor
-      (YAML parse)      (dependency order)    │
-      (var interpolation) (output forwarding) ├─ AnthropicExecutor (API)
-                                              ├─ OpenClawExecutor (sub-agents)
-                                              └─ DryRunExecutor (testing)
-        │
-        ▼
-    Scenario Runner ──▶ Graders
-      (acceptance test)   ├─ Assertion (eval)
-                          ├─ LLM Judge (rubric)
-                          └─ URL Check (HTTP)
-```
-
----
-
-## File Structure
-
-```
-orchestration-engine/
-├── src/orchestration_engine/
-│   ├── cli.py              # Click CLI (quickstart, start, templates, run, submit, status, list, cancel, validate)
-│   ├── pipeline_runner.py  # PipelineRunner — standalone(), openclaw(), dry_run()
-│   ├── templates.py        # YAML template loading + topological sort
-│   ├── sequencer.py        # Phase sequencer with output forwarding
-│   ├── executors/
-│   │   └── anthropic_executor.py  # Direct Anthropic API (stdlib only)
-│   ├── schemas.py          # Pydantic V2 models
-│   ├── db.py               # SQLite database layer
-│   ├── queue.py            # TaskQueue
-│   ├── runner.py           # TaskRunner + legacy executors
-│   ├── recovery.py         # Error recovery + circuit breakers
-│   ├── config.py           # TOML configuration
-│   └── ...
-├── scenario_runner/
-│   ├── runner.py           # ScenarioRunner
-│   └── graders/            # assertion, llm_judge, url_check
-├── scenarios/              # 3 scenario YAMLs + 4 rubrics
-├── templates/              # Pipeline templates (content-pipeline.yaml)
-├── examples/               # hello-pipeline.yaml (smoke test)
-├── tests/                  # 442 tests
-├── docs/                   # Architecture, API reference, strategy docs
-├── pyproject.toml          # v0.3.0, MIT license
-└── README.md
-```
-
----
-
-## Documentation
-
-- [Getting Started](docs/getting-started.md) — Detailed setup guide
-- [Architecture](ARCHITECTURE.md) — System design
-- [API Reference](docs/api-reference.md) — CLI commands + Python classes
-- [Tech Stack](docs/tech-stack.md) — Dependencies and choices
-- [Scenario Strategy](docs/orchestration-engine-scenario-strategy.md) — Testing philosophy
-
 ---
 
 ## Relationship to OpenClaw
 
-| Layer | Provides | Think of it as... |
-|-------|----------|-------------------|
+| Layer | Provides | Think of it as… |
+|-------|----------|-----------------|
 | **OpenClaw** | Sub-agent spawning, tool access, model switching | Operating System |
 | **Orchestration Engine** | Pipeline templates, phase sequencing, quality gates | Application Framework |
-| **Scenario Runner** | Outcome-based testing, LLM judges, satisfaction tracking | Test Framework |
+| **Scenario Runner** | Outcome-based testing, LLM judges, grading | Test Framework |
 
 The engine works **standalone** (direct API) or **with OpenClaw** (sub-agent spawning). No vendor lock-in.
 
 ---
 
-## License
+## Contributing
 
-MIT
+Pull requests are welcome! Here's how to get started:
+
+```bash
+git clone https://github.com/ToscanRivera/orchestration-engine.git
+cd orchestration-engine
+pip install -e ".[test]"
+pytest
+```
+
+**Areas where contributions are especially welcome:**
+
+- 📦 **Community templates** — add a YAML template to `templates/` and submit a PR
+- 🧪 **Scenarios & rubrics** — improve grading quality for existing templates
+- 🔌 **Executors** — add support for new model providers (Gemini, Mistral, local models)
+- 📖 **Documentation** — improve examples, add tutorials, translate docs
+
+Please read CONTRIBUTING.md (coming soon) for code style and PR guidelines.
 
 ---
 
-**442 tests. 3 scenarios. 4 rubrics. Zero hallucinations tolerated.**
+## Documentation
+
+- [Getting Started](docs/GETTING_STARTED.md) — detailed setup guide
+- [Architecture](docs/ARCHITECTURE.md) — system design
+- [API Reference](docs/api-reference.md) — CLI commands + Python classes
+- [Tech Stack](docs/tech-stack.md) — dependencies and choices
+
+---
+
+## License
+
+MIT © [Conny Lazo](https://connylazo.com) & [Toscan](https://github.com/ToscanRivera)
+
+See [LICENSE](LICENSE) for the full text.
+
+---
+
+**Tests passing. 3 execution modes. Zero vendor lock-in.**
