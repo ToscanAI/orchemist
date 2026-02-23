@@ -1,0 +1,162 @@
+# Community Template Index
+# ========================
+# This file is the authoritative list of community-contributed pipeline
+# templates that can be discovered and installed via:
+#
+#   orch templates search <query>
+#   orch templates install <name>
+#
+# Each entry must have: name, description, author, repo_url, version,
+# category, tags (list), install_command.
+#
+# Format version: 1
+
+templates:
+
+  # ── Bundled examples (ship with orchestration-engine) ──────────────────
+
+  - name: hello-pipeline
+    description: >
+      Minimal two-phase example (Greet → Summarise). Perfect for smoke-testing
+      orch run end-to-end.
+    author: Orchestration Engine Team
+    repo_url: https://github.com/ToscanRivera/orchestration-engine/blob/main/examples/hello-pipeline.yaml
+    version: "1.0.0"
+    category: example
+    tags:
+      - example
+      - hello-world
+      - smoke-test
+      - minimal
+    install_command: "orch templates install ToscanRivera/orchestration-engine --file examples/hello-pipeline.yaml"
+
+  - name: content-pipeline-v2
+    description: >
+      7-phase content creation pipeline: research → outline → draft →
+      parallel review (flow + adversarial) → revision → final polish.
+    author: Toscan
+    repo_url: https://github.com/ToscanRivera/orchestration-engine/blob/main/examples/content-pipeline-v2.yaml
+    version: "1.0.0"
+    category: content
+    tags:
+      - content
+      - writing
+      - research
+      - review
+      - article
+      - long-form
+    install_command: "orch templates install ToscanRivera/orchestration-engine --file examples/content-pipeline-v2.yaml"
+
+  - name: code-review-pipeline
+    description: >
+      Automated code review: parse diff → parallel complexity / style /
+      security checks → unified review report synthesis.
+    author: Orchestration Engine Team
+    repo_url: https://github.com/ToscanRivera/orchestration-engine/blob/main/examples/code-review-pipeline.yaml
+    version: "1.0.0"
+    category: engineering
+    tags:
+      - code-review
+      - engineering
+      - security
+      - quality
+      - diff
+    install_command: "orch templates install ToscanRivera/orchestration-engine --file examples/code-review-pipeline.yaml"
+
+  - name: research-pipeline
+    description: >
+      Structured research pipeline: source discovery → extraction →
+      cross-reference → narrative synthesis → fact-check → final report.
+    author: Orchestration Engine Team
+    repo_url: https://github.com/ToscanRivera/orchestration-engine/blob/main/examples/research-pipeline.yaml
+    version: "1.0.0"
+    category: research
+    tags:
+      - research
+      - fact-check
+      - report
+      - synthesis
+      - sources
+    install_command: "orch templates install ToscanRivera/orchestration-engine --file examples/research-pipeline.yaml"
+
+  # ── Hypothetical community contributions ───────────────────────────────
+
+  - name: seo-blog-pipeline
+    description: >
+      SEO-optimised blog post generator: keyword research → topic clustering →
+      outline → draft → on-page SEO audit → final post with meta tags.
+    author: community/seo-bot
+    repo_url: https://github.com/community/orch-seo-blog-pipeline
+    version: "0.9.1"
+    category: content
+    tags:
+      - seo
+      - blog
+      - content
+      - marketing
+      - keywords
+    install_command: "orch templates install community/orch-seo-blog-pipeline"
+
+  - name: pr-review-assistant
+    description: >
+      Pull-request review assistant: fetch PR diff → summarise changes →
+      detect breaking changes → suggest improvements → post review comment.
+    author: community/devtools
+    repo_url: https://github.com/community/orch-pr-review-assistant
+    version: "1.2.0"
+    category: engineering
+    tags:
+      - pull-request
+      - code-review
+      - github
+      - engineering
+      - automation
+    install_command: "orch templates install community/orch-pr-review-assistant"
+
+  - name: incident-postmortem
+    description: >
+      Automated incident post-mortem: timeline extraction → root-cause
+      analysis → contributing factors → action items → shareable report.
+    author: community/sre-tools
+    repo_url: https://github.com/community/orch-incident-postmortem
+    version: "1.0.3"
+    category: operations
+    tags:
+      - incident
+      - postmortem
+      - sre
+      - operations
+      - reliability
+    install_command: "orch templates install community/orch-incident-postmortem"
+
+  - name: api-docs-generator
+    description: >
+      API documentation pipeline: parse OpenAPI spec → generate endpoint
+      summaries → write usage examples → produce Markdown reference docs.
+    author: community/doctools
+    repo_url: https://github.com/community/orch-api-docs-generator
+    version: "2.0.0"
+    category: documentation
+    tags:
+      - api
+      - documentation
+      - openapi
+      - markdown
+      - developer-experience
+    install_command: "orch templates install community/orch-api-docs-generator"
+
+  - name: data-quality-pipeline
+    description: >
+      Data quality assessment: schema validation → null / outlier detection →
+      distribution analysis → quality score → remediation recommendations.
+    author: community/data-eng
+    repo_url: https://github.com/community/orch-data-quality-pipeline
+    version: "0.5.0"
+    category: data
+    tags:
+      - data
+      - quality
+      - validation
+      - analytics
+      - schema
+    install_command: "orch templates install community/orch-data-quality-pipeline"

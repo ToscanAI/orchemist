@@ -1819,6 +1819,97 @@ def templates_uninstall(name: str, force: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Feature #76 — orch templates search <query>
+# ---------------------------------------------------------------------------
+
+DEFAULT_TEMPLATE_INDEX_URL = (
+    "https://raw.githubusercontent.com/ToscanRivera/orchestration-engine/main/"
+    "community-templates/index.yaml"
+)
+_TEMPLATE_INDEX_CACHE = Path.home() / ".orch" / "cache" / "template-index.yaml"
+
+
+@templates.command("search")
+@click.argument("query", default="", required=False)
+@click.option(
+    "--refresh",
+    is_flag=True,
+    default=False,
+    help="Force re-fetch of the remote index (ignore cache).",
+)
+@click.option(
+    "--index-url",
+    default=None,
+    help="Override the default community index URL.",
+)
+def templates_search(query: str, refresh: bool, index_url: Optional[str]) -> None:
+    """Search the community template index.
+
+    QUERY is an optional search term (name, description, tags, category).
+    Omit to list all available community templates.
+
+    \b
+    Examples:
+      orch templates search content
+      orch templates search --refresh
+      orch templates search code-review --index-url https://example.com/index.yaml
+    """
+    from .template_index import TemplateIndex
+
+    index = TemplateIndex()
+    url = index_url or DEFAULT_TEMPLATE_INDEX_URL
+
+    # ── 1. Resolve index data ──────────────────────────────────────────
+    loaded = False
+
+    if not refresh and TemplateIndex.is_cache_fresh(_TEMPLATE_INDEX_CACHE):
+        try:
+            index.load_local(_TEMPLATE_INDEX_CACHE)
+            loaded = True
+        except Exception:
+            pass  # Fall through to remote fetch
+
+    if not loaded:
+        try:
+            click.echo(f"Fetching index from {url} …", err=True)
+            index.load_remote(url)
+            try:
+                index.save_cache(_TEMPLATE_INDEX_CACHE)
+            except Exception:
+                pass  # Cache save failure is non-fatal
+        except Exception as exc:
+            # If remote fails but we have a stale cache, use it
+            if _TEMPLATE_INDEX_CACHE.exists():
+                click.echo(
+                    f"⚠  Remote fetch failed ({exc}); using stale cache.",
+                    err=True,
+                )
+                index.load_local(_TEMPLATE_INDEX_CACHE)
+            else:
+                click.echo(
+                    f"✗ Could not load template index: {exc}",
+                    err=True,
+                )
+                raise SystemExit(1)
+
+    # ── 2. Search ──────────────────────────────────────────────────────
+    results = index.search(query)
+
+    # ── 3. Display ─────────────────────────────────────────────────────
+    if not results:
+        click.echo(f"No templates found matching {query!r}.")
+        return
+
+    label = f"({len(results)} result{'s' if len(results) != 1 else ''})"
+    if query:
+        click.echo(f"Results for {query!r} {label}:\n")
+    else:
+        click.echo(f"Community templates {label}:\n")
+
+    click.echo(index.format_results(results))
+
+
+# ---------------------------------------------------------------------------
 # Feature #65 — orch quickstart
 # ---------------------------------------------------------------------------
 
