@@ -1469,6 +1469,241 @@ def quickstart(ctx: click.Context) -> None:
     console.print()
 
 
+# ---------------------------------------------------------------------------
+# Feature #66 — orch start (interactive wizard)
+# ---------------------------------------------------------------------------
+
+def _find_template(name_or_path: str):
+    """Locate a template by file path OR by name/ID.
+
+    Returns:
+        (template_path: Path, template: PipelineTemplate)
+
+    Raises SystemExit on failure.
+    """
+    import os as _os
+    from .templates import TemplateEngine
+
+    engine = TemplateEngine()
+
+    is_path = (
+        name_or_path.endswith(".yaml")
+        or name_or_path.endswith(".yml")
+        or _os.sep in name_or_path
+        or "/" in name_or_path
+    )
+
+    if is_path:
+        p = Path(name_or_path)
+        try:
+            template = engine.load_template(p)
+            return p, template
+        except FileNotFoundError:
+            click.echo(f"✗ Template file not found: {name_or_path}", err=True)
+            sys.exit(1)
+        except Exception as exc:
+            click.echo(f"✗ Could not load template: {exc}", err=True)
+            sys.exit(1)
+
+    # Name / ID lookup
+    found_all = _scan_templates()
+    search = name_or_path.lower()
+    for filepath, _source, tmpl in found_all:
+        if tmpl.id.lower() == search or tmpl.name.lower() == search:
+            return filepath, tmpl
+
+    # Not found — suggest similar
+    candidates = [
+        tmpl.name
+        for _, _, tmpl in found_all
+        if search in tmpl.id.lower() or search in tmpl.name.lower()
+    ]
+    click.echo(f"✗ Template '{name_or_path}' not found.", err=True)
+    if candidates:
+        click.echo("\nDid you mean one of these?", err=True)
+        for c in candidates:
+            click.echo(f"  • {c}", err=True)
+    else:
+        click.echo(
+            "\nNo similar templates found. Run 'orch templates list' to see all.",
+            err=True,
+        )
+    sys.exit(1)
+
+
+def _prompt_for_field(
+    field_name: str,
+    field_info: Dict[str, Any],
+    required_fields: set,
+    yes: bool,
+) -> Optional[str]:
+    """Prompt the user for a single config-schema field.
+
+    When *yes* is True, skip the prompt and return the field's default (or "").
+    Returns None if the field is optional and the user leaves it blank.
+    """
+    field_info = field_info or {}
+    field_type = field_info.get("type", "string")
+    field_desc = field_info.get("description", "")
+    field_default = field_info.get("default", None)
+    field_enum = field_info.get("enum", None)
+    is_required = field_name in required_fields
+
+    # Build label
+    req_tag = ", required" if is_required else ""
+    label = f"  {field_name} ({field_type}{req_tag})"
+    if field_desc:
+        label += f": {field_desc}"
+
+    if yes:
+        # Non-interactive: use default or empty string
+        return str(field_default) if field_default is not None else (None if not is_required else "")
+
+    click.echo(label)
+
+    prompt_text = "  > "
+    if field_enum:
+        choice = click.Choice(field_enum)
+        value = click.prompt(
+            prompt_text,
+            default=field_default or "",
+            type=choice,
+            prompt_suffix="",
+        )
+    elif field_default is not None:
+        # Show default in brackets
+        click.echo(f"  [default: {field_default}]")
+        value = click.prompt(
+            prompt_text,
+            default=str(field_default),
+            show_default=False,
+            prompt_suffix="",
+        )
+    else:
+        if is_required:
+            value = click.prompt(prompt_text, prompt_suffix="")
+        else:
+            value = click.prompt(prompt_text, default="", show_default=False, prompt_suffix="")
+
+    click.echo()
+    return value if value != "" else (None if not is_required else "")
+
+
+@main.command("start")
+@click.argument("template_name_or_path")
+@click.option(
+    "--mode",
+    type=click.Choice(["standalone", "openclaw", "dry-run"]),
+    default="dry-run",
+    show_default=True,
+    help="Execution mode (dry-run is safe — no API calls).",
+)
+@click.option(
+    "--api-key",
+    envvar="ANTHROPIC_API_KEY",
+    default=None,
+    help="Anthropic API key for standalone mode (or set ANTHROPIC_API_KEY).",
+)
+@click.option(
+    "--yes", "-y",
+    is_flag=True,
+    default=False,
+    help="Skip prompts and use default values for all fields.",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory to write phase outputs.",
+)
+@click.pass_context
+def start_wizard(
+    ctx: click.Context,
+    template_name_or_path: str,
+    mode: str,
+    api_key: Optional[str],
+    yes: bool,
+    output_dir: Optional[Path],
+) -> None:
+    """Interactive wizard to fill in a template's inputs and run it.
+
+    TEMPLATE_NAME_OR_PATH can be a template name/ID (e.g. content-pipeline-mvp)
+    or a path to a .yaml file.
+
+    Examples:
+
+      # Interactive wizard with defaults:
+      orch start content-pipeline-mvp
+
+      # Non-interactive (use all defaults), standalone mode:
+      orch start content-pipeline-mvp --mode standalone --yes
+
+      # Point at a local file:
+      orch start ./my-template.yaml --mode dry-run
+    """
+    import json as _json
+    from rich.console import Console
+
+    console = Console(highlight=False)
+
+    # ---- 1. Find and load template ----
+    template_path, template = _find_template(template_name_or_path)
+
+    # ---- 2. Show header ----
+    console.print()
+    console.print(
+        f"[bold cyan]{template.name}[/bold cyan] "
+        f"[dim](v{template.version})[/dim]"
+    )
+    if template.description:
+        console.print(template.description)
+    console.print()
+
+    # ---- 3. Collect inputs from config_schema ----
+    config_schema: Dict[str, Any] = template.config_schema or {}
+    props: Dict[str, Any] = config_schema.get("properties", {}) or {}
+    required_fields: set = set(config_schema.get("required", []))
+
+    collected: Dict[str, str] = {}
+
+    if props:
+        if not yes:
+            console.print("[bold]Fill in the pipeline inputs:[/bold]")
+            console.print()
+
+        for field_name, field_info in props.items():
+            value = _prompt_for_field(field_name, field_info, required_fields, yes)
+            if value is not None:
+                collected[field_name] = value
+    elif not yes:
+        console.print("[dim]This template has no configurable inputs.[/dim]")
+        console.print()
+
+    # ---- 4. Summary + confirmation ----
+    if collected and not yes:
+        console.print("[bold]Summary:[/bold]")
+        for k, v in collected.items():
+            console.print(f"  {k}: {v}")
+        console.print()
+        if not click.confirm("Proceed?", default=True):
+            click.echo("Aborted.")
+            return
+
+    # ---- 5. Run via the existing run_template command ----
+    input_json_str = _json.dumps(collected) if collected else None
+
+    ctx.invoke(
+        run_template,
+        template_file=template_path,
+        mode=mode,
+        api_key=api_key,
+        input_json=input_json_str,
+        input_file=None,
+        output_dir=output_dir,
+        dry_run_delay=0.0,
+        dry_run_failure_rate=0.0,
+    )
+
 
 if __name__ == '__main__':
     main()
