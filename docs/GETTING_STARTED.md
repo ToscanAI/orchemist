@@ -1,6 +1,6 @@
 # Getting Started — From Zero to First Pipeline
 
-> **You'll have a working pipeline in about 10 minutes.** This guide assumes you know what a terminal is and can run a Python command. That's it.
+> **You'll have a working pipeline in under 5 minutes.** This guide assumes you know what a terminal is and can run a Python command. That's it.
 
 ---
 
@@ -39,7 +39,7 @@ pip install orchestration-engine
 
 **Option B: Clone and install locally** *(recommended while the project is in active development)*
 ```bash
-git clone https://github.com/your-org/orchestration-engine.git
+git clone https://github.com/ToscanRivera/orchestration-engine.git
 cd orchestration-engine
 pip install -e .
 ```
@@ -60,7 +60,21 @@ python3 -m orchestration_engine --help
 
 ## Your First Pipeline
 
-Let's build a simple two-phase pipeline: one phase to research a topic, one to write a short summary.
+The fastest way to get started:
+
+```bash
+# Option 1: Copy a working example to your current directory
+orch quickstart
+
+# Option 2: Interactive wizard — answer questions, get a custom pipeline
+orch start
+
+# Option 3: Browse available templates
+orch templates list
+orch templates info content-pipeline
+```
+
+Or build one from scratch. Let's create a simple two-phase pipeline: one phase to research a topic, one to write a short summary.
 
 Create a file called `my-pipeline.yaml` anywhere on your machine:
 
@@ -132,7 +146,7 @@ orch run my-pipeline.yaml --input-file input.json
 
 **Dry run mode** — run the pipeline without actually calling the AI (useful for testing your YAML structure):
 ```bash
-orch run my-pipeline.yaml --input '{"topic": "test"}' --dry-run
+orch run my-pipeline.yaml --input '{"topic": "test"}' --mode dry-run
 ```
 
 In dry-run mode, the executor returns mock results immediately. Your phases still run and pass data between each other — you're just testing the plumbing, not the AI.
@@ -245,7 +259,7 @@ python3 -m venv ~/orch-env
 source ~/orch-env/bin/activate
 
 # Install the engine
-git clone https://github.com/your-org/orchestration-engine.git
+git clone https://github.com/ToscanRivera/orchestration-engine.git
 cd orchestration-engine
 pip install -e .
 ```

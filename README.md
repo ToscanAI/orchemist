@@ -46,7 +46,7 @@ pip install .
 orch --help
 ```
 
-You should see a list of commands: `run`, `submit`, `status`, `list`, `cancel`, `validate`.
+You should see a list of commands: `run`, `quickstart`, `start`, `templates`, `submit`, `status`, `list`, `cancel`, `validate`.
 
 ### Dry Run (no API key needed)
 
@@ -72,11 +72,27 @@ orch run examples/hello-pipeline.yaml --mode standalone --api-key $ANTHROPIC_API
 
 This makes real API calls to Claude. Each phase runs sequentially, producing text output.
 
+### Explore Templates
+
+```bash
+# See what pipeline templates are available
+orch templates list
+
+# Get details on a specific template
+orch templates info content-pipeline
+
+# Copy a starter pipeline to your project
+orch quickstart
+
+# Or use the interactive wizard to build a custom pipeline
+orch start
+```
+
 ### Run Tests
 
 ```bash
 pip install -e ".[test]"
-pytest        # 308 tests
+pytest        # 442 tests
 pytest -v     # verbose output
 ```
 
@@ -193,7 +209,7 @@ CLI
 ```
 orchestration-engine/
 ├── src/orchestration_engine/
-│   ├── cli.py              # Click CLI (run, submit, status, list, cancel, validate)
+│   ├── cli.py              # Click CLI (quickstart, start, templates, run, submit, status, list, cancel, validate)
 │   ├── pipeline_runner.py  # PipelineRunner — standalone(), openclaw(), dry_run()
 │   ├── templates.py        # YAML template loading + topological sort
 │   ├── sequencer.py        # Phase sequencer with output forwarding
@@ -212,7 +228,7 @@ orchestration-engine/
 ├── scenarios/              # 3 scenario YAMLs + 4 rubrics
 ├── templates/              # Pipeline templates (content-pipeline.yaml)
 ├── examples/               # hello-pipeline.yaml (smoke test)
-├── tests/                  # 308 tests
+├── tests/                  # 442 tests
 ├── docs/                   # Architecture, API reference, strategy docs
 ├── pyproject.toml          # v0.3.0, MIT license
 └── README.md
@@ -248,4 +264,4 @@ MIT
 
 ---
 
-**308 tests. 3 scenarios. 4 rubrics. Zero hallucinations tolerated.**
+**442 tests. 3 scenarios. 4 rubrics. Zero hallucinations tolerated.**
