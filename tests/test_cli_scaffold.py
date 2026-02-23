@@ -18,13 +18,13 @@ from orchestration_engine.cli import main
 
 def _invoke(args, cwd=None, input_text=None):
     """Run the CLI and return the result."""
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     return runner.invoke(main, args, input=input_text, catch_exceptions=False)
 
 
 def _invoke_in(tmp_path, args, input_text=None):
     """Run the CLI with `cwd` set to tmp_path so relative paths are isolated."""
-    runner = CliRunner(mix_stderr=False)
+    runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path):
         return runner.invoke(main, args, input=input_text, catch_exceptions=False)
 

@@ -1,0 +1,291 @@
+# research-pipeline.yaml
+# A structured research pipeline that discovers sources, extracts findings,
+# cross-references them for consistency, synthesises a narrative, fact-checks
+# claims, and produces a polished final report.
+#
+# Run with: orch run examples/research-pipeline.yaml --input '{"topic":"Quantum computing in cryptography"}'
+# Validate:  orch validate examples/research-pipeline.yaml
+
+id: research-pipeline
+name: "Research Pipeline"
+version: "1.0.0"
+description: >
+  A 6-phase research pipeline that discovers and evaluates sources on a topic,
+  extracts key findings, cross-references them for consistency and credibility,
+  synthesises a coherent narrative, fact-checks all claims, and produces a
+  well-structured final research report with configurable depth.
+author: "Toscan"
+category: "research"
+tags:
+  - research
+  - fact-checking
+  - synthesis
+  - report
+  - knowledge
+
+# Real-world scenarios this pipeline is designed for
+use_cases:
+  - "Produce a structured research report on any topic with automatic cross-referencing"
+  - "Generate fact-checked backgrounders for journalism, policy, or academic work"
+  - "Quickly synthesise multi-source knowledge on emerging topics with depth control"
+
+# Minimal example showing the required and optional config inputs
+example_input:
+  topic: "The role of AI in climate change mitigation"
+  depth: "standard"
+  max_sources: 10
+
+# Schema defining what inputs the pipeline accepts at runtime
+config_schema:
+  type: object
+  properties:
+    topic:
+      type: string
+      description: "The research subject or question to investigate"
+    depth:
+      type: string
+      description: "Research depth: 'quick' (overview), 'standard' (balanced), or 'deep' (exhaustive)"
+      default: "standard"
+      enum:
+        - quick
+        - standard
+        - deep
+    max_sources:
+      type: integer
+      description: "Maximum number of sources to gather and process"
+      default: 10
+  required:
+    - topic
+
+# phases: discover runs first; extract follows; then cross-reference; then
+# synthesize and fact-check run in parallel; format waits for both before
+# producing the final deliverable.
+phases:
+
+  # ── discover ──────────────────────────────────────────────────────────────
+  # First phase: identify and catalogue relevant sources on the topic.
+  - id: discover
+    name: "Source Discovery"
+    description: "Identify and catalogue credible sources on the research topic based on depth setting."
+    task_type: research
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: []
+    timeout_minutes: 30
+    prompt_template: |
+      You are a research librarian. Discover and catalogue credible sources on the
+      following topic according to the requested depth.
+
+      Topic: {input[topic]}
+      Depth: {input[depth]}
+      Maximum sources: {input[max_sources]}
+
+      For 'quick' depth: focus on 3-5 authoritative overview sources.
+      For 'standard' depth: gather {input[max_sources]} diverse sources across perspectives.
+      For 'deep' depth: aim for maximum coverage up to {input[max_sources]} sources,
+        including primary research, meta-analyses, and opposing viewpoints.
+
+      For each source, provide:
+      - Title
+      - Author(s) or organisation
+      - Publication / URL (real or representative example)
+      - Date (approximate if needed)
+      - Source type (academic paper / news / report / book / blog / etc.)
+      - Credibility rating: high / medium / low with brief rationale
+      - 1-sentence summary of what it contributes
+
+      Group sources by: Primary Sources, Secondary Sources, and Dissenting Views.
+
+  # ── extract ───────────────────────────────────────────────────────────────
+  # Extract and structure the key findings from the discovered sources.
+  - id: extract
+    name: "Key Findings Extraction"
+    description: "Extract and structure the most important findings, claims, and data from all sources."
+    task_type: research
+    model_tier: sonnet
+    thinking_level: low
+    depends_on:
+      - discover
+    timeout_minutes: 35
+    prompt_template: |
+      You are a research analyst. Extract structured findings from the source catalogue below.
+
+      Topic: {input[topic]}
+      Research depth: {input[depth]}
+
+      === SOURCE CATALOGUE ===
+      {previous_output[discover]}
+
+      Extract and structure:
+      1. **Core claims** — the central assertions made across sources (with source attribution)
+      2. **Key statistics & data** — quantitative findings with sources and dates
+      3. **Expert consensus** — where do sources agree?
+      4. **Points of contention** — where do credible sources disagree, and why?
+      5. **Knowledge gaps** — what questions remain unanswered or under-researched?
+      6. **Emerging trends** — what new developments are identified?
+
+      For each finding, note:
+      - Supporting sources (by title)
+      - Confidence level: high / medium / low
+      - Any caveats or limitations
+
+  # ── cross-reference ───────────────────────────────────────────────────────
+  # Verify that findings are consistent across sources and flag discrepancies.
+  - id: cross-reference
+    name: "Cross-Reference Verification"
+    description: "Cross-reference extracted findings across sources to identify consistency, conflicts, and gaps."
+    task_type: research
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on:
+      - extract
+    timeout_minutes: 30
+    prompt_template: |
+      You are a research verification specialist. Cross-reference the extracted
+      findings below to identify agreements, conflicts, and credibility issues.
+
+      Topic: {input[topic]}
+
+      === EXTRACTED FINDINGS ===
+      {previous_output[extract]}
+
+      Perform cross-referencing analysis:
+      1. **Corroborated facts** — claims confirmed by 2+ independent sources (list them)
+      2. **Single-source claims** — important claims with only one source (flag for caution)
+      3. **Source conflicts** — where credible sources directly contradict each other
+         (describe the conflict, which sources take which position, and possible reasons)
+      4. **Credibility assessment** — are there any sources that seem outliers or biased?
+      5. **Confidence map** — for each major claim, assign overall confidence:
+         - HIGH: 3+ independent credible sources agree
+         - MEDIUM: 2 sources agree, or 1 highly credible source
+         - LOW: single lower-credibility source, or conflicting evidence
+      6. **Recommended verification** — any claims that need additional sourcing before
+         inclusion in a final report
+
+      Be rigorous — this verification step protects the integrity of the final report.
+
+  # ── synthesize ────────────────────────────────────────────────────────────
+  # Synthesise verified findings into a coherent narrative.
+  - id: synthesize
+    name: "Narrative Synthesis"
+    description: "Synthesise the verified findings into a coherent, well-argued narrative for the report."
+    task_type: content
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on:
+      - cross-reference
+    timeout_minutes: 40
+    prompt_template: |
+      You are a research writer. Synthesise the verified findings into a coherent
+      narrative that will form the body of the final research report.
+
+      Topic: {input[topic]}
+      Research depth: {input[depth]}
+
+      === CROSS-REFERENCED FINDINGS ===
+      {previous_output[cross-reference]}
+
+      Write a well-structured narrative that:
+      1. Opens with a clear statement of the topic and its significance
+      2. Presents the key findings in logical order (most established → most contested)
+      3. Acknowledges areas of expert consensus and areas of ongoing debate
+      4. Integrates data and statistics naturally into the prose
+      5. Distinguishes between high-confidence and lower-confidence claims
+      6. Identifies implications and what the findings mean in practice
+      7. Closes with a synthesis of the overall state of knowledge on the topic
+
+      Write in a clear, academic-adjacent style appropriate for an informed audience.
+      Include inline citations in the form (Author/Source, Year).
+      Do NOT include section headers yet — this is the narrative body only.
+
+  # ── fact-check ────────────────────────────────────────────────────────────
+  # Parallel with synthesize: verify every claim in the narrative.
+  - id: fact-check
+    name: "Fact-Check Claims"
+    description: "Verify every factual claim in the synthesised narrative against the source evidence."
+    task_type: review
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on:
+      - synthesize
+    timeout_minutes: 30
+    prompt_template: |
+      You are a fact-checker. Verify the claims in the research narrative below
+      against the cross-referenced source evidence.
+
+      === NARRATIVE TO FACT-CHECK ===
+      {previous_output[synthesize]}
+
+      === SOURCE EVIDENCE (cross-referenced) ===
+      {previous_output[cross-reference]}
+
+      For every factual claim in the narrative:
+      1. Quote the claim
+      2. Mark its status:
+         - ✓ VERIFIED — supported by the source evidence
+         - ⚠ NEEDS CAVEAT — partially supported; requires qualification
+         - ✗ UNSUPPORTED — not backed by the evidence; should be removed or rewritten
+         - ? UNVERIFIABLE — cannot confirm from available sources
+      3. If not VERIFIED, explain what change is needed
+
+      Provide a fact-check summary:
+      - Total claims checked
+      - Counts by status
+      - Overall reliability score (0–100)
+      - List of specific corrections required before publication
+
+  # ── format ────────────────────────────────────────────────────────────────
+  # Final phase: produce the formatted research report.
+  - id: format
+    name: "Final Report Formatting"
+    description: "Produce the final, formatted research report incorporating synthesis and fact-check corrections."
+    task_type: content
+    model_tier: sonnet
+    thinking_level: low
+    depends_on:
+      - synthesize
+      - fact-check
+    timeout_minutes: 30
+    prompt_template: |
+      Produce a final, publication-ready research report by combining the
+      narrative with all fact-check corrections.
+
+      Topic: {input[topic]}
+      Research depth: {input[depth]}
+
+      === NARRATIVE ===
+      {previous_output[synthesize]}
+
+      === FACT-CHECK REPORT (apply all corrections) ===
+      {previous_output[fact-check]}
+
+      Format the final report with:
+
+      # [Compelling Report Title]
+
+      ## Executive Summary
+      (2-3 paragraphs: what was researched, key findings, key implications)
+
+      ## Background
+      (Context and significance of the topic)
+
+      ## Key Findings
+      (Organised thematic sub-sections, incorporating all corrections from fact-check)
+
+      ## Areas of Consensus and Debate
+      (Where experts agree vs. where evidence is contested)
+
+      ## Implications
+      (What do these findings mean in practice?)
+
+      ## Knowledge Gaps & Future Research
+      (What remains unknown or under-researched)
+
+      ## Conclusion
+      (Summary synthesis)
+
+      ## Sources
+      (List all sources referenced in the report)
+
+      Apply every correction flagged in the fact-check report before finalising.
+      Remove or qualify all claims marked ✗ UNSUPPORTED or ⚠ NEEDS CAVEAT.
