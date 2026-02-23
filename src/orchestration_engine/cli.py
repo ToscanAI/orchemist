@@ -1230,6 +1230,158 @@ def templates_list(json_output: bool) -> None:
     console.print(table)
 
 
+# ---------------------------------------------------------------------------
+# Feature #68 — orch templates info <name|path>
+# ---------------------------------------------------------------------------
+
+@templates.command("info")
+@click.argument("name_or_path")
+def templates_info(name_or_path: str) -> None:
+    """Show detailed info about a template (by name, ID, or file path)."""
+    import os as _os
+    from rich.console import Console
+    from rich.table import Table
+    from .templates import TemplateEngine
+
+    console = Console(highlight=False)
+    engine = TemplateEngine()
+
+    # Determine: is this a file path or a name?
+    is_path = (
+        name_or_path.endswith(".yaml")
+        or name_or_path.endswith(".yml")
+        or _os.sep in name_or_path
+        or "/" in name_or_path
+    )
+
+    template = None
+    template_path = None
+
+    if is_path:
+        p = Path(name_or_path)
+        try:
+            template = engine.load_template(p)
+            template_path = p
+        except FileNotFoundError:
+            click.echo(f"✗ Template file not found: {name_or_path}", err=True)
+            sys.exit(1)
+        except Exception as exc:
+            click.echo(f"✗ Could not load template: {exc}", err=True)
+            sys.exit(1)
+    else:
+        # Search resolution paths
+        found_all = _scan_templates()
+        search = name_or_path.lower()
+
+        for filepath, _source, tmpl in found_all:
+            if tmpl.id.lower() == search or tmpl.name.lower() == search:
+                template = tmpl
+                template_path = filepath
+                break
+
+        if template is None:
+            # Suggest similar templates
+            candidates = [
+                tmpl.name
+                for _, _, tmpl in found_all
+                if search in tmpl.id.lower() or search in tmpl.name.lower()
+            ]
+            click.echo(f"✗ Template '{name_or_path}' not found.", err=True)
+            if candidates:
+                click.echo("\nDid you mean one of these?", err=True)
+                for c in candidates:
+                    click.echo(f"  • {c}", err=True)
+            else:
+                click.echo(
+                    "\nNo similar templates found. Run 'orch templates list' to see all.",
+                    err=True,
+                )
+            sys.exit(1)
+
+    # ---- Header ----
+    console.print(
+        f"\n[bold cyan]{template.name}[/bold cyan] "
+        f"[dim](v{template.version})[/dim]"
+    )
+    if template.description:
+        console.print(template.description)
+    console.print()
+
+    # ---- Config Schema ----
+    props: Dict[str, Any] = {}
+    required_fields: set = set()
+
+    if template.config_schema:
+        props = template.config_schema.get("properties", {}) or {}
+        required_fields = set(template.config_schema.get("required", []))
+
+    if props:
+        console.print("[bold]Config Schema:[/bold]")
+        schema_table = Table(show_header=True, header_style="bold")
+        schema_table.add_column("Field")
+        schema_table.add_column("Type")
+        schema_table.add_column("Required", justify="center")
+        schema_table.add_column("Description")
+
+        for field_name, field_info in props.items():
+            field_info = field_info or {}
+            field_type = field_info.get("type", "any")
+            field_desc = field_info.get("description", "")
+            field_required = "yes" if field_name in required_fields else "no"
+            schema_table.add_row(field_name, field_type, field_required, field_desc)
+
+        console.print(schema_table)
+        console.print()
+
+    # ---- Phases table ----
+    if template.phases:
+        console.print("[bold]Phases:[/bold]")
+        phases_table = Table(show_header=True, header_style="bold")
+        phases_table.add_column("ID")
+        phases_table.add_column("Name")
+        phases_table.add_column("Model", justify="center")
+        phases_table.add_column("Thinking", justify="center")
+        phases_table.add_column("Depends On")
+
+        for phase in template.phases:
+            deps = ", ".join(phase.depends_on) if phase.depends_on else "—"
+            phases_table.add_row(
+                _yaml_str(phase.id),
+                _yaml_str(phase.name),
+                _yaml_str(phase.model_tier),
+                _yaml_str(phase.thinking_level),
+                deps,
+            )
+
+        console.print(phases_table)
+        console.print()
+
+    # ---- Execution order / dependency graph ----
+    waves = engine.get_execution_order(template)
+    if waves:
+        console.print("[bold]Execution Order:[/bold]")
+        for i, wave in enumerate(waves, start=1):
+            console.print(f"  Wave {i}: {', '.join(wave)}")
+        console.print()
+
+    # ---- Example command ----
+    if template_path:
+        example_input: Dict[str, Any] = {}
+        if props:
+            # Use first field as example
+            first_field, first_info = next(iter(props.items()))
+            first_info = first_info or {}
+            if first_info.get("type", "string") == "string":
+                example_input[first_field] = "AI agents"
+            else:
+                example_input[first_field] = "..."
+
+        input_str = json.dumps(example_input) if example_input else '{"key": "value"}'
+        console.print("[bold]Example:[/bold]")
+        console.print(
+            f"  orch run {template_path} --mode dry-run --input '{input_str}'"
+        )
+        console.print()
 
 
 if __name__ == '__main__':
