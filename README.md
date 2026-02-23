@@ -120,12 +120,26 @@ phases:
 | **v0.1 — Engine Works** | ✅ Complete | [#62](https://github.com/ToscanRivera/orchestration-engine/pull/62) | DB API + Security hardening + 179 tests |
 | **v0.2 — Scenarios Grade** | ✅ Complete | [#63](https://github.com/ToscanRivera/orchestration-engine/pull/63) | Scenario runner + 3 graders + 3 scenarios + 214 tests |
 | **v0.3 — Pipeline Runs** | ✅ Complete | [#64](https://github.com/ToscanRivera/orchestration-engine/pull/64) | Template engine + Phase sequencer + `orch run` E2E + 308 tests |
-| **v0.4 — Confidence** | 📋 Next | — | 10 scenarios, reporting, multi-trial, calibration |
-| **v0.5 — Integrated** | 📋 Planned | — | CI integration, git workflow |
+| **Week 1 — CLI & DX** | ✅ Complete | [#115](https://github.com/ToscanRivera/orchestration-engine/pull/115)–[#118](https://github.com/ToscanRivera/orchestration-engine/pull/118) | `orch quickstart`, `orch start` wizard, `orch templates list/info/install/uninstall`, rich progress, markdown output + 442 tests |
+| **Week 2 — Template Ecosystem** | 📋 In Progress | — | `orch new`, `orch validate`, skill_refs, example templates, Gemini fallback executor |
+| **Weeks 3-4 — Web UI** | 📋 Planned | — | `orch serve` with FastAPI + htmx, command transpiler, rubric generator |
+| **Weeks 5-8 — Visual Builder** | 📋 Planned | — | Drag-and-drop phase blocks, auto-YAML, domain template packs |
 
 ---
 
 ## What's Built
+
+### CLI & Developer Experience (Week 1)
+
+- **`orch quickstart`** — Copy a working pipeline to your project in one command
+- **`orch start`** — Interactive wizard that asks questions and generates a custom pipeline from any template's `config_schema`
+- **`orch templates list`** — Browse available pipeline templates (built-in + installed)
+- **`orch templates info <name>`** — View template details, phases, config schema, and dependencies
+- **`orch templates install <source>`** — Install templates from GitHub URLs, shorthand (`user/repo`), or local paths
+- **`orch templates uninstall <name>`** — Clean removal of installed templates
+- **Rich progress display** — Live phase-by-phase progress with spinners and status
+- **Markdown output** — Pipeline results rendered as readable markdown reports
+- **Default output directory** — Results auto-saved to `./orch-output/` with timestamps
 
 ### Pipeline Engine (v0.3)
 
@@ -152,20 +166,24 @@ phases:
 ## Architecture
 
 ```
-CLI (orch run)
-    │
-    ▼
-Template Engine ──▶ Phase Sequencer ──▶ Executor
-  (YAML parse)      (dependency order)    │
-  (var interpolation) (output forwarding) ├─ AnthropicExecutor (API)
-                                          ├─ OpenClawExecutor (sub-agents)
-                                          └─ DryRunExecutor (testing)
-    │
-    ▼
-Scenario Runner ──▶ Graders
-  (acceptance test)   ├─ Assertion (eval)
-                      ├─ LLM Judge (rubric)
-                      └─ URL Check (HTTP)
+CLI
+├── orch quickstart     ──▶ Copy template to project
+├── orch start          ──▶ Interactive wizard (config_schema-driven)
+├── orch templates      ──▶ list / info / install / uninstall
+└── orch run            ──▶ Execute pipeline
+        │
+        ▼
+    Template Engine ──▶ Phase Sequencer ──▶ Executor
+      (YAML parse)      (dependency order)    │
+      (var interpolation) (output forwarding) ├─ AnthropicExecutor (API)
+                                              ├─ OpenClawExecutor (sub-agents)
+                                              └─ DryRunExecutor (testing)
+        │
+        ▼
+    Scenario Runner ──▶ Graders
+      (acceptance test)   ├─ Assertion (eval)
+                          ├─ LLM Judge (rubric)
+                          └─ URL Check (HTTP)
 ```
 
 ---
