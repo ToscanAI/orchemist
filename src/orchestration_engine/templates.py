@@ -42,6 +42,7 @@ class PhaseDefinition:
     prompt_template: str = ""       # Python str.format()-style with {input}, {previous_output}
     output_schema: Dict[str, Any] = field(default_factory=dict)
     skill_refs: List[str] = field(default_factory=list)  # paths to external skill files
+    context_files: List[str] = field(default_factory=list)  # local files to inline into prompt
 
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
@@ -55,6 +56,8 @@ class PhaseDefinition:
             self.prompt_template = ""
         if self.skill_refs is None:
             self.skill_refs = []
+        if self.context_files is None:
+            self.context_files = []
 
 
 @dataclass
@@ -332,6 +335,7 @@ class TemplateEngine:
                 "thinking_level", "depends_on", "timeout_minutes",
                 "human_review", "prompt_template", "output_schema",
                 "skill_refs",
+                "context_files",
             }
             cleaned = {k: v for k, v in phase_data.items() if k in known_fields}
             phases.append(PhaseDefinition(**cleaned))

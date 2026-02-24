@@ -199,6 +199,26 @@ class PhaseSequencer:
 
         safe_skills = _SafeDict(skill_context)
 
+        # Load context_files and build file_context dict
+        file_context: Dict[str, str] = {}
+        if hasattr(phase, 'context_files') and phase.context_files:
+            for file_path in phase.context_files:
+                try:
+                    p = Path(file_path).expanduser()
+                    if p.exists():
+                        content = p.read_text(errors="replace")
+                        # Use filename (without extension) as key
+                        key = p.stem.replace("-", "_").replace(".", "_")
+                        file_context[key] = content
+                        logger.debug(f"Phase '{phase.id}': loaded context file '{file_path}' ({len(content)} chars)")
+                    else:
+                        logger.warning(f"Phase '{phase.id}': context file not found: {file_path}")
+                        file_context[p.stem] = f"<FILE_NOT_FOUND:{file_path}>"
+                except Exception as exc:
+                    logger.warning(f"Phase '{phase.id}': failed to read context file '{file_path}' — {exc}")
+                    file_context[Path(file_path).stem] = f"<FILE_READ_ERROR:{file_path}>"
+        safe_files = _SafeDict(file_context)
+
         # Build per-phase keyword args so templates can use {phase_id.output}
         # in addition to {previous_output[phase_id]}
         phase_kwargs: Dict[str, _PhaseOutput] = {
@@ -212,6 +232,7 @@ class PhaseSequencer:
                 previous_output=safe_outputs,
                 config=safe_config,
                 skill_context=safe_skills,
+                files=safe_files,
                 **phase_kwargs,
             )
         except (KeyError, IndexError, AttributeError) as exc:
