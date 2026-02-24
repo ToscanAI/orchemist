@@ -382,7 +382,7 @@ class OpenClawExecutor(TaskExecutor):
             try:
                 hist_result = self._invoke_tool("sessions_history", {
                     "sessionKey": session_key,
-                    "limit": 5,
+                    "limit": 50,
                 })
             except RuntimeError as exc:
                 # Session may not be ready yet
@@ -412,31 +412,55 @@ class OpenClawExecutor(TaskExecutor):
             if not last_assistant:
                 continue
 
-            # Check if it's a final response (has content, not just tool calls)
-            content = last_assistant.get("content", [])
-            has_text = any(
-                isinstance(c, dict) and c.get("type") == "text" and c.get("text", "").strip()
-                for c in (content if isinstance(content, list) else [])
-            )
-
-            if has_text:
-                # Extract all text blocks
-                text_parts = []
-                for c in (content if isinstance(content, list) else []):
-                    if isinstance(c, dict) and c.get("type") == "text":
-                        text_parts.append(c.get("text", ""))
-                # Extract token usage if available
-                usage = last_assistant.get("usage", {})
-                tokens_in = usage.get("input", 0) + usage.get("cacheRead", 0)
-                tokens_out = usage.get("output", 0)
-                return "\n".join(text_parts), tokens_in + tokens_out
-
             # Check for stop reason indicating completion
             stop = last_assistant.get("stopReason", "")
-            if stop in ("stop", "end_turn") and not has_text:
-                # Completed but empty — might have only tool calls
-                logger.debug(f"Session {session_key} stopped with no text output, continuing poll...")
+            if stop not in ("stop", "end_turn"):
+                # Not yet complete — still generating or using tools
+                logger.debug(f"Session {session_key}: stopReason='{stop}', still running...")
                 continue
+
+            # Session completed — extract text from the last assistant message
+            content = last_assistant.get("content", [])
+            text_parts = []
+            for c in (content if isinstance(content, list) else []):
+                if isinstance(c, dict) and c.get("type") == "text":
+                    text = c.get("text", "").strip()
+                    if text:
+                        text_parts.append(text)
+
+            # If the last assistant message has no text (only tool calls that
+            # completed), look backwards for the most recent text-bearing message
+            if not text_parts:
+                for msg in reversed(messages):
+                    if msg.get("role") != "assistant":
+                        continue
+                    mc = msg.get("content", [])
+                    for c in (mc if isinstance(mc, list) else []):
+                        if isinstance(c, dict) and c.get("type") == "text":
+                            text = c.get("text", "").strip()
+                            if text:
+                                text_parts.append(text)
+                    if text_parts:
+                        break
+
+            output = "\n".join(text_parts)
+
+            # Extract token usage from all assistant messages
+            total_tokens = 0
+            for msg in messages:
+                if msg.get("role") == "assistant":
+                    usage = msg.get("usage", {})
+                    total_tokens += (
+                        usage.get("input", 0)
+                        + usage.get("cacheRead", 0)
+                        + usage.get("output", 0)
+                    )
+
+            logger.info(
+                f"Session {session_key} completed: {len(output)} chars, "
+                f"{total_tokens} tokens"
+            )
+            return output, total_tokens
 
     @staticmethod
     def _extract_output(response: Dict[str, Any]) -> str:

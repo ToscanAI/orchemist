@@ -333,7 +333,8 @@ class TestSuccessfulExecution:
                     "sessionKey": session_key,
                     "messages": [
                         {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
-                        {"role": "assistant", "content": [{"type": "text", "text": output_text}], "stopReason": "stop"},
+                        {"role": "assistant", "content": [{"type": "text", "text": output_text}],
+                         "stopReason": "stop", "usage": {"input": 100, "output": 50}},
                     ],
                 })}],
             },
@@ -395,7 +396,8 @@ class TestSuccessfulExecution:
                     "sessionKey": "sess-006",
                     "messages": [
                         {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
-                        {"role": "assistant", "content": [{"type": "text", "text": "via text fallback"}], "stopReason": "stop"},
+                        {"role": "assistant", "content": [{"type": "text", "text": "via text fallback"}],
+                         "stopReason": "stop", "usage": {"input": 100, "output": 50}},
                     ],
                 })}],
             },
@@ -444,7 +446,7 @@ class TestErrorHandling:
                 "details": {"childSessionKey": "sess-empty"},
             },
         }
-        # History shows assistant with empty text
+        # History shows assistant with empty text but stopReason=stop (completed)
         done_resp = {
             "ok": True,
             "result": {
@@ -458,20 +460,16 @@ class TestErrorHandling:
             },
         }
 
-        executor.timeout_seconds = 1
-
         def mock_post(url, body):
             if body.get("tool") == "sessions_spawn":
                 return spawn_resp
             return done_resp
 
         with patch.object(executor, "_http_post", side_effect=mock_post), \
-             patch("orchestration_engine.openclaw_executor.time.sleep"), \
-             patch("orchestration_engine.openclaw_executor.time.monotonic",
-                   side_effect=[0.0, 0.0, 0.5, 2.0]):
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
-        # Empty output → times out since no text is found
+        # Empty output → FAILED
         assert result.state == TaskState.FAILED
 
     def test_missing_session_key_returns_failed(self, executor, sample_task):
@@ -504,6 +502,7 @@ class TestTimeoutHandling:
                 "details": {"childSessionKey": session_key},
             },
         }
+        # Session never completes — no stopReason, only user message
         running_resp = {
             "ok": True,
             "result": {

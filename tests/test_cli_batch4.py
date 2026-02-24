@@ -49,6 +49,16 @@ phases:
 # orch templates install — local file
 # ---------------------------------------------------------------------------
 
+
+def _safe_output(result):
+    """Combine output + stderr safely (stderr may not be captured)."""
+    text = result.output or ""
+    try:
+        text += result.stderr or ""
+    except ValueError:
+        pass
+    return text
+
 class TestTemplatesInstallLocal:
     """Test installing from local .yaml files."""
 
@@ -81,7 +91,7 @@ class TestTemplatesInstallLocal:
             # Install again without --force
             result = runner.invoke(main, ["templates", "install", str(sample_yaml)])
         assert result.exit_code != 0
-        assert "already installed" in result.output or "already installed" in (result.stderr or "")
+        assert "already installed" in result.output or "already installed" in _safe_output(result)
 
     def test_install_local_force_overwrite(self, runner, sample_yaml, tmp_orch_home):
         with patch("orchestration_engine.cli._USER_TEMPLATES_DIR", tmp_orch_home):
@@ -97,7 +107,7 @@ class TestTemplatesInstallLocal:
                 "templates", "install", "/nonexistent/file.yaml",
             ])
         assert result.exit_code != 0
-        assert "not found" in (result.output + (result.stderr or "")).lower()
+        assert "not found" in _safe_output(result).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +151,7 @@ class TestTemplatesInstallGitHub:
                 "templates", "install", "some-random-name",
             ])
         assert result.exit_code != 0
-        assert "Unknown source" in (result.output + (result.stderr or ""))
+        assert "Unknown source" in _safe_output(result)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +179,7 @@ class TestTemplatesUninstall:
                 "templates", "uninstall", "nonexistent", "--force",
             ])
         assert result.exit_code != 0
-        assert "not found" in (result.output + (result.stderr or "")).lower()
+        assert "not found" in _safe_output(result).lower()
 
     def test_uninstall_abort_on_no(self, runner, sample_yaml, tmp_orch_home):
         with patch("orchestration_engine.cli._USER_TEMPLATES_DIR", tmp_orch_home):

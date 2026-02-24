@@ -202,7 +202,7 @@ class PhaseSequencer:
         # Build per-phase keyword args so templates can use {phase_id.output}
         # in addition to {previous_output[phase_id]}
         phase_kwargs: Dict[str, _PhaseOutput] = {
-            pid: _PhaseOutput(str(pout))
+            pid: _PhaseOutput(_extract_phase_text(pout))
             for pid, pout in self.phase_outputs.items()
         }
 
@@ -431,6 +431,35 @@ def _is_within_dir(path: Path, directory: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _extract_phase_text(phase_output: Any) -> str:
+    """Extract clean text from a phase output dict.
+
+    Phase outputs are stored as ``TaskResult.model_dump()`` dicts.  The actual
+    text lives at ``result.text`` (or ``result["text"]``).  If the output is
+    already a string, return it as-is.
+    """
+    if isinstance(phase_output, str):
+        return phase_output
+    if isinstance(phase_output, dict):
+        # Primary path: result dict from TaskResult.model_dump()
+        result = phase_output.get("result", {})
+        if isinstance(result, dict):
+            text = result.get("text", "")
+            if text:
+                return str(text)
+        # Fallback: maybe it's a flat dict with 'text' at top level
+        text = phase_output.get("text", "")
+        if text:
+            return str(text)
+        # Last resort: stringify but warn
+        logger.warning(
+            f"Phase output dict has no 'result.text' key; falling back to str(). "
+            f"Keys: {list(phase_output.keys())}"
+        )
+        return str(phase_output)
+    return str(phase_output)
 
 
 class _SafeDict(dict):
