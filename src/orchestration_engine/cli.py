@@ -2904,10 +2904,22 @@ def import_plugin_command(
 
     # ── 3. Determine output path ──────────────────────────────────────────────
     if output is None:
-        # Derive stem from the generated YAML's id field
+        # Derive stem from the generated YAML's id field.
+        # Strip the leading comment header (lines beginning with "#") before
+        # parsing so yaml.safe_load receives clean YAML.  The previous
+        # approach (lstrip + concatenate) was fragile and produced invalid
+        # duplicate-key YAML on some edge-case inputs.
         try:
-            first_pass = yaml.safe_load(yaml_text.lstrip("# \n").splitlines()[0] + "\n" + yaml_text)
-            template_id = first_pass.get("id", command_file.stem) if first_pass else command_file.stem
+            data_lines = [
+                line for line in yaml_text.splitlines()
+                if not line.startswith("#")
+            ]
+            first_pass = yaml.safe_load("\n".join(data_lines))
+            template_id = (
+                first_pass.get("id", command_file.stem)
+                if isinstance(first_pass, dict)
+                else command_file.stem
+            )
         except Exception:
             template_id = command_file.stem
         output = Path(f"{template_id}.yaml")

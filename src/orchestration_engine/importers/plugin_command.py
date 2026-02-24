@@ -383,12 +383,39 @@ def _extract_skill_refs(text: str, base_dir: Optional[Path] = None) -> List[str]
     seen: Dict[str, None] = {}  # Ordered set (insertion-order dict)
 
     def _try_resolve(raw_href: str) -> Optional[str]:
-        """Resolve *raw_href* relative to *base_dir*; return abs path or None."""
+        """Resolve *raw_href* relative to *base_dir*; return abs path or None.
+
+        Security — two layers of path-traversal prevention:
+
+        1. Absolute paths are rejected unconditionally.  A skill reference
+           like ``/etc/SKILL.md`` must never be accepted regardless of whether
+           the file exists.
+
+        2. Relative paths that resolve *outside* the project root are rejected.
+           The project root is defined as ``base_dir.parent`` (one directory
+           above the command file's folder).  This permits the canonical
+           ``../skills/brand-voice/SKILL.md`` pattern (up from ``commands/``
+           to the project root, then down into ``skills/``), while blocking
+           references like ``../../etc/SKILL.md`` that escape the project tree
+           entirely.
+
+        Callers that genuinely need an out-of-tree skill file should place a
+        symlink pointing to it from within the project directory.
+        """
         p = Path(raw_href)
         if p.is_absolute():
-            resolved = p
-        else:
-            resolved = (base_dir / p).resolve()
+            # Reject absolute path skill refs: they can reference arbitrary
+            # locations on the filesystem, including sensitive system paths.
+            return None
+        resolved = (base_dir / p).resolve()
+        # Reject relative paths that escape beyond the project root.
+        # project_root == base_dir.parent  (e.g. /project/ when the command
+        # file lives in /project/commands/).
+        project_root = base_dir.resolve().parent
+        try:
+            resolved.relative_to(project_root)
+        except ValueError:
+            return None
         if resolved.exists() and resolved.name.upper() == "SKILL.MD":
             return str(resolved)
         return None
@@ -420,17 +447,33 @@ def _make_unique_id(base_id: str, seen: Dict[str, int]) -> str:
     If *base_id* has not been used, return it and record it.  Otherwise
     append ``-2``, ``-3``, … until a fresh name is found.
 
+    Unlike a naive recursive approach, this iterative implementation correctly
+    handles the case where a literal section heading like "Phase 2" has already
+    added ``phase-2`` to *seen* independently — a subsequent duplicate "Phase"
+    heading then produces ``phase-3`` rather than the ugly ``phase-2-2``.
+
+    A loop limit of 10,000 guards against unbounded iteration on pathological
+    documents (far beyond any realistic heading duplication).
+
     Args:
         base_id: Slugified candidate phase ID.
-        seen:    Mutable mapping of ``{phase_id: count}``.  Modified in place.
+        seen:    Mutable mapping of ``{phase_id: 1}``.  Modified in place.
     """
     if base_id not in seen:
         seen[base_id] = 1
         return base_id
-    seen[base_id] += 1
-    candidate = f"{base_id}-{seen[base_id]}"
-    # Recurse in case the suffixed name also collides
-    return _make_unique_id(candidate, seen)
+    # Iterative counter: try base_id-2, base_id-3, … until we find a free slot.
+    counter = 2
+    while counter <= 10_000:
+        candidate = f"{base_id}-{counter}"
+        if candidate not in seen:
+            seen[candidate] = 1
+            return candidate
+        counter += 1
+    raise RuntimeError(
+        f"Cannot generate a unique phase ID for base '{base_id}' after 10,000 "
+        "attempts — check for pathological heading duplication."
+    )
 
 
 def _build_phase_prompt(heading: str, body: str) -> str:
@@ -440,17 +483,25 @@ def _build_phase_prompt(heading: str, body: str) -> str:
     1. Declares what input is available (``{input}`` and ``{previous_output}``).
     2. States the section name.
     3. Appends the full section body as task instructions.
+
+    Note: heading and body are embedded via f-string/concatenation rather than
+    ``str.format()`` so that any ``{...}`` placeholders that legitimately appear
+    in the body text (e.g., Jinja templates, JSON examples, or keys like
+    ``{heading}``/``{body}`` itself) are passed through verbatim instead of
+    being silently mangled.  The ``{input}`` and ``{previous_output}`` tokens
+    are preserved as literal strings for PhaseSequencer's ``_SafeDict``
+    substitution at runtime.
     """
-    intro = (
-        "You are executing the '{heading}' step of this workflow.\n\n"
+    instructions = body if body else f"Complete the '{heading}' step."
+    return (
+        f"You are executing the '{heading}' step of this workflow.\n\n"
         "## Input\n\n"
-        "{{input}}\n\n"
+        "{input}\n\n"
         "## Context from previous steps\n\n"
-        "{{previous_output}}\n\n"
+        "{previous_output}\n\n"
         "## Instructions\n\n"
-        "{body}"
+        + instructions
     )
-    return intro.format(heading=heading, body=body if body else f"Complete the '{heading}' step.")
 
 
 def _build_review_prompt(content_phase_id: str, content_phase_name: str) -> str:
@@ -570,7 +621,7 @@ def _build_template_dict(
         phase_name = section.heading
 
         # Determine which skill refs belong to this section
-        base_dir = None  # already resolved to absolute paths in skill_refs_all
+        # (skill_refs_all already contains resolved absolute paths)
         section_skill_refs = _skill_refs_for_section(
             section.body, parsed.skill_refs_all
         )
@@ -707,8 +758,13 @@ def _dump_template_yaml(template_dict: Dict[str, Any]) -> str:
 
     prepared = _prepare(template_dict)
 
-    dumper = yaml.Dumper
-    dumper.add_representer(_LiteralStr, _literal_representer)
+    # Use a local subclass so we never mutate the global yaml.Dumper
+    # representers dict.  Assigning ``dumper = yaml.Dumper`` is merely an
+    # alias (not a copy) and would permanently pollute the global state.
+    class _CustomDumper(yaml.Dumper):
+        pass
+
+    _CustomDumper.add_representer(_LiteralStr, _literal_representer)
 
     header = (
         "# Generated by: orch import plugin-command\n"
@@ -725,7 +781,7 @@ def _dump_template_yaml(template_dict: Dict[str, Any]) -> str:
     yaml.dump(
         prepared,
         stream,
-        Dumper=dumper,
+        Dumper=_CustomDumper,
         default_flow_style=False,
         allow_unicode=True,
         sort_keys=False,

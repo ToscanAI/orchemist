@@ -336,6 +336,19 @@ class TestMakeUniqueId:
         ids = [_make_unique_id("phase", seen) for _ in range(4)]
         assert ids == ["phase", "phase-2", "phase-3", "phase-4"]
 
+    def test_no_ugly_chained_suffix_when_literal_id_preexists(self):
+        """Regression: if 'phase-2' is already in seen (from a literal heading
+        named 'Phase 2'), a subsequent duplicate 'Phase' must produce 'phase-3'
+        not the ugly 'phase-2-2'.
+        """
+        seen: Dict[str, int] = {}
+        _make_unique_id("phase", seen)      # → 'phase'
+        _make_unique_id("phase-2", seen)    # → 'phase-2'  (independent literal)
+        third = _make_unique_id("phase", seen)
+        assert third == "phase-3", (
+            f"Expected 'phase-3' when 'phase-2' already exists, got {third!r}"
+        )
+
 
 # ===========================================================================
 # Unit tests: skill-ref extraction
@@ -371,6 +384,72 @@ class TestExtractSkillRefs:
         text = "[a](./SKILL.md) and [b](./SKILL.md)"
         refs = _extract_skill_refs(text, base_dir=tmp_path)
         assert len(refs) == 1
+
+    # ── AC-15: path traversal prevention ────────────────────────────────────
+
+    def test_absolute_path_skill_ref_rejected(self, tmp_path):
+        """AC-15: absolute path skill refs must be silently rejected.
+
+        Even if the file exists on disk, an absolute path reference bypasses
+        directory-tree confinement and must not be returned.  This prevents
+        an untrusted markdown document from exfiltrating arbitrary file paths.
+        """
+        # Create a real SKILL.md at an absolute path unrelated to base_dir
+        skill_file = tmp_path / "outside" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# Outside skill")
+
+        base_dir = tmp_path / "plugin_dir"
+        base_dir.mkdir()
+
+        # Absolute path link — points to an existing file, but should be rejected
+        text = f"[skill]({str(skill_file)})"
+        refs = _extract_skill_refs(text, base_dir=base_dir)
+        assert refs == [], (
+            "Absolute path skill refs must be rejected to prevent path traversal attacks"
+        )
+
+    def test_relative_traversal_within_project_allowed(self, tmp_path):
+        """Relative paths that traverse upward within the project remain valid.
+
+        A pattern like ``../skills/brand-voice/SKILL.md`` from a ``commands/``
+        directory is the canonical usage and must continue to work.
+        """
+        skill_file = tmp_path / "skills" / "brand-voice" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# Brand Voice Skill")
+
+        commands_dir = tmp_path / "commands"
+        commands_dir.mkdir()
+
+        text = "[brand-voice skill](../skills/brand-voice/SKILL.md)"
+        refs = _extract_skill_refs(text, base_dir=commands_dir)
+        assert len(refs) == 1, "Relative upward traversal within project must be accepted"
+
+    def test_relative_path_escaping_project_root_rejected(self, tmp_path):
+        """AC-15: relative paths that resolve beyond the project root must be rejected.
+
+        Given a command file in ``project/commands/``, the project root is
+        ``project/`` (= base_dir.parent).  A reference like
+        ``../../outside/SKILL.md`` resolves two levels above ``commands/``
+        and exits the project tree — it must be silently dropped.
+        """
+        # Create a real SKILL.md two levels above base_dir
+        outside_skill = tmp_path.parent / "outside" / "SKILL.md"
+        outside_skill.parent.mkdir(parents=True, exist_ok=True)
+        outside_skill.write_text("# Outside skill")
+
+        base_dir = tmp_path / "commands"
+        base_dir.mkdir()
+
+        # ../../outside/SKILL.md from tmp_path/commands/ resolves to
+        # tmp_path/../outside/SKILL.md — clearly outside the project root (tmp_path).
+        text = "[skill](../../outside/SKILL.md)"
+        refs = _extract_skill_refs(text, base_dir=base_dir)
+        assert refs == [], (
+            "Relative paths that escape the project root must be rejected "
+            "to prevent directory-traversal exfiltration of skill file paths"
+        )
 
 
 # ===========================================================================
@@ -643,6 +722,37 @@ class TestRoundTrip:
         data = _load_yaml(yaml_text)
         content = next(p for p in data["phases"] if p["id"] == "generate-content")
         assert "{previous_output}" in content["prompt_template"]
+
+    def test_prompt_template_curly_braces_in_body_preserved_verbatim(self):
+        """Regression: {word} tokens in the markdown body must not be mangled.
+
+        Previously _build_phase_prompt used str.format(heading=..., body=...).
+        Any {heading} or {body} in the section text would be silently replaced;
+        other {tokens} would raise KeyError.  The fix uses f-string + concat,
+        which passes all body content through unchanged.
+        """
+        doc = textwrap.dedent(
+            """\
+            ---
+            description: Curly brace test
+            ---
+
+            # Jinja Pipeline
+
+            ## Render Template
+
+            Use `{{ variable }}` in Jinja.  Also {heading} and {body} must survive.
+            """
+        )
+        yaml_text = import_plugin_command_from_string(doc)
+        data = _load_yaml(yaml_text)
+        phase = next(p for p in data["phases"] if "render" in p["id"])
+        assert "{heading}" in phase["prompt_template"], (
+            "{heading} in body was mangled by str.format()"
+        )
+        assert "{body}" in phase["prompt_template"], (
+            "{body} in body was mangled by str.format()"
+        )
 
     def test_tags_propagated_from_frontmatter(self):
         yaml_text = import_plugin_command_from_string(MULTI_SECTION_COMMAND)
@@ -925,3 +1035,127 @@ class TestExtendedValidation:
         _, warns = self._run_extended(yaml_text, tmp_path)
         level_warnings = [w for w in warns if "thinking_level" in w]
         assert level_warnings == [], f"Unexpected thinking_level warnings: {level_warnings}"
+
+
+# ===========================================================================
+# AC-14: YAML Dumper isolation (must NOT mutate global yaml.Dumper)
+# ===========================================================================
+
+
+class TestYAMLDumperIsolation:
+    """Verify that _dump_template_yaml uses a local Dumper subclass and never
+    pollutes the global ``yaml.Dumper.yaml_representers`` dict.
+
+    Before this fix, the code did:
+
+        dumper = yaml.Dumper          # alias, not a copy
+        dumper.add_representer(...)   # permanently mutates the class
+
+    which caused silent, cumulative state build-up in long-running processes
+    and test runners.
+    """
+
+    def test_no_global_yaml_dumper_mutation_single_call(self):
+        """AC-14: one call must not add representers to the global yaml.Dumper."""
+        before_count = len(yaml.Dumper.yaml_representers)
+
+        import_plugin_command_from_string(MINIMAL_COMMAND)
+
+        after_count = len(yaml.Dumper.yaml_representers)
+        assert before_count == after_count, (
+            f"yaml.Dumper was mutated after one call: "
+            f"{before_count} → {after_count} representers"
+        )
+
+    def test_no_global_yaml_dumper_mutation_repeated_calls(self):
+        """AC-14: repeated calls must not accumulate representers."""
+        before_count = len(yaml.Dumper.yaml_representers)
+
+        for _ in range(5):
+            import_plugin_command_from_string(MINIMAL_COMMAND)
+
+        after_count = len(yaml.Dumper.yaml_representers)
+        assert before_count == after_count, (
+            f"yaml.Dumper representers grew after repeated calls: "
+            f"{before_count} → {after_count}"
+        )
+
+    def test_no_str_subtype_in_global_dumper_representers(self):
+        """AC-14: _LiteralStr (internal str subtype) must never appear in global Dumper."""
+        import_plugin_command_from_string(MULTI_SECTION_COMMAND)
+
+        # Check that no new str subclasses leaked into the global representers
+        str_subtypes = [
+            t for t in yaml.Dumper.yaml_representers.keys()
+            if isinstance(t, type) and issubclass(t, str) and t is not str
+        ]
+        assert str_subtypes == [], (
+            f"Unexpected str subtypes leaked into yaml.Dumper.yaml_representers: "
+            f"{str_subtypes}"
+        )
+
+    def test_global_yaml_dump_unaffected_after_import(self):
+        """AC-14: standard yaml.dump still works correctly after the importer runs.
+
+        Specifically, plain strings must serialise as unquoted scalars, not as
+        literal blocks (the style the importer uses internally).
+        """
+        import_plugin_command_from_string(MINIMAL_COMMAND)
+
+        # A plain string should still round-trip cleanly
+        result = yaml.dump({"key": "short value"}, Dumper=yaml.Dumper).strip()
+        assert result == "key: short value", (
+            f"yaml.Dumper behaviour changed after importer call: {result!r}"
+        )
+
+
+# ===========================================================================
+# CLI: template_id derivation edge cases
+# ===========================================================================
+
+
+class TestCLITemplateIdDerivation:
+    """Ensure the CLI correctly derives the output filename from the generated
+    YAML even when the comment header contains YAML-like content.
+
+    The previous implementation used a fragile lstrip+concatenate approach
+    that could produce duplicate-key YAML and was sensitive to header content.
+    The fix strips comment lines before calling yaml.safe_load.
+    """
+
+    def test_output_filename_from_template_id(self, tmp_path, monkeypatch):
+        """Output file is named <template-id>.yaml regardless of header noise."""
+        monkeypatch.chdir(tmp_path)
+        cmd_file = tmp_path / "test.md"
+        cmd_file.write_text(MINIMAL_COMMAND)
+        result = _cli("import", "plugin-command", str(cmd_file))
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        expected = tmp_path / "minimal-pipeline.yaml"
+        assert expected.exists(), (
+            f"Expected output file '{expected}' not created. "
+            f"CLI output: {result.output}"
+        )
+
+    def test_output_filename_for_multi_word_title(self, tmp_path, monkeypatch):
+        """Multi-word titles must be slugified into the output filename."""
+        monkeypatch.chdir(tmp_path)
+        doc = textwrap.dedent(
+            """\
+            ---
+            description: Multi word title test
+            ---
+
+            # My Complex Pipeline Title
+
+            ## Step One
+            Do something.
+            """
+        )
+        cmd_file = tmp_path / "complex.md"
+        cmd_file.write_text(doc)
+        result = _cli("import", "plugin-command", str(cmd_file))
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        expected = tmp_path / "my-complex-pipeline-title.yaml"
+        assert expected.exists(), (
+            f"Expected '{expected}' to be created. CLI output: {result.output}"
+        )
