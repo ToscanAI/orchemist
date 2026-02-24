@@ -445,16 +445,27 @@ class OpenClawExecutor(TaskExecutor):
 
             output = "\n".join(text_parts)
 
-            # Extract token usage from all assistant messages
+            # Extract token usage — sessions_history doesn't include per-message
+            # usage, so we query sessions_list for the session's totalTokens
             total_tokens = 0
-            for msg in messages:
-                if msg.get("role") == "assistant":
-                    usage = msg.get("usage", {})
-                    total_tokens += (
-                        usage.get("input", 0)
-                        + usage.get("cacheRead", 0)
-                        + usage.get("output", 0)
+            try:
+                list_result = self._invoke_tool("sessions_list", {
+                    "activeMinutes": 60,
+                })
+                list_text = self._parse_tool_text(list_result)
+                if list_text:
+                    sessions_data = json.loads(list_text)
+                    sessions = (
+                        sessions_data if isinstance(sessions_data, list)
+                        else sessions_data.get("sessions", [])
                     )
+                    for s in sessions:
+                        sk = s.get("sessionKey", "") or s.get("key", "")
+                        if sk == session_key:
+                            total_tokens = s.get("totalTokens", 0)
+                            break
+            except Exception as exc:
+                logger.debug(f"Could not extract token count: {exc}")
 
             logger.info(
                 f"Session {session_key} completed: {len(output)} chars, "

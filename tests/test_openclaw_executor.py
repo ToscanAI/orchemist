@@ -339,11 +339,24 @@ class TestSuccessfulExecution:
                 })}],
             },
         }
+        # sessions_list response for token extraction
+        list_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessions": [
+                        {"sessionKey": session_key, "totalTokens": 1500},
+                    ],
+                })}],
+            },
+        }
         call_count = {"history": 0}
 
         def mock_post(url, body):
             if body.get("tool") == "sessions_spawn":
                 return spawn_resp
+            if body.get("tool") == "sessions_list":
+                return list_resp
             # sessions_history
             call_count["history"] += 1
             if call_count["history"] <= poll_rounds:
@@ -369,6 +382,15 @@ class TestSuccessfulExecution:
             result = executor.execute(sample_task)
 
         assert result.result["text"] == "Pipeline result text"
+
+    def test_tokens_extracted_from_sessions_list(self, executor, sample_task):
+        mock = self._make_mock_post("sess-tok", "token test output")
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.tokens_consumed == 1500
 
     def test_polls_until_done(self, executor, sample_task):
         mock = self._make_mock_post("sess-005", "final", poll_rounds=2)

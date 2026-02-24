@@ -2801,6 +2801,142 @@ def new_template(
 
 
 # ---------------------------------------------------------------------------
+# orch import — import external resources into PipelineTemplate YAML
+# ---------------------------------------------------------------------------
+
+
+@main.group("import")
+def import_group() -> None:
+    """Import external resources and convert them to PipelineTemplate YAML."""
+
+
+@import_group.command("plugin-command")
+@click.argument(
+    "command_file",
+    type=click.Path(exists=True, path_type=Path),
+    metavar="COMMAND_FILE",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "Path to write the generated YAML template.  "
+        "Defaults to <command-id>.yaml in the current directory."
+    ),
+)
+@click.option(
+    "--author",
+    default=None,
+    help="Author string for the generated template (default: 'orch import plugin-command').",
+)
+@click.option(
+    "--dry-run",
+    "dry_run",
+    is_flag=True,
+    default=False,
+    help="Print the generated YAML to stdout without writing a file.",
+)
+@click.option(
+    "--validate",
+    "run_validate",
+    is_flag=True,
+    default=False,
+    help="Run orch validate on the generated file after writing.",
+)
+def import_plugin_command(
+    command_file: Path,
+    output: Optional[Path],
+    author: Optional[str],
+    dry_run: bool,
+    run_validate: bool,
+) -> None:
+    """Convert a knowledge-work-plugin command file to a PipelineTemplate YAML.
+
+    COMMAND_FILE is the path to a Markdown plugin command file (with optional
+    YAML frontmatter).  The importer:
+
+    \b
+    1. Parses the frontmatter for template metadata.
+    2. Maps every non-meta H2 section to a pipeline phase (sonnet tier).
+    3. Auto-inserts a review phase (opus tier) after each content phase.
+    4. Derives config_schema from the ## Inputs section.
+    5. Collects skill file references into skill_refs.
+
+    The generated YAML is written to --output (default: <id>.yaml).
+    Use --dry-run to preview without writing.  Use --validate to immediately
+    check the result with orch validate.
+
+    Examples:
+
+    \b
+      orch import plugin-command campaign-plan.md
+      orch import plugin-command draft-content.md --output my-draft.yaml
+      orch import plugin-command brand-review.md --dry-run
+      orch import plugin-command campaign-plan.md --validate
+    """
+    from .importers.plugin_command import (
+        import_plugin_command as _do_import,
+        GENERATED_AUTHOR,
+    )
+
+    OK  = click.style("✓", fg="green")
+    ERR = click.style("✗", fg="red")
+
+    # ── 1. Parse and generate YAML ────────────────────────────────────────────
+    try:
+        yaml_text = _do_import(
+            command_file,
+            author=author or GENERATED_AUTHOR,
+        )
+    except ValueError as exc:
+        click.echo(f"{ERR} Failed to parse plugin command: {exc}", err=True)
+        sys.exit(1)
+    except Exception as exc:
+        click.echo(f"{ERR} Unexpected error: {exc}", err=True)
+        sys.exit(1)
+
+    # ── 2. Dry-run: print and exit ────────────────────────────────────────────
+    if dry_run:
+        click.echo(yaml_text)
+        return
+
+    # ── 3. Determine output path ──────────────────────────────────────────────
+    if output is None:
+        # Derive stem from the generated YAML's id field
+        try:
+            first_pass = yaml.safe_load(yaml_text.lstrip("# \n").splitlines()[0] + "\n" + yaml_text)
+            template_id = first_pass.get("id", command_file.stem) if first_pass else command_file.stem
+        except Exception:
+            template_id = command_file.stem
+        output = Path(f"{template_id}.yaml")
+
+    # ── 4. Write to disk ──────────────────────────────────────────────────────
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(yaml_text, encoding="utf-8")
+    except OSError as exc:
+        click.echo(f"{ERR} Could not write output file: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(f"{OK} Generated template: {output}")
+
+    # ── 5. Optional: run orch validate on the result ─────────────────────────
+    if run_validate:
+        click.echo()
+        from click.testing import CliRunner
+        result = CliRunner().invoke(validate_template, [str(output)], catch_exceptions=False)
+        click.echo(result.output, nl=False)
+        if result.exit_code != 0:
+            sys.exit(result.exit_code)
+    else:
+        click.echo(f"\nNext steps:")
+        click.echo(f"  orch validate {output}           # Check the template")
+        click.echo(f"  orch run {output} --mode dry-run  # Test it")
+
+
+# ---------------------------------------------------------------------------
 # orch serve — local web UI server  (Feature #79)
 # ---------------------------------------------------------------------------
 
