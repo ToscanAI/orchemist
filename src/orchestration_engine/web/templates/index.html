@@ -1003,6 +1003,17 @@
 .phase-output-tab.active { border-bottom-color: #4a9eff; color: #e6edf3; }
 .output-tabs { border-bottom: 1px solid #30363d; margin-bottom: 12px; }
 
+
+/* === Issue #85: Phase Output Inspection === */
+.phase-pill { cursor: pointer; }
+.phase-pill:hover { transform: scale(1.05); }
+
+/* === Issue #86: Human-in-the-Loop (HITL) === */
+.hitl-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.hitl-content { background: #1a1a2e; border: 1px solid #4a9eff; border-radius: 12px; padding: 24px; max-width: 800px; width: 90%; max-height: 80vh; overflow-y: auto; }
+.hitl-actions { display: flex; gap: 12px; margin-top: 16px; justify-content: flex-end; }
+.btn-approve { background: #22c55e; color: white; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; }
+.btn-edit { background: #4a9eff; color: white; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; }
 </style>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
@@ -1138,6 +1149,28 @@
         <div class="log-entry start"><span class="ts">--:--:--</span><span class="msg">Ready. Select a template to get started.</span></div>
       </div>
     </section>
+
+  <!-- Issue #86: HITL Modal -->
+  <div id="hitl-modal" class="hitl-modal" style="display:none;" aria-modal="true" role="dialog">
+    <div class="hitl-content">
+      <h3 id="hitl-title">Pipeline Paused</h3>
+      <p id="hitl-message"></p>
+      <div class="output-viewer" id="hitl-output-preview"></div>
+      <div class="hitl-actions">
+        <button class="btn-approve" onclick="hitlApprove()">✅ Approve &amp; Continue</button>
+        <button class="btn-edit" onclick="hitlShowEdit()">✏️ Edit Output</button>
+      </div>
+      <div id="hitl-edit-area" style="display:none;margin-top:12px;">
+        <textarea id="hitl-edit-text" style="width:100%;min-height:120px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:8px;font-family:monospace;"></textarea>
+        <div class="hitl-actions" style="margin-top:8px;">
+          <button class="btn-approve" onclick="hitlSaveEdit()">💾 Save &amp; Continue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Issue #85: output-area for phase output inspection -->
+  <div id="output-area" style="display:none;"></div>
 
   </div>
 
@@ -1612,6 +1645,7 @@ function showOutput(phaseId) {
 
     // ── SSE connection ────────────────────────────────────────────────
     function connectSSE(runId) {
+      _currentRunId = runId;
       const es = new EventSource('/api/run/' + runId + '/status');
       activeEventSource = es;
 
@@ -1659,6 +1693,9 @@ function showOutput(phaseId) {
         setBadge('error', 'error');
         resetRunBtn();
         if (activeEventSource) { activeEventSource.close(); activeEventSource = null; }
+      } else if (type === 'paused') {
+        logEntry('start', `⏸ Pipeline paused after: ${evt.phase_id}`);
+        hitlShow(_currentRunId, evt.phase_id, evt.message, evt.output_preview || '');
       }
     }
 
@@ -1744,7 +1781,7 @@ let _run_start = null;
 
 function renderProgressPanel(phases) {
   let pills = phases.map(p =>
-    '<div class="phase-pill" id="pill-' + escHtml(p.id) + '">' + escHtml(p.name) + ' &#x23F3;</div>'
+    '<div class="phase-pill" id="pill-' + escHtml(p.id) + '" onclick="showPhaseOutput(\'' + escHtml(p.id) + '\',_currentRunId)">' + escHtml(p.name) + ' &#x23F3;</div>'
   ).join('');
   return '<div class="progress-panel" id="progress-panel">'
     + '<div style="display:flex;align-items:center"><span class="conn-dot" id="conn-dot"></span><strong>Pipeline Running</strong></div>'
@@ -1782,7 +1819,10 @@ function handleProgressEvent(evt) {
       if (dot) dot.className = 'conn-dot disconnected';
       if (_elapsed_timer) { clearInterval(_elapsed_timer); _elapsed_timer = null; }
     }
-  } catch(e) { console.warn('SSE parse error', e); }
+  } else if (d.type === 'paused') {
+      hitlShow(_currentRunId, d.phase_id, d.message, d.output_preview || '');
+    }
+} catch(e) { console.warn('SSE parse error', e); }
 }
 
 function startElapsedTimer() {
@@ -1791,6 +1831,79 @@ function startElapsedTimer() {
     const el = document.getElementById('elapsed-time');
     if (el) { const s = Math.floor((Date.now() - _run_start)/1000); el.textContent = s < 60 ? s+'s' : Math.floor(s/60)+'m '+s%60+'s'; }
   }, 1000);
+}
+
+/* === Issue #85: Phase Output Inspection === */
+let _currentRunId = null;
+
+function showPhaseOutput(phaseId, runId) {
+  if (!runId) return;
+  fetch('/api/run/' + runId + '/outputs')
+    .then(r => r.json())
+    .then(outputs => {
+      const content = outputs[phaseId] || 'No output available for this phase.';
+      const viewer = document.getElementById('output-area');
+      if (viewer) {
+        viewer.style.display = 'block';
+        viewer.innerHTML = '<h3>' + escHtml(phaseId) + '</h3>' +
+          '<div class="output-viewer">' +
+          (typeof DOMPurify !== 'undefined' && typeof marked !== 'undefined'
+            ? DOMPurify.sanitize(marked.parse(String(content)))
+            : '<pre>' + escHtml(String(content)) + '</pre>') +
+          '</div>';
+      }
+    })
+    .catch(function(e) { console.warn('showPhaseOutput error', e); });
+}
+
+/* === Issue #86: Human-in-the-Loop (HITL) === */
+let _hitlRunId = null;
+let _hitlPhaseId = null;
+
+function hitlShow(runId, phaseId, message, outputPreview) {
+  _hitlRunId = runId;
+  _hitlPhaseId = phaseId;
+  document.getElementById('hitl-title').textContent = 'Pipeline Paused — ' + phaseId;
+  document.getElementById('hitl-message').textContent = message || 'Review the output and approve to continue.';
+  const prev = document.getElementById('hitl-output-preview');
+  if (prev) prev.textContent = outputPreview || '';
+  document.getElementById('hitl-edit-area').style.display = 'none';
+  document.getElementById('hitl-modal').style.display = 'flex';
+}
+
+function hitlHide() {
+  document.getElementById('hitl-modal').style.display = 'none';
+  _hitlRunId = null;
+  _hitlPhaseId = null;
+}
+
+function hitlApprove() {
+  if (!_hitlRunId) return;
+  fetch('/api/run/' + _hitlRunId + '/resume', {method: 'POST'})
+    .then(function() { hitlHide(); })
+    .catch(function(e) { console.warn('hitlApprove error', e); });
+}
+
+function hitlShowEdit() {
+  fetch('/api/run/' + _hitlRunId + '/outputs')
+    .then(r => r.json())
+    .then(outputs => {
+      const current = outputs[_hitlPhaseId] || '';
+      document.getElementById('hitl-edit-text').value = current;
+      document.getElementById('hitl-edit-area').style.display = 'block';
+    })
+    .catch(function(e) { console.warn('hitlShowEdit error', e); });
+}
+
+function hitlSaveEdit() {
+  if (!_hitlRunId || !_hitlPhaseId) return;
+  const newOutput = document.getElementById('hitl-edit-text').value;
+  fetch('/api/run/' + _hitlRunId + '/edit', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({phase_id: _hitlPhaseId, output: newOutput})
+  }).then(function() { hitlHide(); })
+    .catch(function(e) { console.warn('hitlSaveEdit error', e); });
 }
 
 </script>

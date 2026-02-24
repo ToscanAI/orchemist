@@ -9,6 +9,7 @@ module only after confirming they are installed (see cli.py serve command).
 
 import asyncio
 import logging
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -96,6 +97,7 @@ def create_app():  # noqa: C901
         # Fix 4: Validate mode with Literal to reject unknown values (returns 422).
         mode: Literal["dry-run", "standalone", "openclaw"] = "dry-run"
         input: Dict[str, Any] = {}
+        pause_after: Optional[List[str]] = None  # Phase IDs to pause after (#86)
 
     # ------------------------------------------------------------------ #
     # Routes                                                               #
@@ -226,6 +228,10 @@ def create_app():  # noqa: C901
             "event_queue": asyncio.Queue(),  # Fix 1: thread-safe delivery channel
             "done": False,
             "error": None,
+            # Issue #86: Human-in-the-loop
+            "pause_after": req.pause_after or [],
+            "resume_event": threading.Event(),  # used to block sequencer thread when paused
+            "paused_at_phase": None,
         }
         _active_runs[run_id] = run_state
 
@@ -268,6 +274,38 @@ def create_app():  # noqa: C901
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         return run.get("outputs", {})
+
+    @app.post("/api/run/{run_id}/resume")
+    async def resume_run(run_id: str) -> JSONResponse:
+        """Resume a paused pipeline run (#86)."""
+        run = _active_runs.get(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        if run.get("status") != "paused":
+            raise HTTPException(status_code=409, detail="Run is not paused")
+        run["status"] = "running"
+        run["paused_at_phase"] = None
+        run["resume_event"].set()
+        return JSONResponse({"ok": True, "run_id": run_id})
+
+    class EditOutputRequest(BaseModel):
+        phase_id: str
+        output: str
+
+    @app.post("/api/run/{run_id}/edit")
+    async def edit_run_output(run_id: str, req: EditOutputRequest) -> JSONResponse:
+        """Edit a phase output before resuming a paused pipeline run (#86)."""
+        run = _active_runs.get(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        if run.get("status") != "paused":
+            raise HTTPException(status_code=409, detail="Run is not paused")
+        # Overwrite the stored output for this phase
+        run.setdefault("outputs", {})[req.phase_id] = req.output
+        run["status"] = "running"
+        run["paused_at_phase"] = None
+        run["resume_event"].set()
+        return JSONResponse({"ok": True, "run_id": run_id, "phase_id": req.phase_id})
 
     return app
 
@@ -366,6 +404,12 @@ async def _execute_pipeline(
             loop.call_soon_threadsafe(run["event_queue"].put_nowait, payload)
         else:
             run["phases_completed"].append(phase_id)
+            # Issue #85: include output preview in phase_complete event
+            output_text = phase_result.get("output") or phase_result.get("text", "")
+            output_preview = output_text[:200] if output_text else ""
+            # Store phase output for /api/run/{id}/outputs endpoint (#84)
+            if output_text:
+                run.setdefault("outputs", {})[phase_id] = output_text
             payload = _json.dumps({
                 "type": "phase_complete",
                 "phase_id": phase_id,
@@ -375,14 +419,29 @@ async def _execute_pipeline(
                 "tokens_out": tokens_out,
                 "cost_usd": cost,
                 "elapsed_seconds": elapsed,
+                "output_preview": output_preview,  # Issue #85
             })
             run["events"].append(payload)
             loop.call_soon_threadsafe(run["event_queue"].put_nowait, payload)
-            # Store phase output for /api/run/{id}/outputs endpoint (#84)
-            if "output" in phase_result or "text" in phase_result:
-                run.setdefault("outputs", {})[phase_id] = (
-                    phase_result.get("output") or phase_result.get("text", "")
-                )
+            # Issue #86: pause if this phase is in pause_after list
+            if phase_id in run.get("pause_after", []):
+                run["status"] = "paused"
+                run["paused_at_phase"] = phase_id
+                pause_payload = _json.dumps({
+                    "type": "paused",
+                    "phase_id": phase_id,
+                    "message": "Waiting for approval...",
+                    "output_preview": output_preview,
+                })
+                run["events"].append(pause_payload)
+                loop.call_soon_threadsafe(run["event_queue"].put_nowait, pause_payload)
+                # Block this thread until resumed (timeout prevents zombie threads)
+                if not run["resume_event"].wait(timeout=3600):
+                    # Timed out after 1 hour — treat as cancelled
+                    run["status"] = "cancelled"
+                    run["done"] = True
+                    return
+                run["resume_event"].clear()
 
     try:
         def _run_sync() -> dict:

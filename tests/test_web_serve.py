@@ -672,3 +672,54 @@ class TestOutputViewer:
             time.sleep(2)
             r2 = client.get(f"/api/run/{run_id}/outputs")
             assert r2.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Issue #85: Phase Output Inspection
+# ---------------------------------------------------------------------------
+
+class TestPhaseInspection:
+    def test_phase_clickable(self, client):
+        r = client.get("/")
+        assert "showPhaseOutput" in r.text
+
+    def test_phase_hover_style(self, client):
+        r = client.get("/")
+        assert "scale(1.05)" in r.text
+
+
+# ---------------------------------------------------------------------------
+# Issue #86: Human-in-the-Loop
+# ---------------------------------------------------------------------------
+
+class TestHumanInTheLoop:
+    def test_pause_field_accepted(self, client):
+        r = client.post(
+            "/api/run",
+            json={"template": "content-pipeline", "mode": "dry-run", "pause_after": ["research"]},
+        )
+        assert r.status_code == 200
+        # Resume the run to prevent zombie threads blocking teardown
+        run_id = r.json().get("run_id")
+        if run_id:
+            time.sleep(0.1)  # allow pipeline to start
+            client.post(f"/api/run/{run_id}/resume")
+
+    def test_resume_endpoint_exists(self, client):
+        r = client.post("/api/run/nonexistent/resume")
+        assert r.status_code == 404
+
+    def test_edit_endpoint_exists(self, client):
+        r = client.post(
+            "/api/run/nonexistent/edit",
+            json={"phase_id": "x", "output": "y"},
+        )
+        assert r.status_code == 404
+
+    def test_hitl_modal_css(self, client):
+        r = client.get("/")
+        assert "hitl-modal" in r.text
+
+    def test_hitl_js(self, client):
+        r = client.get("/")
+        assert "btn-approve" in r.text
