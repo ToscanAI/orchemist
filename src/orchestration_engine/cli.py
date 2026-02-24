@@ -2002,6 +2002,181 @@ def quickstart(ctx: click.Context) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Issue #110 — orch templates test
+# ---------------------------------------------------------------------------
+
+@templates.command("test")
+@click.option(
+    "--verbose", "-v",
+    is_flag=True,
+    default=False,
+    help="Show full error output per template on failure.",
+)
+@click.option(
+    "--fail-fast", "-x",
+    is_flag=True,
+    default=False,
+    help="Stop after the first template failure.",
+)
+def templates_test(verbose: bool, fail_fast: bool) -> None:
+    """Validate and dry-run every discovered template.
+
+    Discovers all ``.yaml`` / ``.yml`` files in ``templates/`` and
+    ``examples/`` (same glob pattern used by the test suite) then runs
+    two checks on each:
+
+    \b
+    1. Structural + extended validation (equivalent to ``orch validate``)
+    2. Dry-run execution (equivalent to ``orch run --mode dry-run``)
+
+    Exits 0 when all templates pass; exits 1 on the first failure
+    (if ``--fail-fast``) or after all templates have been checked.
+
+    Examples:
+
+      orch templates test
+      orch templates test --verbose
+      orch templates test --fail-fast
+    """
+    import glob as _glob
+    import json as _json
+    import traceback as _tb
+
+    import yaml as _yaml
+
+    from .templates import TemplateEngine
+    from .pipeline_runner import PipelineRunner
+    from .sequencer import PhaseSequencer
+
+    OK_MARK = click.style("✓", fg="green")
+    FAIL_MARK = click.style("✗", fg="red")
+
+    # ── 1. Discover templates (same glob as test suite) ──────────────────
+    repo_root = Path(__file__).parent.parent.parent.parent
+    # Heuristic: walk up until we find a templates/ directory
+    _candidate = Path(__file__).resolve()
+    for _ in range(6):
+        _candidate = _candidate.parent
+        if (_candidate / "templates").exists() and (_candidate / "examples").exists():
+            repo_root = _candidate
+            break
+
+    all_templates: List[str] = sorted(
+        _glob.glob(str(repo_root / "templates" / "*.yaml"))
+        + _glob.glob(str(repo_root / "templates" / "*.yml"))
+        + _glob.glob(str(repo_root / "examples" / "*.yaml"))
+        + _glob.glob(str(repo_root / "examples" / "*.yml"))
+    )
+
+    if not all_templates:
+        click.echo(
+            f"{FAIL_MARK} No templates discovered under {repo_root}/ "
+            "(looked in templates/ and examples/)",
+            err=True,
+        )
+        sys.exit(1)
+
+    click.echo(
+        f"Discovered {len(all_templates)} template(s) under {repo_root}/\n"
+    )
+
+    engine = TemplateEngine()
+    passed: List[str] = []
+    failed: List[str] = []
+
+    for template_path_str in all_templates:
+        template_path = Path(template_path_str)
+        template_name = template_path.name
+        errors: List[str] = []
+
+        # ── 2a. Validate ──────────────────────────────────────────────────
+        try:
+            template = engine.load_template(template_path)
+            structural_errors = engine.validate_template(template)
+            if structural_errors:
+                errors.extend(
+                    [f"[structural] {e}" for e in structural_errors]
+                )
+
+            raw_data: Dict[str, Any] = _yaml.safe_load(
+                template_path.read_text()
+            )
+            ext_errors, _ext_warnings = engine.validate_template_extended(
+                template, raw_data
+            )
+            if ext_errors:
+                errors.extend(
+                    [f"[extended] {e}" for e in ext_errors]
+                )
+        except Exception as exc:
+            errors.append(
+                f"[load/validate] {exc}"
+                + (f"\n{_tb.format_exc()}" if verbose else "")
+            )
+
+        # ── 2b. Dry-run ───────────────────────────────────────────────────
+        if not errors:
+            try:
+                input_data: Dict[str, Any] = (
+                    template.example_input if template.example_input else {}
+                )
+                dry_runner = PipelineRunner.dry_run(
+                    delay_seconds=0.0,
+                    failure_rate=0.0,
+                )
+                with dry_runner:
+                    sequencer = PhaseSequencer(
+                        template, dry_runner, config=input_data
+                    )
+                    result = sequencer.execute(input_data)
+
+                if result.get("aborted"):
+                    failed_phase = result.get("failed_phase", "unknown")
+                    errors.append(
+                        f"[dry-run] pipeline aborted at phase '{failed_phase}'"
+                    )
+            except Exception as exc:
+                errors.append(
+                    f"[dry-run] {exc}"
+                    + (f"\n{_tb.format_exc()}" if verbose else "")
+                )
+
+        # ── 3. Report ─────────────────────────────────────────────────────
+        if errors:
+            failed.append(template_name)
+            click.echo(f"  {FAIL_MARK} {template_name}")
+            if verbose:
+                for err in errors:
+                    for line in err.splitlines():
+                        click.echo(f"       {line}", err=True)
+        else:
+            passed.append(template_name)
+            click.echo(f"  {OK_MARK} {template_name}")
+
+        if errors and fail_fast:
+            click.echo(
+                f"\n{FAIL_MARK} Stopped after first failure (--fail-fast).",
+                err=True,
+            )
+            sys.exit(1)
+
+    # ── 4. Summary ────────────────────────────────────────────────────────
+    click.echo()
+    total = len(passed) + len(failed)
+    if failed:
+        click.echo(
+            f"{FAIL_MARK} {len(failed)}/{total} template(s) failed: "
+            + ", ".join(failed),
+            err=True,
+        )
+        sys.exit(1)
+    else:
+        click.echo(
+            f"{OK_MARK} All {total} template(s) passed."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Feature #66 — orch start (interactive wizard)
 # ---------------------------------------------------------------------------
 
