@@ -38,6 +38,12 @@ dev = [
     "isort",
     "flake8",
     "mypy",
+    "httpx>=0.24.0",
+]
+web = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.20.0",
+    "sse-starlette>=1.0.0",
 ]
 
 [project.scripts]

@@ -2625,5 +2625,49 @@ def new_template(
     click.echo(f"  orch run {output_path} --mode dry-run  # Test it")
 
 
+# ---------------------------------------------------------------------------
+# orch serve — local web UI server  (Feature #79)
+# ---------------------------------------------------------------------------
+
+@main.command("serve")
+@click.option('--port', default=8374, show_default=True, help='Port to serve on.')
+@click.option('--host', default='127.0.0.1', show_default=True, help='Host to bind to.')
+@click.option('--no-open', is_flag=True, help='Do not auto-open browser.')
+def serve(port: int, host: str, no_open: bool) -> None:
+    """Launch the web UI for running pipelines in the browser.
+
+    Starts a local FastAPI server and opens the browser automatically.
+    Requires the optional [web] extra:
+
+      pip install orchestration-engine[web]
+
+    Example:
+
+      orch serve                    # http://127.0.0.1:8374
+      orch serve --port 9000
+      orch serve --no-open          # start without opening browser
+    """
+    try:
+        import uvicorn
+        from .web.app import create_app
+    except ImportError:
+        click.echo("Web UI requires extra dependencies. Install with:", err=True)
+        click.echo("  pip install orchestration-engine[web]", err=True)
+        sys.exit(1)
+
+    app = create_app()
+
+    if not no_open:
+        import threading
+        import webbrowser
+        threading.Timer(1.5, lambda: webbrowser.open(f"http://{host}:{port}")).start()
+
+    click.echo(f"✓ Orchestration Engine web UI")
+    click.echo(f"  Listening on http://{host}:{port}")
+    click.echo(f"  Press Ctrl+C to stop.")
+
+    uvicorn.run(app, host=host, port=port)
+
+
 if __name__ == '__main__':
     main()

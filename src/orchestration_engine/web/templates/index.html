@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orchestration Engine</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"></script>
+  <style>
+    /* ── Reset & base ───────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0e1117;
+      --bg-panel:   #161b22;
+      --bg-hover:   #1c2330;
+      --bg-active:  #21262d;
+      --border:     #30363d;
+      --text:       #c9d1d9;
+      --text-muted: #8b949e;
+      --accent:     #238636;
+      --accent-btn: #2ea043;
+      --accent-btn-hover: #3fb950;
+      --danger:     #da3633;
+      --warning:    #e3b341;
+      --info:       #58a6ff;
+      --radius:     6px;
+      --font:       -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ── Layout ─────────────────────────────────────────────────── */
+    #app {
+      display: grid;
+      grid-template-rows: 48px 1fr 220px;
+      grid-template-columns: 260px 1fr;
+      grid-template-areas:
+        "header  header"
+        "sidebar main"
+        "log     log";
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────── */
+    #header {
+      grid-area: header;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 10px;
+    }
+
+    #header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    #header .version {
+      font-size: 11px;
+      color: var(--text-muted);
+      background: var(--bg-active);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1px 8px;
+    }
+
+    #header .spacer { flex: 1; }
+
+    #header .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: inline-block;
+    }
+
+    /* ── Sidebar ─────────────────────────────────────────────────── */
+    #sidebar {
+      grid-area: sidebar;
+      background: var(--bg-panel);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-header {
+      padding: 12px 16px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .refresh-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 3px;
+      font-size: 12px;
+    }
+    .refresh-btn:hover { color: var(--text); background: var(--bg-active); }
+
+    #template-list { padding: 4px 0; flex: 1; }
+
+    .template-item {
+      padding: 8px 16px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      transition: background 0.1s;
+    }
+    .template-item:hover { background: var(--bg-hover); }
+    .template-item.active {
+      background: var(--bg-active);
+      border-left-color: var(--info);
+    }
+
+    .template-item .t-name {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+    }
+    .template-item .t-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+    .template-item .badge {
+      display: inline-block;
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      background: var(--bg-active);
+      border: 1px solid var(--border);
+      margin-left: 4px;
+    }
+
+    /* ── Main area ───────────────────────────────────────────────── */
+    #main {
+      grid-area: main;
+      overflow-y: auto;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      color: var(--text-muted);
+      gap: 8px;
+      padding: 60px 0;
+    }
+    .empty-state .icon { font-size: 32px; }
+    .empty-state p { font-size: 13px; }
+
+    /* Template detail */
+    .detail-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .detail-header h2 {
+      font-size: 20px;
+      font-weight: 600;
+      flex: 1;
+    }
+    .detail-meta {
+      font-size: 12px;
+      color: var(--text-muted);
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 2px;
+    }
+    .detail-meta span { display: flex; align-items: center; gap: 4px; }
+    .detail-description {
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    /* Phases table */
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .phases-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .phase-row {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      display: grid;
+      grid-template-columns: 24px 1fr auto;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .phase-num {
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      background: var(--bg-active);
+      border: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .phase-info .phase-name { font-weight: 500; font-size: 13px; }
+    .phase-info .phase-desc { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .phase-info .phase-deps { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+
+    .phase-badges { display: flex; gap: 4px; flex-wrap: wrap; }
+    .chip {
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--bg-active);
+      color: var(--text-muted);
+    }
+    .chip.model { border-color: #58a6ff44; color: var(--info); }
+    .chip.thinking { border-color: #e3b34144; color: var(--warning); }
+
+    /* Run form */
+    .run-form {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .form-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .form-row label {
+      font-size: 12px;
+      color: var(--text-muted);
+      min-width: 60px;
+    }
+
+    select, input[type="text"], textarea {
+      background: var(--bg-active);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      padding: 6px 10px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    select:focus, input[type="text"]:focus, textarea:focus {
+      border-color: var(--info);
+    }
+    select { cursor: pointer; }
+
+    textarea {
+      width: 100%;
+      resize: vertical;
+      min-height: 70px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12px;
+    }
+
+    .btn {
+      padding: 7px 16px;
+      border-radius: var(--radius);
+      border: none;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary {
+      background: var(--accent-btn);
+      color: #fff;
+    }
+    .btn-primary:not(:disabled):hover { background: var(--accent-btn-hover); }
+    .btn-secondary {
+      background: var(--bg-active);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: var(--bg-hover); }
+
+    .htmx-indicator { display: none; }
+    .htmx-request .htmx-indicator { display: inline; }
+    .htmx-request .htmx-spinner { display: inline-block; }
+
+    /* ── Log panel ───────────────────────────────────────────────── */
+    #log-panel {
+      grid-area: log;
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .log-header {
+      padding: 6px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+      flex-shrink: 0;
+    }
+    .log-header h3 {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+    #run-status-badge {
+      font-size: 11px;
+      padding: 1px 8px;
+      border-radius: 10px;
+      background: var(--bg-active);
+      border: 1px solid var(--border);
+    }
+    #run-status-badge.running { border-color: var(--warning); color: var(--warning); }
+    #run-status-badge.complete { border-color: var(--accent); color: var(--accent); }
+    #run-status-badge.error { border-color: var(--danger); color: var(--danger); }
+
+    .log-clear-btn {
+      margin-left: auto;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 12px;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+    .log-clear-btn:hover { color: var(--text); background: var(--bg-active); }
+
+    #log-entries {
+      overflow-y: auto;
+      padding: 6px 16px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .log-entry {
+      display: flex;
+      gap: 10px;
+      font-size: 12px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      padding: 2px 0;
+    }
+    .log-entry .ts { color: var(--text-muted); flex-shrink: 0; }
+    .log-entry .msg { color: var(--text); }
+    .log-entry.phase-complete .msg { color: #3fb950; }
+    .log-entry.phase-failed .msg   { color: var(--danger); }
+    .log-entry.error .msg          { color: var(--danger); }
+    .log-entry.start .msg          { color: var(--info); }
+    .log-entry.complete .msg       { color: var(--accent-btn-hover); font-weight: 600; }
+
+    .progress-bar-wrap {
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      width: 100%;
+    }
+    #progress-bar {
+      height: 100%;
+      background: var(--info);
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+
+    /* ── Loading spinner ─────────────────────────────────────────── */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--info);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+    }
+
+    /* Scrollbar styling */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #444d56; }
+  </style>
+</head>
+<body>
+  <div id="app">
+
+    <!-- Header -->
+    <header id="header">
+      <span class="status-dot" title="Server online"></span>
+      <h1>Orchestration Engine</h1>
+      <span class="version" id="version-badge">v…</span>
+      <span class="spacer"></span>
+    </header>
+
+    <!-- Sidebar -->
+    <nav id="sidebar">
+      <div class="sidebar-header">
+        Templates
+        <button class="refresh-btn" onclick="loadTemplates()" title="Refresh">↻</button>
+      </div>
+      <div id="template-list">
+        <div class="empty-state" style="padding:30px 0">
+          <span class="spinner"></span>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main content -->
+    <main id="main">
+      <div class="empty-state" id="empty-state">
+        <span class="icon">🔌</span>
+        <p>Select a template from the sidebar to get started.</p>
+      </div>
+      <div id="detail-area" style="display:none; flex-direction:column; gap:16px;">
+        <!-- injected by JS -->
+      </div>
+    </main>
+
+    <!-- Log panel -->
+    <section id="log-panel">
+      <div class="log-header">
+        <h3>Pipeline Log</h3>
+        <span id="run-status-badge"></span>
+        <div class="progress-bar-wrap" style="flex:1; margin:0 8px;">
+          <div id="progress-bar"></div>
+        </div>
+        <button class="log-clear-btn" onclick="clearLog()">Clear</button>
+      </div>
+      <div id="log-entries">
+        <div class="log-entry start"><span class="ts">--:--:--</span><span class="msg">Ready. Select a template and press Run.</span></div>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    // ── State ────────────────────────────────────────────────────────
+    let currentTemplate = null;
+    let totalPhases = 0;
+    let completedPhases = 0;
+    let activeEventSource = null;
+
+    // ── Bootstrap ────────────────────────────────────────────────────
+    async function bootstrap() {
+      try {
+        const res = await fetch('/api/health');
+        const data = await res.json();
+        document.getElementById('version-badge').textContent = 'v' + data.version;
+      } catch(e) { /* ignore */ }
+      loadTemplates();
+    }
+
+    // ── Load template list ────────────────────────────────────────────
+    async function loadTemplates() {
+      const list = document.getElementById('template-list');
+      list.innerHTML = '<div class="empty-state" style="padding:30px 0"><span class="spinner"></span></div>';
+      try {
+        const res = await fetch('/api/templates');
+        const templates = await res.json();
+        if (!templates.length) {
+          list.innerHTML = '<div class="empty-state" style="padding:20px 0"><p>No templates found.</p></div>';
+          return;
+        }
+        list.innerHTML = templates.map(t => `
+          <div class="template-item" id="tpl-${t.id}" onclick="selectTemplate('${t.id}')">
+            <div class="t-name">${escHtml(t.name)}</div>
+            <div class="t-meta">
+              ${escHtml(t.source)}
+              <span class="badge">${t.phases_count} phases</span>
+              <span class="badge">${escHtml(t.version)}</span>
+            </div>
+          </div>
+        `).join('');
+      } catch(e) {
+        list.innerHTML = `<div class="empty-state" style="padding:20px 0"><p>Error loading templates: ${escHtml(String(e))}</p></div>`;
+      }
+    }
+
+    // ── Select + load template detail ────────────────────────────────
+    async function selectTemplate(id) {
+      // Highlight sidebar item
+      document.querySelectorAll('.template-item').forEach(el => el.classList.remove('active'));
+      const el = document.getElementById('tpl-' + id);
+      if (el) el.classList.add('active');
+
+      document.getElementById('empty-state').style.display = 'none';
+      const detail = document.getElementById('detail-area');
+      detail.style.display = 'flex';
+      detail.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
+
+      try {
+        const res = await fetch('/api/templates/' + encodeURIComponent(id));
+        if (!res.ok) { detail.innerHTML = `<div class="empty-state"><p>Template not found.</p></div>`; return; }
+        const t = await res.json();
+        currentTemplate = t;
+        totalPhases = t.phases.length;
+        renderDetail(t);
+      } catch(e) {
+        detail.innerHTML = `<div class="empty-state"><p>Error: ${escHtml(String(e))}</p></div>`;
+      }
+    }
+
+    // ── Render template detail ────────────────────────────────────────
+    function renderDetail(t) {
+      const detail = document.getElementById('detail-area');
+      detail.innerHTML = `
+        <div class="detail-header">
+          <div>
+            <h2>${escHtml(t.name)}</h2>
+            <div class="detail-meta">
+              <span>🏷 ${escHtml(t.version)}</span>
+              <span>📦 ${t.phases.length} phases</span>
+              ${t.author ? `<span>👤 ${escHtml(t.author)}</span>` : ''}
+              ${t.tags && t.tags.length ? `<span>🔖 ${t.tags.map(escHtml).join(', ')}</span>` : ''}
+            </div>
+          </div>
+        </div>
+        ${t.description ? `<p class="detail-description">${escHtml(t.description)}</p>` : ''}
+
+        <div>
+          <div class="section-title">Phases</div>
+          <div class="phases-list">
+            ${t.phases.map((p, i) => `
+              <div class="phase-row" id="phase-row-${escHtml(p.id)}">
+                <div class="phase-num">${i+1}</div>
+                <div class="phase-info">
+                  <div class="phase-name">${escHtml(p.name || p.id)}</div>
+                  ${p.description ? `<div class="phase-desc">${escHtml(p.description)}</div>` : ''}
+                  ${p.depends_on && p.depends_on.length ? `<div class="phase-deps">depends on: ${p.depends_on.map(escHtml).join(', ')}</div>` : ''}
+                </div>
+                <div class="phase-badges">
+                  <span class="chip model">${escHtml(p.model_tier)}</span>
+                  ${p.thinking_level && p.thinking_level !== 'off' ? `<span class="chip thinking">${escHtml(p.thinking_level)}</span>` : ''}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+
+        <div>
+          <div class="section-title">Run Pipeline</div>
+          <div class="run-form" id="run-form">
+            <div class="form-row">
+              <label>Mode</label>
+              <select id="run-mode">
+                <option value="dry-run">dry-run (mock)</option>
+                <option value="standalone">standalone (Anthropic API)</option>
+                <option value="openclaw">openclaw (sub-agent)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">
+                Input JSON ${t.example_input && Object.keys(t.example_input).length ? '(example shown)' : '(optional)'}
+              </label>
+              <textarea id="run-input" placeholder="{}">${t.example_input && Object.keys(t.example_input).length ? JSON.stringify(t.example_input, null, 2) : ''}</textarea>
+            </div>
+            <div class="form-row">
+              <button class="btn btn-primary" id="run-btn" onclick="startRun()">▶ Run Pipeline</button>
+              <span id="run-spinner" style="display:none;"><span class="spinner"></span> Running…</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // ── Start a run ───────────────────────────────────────────────────
+    async function startRun() {
+      if (!currentTemplate) return;
+
+      const mode = document.getElementById('run-mode').value;
+      const inputRaw = document.getElementById('run-input').value.trim();
+      let inputData = {};
+      if (inputRaw) {
+        try { inputData = JSON.parse(inputRaw); }
+        catch(e) { logEntry('error', 'Invalid JSON in input: ' + e.message); return; }
+      }
+
+      // Close any prior SSE
+      if (activeEventSource) { activeEventSource.close(); activeEventSource = null; }
+
+      document.getElementById('run-btn').disabled = true;
+      document.getElementById('run-spinner').style.display = '';
+      completedPhases = 0;
+      setBadge('running', 'running');
+      setProgress(0);
+      clearLog();
+
+      try {
+        const res = await fetch('/api/run', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({template: currentTemplate.id, mode, input: inputData})
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          logEntry('error', 'Failed to start run: ' + (err.detail || res.status));
+          resetRunBtn();
+          return;
+        }
+        const {run_id} = await res.json();
+        logEntry('start', `Run started: ${run_id}  [${mode}]  template=${currentTemplate.id}`);
+        connectSSE(run_id);
+      } catch(e) {
+        logEntry('error', 'Network error: ' + e.message);
+        resetRunBtn();
+      }
+    }
+
+    // ── SSE connection ────────────────────────────────────────────────
+    function connectSSE(runId) {
+      const es = new EventSource('/api/run/' + runId + '/status');
+      activeEventSource = es;
+
+      es.onmessage = function(e) {
+        let evt;
+        try { evt = JSON.parse(e.data); } catch { return; }
+        handleEvent(evt);
+      };
+
+      es.onerror = function() {
+        if (es.readyState === EventSource.CLOSED) return;
+        logEntry('error', 'SSE connection lost.');
+        es.close();
+        resetRunBtn();
+      };
+    }
+
+    function handleEvent(evt) {
+      const type = evt.type;
+      if (type === 'start') {
+        logEntry('start', `Pipeline starting: ${evt.template}  mode=${evt.mode}`);
+      } else if (type === 'phase_complete') {
+        completedPhases++;
+        setProgress(totalPhases > 0 ? (completedPhases / totalPhases) * 100 : 0);
+        const cost = evt.cost_usd ? ` $${parseFloat(evt.cost_usd).toFixed(4)}` : '';
+        logEntry('phase-complete', `✓ ${evt.phase_id}  state=${evt.state}  tokens=${evt.tokens}${cost}`);
+        highlightPhase(evt.phase_id, 'complete');
+      } else if (type === 'phase_failed') {
+        const cost = evt.cost_usd ? ` $${parseFloat(evt.cost_usd).toFixed(4)}` : '';
+        logEntry('phase-failed', `✗ ${evt.phase_id}  state=${evt.state}  tokens=${evt.tokens}${cost}`);
+        highlightPhase(evt.phase_id, 'failed');
+      } else if (type === 'complete') {
+        logEntry('complete', `✅ Pipeline complete! ${evt.phases} phases finished.`);
+        setBadge('complete', 'complete');
+        setProgress(100);
+        resetRunBtn();
+        if (activeEventSource) { activeEventSource.close(); activeEventSource = null; }
+      } else if (type === 'aborted') {
+        logEntry('phase-failed', `Pipeline aborted at phase: ${evt.failed_phase}`);
+        setBadge('error', 'aborted');
+        resetRunBtn();
+        if (activeEventSource) { activeEventSource.close(); activeEventSource = null; }
+      } else if (type === 'error') {
+        logEntry('error', `Error: ${evt.message}`);
+        setBadge('error', 'error');
+        resetRunBtn();
+        if (activeEventSource) { activeEventSource.close(); activeEventSource = null; }
+      }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────
+    function highlightPhase(phaseId, state) {
+      const row = document.getElementById('phase-row-' + phaseId);
+      if (!row) return;
+      const num = row.querySelector('.phase-num');
+      if (state === 'complete') {
+        num.style.background = '#1a3e1a';
+        num.style.borderColor = '#3fb950';
+        num.style.color = '#3fb950';
+        num.textContent = '✓';
+      } else {
+        num.style.background = '#3e1a1a';
+        num.style.borderColor = '#da3633';
+        num.style.color = '#da3633';
+        num.textContent = '✗';
+      }
+    }
+
+    function logEntry(cls, msg) {
+      const el = document.getElementById('log-entries');
+      const ts = new Date().toTimeString().slice(0,8);
+      const div = document.createElement('div');
+      div.className = 'log-entry ' + cls;
+      div.innerHTML = `<span class="ts">${ts}</span><span class="msg">${escHtml(msg)}</span>`;
+      el.appendChild(div);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function clearLog() {
+      document.getElementById('log-entries').innerHTML = '';
+    }
+
+    function setBadge(cls, text) {
+      const badge = document.getElementById('run-status-badge');
+      badge.className = cls;
+      badge.textContent = text;
+    }
+
+    function setProgress(pct) {
+      document.getElementById('progress-bar').style.width = pct + '%';
+    }
+
+    function resetRunBtn() {
+      const btn = document.getElementById('run-btn');
+      if (btn) btn.disabled = false;
+      const spinner = document.getElementById('run-spinner');
+      if (spinner) spinner.style.display = 'none';
+    }
+
+    function escHtml(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;');
+    }
+
+    // ── Init ─────────────────────────────────────────────────────────
+    bootstrap();
+  </script>
+</body>
+</html>
