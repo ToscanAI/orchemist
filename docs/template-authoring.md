@@ -943,6 +943,27 @@ orch test scenarios/my-pipeline-smoke.yaml
 
 ---
 
+### 7.4 Timeout Best Practices
+
+**Always set explicit `timeout_minutes` per phase.** The default is 30 minutes, which means a 5-phase pipeline has a 2.5-hour ceiling even if phases finish in 5 minutes each.
+
+Guidelines from production use:
+| Phase type | Recommended timeout |
+|---|---|
+| Research / analysis | 10 min |
+| Implementation (code generation) | 15 min |
+| Code review (Opus with high thinking) | 15 min |
+| Apply fixes | 10 min |
+| Test generation | 10 min |
+| Content writing | 15 min |
+| Human review gate | 2880 min (48h) |
+
+**Key insight:** If a phase consistently times out, the prompt is too broad. Tighten the spec instead of increasing the timeout. A focused 10-minute agent produces better output than a wandering 30-minute one.
+
+**OpenClaw mode note:** When running via `orch run --mode openclaw`, the pipeline process itself must stay alive for the full duration. Use `nohup` or a process manager for pipelines expected to run >10 minutes.
+
+---
+
 ## 8. Troubleshooting
 
 ### 8.1 Common Errors
