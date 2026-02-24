@@ -199,12 +199,20 @@ class PhaseSequencer:
 
         safe_skills = _SafeDict(skill_context)
 
+        # Build per-phase keyword args so templates can use {phase_id.output}
+        # in addition to {previous_output[phase_id]}
+        phase_kwargs: Dict[str, _PhaseOutput] = {
+            pid: _PhaseOutput(str(pout))
+            for pid, pout in self.phase_outputs.items()
+        }
+
         try:
             prompt = phase.prompt_template.format(
                 input=safe_input,
                 previous_output=safe_outputs,
                 config=safe_config,
                 skill_context=safe_skills,
+                **phase_kwargs,
             )
         except (KeyError, IndexError, AttributeError) as exc:
             logger.warning(
@@ -436,3 +444,26 @@ class _SafeDict(dict):
     def __missing__(self, key: str) -> str:
         logger.debug(f"Template referenced missing key: '{key}'")
         return f"<MISSING:{key}>"
+
+
+class _PhaseOutput:
+    """Wrapper that allows ``{phase_id.output}`` syntax in prompt templates.
+
+    When a template references ``{requirements.output}``, Python's ``str.format()``
+    calls ``getattr(phase_obj, 'output')``.  This class provides that attribute.
+    It also has a ``__format__`` method so ``{requirements}`` (without ``.output``)
+    returns the output text directly.
+    """
+
+    def __init__(self, text: str) -> None:
+        self.output = text
+        self._text = text
+
+    def __format__(self, format_spec: str) -> str:
+        return format(self._text, format_spec)
+
+    def __str__(self) -> str:
+        return self._text
+
+    def __repr__(self) -> str:
+        return f"_PhaseOutput({self._text[:80]!r}...)"

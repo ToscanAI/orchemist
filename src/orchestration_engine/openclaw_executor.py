@@ -163,7 +163,7 @@ class OpenClawExecutor(TaskExecutor):
 
         # ── 4. Real execution ────────────────────────────────────────────────
         try:
-            output_text = self._run_session(prompt, model, thinking)
+            output_text, tokens_consumed = self._run_session(prompt, model, thinking)
         except TimeoutError as exc:
             elapsed = (datetime.now() - start_time).total_seconds()
             logger.error(f"OpenClaw session timed out for task {task_id}: {exc}")
@@ -209,7 +209,7 @@ class OpenClawExecutor(TaskExecutor):
 
         elapsed = (datetime.now() - start_time).total_seconds()
 
-        if not output_text:
+        if not output_text or (isinstance(output_text, str) and not output_text.strip()):
             return TaskResult(
                 task_id=task_id,
                 task_type=task.type,
@@ -241,7 +241,7 @@ class OpenClawExecutor(TaskExecutor):
             started_at=start_time,
             completed_at=datetime.now(),
             model_used=model,
-            tokens_consumed=0,  # Gateway does not expose token counts
+            tokens_consumed=tokens_consumed,
             execution_time_seconds=elapsed,
             cost_usd=None,
         )
@@ -425,7 +425,11 @@ class OpenClawExecutor(TaskExecutor):
                 for c in (content if isinstance(content, list) else []):
                     if isinstance(c, dict) and c.get("type") == "text":
                         text_parts.append(c.get("text", ""))
-                return "\n".join(text_parts)
+                # Extract token usage if available
+                usage = last_assistant.get("usage", {})
+                tokens_in = usage.get("input", 0) + usage.get("cacheRead", 0)
+                tokens_out = usage.get("output", 0)
+                return "\n".join(text_parts), tokens_in + tokens_out
 
             # Check for stop reason indicating completion
             stop = last_assistant.get("stopReason", "")
