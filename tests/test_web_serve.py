@@ -425,3 +425,168 @@ class TestTemplateDetailEnhanced:
         data = client.get("/api/templates/content-pipeline-v23").json()
         assert "author" in data, "Template detail should include 'author'"
         assert data["author"], "content-pipeline-v23 author should be non-empty"
+
+
+# ---------------------------------------------------------------------------
+# Auto-generated Input Forms — Feature #81
+# ---------------------------------------------------------------------------
+
+class TestInputFormsHTML:
+    """Verify the SPA HTML contains the auto-generated form infrastructure."""
+
+    def test_html_contains_render_form_function(self, client):
+        body = client.get("/").text
+        assert "renderForm" in body, (
+            "HTML should contain the renderForm() JavaScript function"
+        )
+
+    def test_html_contains_form_group_class(self, client):
+        body = client.get("/").text
+        assert "form-group" in body, (
+            "HTML should define .form-group CSS class for field layout"
+        )
+
+    def test_html_contains_schema_form_id(self, client):
+        body = client.get("/").text
+        assert "schema-form" in body, (
+            "HTML should reference 'schema-form' container for the generated form"
+        )
+
+    def test_html_contains_mode_selector(self, client):
+        body = client.get("/").text
+        # Mode selector is rendered dynamically via JS; check that the option
+        # values are present as string literals in the JS source.
+        assert "dry-run" in body, "HTML should include dry-run mode option"
+        assert "standalone" in body, "HTML should include standalone mode option"
+        assert "openclaw" in body, "HTML should include openclaw mode option"
+
+    def test_html_contains_required_star_style(self, client):
+        body = client.get("/").text
+        assert "required-star" in body, (
+            "HTML should style required field asterisks with .required-star"
+        )
+
+    def test_html_contains_toggle_switch(self, client):
+        body = client.get("/").text
+        assert "toggle-switch" in body, (
+            "HTML should contain toggle-switch CSS class for boolean fields"
+        )
+
+    def test_html_contains_validate_form_function(self, client):
+        body = client.get("/").text
+        assert "validateForm" in body, (
+            "HTML should contain validateForm() function for client-side validation"
+        )
+
+    def test_html_contains_collect_form_values_function(self, client):
+        body = client.get("/").text
+        assert "collectFormValues" in body, (
+            "HTML should contain collectFormValues() function to gather form data"
+        )
+
+    def test_html_contains_has_error_class(self, client):
+        body = client.get("/").text
+        assert "has-error" in body, (
+            "HTML should define .has-error class for invalid field highlighting"
+        )
+
+    def test_html_contains_field_help_class(self, client):
+        body = client.get("/").text
+        assert "field-help" in body, (
+            "HTML should define .field-help class for field description text"
+        )
+
+    def test_html_contains_mode_selector_row_class(self, client):
+        body = client.get("/").text
+        assert "mode-selector-row" in body, (
+            "HTML should contain .mode-selector-row for the mode dropdown"
+        )
+
+    def test_html_renders_string_fields_as_text_input(self, client):
+        body = client.get("/").text
+        # renderForm generates input[type="text"] for string fields
+        assert 'type="text"' in body or "type=\\'text\\'" in body or "input type" in body, (
+            "HTML should reference text input generation for string fields"
+        )
+
+    def test_html_renders_number_fields_as_number_input(self, client):
+        body = client.get("/").text
+        assert 'type="number"' in body or "type=\\'number\\'" in body, (
+            "HTML should reference number input generation for number/integer fields"
+        )
+
+    def test_html_renders_boolean_fields_as_checkbox(self, client):
+        body = client.get("/").text
+        assert 'type="checkbox"' in body or "type=\\'checkbox\\'" in body, (
+            "HTML should reference checkbox input generation for boolean fields"
+        )
+
+    def test_html_renders_enum_fields_as_select(self, client):
+        body = client.get("/").text
+        # renderForm builds <select> for enum fields
+        assert "enumVals" in body or "<select" in body, (
+            "HTML should reference select element generation for enum fields"
+        )
+
+
+class TestInputFormsAPI:
+    """Verify that the template detail API exposes config_schema."""
+
+    def test_detail_has_config_schema_key(self, client):
+        data = client.get("/api/templates/content-pipeline-v23").json()
+        assert "config_schema" in data, (
+            "Template detail should include 'config_schema' key"
+        )
+
+    def test_config_schema_is_dict(self, client):
+        data = client.get("/api/templates/content-pipeline-v23").json()
+        assert isinstance(data["config_schema"], dict), (
+            "'config_schema' should be a dict"
+        )
+
+    def test_content_pipeline_config_schema_has_properties(self, client):
+        data = client.get("/api/templates/content-pipeline-v23").json()
+        schema = data["config_schema"]
+        assert "properties" in schema, (
+            "content-pipeline-v23 config_schema should have 'properties'"
+        )
+
+    def test_content_pipeline_config_schema_has_topic_field(self, client):
+        data = client.get("/api/templates/content-pipeline-v23").json()
+        props = data["config_schema"].get("properties", {})
+        assert "topic" in props, (
+            "content-pipeline-v23 config_schema should have a 'topic' property"
+        )
+
+    def test_content_pipeline_config_schema_has_required(self, client):
+        data = client.get("/api/templates/content-pipeline-v23").json()
+        schema = data["config_schema"]
+        assert "required" in schema, (
+            "content-pipeline-v23 config_schema should have a 'required' list"
+        )
+
+    def test_content_pipeline_topic_is_required(self, client):
+        data = client.get("/api/templates/content-pipeline-v23").json()
+        required = data["config_schema"].get("required", [])
+        assert "topic" in required, (
+            "content-pipeline-v23 'topic' field should be in required list"
+        )
+
+    def test_content_pipeline_schema_field_has_type(self, client):
+        data = client.get("/api/templates/content-pipeline-v23").json()
+        props = data["config_schema"].get("properties", {})
+        for field_name, field_schema in props.items():
+            assert "type" in field_schema, (
+                f"Field '{field_name}' in config_schema should have a 'type'"
+            )
+
+    def test_config_schema_empty_dict_for_missing_schema(self, client):
+        """Templates without a config_schema should return empty dict, not null."""
+        data = client.get("/api/templates").json()
+        # Find any template, check detail — config_schema must always be dict
+        for t in data[:3]:
+            detail = client.get(f"/api/templates/{t['id']}").json()
+            assert "config_schema" in detail
+            assert isinstance(detail["config_schema"], dict), (
+                f"Template '{t['id']}' config_schema should be a dict (even if empty)"
+            )

@@ -24,7 +24,7 @@ class PhaseSequencer:
     """
 
     def __init__(self, template: PipelineTemplate, runner, config: dict = None,
-                 on_phase_complete=None) -> None:
+                 on_phase_complete=None, on_phase_start=None) -> None:
         """Initialise the sequencer.
 
         Args:
@@ -33,12 +33,15 @@ class PhaseSequencer:
             config:              Optional pipeline-level configuration dict (passed to templates).
             on_phase_complete:   Optional callable(phase_id: str, result: dict) → None.
                                  Called after each phase completes (success or failure).
+            on_phase_start:      Optional callable(phase_id: str, phase, wave_index: int) → None.
+                                 Called just before a phase starts executing.
         """
         self.template = template
         self.runner = runner
         self.config = config or {}
         self.phase_outputs: Dict[str, Any] = {}
         self.on_phase_complete = on_phase_complete
+        self.on_phase_start = on_phase_start
 
     # ------------------------------------------------------------------
     # Public API
@@ -62,10 +65,17 @@ class PhaseSequencer:
             logger.warning("Template has no executable phases (empty or fully cyclic)")
             return {"phase_outputs": {}, "final_output": {}}
 
-        for wave in execution_order:
+        for wave_index, wave in enumerate(execution_order):
             # MVP: sequential within each wave (no actual parallelism)
             for phase_id in wave:
                 phase = self._get_phase(phase_id)
+
+                # Notify caller that phase is about to start
+                if self.on_phase_start is not None:
+                    try:
+                        self.on_phase_start(phase_id, phase, wave_index)
+                    except Exception:
+                        pass  # Never let a callback crash the pipeline
 
                 # Build the prompt for this phase
                 phase_input = self._build_phase_input(phase, initial_input)

@@ -677,11 +677,297 @@
       vertical-align: middle;
     }
 
+    /* ── Live progress panel ─────────────────────────────────────── */
+    #live-progress-panel {
+      display: none;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin: 0 24px 16px;
+      padding: 14px 16px;
+      flex-direction: column;
+      gap: 12px;
+    }
+    #live-progress-panel.visible { display: flex; }
+
+    .progress-panel-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .progress-panel-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      flex: 1;
+    }
+
+    /* Connection status indicator */
+    .sse-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--border);
+      display: inline-block;
+      transition: background 0.3s;
+    }
+    .sse-dot.connected { background: var(--accent); }
+    .sse-dot.error     { background: var(--danger); }
+
+    /* Phase timeline */
+    .phase-timeline {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      id: phase-timeline;
+    }
+
+    .phase-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: var(--bg-active);
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: nowrap;
+      transition: border-color 0.2s, background 0.2s, color 0.2s;
+      position: relative;
+    }
+    .phase-pill.pending  { border-color: var(--border); }
+    .phase-pill.running  {
+      border-color: var(--warning);
+      color: var(--warning);
+      background: rgba(227, 179, 65, 0.08);
+    }
+    .phase-pill.done     {
+      border-color: var(--accent);
+      color: #3fb950;
+      background: rgba(46, 160, 67, 0.08);
+    }
+    .phase-pill.failed   {
+      border-color: var(--danger);
+      color: var(--danger);
+      background: rgba(218, 54, 51, 0.08);
+    }
+
+    .phase-pill-sub {
+      font-size: 9px;
+      color: var(--text-muted);
+      margin-top: 1px;
+    }
+
+    /* Pulse animation for running phase */
+    @keyframes pulse-ring {
+      0%   { box-shadow: 0 0 0 0 rgba(227,179,65,0.4); }
+      70%  { box-shadow: 0 0 0 5px rgba(227,179,65,0); }
+      100% { box-shadow: 0 0 0 0 rgba(227,179,65,0); }
+    }
+    .phase-pill.running { animation: pulse-ring 1.4s ease-out infinite; }
+
+    /* Overall progress bar */
+    .overall-progress-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .overall-progress-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+    }
+    .overall-progress-bar-track {
+      height: 6px;
+      background: var(--bg-active);
+      border-radius: 3px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    #overall-progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--info), var(--accent));
+      border-radius: 3px;
+      transition: width 0.4s ease;
+      width: 0%;
+    }
+
+    /* Running totals */
+    .running-totals {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .total-stat {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .total-stat .stat-label {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+    }
+    .total-stat .stat-value {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
     /* Scrollbar styling */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #444d56; }
+
+    /* ── Auto-generated input forms (Feature #81) ────────────────── */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .form-group label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .form-group label .required-star {
+      color: var(--danger);
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .form-group input[type="text"],
+    .form-group input[type="number"],
+    .form-group textarea,
+    .form-group select {
+      width: 100%;
+    }
+
+    .form-group .field-help {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    .form-group .field-error {
+      font-size: 11px;
+      color: var(--danger);
+      display: none;
+    }
+
+    .form-group.has-error input,
+    .form-group.has-error textarea,
+    .form-group.has-error select {
+      border-color: var(--danger) !important;
+    }
+
+    .form-group.has-error .field-error {
+      display: block;
+    }
+
+    /* Boolean toggle switch */
+    .toggle-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 36px;
+      height: 20px;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+      position: absolute;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background: var(--bg-active);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      transition: background 0.2s, border-color 0.2s;
+    }
+
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      left: 2px;
+      top: 2px;
+      background: var(--text-muted);
+      border-radius: 50%;
+      transition: transform 0.2s, background 0.2s;
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(16px);
+      background: #fff;
+    }
+
+    .toggle-switch input:focus + .toggle-slider {
+      box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.3);
+    }
+
+    .toggle-label-text {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    /* Form fields grid */
+    .schema-form {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* Mode selector row */
+    .mode-selector-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 0;
+      border-top: 1px solid var(--border);
+      margin-top: 4px;
+    }
+
+    .mode-selector-row label {
+      font-size: 12px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .mode-selector-row select {
+      flex: 1;
+      max-width: 240px;
+    }
   </style>
 </head>
 <body>
@@ -754,6 +1040,51 @@
       <div id="detail-area" style="display:none;">
         <!-- injected by JS -->
       </div>
+
+      <!-- Live progress panel (visible while pipeline is running) -->
+      <div id="live-progress-panel" aria-live="polite" aria-label="Pipeline progress">
+        <div class="progress-panel-header">
+          <span class="progress-panel-title">Live Progress</span>
+          <span class="sse-dot" id="sse-dot" title="SSE disconnected"></span>
+          <span id="sse-status-text" style="font-size:11px;color:var(--text-muted);">disconnected</span>
+        </div>
+
+        <!-- Phase timeline -->
+        <div class="phase-timeline" id="phase-timeline" role="list" aria-label="Phase timeline">
+          <!-- pills injected by JS -->
+        </div>
+
+        <!-- Overall progress bar -->
+        <div class="overall-progress-wrap" id="overall-progress-wrap">
+          <div class="overall-progress-label">
+            <span id="progress-label-text">0 of 0 phases complete</span>
+            <span id="progress-pct-text">0%</span>
+          </div>
+          <div class="overall-progress-bar-track" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+            <div id="overall-progress-fill"></div>
+          </div>
+        </div>
+
+        <!-- Running totals -->
+        <div class="running-totals" id="running-totals">
+          <div class="total-stat">
+            <span class="stat-label">Tokens In</span>
+            <span class="stat-value" id="stat-tokens-in">0</span>
+          </div>
+          <div class="total-stat">
+            <span class="stat-label">Tokens Out</span>
+            <span class="stat-value" id="stat-tokens-out">0</span>
+          </div>
+          <div class="total-stat">
+            <span class="stat-label">Est. Cost</span>
+            <span class="stat-value" id="stat-cost">$0.0000</span>
+          </div>
+          <div class="total-stat">
+            <span class="stat-label">Elapsed</span>
+            <span class="stat-value" id="stat-elapsed">0s</span>
+          </div>
+        </div>
+      </div>
     </main>
 
     <!-- Log panel -->
@@ -781,6 +1112,14 @@
     let activeEventSource = null;
     let allTemplates = [];       // Full template list from API
     let activeCategory = 'all'; // Currently selected category filter
+
+    // ── Live progress state ──────────────────────────────────────────
+    let _pipelineStartTime = null;
+    let _elapsedTimer = null;
+    let _totalTokensIn = 0;
+    let _totalTokensOut = 0;
+    let _totalCost = 0.0;
+    let _phaseStates = {};   // phase_id → 'pending'|'running'|'done'|'failed'
 
     // ── Bootstrap ────────────────────────────────────────────────────
     async function bootstrap() {
@@ -957,6 +1296,10 @@
     // ── Render template detail ────────────────────────────────────────
     function renderDetail(t) {
       const detail = document.getElementById('detail-area');
+      const hasSchema = t.config_schema &&
+                        t.config_schema.properties &&
+                        Object.keys(t.config_schema.properties).length > 0;
+
       detail.innerHTML = `
         <div class="detail-back">
           <button class="detail-back-btn" onclick="showBrowser()">← All templates</button>
@@ -997,19 +1340,22 @@
         <div>
           <div class="section-title">Run Pipeline</div>
           <div class="run-form" id="run-form">
-            <div class="form-row">
-              <label>Mode</label>
+            ${hasSchema
+              ? `<div class="schema-form" id="schema-form">${renderForm(t.config_schema)}</div>`
+              : `<div>
+                  <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">
+                    Input JSON ${t.example_input && Object.keys(t.example_input).length ? '(example shown)' : '(optional)'}
+                  </label>
+                  <textarea id="run-input" placeholder="{}">${t.example_input && Object.keys(t.example_input).length ? escHtml(JSON.stringify(t.example_input, null, 2)) : ''}</textarea>
+                </div>`
+            }
+            <div class="mode-selector-row">
+              <label for="run-mode">Mode</label>
               <select id="run-mode">
                 <option value="dry-run">dry-run (mock)</option>
                 <option value="standalone">standalone (Anthropic API)</option>
                 <option value="openclaw">openclaw (sub-agent)</option>
               </select>
-            </div>
-            <div>
-              <label style="font-size:12px; color:var(--text-muted); display:block; margin-bottom:4px;">
-                Input JSON ${t.example_input && Object.keys(t.example_input).length ? '(example shown)' : '(optional)'}
-              </label>
-              <textarea id="run-input" placeholder="{}">${t.example_input && Object.keys(t.example_input).length ? JSON.stringify(t.example_input, null, 2) : ''}</textarea>
             </div>
             <div class="form-row">
               <button class="btn btn-primary" id="run-btn" onclick="startRun()">▶ Run Pipeline</button>
@@ -1020,16 +1366,146 @@
       `;
     }
 
+    // ── Render form from JSON Schema ──────────────────────────────────
+    // Returns HTML string for a form generated from a JSON Schema object.
+    function renderForm(configSchema) {
+      if (!configSchema || !configSchema.properties) return '';
+      const props = configSchema.properties;
+      const required = Array.isArray(configSchema.required) ? configSchema.required : [];
+
+      const longTextNames = /description|brief|task_description|summary|content|body|prompt|text/i;
+
+      const fields = Object.entries(props).map(([name, schema]) => {
+        const isRequired = required.includes(name);
+        const label = name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const helpText = schema.description || '';
+        const defaultVal = schema.default !== undefined ? schema.default : '';
+        const fieldType = schema.type || 'string';
+        const enumVals = schema.enum;
+        const starHtml = isRequired
+          ? '<span class="required-star" aria-label="required">*</span>'
+          : '';
+        const reqAttr = isRequired ? 'data-required="true"' : '';
+
+        let inputHtml;
+
+        if (enumVals && Array.isArray(enumVals)) {
+          // Enum → <select>
+          const opts = enumVals.map(v =>
+            `<option value="${escHtml(String(v))}"${String(v) === String(defaultVal) ? ' selected' : ''}>${escHtml(String(v))}</option>`
+          ).join('');
+          inputHtml = `<select id="field-${escHtml(name)}" name="${escHtml(name)}" ${reqAttr}>${opts}</select>`;
+
+        } else if (fieldType === 'boolean') {
+          // Boolean → toggle switch
+          const checked = defaultVal === true || defaultVal === 'true' ? 'checked' : '';
+          inputHtml = `
+            <div class="toggle-wrap">
+              <label class="toggle-switch">
+                <input type="checkbox" id="field-${escHtml(name)}" name="${escHtml(name)}" ${checked}>
+                <span class="toggle-slider"></span>
+              </label>
+              <span class="toggle-label-text">${checked ? 'Yes' : 'No'}</span>
+            </div>`;
+
+        } else if (fieldType === 'number' || fieldType === 'integer') {
+          // Number/integer → <input type="number">
+          const step = fieldType === 'integer' ? 'step="1"' : '';
+          const min = schema.minimum !== undefined ? `min="${schema.minimum}"` : '';
+          const max = schema.maximum !== undefined ? `max="${schema.maximum}"` : '';
+          const val = defaultVal !== '' ? `value="${escHtml(String(defaultVal))}"` : '';
+          inputHtml = `<input type="number" id="field-${escHtml(name)}" name="${escHtml(name)}" ${step} ${min} ${max} ${val} ${reqAttr} placeholder="${escHtml(String(defaultVal || ''))}">`;
+
+        } else {
+          // String → textarea or text input
+          const isMultiline = /multiline/i.test(helpText) || longTextNames.test(name);
+          if (isMultiline) {
+            inputHtml = `<textarea id="field-${escHtml(name)}" name="${escHtml(name)}" ${reqAttr} placeholder="${escHtml(String(defaultVal || ''))}" rows="3">${escHtml(String(defaultVal))}</textarea>`;
+          } else {
+            inputHtml = `<input type="text" id="field-${escHtml(name)}" name="${escHtml(name)}" ${reqAttr} value="${escHtml(String(defaultVal))}" placeholder="${escHtml(String(defaultVal || ''))}">`;
+          }
+        }
+
+        return `
+          <div class="form-group" id="fg-${escHtml(name)}">
+            <label for="field-${escHtml(name)}">${escHtml(label)}${starHtml}</label>
+            ${inputHtml}
+            ${helpText ? `<span class="field-help">${escHtml(helpText)}</span>` : ''}
+            <span class="field-error">This field is required</span>
+          </div>`;
+      });
+
+      return fields.join('');
+    }
+
+    // ── Collect form values into JSON object ──────────────────────────
+    function collectFormValues() {
+      const form = document.getElementById('schema-form');
+      if (!form) return null; // No schema form — caller should use textarea
+      const result = {};
+      form.querySelectorAll('[id^="field-"]').forEach(el => {
+        const name = el.name || el.id.replace('field-', '');
+        if (el.type === 'checkbox') {
+          result[name] = el.checked;
+        } else if (el.type === 'number') {
+          result[name] = el.value !== '' ? Number(el.value) : undefined;
+        } else {
+          result[name] = el.value;
+        }
+      });
+      // Remove undefined entries
+      Object.keys(result).forEach(k => result[k] === undefined && delete result[k]);
+      return result;
+    }
+
+    // ── Client-side validation ────────────────────────────────────────
+    function validateForm() {
+      const form = document.getElementById('schema-form');
+      if (!form) return true; // No schema form → always valid (JSON textarea)
+      let valid = true;
+      form.querySelectorAll('[data-required="true"]').forEach(el => {
+        const name = el.name || el.id.replace('field-', '');
+        const fg = document.getElementById('fg-' + name);
+        const isEmpty = el.type === 'checkbox'
+          ? false  // checkboxes are always "filled"
+          : !el.value.trim();
+        if (isEmpty) {
+          valid = false;
+          if (fg) fg.classList.add('has-error');
+          el.addEventListener('input', () => {
+            if (el.value.trim()) fg && fg.classList.remove('has-error');
+          }, { once: true });
+        } else {
+          if (fg) fg.classList.remove('has-error');
+        }
+      });
+      return valid;
+    }
+
     // ── Start a run ───────────────────────────────────────────────────
     async function startRun() {
       if (!currentTemplate) return;
 
+      // Validate form before submission
+      if (!validateForm()) {
+        logEntry('error', 'Please fill in all required fields before running.');
+        return;
+      }
+
       const mode = document.getElementById('run-mode').value;
-      const inputRaw = document.getElementById('run-input').value.trim();
+
+      // Collect input from schema form OR raw JSON textarea
       let inputData = {};
-      if (inputRaw) {
-        try { inputData = JSON.parse(inputRaw); }
-        catch(e) { logEntry('error', 'Invalid JSON in input: ' + e.message); return; }
+      const schemaForm = document.getElementById('schema-form');
+      if (schemaForm) {
+        inputData = collectFormValues() || {};
+      } else {
+        const inputRaw = (document.getElementById('run-input') || {}).value || '';
+        const trimmed = inputRaw.trim();
+        if (trimmed) {
+          try { inputData = JSON.parse(trimmed); }
+          catch(e) { logEntry('error', 'Invalid JSON in input: ' + e.message); return; }
+        }
       }
 
       // Close any prior SSE

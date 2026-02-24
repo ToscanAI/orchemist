@@ -189,6 +189,7 @@ def create_app():  # noqa: C901
                 "tags": template.tags,
                 "phases": phases_data,
                 "example_input": template.example_input,
+                "config_schema": template.config_schema or {},
             }
         )
 
@@ -296,23 +297,62 @@ async def _execute_pipeline(
 
     _push_event("start", {"run_id": run_id, "template": template.id, "mode": mode})
 
+    # Per-phase timing: phase_id → start time (float)
+    _phase_start_times: Dict[str, float] = {}
+    # Running totals
+    _total_tokens_in: int = 0
+    _total_tokens_out: int = 0
+    _total_cost: float = 0.0
+    _pipeline_start_time: float = time.time()
+
+    def on_phase_start(phase_id: str, phase: Any, wave_index: int) -> None:
+        """Fires just before a phase begins executing."""
+        _phase_start_times[phase_id] = time.time()
+        payload = _json.dumps({
+            "type": "phase_start",
+            "phase_id": phase_id,
+            "phase_name": getattr(phase, "name", phase_id),
+            "model_tier": getattr(phase, "model_tier", ""),
+            "wave": wave_index,
+        })
+        run["events"].append(payload)
+        loop.call_soon_threadsafe(run["event_queue"].put_nowait, payload)
+
     def on_phase_complete(phase_id: str, phase_result: dict) -> None:
         # Fix 1: This callback runs in a thread-pool thread; use call_soon_threadsafe
         # to safely deliver events to the asyncio event loop.
+        nonlocal _total_tokens_in, _total_tokens_out, _total_cost
+
         state = phase_result.get("state", "unknown")
         state_val = state.value if hasattr(state, "value") else str(state)
-        tokens = phase_result.get("tokens_consumed", 0)
+
+        tokens_consumed = int(phase_result.get("tokens_consumed", 0) or 0)
         cost = float(phase_result.get("cost_usd", 0) or 0)
+        # Split tokens: use tokens_in/tokens_out if available, else split evenly
+        tokens_in = int(phase_result.get("tokens_in", tokens_consumed // 2) or 0)
+        tokens_out = int(phase_result.get("tokens_out", tokens_consumed - tokens_in) or 0)
+
+        elapsed = 0.0
+        if phase_id in _phase_start_times:
+            elapsed = round(time.time() - _phase_start_times[phase_id], 2)
+
+        # Accumulate totals
+        _total_tokens_in += tokens_in
+        _total_tokens_out += tokens_out
+        _total_cost += cost
 
         if state_val in ("failed", "permanently_failed"):
             run["phases_failed"].append(phase_id)
-            # Serialise and schedule on the event loop from the thread pool.
             payload = _json.dumps({
-                "type": "phase_failed",
+                "type": "phase_error",
                 "phase_id": phase_id,
-                "state": state_val,
-                "tokens": tokens,
+                "phase_name": phase_id,
+                "status": state_val,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
                 "cost_usd": cost,
+                "elapsed_seconds": elapsed,
+                "error_message": str(phase_result.get("errors", [{}])[0]) if phase_result.get("errors") else state_val,
             })
             run["events"].append(payload)
             loop.call_soon_threadsafe(run["event_queue"].put_nowait, payload)
@@ -321,9 +361,12 @@ async def _execute_pipeline(
             payload = _json.dumps({
                 "type": "phase_complete",
                 "phase_id": phase_id,
-                "state": state_val,
-                "tokens": tokens,
+                "phase_name": phase_id,
+                "status": state_val,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
                 "cost_usd": cost,
+                "elapsed_seconds": elapsed,
             })
             run["events"].append(payload)
             loop.call_soon_threadsafe(run["event_queue"].put_nowait, payload)
@@ -343,23 +386,63 @@ async def _execute_pipeline(
                     runner,
                     config=initial_input,
                     on_phase_complete=on_phase_complete,
+                    on_phase_start=on_phase_start,
                 )
                 return sequencer.execute(initial_input)
 
         result = await loop.run_in_executor(None, _run_sync)
 
+        total_elapsed = round(time.time() - _pipeline_start_time, 2)
+        total_phases = len(template.phases)
+        completed = len(run["phases_completed"])
+        failed = len(run["phases_failed"])
+
         if result.get("aborted"):
             run["status"] = "aborted"
             _push_event("aborted", {"failed_phase": result.get("failed_phase", "unknown")})
+            _push_event("pipeline_complete", {
+                "status": "aborted",
+                "total_phases": total_phases,
+                "completed": completed,
+                "failed": failed,
+                "total_tokens": _total_tokens_in + _total_tokens_out,
+                "total_tokens_in": _total_tokens_in,
+                "total_tokens_out": _total_tokens_out,
+                "total_cost": round(_total_cost, 6),
+                "total_elapsed": total_elapsed,
+            })
         else:
             run["status"] = "completed"
-            _push_event("complete", {"phases": len(run["phases_completed"])})
+            _push_event("complete", {"phases": completed})
+            _push_event("pipeline_complete", {
+                "status": "completed",
+                "total_phases": total_phases,
+                "completed": completed,
+                "failed": failed,
+                "total_tokens": _total_tokens_in + _total_tokens_out,
+                "total_tokens_in": _total_tokens_in,
+                "total_tokens_out": _total_tokens_out,
+                "total_cost": round(_total_cost, 6),
+                "total_elapsed": total_elapsed,
+            })
 
     except Exception as exc:
         logger.exception("Pipeline run %s failed: %s", run_id, exc)
         run["status"] = "error"
         run["error"] = str(exc)
         _push_event("error", {"message": str(exc)})
+        total_elapsed = round(time.time() - _pipeline_start_time, 2)
+        _push_event("pipeline_complete", {
+            "status": "error",
+            "total_phases": len(template.phases),
+            "completed": len(run["phases_completed"]),
+            "failed": len(run["phases_failed"]),
+            "total_tokens": _total_tokens_in + _total_tokens_out,
+            "total_tokens_in": _total_tokens_in,
+            "total_tokens_out": _total_tokens_out,
+            "total_cost": round(_total_cost, 6),
+            "total_elapsed": total_elapsed,
+        })
     finally:
         # Fix 2: Record completion timestamp for TTL-based cleanup.
         run["completed_at"] = time.time()
