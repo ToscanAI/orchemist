@@ -1,0 +1,131 @@
+id: docs-pipeline
+name: "Documentation Pipeline"
+version: "1.0.0"
+description: >
+  3-phase pipeline for writing documentation: research/outline → write → review.
+  Produces reviewed, publication-ready documentation.
+author: "Toscan"
+category: "content"
+
+tags:
+  - documentation
+  - writing
+  - review
+
+use_cases:
+  - "README files, CONTRIBUTING.md, guides"
+  - "API documentation and references"
+  - "Template authoring guides and tutorials"
+
+example_input:
+  doc_type: "CONTRIBUTING.md"
+  target_file: "CONTRIBUTING.md"
+  project_context: "An open-source AI pipeline orchestration engine"
+  requirements: "Cover quickstart, template structure, testing, publishing, code contributions"
+
+config_schema:
+  type: object
+  properties:
+    doc_type:
+      type: string
+      description: "Type of document (e.g. CONTRIBUTING.md, API guide, tutorial)"
+    target_file:
+      type: string
+      description: "Path where the document should be written"
+    project_context:
+      type: string
+      description: "Brief description of the project for context"
+    requirements:
+      type: string
+      description: "Specific requirements and sections to include"
+    reference_files:
+      type: string
+      description: "Comma-separated list of files to read for context"
+      default: ""
+    max_lines:
+      type: integer
+      description: "Maximum line count for the document"
+      default: 500
+  required:
+    - doc_type
+    - target_file
+    - project_context
+    - requirements
+
+phases:
+  - id: research
+    name: "Research & Outline"
+    description: "Read reference files and produce a structured outline"
+    task_type: research
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: []
+    timeout_minutes: 10
+    prompt_template: |
+      You are a technical writer preparing to write: {input[doc_type]}
+      Project: {input[project_context]}
+      Requirements: {input[requirements]}
+      Reference files to read: {input[reference_files]}
+
+      1. Read all reference files listed above
+      2. Produce a detailed outline with:
+         - All sections and subsections
+         - Key points to cover in each section
+         - Code examples needed
+         - Cross-references to other docs
+      
+      Output the complete outline as markdown.
+
+  - id: write
+    name: "Write Document"
+    description: "Write the full document based on the outline"
+    task_type: content
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on:
+      - research
+    timeout_minutes: 15
+    prompt_template: |
+      You are a technical writer. Write the complete document based on this outline:
+
+      {research.output}
+
+      Document type: {input[doc_type]}
+      Project: {input[project_context]}
+      Requirements: {input[requirements]}
+      Max length: {input[max_lines]} lines
+
+      Write the FULL document content. Be practical, include real code examples,
+      and maintain a friendly but professional tone. Output the complete markdown.
+
+  - id: review
+    name: "Technical Review"
+    description: "Review for accuracy, completeness, and tone"
+    task_type: analysis
+    model_tier: opus
+    thinking_level: medium
+    depends_on:
+      - write
+    timeout_minutes: 10
+    prompt_template: |
+      Review this {input[doc_type]} for an open-source project.
+
+      ## Document to Review
+      {write.output}
+
+      ## Review Criteria
+      1. **Accuracy** — Are CLI commands, field names, and examples correct?
+      2. **Completeness** — Does it cover all requirements: {input[requirements]}
+      3. **Tone** — Welcoming and practical, not corporate?
+      4. **Examples** — Syntactically correct and useful?
+      5. **Missing info** — Anything a reader would need that's not there?
+
+      Provide verdict: APPROVE, APPROVE_WITH_CHANGES, or REQUEST_CHANGES.
+      List specific issues with fixes. If APPROVE_WITH_CHANGES, provide the
+      corrected sections so they can be applied directly.
+
+    output_schema:
+      type: object
+      properties:
+        result:
+          type: string
