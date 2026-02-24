@@ -1,0 +1,109 @@
+id: security-audit-pipeline
+name: "Security Audit Pipeline"
+version: "1.0.0"
+author: "Toscan"
+description: >
+  3-phase security audit: investigate code → write findings → Opus review.
+  Uses context_files to inline source code for sub-agents.
+category: "analysis"
+
+config_schema:
+  type: object
+  properties:
+    audit_scope:
+      type: string
+      description: "What to investigate — specific warnings, files, or concerns"
+    project_context:
+      type: string
+      description: "Brief project description"
+  required:
+    - audit_scope
+
+phases:
+  - id: investigate
+    name: "Code Investigation"
+    description: "Read source code and investigate security/quality warnings"
+    task_type: analysis
+    model_tier: opus
+    thinking_level: high
+    timeout_minutes: 15
+    context_files:
+      - src/orchestration_engine/cli.py
+      - src/orchestration_engine/openclaw_executor.py
+      - src/orchestration_engine/templates.py
+      - scenario_runner/graders/llm_judge.py
+      - scenario_runner/runner.py
+    prompt_template: |
+      You are a senior security auditor. Investigate these warnings in the orchestration engine codebase.
+
+      ## Audit Scope
+      {input[audit_scope]}
+
+      ## Source Files
+
+      ### cli.py
+      {files[cli]}
+
+      ### openclaw_executor.py
+      {files[openclaw_executor]}
+
+      ### templates.py
+      {files[templates]}
+
+      ### llm_judge.py
+      {files[llm_judge]}
+
+      ### runner.py
+      {files[runner]}
+
+      For each warning:
+      1. Find the exact code location (line numbers)
+      2. Assess actual severity (CRITICAL / HIGH / MEDIUM / LOW)
+      3. Show the vulnerable code
+      4. Provide a concrete fix with code
+      5. Estimate effort (hours)
+
+  - id: report
+    name: "Write Audit Report"
+    description: "Compile investigation into structured audit report"
+    task_type: content
+    model_tier: sonnet
+    thinking_level: medium
+    timeout_minutes: 10
+    depends_on: [investigate]
+    prompt_template: |
+      Write a structured security audit report from these investigation findings:
+
+      {investigate.output}
+
+      Format:
+      - Executive Summary (1 paragraph)
+      - Findings Table (severity, location, fix, effort)
+      - Detailed Analysis per finding
+      - Recommended Fix Order (by severity × effort)
+      - Total estimated fix effort
+
+  - id: review
+    name: "Audit Review"
+    description: "Independent review of the audit report"
+    task_type: review
+    model_tier: opus
+    thinking_level: medium
+    timeout_minutes: 10
+    depends_on: [report, investigate]
+    prompt_template: |
+      Review this security audit report for accuracy and completeness.
+
+      ## Audit Report
+      {report.output}
+
+      ## Raw Investigation
+      {investigate.output}
+
+      Check:
+      1. Are all findings real? (no false positives)
+      2. Are severity ratings accurate?
+      3. Are the fixes correct and complete?
+      4. Anything missed?
+
+      Verdict: APPROVE or REQUEST_CHANGES

@@ -1,0 +1,120 @@
+id: ux-audit-pipeline
+name: "UX Audit Pipeline"
+version: "1.0.0"
+author: "Toscan"
+description: >
+  UX specialist review of developer experience. Reads docs + CLI code,
+  evaluates workflow coherence, onboarding, error handling.
+category: "analysis"
+
+config_schema:
+  type: object
+  properties:
+    audit_focus:
+      type: string
+      description: "Specific UX areas to evaluate"
+    project_context:
+      type: string
+      description: "Brief project description"
+  required:
+    - audit_focus
+
+phases:
+  - id: evaluate
+    name: "UX Evaluation"
+    description: "Evaluate developer experience across all touchpoints"
+    task_type: analysis
+    model_tier: sonnet
+    thinking_level: high
+    timeout_minutes: 15
+    context_files:
+      - docs/GETTING_STARTED.md
+      - docs/template-authoring.md
+      - CONTRIBUTING.md
+      - src/orchestration_engine/cli.py
+      - scenario_runner/graders/llm_judge.py
+      - scenarios/e2e-autonomous.yaml
+      - examples/code-development-pipeline.yaml
+      - examples/hello-pipeline.yaml
+    prompt_template: |
+      You are a senior UX specialist evaluating a CLI-based AI pipeline orchestration tool.
+
+      ## Focus Areas
+      {input[audit_focus]}
+
+      ## Documentation
+
+      ### GETTING_STARTED.md
+      {files[GETTING_STARTED]}
+
+      ### template-authoring.md
+      {files[template_authoring]}
+
+      ### CONTRIBUTING.md
+      {files[CONTRIBUTING]}
+
+      ## CLI Code (all commands)
+      {files[cli]}
+
+      ## Grader (LLM Judge)
+      {files[llm_judge]}
+
+      ## Example Scenario
+      {files[e2e_autonomous]}
+
+      ## Example Templates
+      ### code-development-pipeline.yaml
+      {files[code_development_pipeline]}
+
+      ### hello-pipeline.yaml
+      {files[hello_pipeline]}
+
+      For each area, provide:
+      - **Score** (1-10)
+      - **Issues Found** (specific, with location)
+      - **Recommended Fixes** (prioritized by impact)
+
+  - id: recommendations
+    name: "Prioritized Recommendations"
+    description: "Compile UX findings into prioritized action items"
+    task_type: content
+    model_tier: sonnet
+    thinking_level: medium
+    timeout_minutes: 10
+    depends_on: [evaluate]
+    prompt_template: |
+      Compile these UX evaluation findings into a prioritized action plan:
+
+      {evaluate.output}
+
+      Output:
+      1. Executive UX Score (overall 1-10 with breakdown)
+      2. Critical Issues (must fix before launch)
+      3. Important Issues (fix within first month)
+      4. Nice-to-Have Improvements
+      5. Specific GitHub issue titles for each fix
+
+  - id: review
+    name: "UX Review"
+    description: "Senior review of UX recommendations"
+    task_type: review
+    model_tier: opus
+    thinking_level: medium
+    timeout_minutes: 10
+    depends_on: [recommendations, evaluate]
+    prompt_template: |
+      Review this UX audit and recommendations for a CLI developer tool.
+
+      ## Recommendations
+      {recommendations.output}
+
+      ## Raw Evaluation
+      {evaluate.output}
+
+      Check:
+      1. Are the scores fair and justified?
+      2. Are recommendations actionable?
+      3. Anything important missed?
+      4. Is the priority order correct?
+
+      Verdict: APPROVE or REQUEST_CHANGES with specific adjustments.
