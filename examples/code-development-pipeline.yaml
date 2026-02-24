@@ -1,0 +1,164 @@
+id: code-development-pipeline
+name: Code Development Pipeline
+version: "1.0.0"
+author: "Conny Lazo & Toscan"
+description: >
+  Full software development pipeline: from requirements analysis through
+  implementation, code review, security scan, and testing. Each phase uses
+  a separate agent to avoid confirmation bias. The code review phase catches
+  bugs, security issues, and architectural problems that the implementer missed.
+
+config_schema:
+  type: object
+  properties:
+    task_description:
+      type: string
+      description: "What to build — feature description, bug report, or refactor goal"
+    repository_path:
+      type: string
+      description: "Path to the repository (for context)"
+    language:
+      type: string
+      description: "Primary programming language"
+      default: "python"
+    test_framework:
+      type: string
+      description: "Test framework to use"
+      default: "pytest"
+  required:
+    - task_description
+
+phases:
+  - id: requirements
+    name: Requirements Analysis
+    description: "Analyze the task, identify acceptance criteria, edge cases, and dependencies"
+    task_type: analysis
+    model_tier: sonnet
+    thinking_level: medium
+    prompt_template: |
+      You are a senior software architect. Analyze this development task and produce
+      a structured requirements document.
+
+      ## Task
+      {input}
+
+      ## Your Analysis Must Include
+      1. **Acceptance criteria** — specific, testable conditions for "done"
+      2. **Edge cases** — what could go wrong, boundary conditions
+      3. **Dependencies** — what existing code/modules are affected
+      4. **Test plan** — what tests need to be written
+      5. **Risk assessment** — what's the hardest part, what might we miss
+
+      Be specific. Vague requirements produce vague code.
+
+  - id: implement
+    name: Implementation
+    description: "Write the code based on requirements analysis"
+    task_type: code
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on: [requirements]
+    prompt_template: |
+      You are a senior software developer. Implement the following based on the
+      requirements analysis.
+
+      ## Requirements Analysis
+      {requirements.output}
+
+      ## Original Task
+      {input}
+
+      ## Instructions
+      1. Write clean, well-documented code
+      2. Follow existing code style and conventions
+      3. Include type hints
+      4. Write docstrings for public functions
+      5. Handle errors gracefully
+      6. Output the complete implementation with file paths
+
+      Output format: For each file, show the full path and complete content.
+
+  - id: code_review
+    name: Code Review
+    description: "Independent review — catches bugs, security issues, architecture problems"
+    task_type: review
+    model_tier: opus
+    thinking_level: high
+    depends_on: [implement, requirements]
+    prompt_template: |
+      You are a senior code reviewer. You did NOT write this code. Review it critically.
+
+      ## Requirements
+      {requirements.output}
+
+      ## Implementation
+      {implement.output}
+
+      ## Review Checklist
+      1. **Correctness** — Does the code do what the requirements specify?
+      2. **Edge cases** — Are the identified edge cases handled?
+      3. **Security** — SQL injection, path traversal, input validation, secrets exposure
+      4. **Performance** — O(n²) loops, unnecessary allocations, missing indexes
+      5. **Test coverage** — Are the right things being tested? Any gaps?
+      6. **Code quality** — Naming, structure, DRY violations, dead code
+      7. **Architecture** — Does this fit the existing codebase? Any coupling issues?
+
+      ## Output Format
+      For each issue found:
+      - **Severity:** BLOCKER / WARNING / NIT
+      - **Location:** File + function/line
+      - **Issue:** What's wrong
+      - **Fix:** How to fix it
+
+      End with: APPROVE (ship it) or REQUEST_CHANGES (must fix blockers first)
+
+  - id: fix
+    name: Apply Fixes
+    description: "Apply code review feedback — fix all blockers and warnings"
+    task_type: code
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on: [code_review, implement]
+    prompt_template: |
+      You are the developer receiving code review feedback. Apply ALL fixes.
+
+      ## Original Implementation
+      {implement.output}
+
+      ## Code Review Feedback
+      {code_review.output}
+
+      ## Instructions
+      1. Fix ALL blockers — these must be resolved
+      2. Fix ALL warnings — these should be resolved
+      3. Address nits where reasonable
+      4. Do NOT introduce new issues while fixing
+      5. Output the complete corrected implementation
+
+      If the review said APPROVE with no blockers, output the original implementation unchanged.
+
+  - id: test_generation
+    name: Test Generation
+    description: "Write comprehensive tests based on requirements and final implementation"
+    task_type: code
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: [fix, requirements]
+    prompt_template: |
+      You are a QA engineer. Write comprehensive tests for this implementation.
+
+      ## Requirements (acceptance criteria + edge cases)
+      {requirements.output}
+
+      ## Final Implementation
+      {fix.output}
+
+      ## Instructions
+      1. Write tests for every acceptance criterion
+      2. Write tests for every identified edge case
+      3. Include happy path and error path tests
+      4. Use {input} as the test framework
+      5. Tests should be runnable independently
+      6. Include clear test names that describe what they verify
+
+      Output: Complete test file(s) with all imports and fixtures.
