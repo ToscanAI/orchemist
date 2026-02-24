@@ -5,40 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Orchestration Engine</title>
   <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js">
-// === Issue #82: Visual Phase Display ===
-function renderPipelineViz(phases) {
-  if (!phases || !phases.length) return '';
-  return '<div class="pipeline-viz">' + phases.map((p, i) => {
-    let tier = (p.model_tier || 'sonnet').toLowerCase();
-    let block = '<div class="phase-block tier-' + escHtml(tier) + '">' +
-      '<div class="phase-name">' + escHtml(p.name || p.id) + '</div>' +
-      '<div class="phase-meta">' + escHtml(tier) + ' \u00b7 ' + escHtml(p.thinking_level || 'low') + '</div>' +
-    '</div>';
-    return (i > 0 ? '<span class="phase-connector">\u2192</span>' : '') + block;
-  }).join('') + '</div>';
-}
-
-// === Issue #84: Output Viewer ===
-function renderOutputViewer(phaseOutputs) {
-  if (!phaseOutputs || !Object.keys(phaseOutputs).length) return '<div class="output-viewer"><em>No outputs yet. Run the pipeline to see results.</em></div>';
-  let tabs = Object.keys(phaseOutputs).map((pid, i) =>
-    '<span class="phase-output-tab' + (i===0?' active':'') + '" onclick="showOutput(\'' + escHtml(pid) + '\')">' + escHtml(pid) + '</span>'
-  ).join('');
-  let panels = Object.entries(phaseOutputs).map(([pid, content], i) =>
-    '<div class="output-panel" id="output-' + escHtml(pid) + '" style="display:' + (i===0?'block':'none') + '">' +
-    '<div class="output-viewer">' + (typeof marked !== 'undefined' ? marked.parse(String(content)) : '<pre>' + escHtml(String(content)) + '</pre>') + '</div></div>'
-  ).join('');
-  return '<div class="output-tabs">' + tabs + '</div>' + panels;
-}
-
-function showOutput(phaseId) {
-  document.querySelectorAll('.output-panel').forEach(p => p.style.display = 'none');
-  document.querySelectorAll('.phase-output-tab').forEach(t => t.classList.remove('active'));
-  const panel = document.getElementById('output-' + phaseId);
-  if (panel) panel.style.display = 'block';
-  event.target.classList.add('active');
-}
-
 </script>
   <style>
     /* ── Reset & base ───────────────────────────────────────────── */
@@ -1038,7 +1004,8 @@ function showOutput(phaseId) {
 .output-tabs { border-bottom: 1px solid #30363d; margin-bottom: 12px; }
 
 </style>
-  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 </head>
 <body>
   <div id="app">
@@ -1175,6 +1142,40 @@ function showOutput(phaseId) {
   </div>
 
   <script>
+// === Issue #82: Visual Phase Display ===
+function renderPipelineViz(phases) {
+  if (!phases || !phases.length) return '';
+  return '<div class="pipeline-viz">' + phases.map((p, i) => {
+    let tier = (p.model_tier || 'sonnet').toLowerCase();
+    let block = '<div class="phase-block tier-' + escHtml(tier) + '">' +
+      '<div class="phase-name">' + escHtml(p.name || p.id) + '</div>' +
+      '<div class="phase-meta">' + escHtml(tier) + ' \u00b7 ' + escHtml(p.thinking_level || 'low') + '</div>' +
+    '</div>';
+    return (i > 0 ? '<span class="phase-connector">\u2192</span>' : '') + block;
+  }).join('') + '</div>';
+}
+
+// === Issue #84: Output Viewer ===
+function renderOutputViewer(phaseOutputs) {
+  if (!phaseOutputs || !Object.keys(phaseOutputs).length) return '<div class="output-viewer"><em>No outputs yet. Run the pipeline to see results.</em></div>';
+  let tabs = Object.keys(phaseOutputs).map((pid, i) =>
+    '<span class="phase-output-tab' + (i===0?' active':'') + '" onclick="showOutput(\'' + escHtml(pid) + '\')">' + escHtml(pid) + '</span>'
+  ).join('');
+  let panels = Object.entries(phaseOutputs).map(([pid, content], i) =>
+    '<div class="output-panel" id="output-' + escHtml(pid) + '" style="display:' + (i===0?'block':'none') + '">' +
+    '<div class="output-viewer">' + (typeof marked !== 'undefined' ? DOMPurify.sanitize(marked.parse(String(content))) : '<pre>' + escHtml(String(content)) + '</pre>') + '</div></div>'
+  ).join('');
+  return '<div class="output-tabs">' + tabs + '</div>' + panels;
+}
+
+function showOutput(phaseId) {
+  document.querySelectorAll('.output-panel').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.phase-output-tab').forEach(t => t.classList.remove('active'));
+  const panel = document.getElementById('output-' + phaseId);
+  if (panel) panel.style.display = 'block';
+  event.target.classList.add('active');
+}
+
     // ── State ────────────────────────────────────────────────────────
     let currentTemplate = null;
     let totalPhases = 0;
