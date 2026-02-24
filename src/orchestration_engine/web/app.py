@@ -116,10 +116,32 @@ def create_app():  # noqa: C901
     async def list_templates() -> JSONResponse:
         """List all discoverable pipeline templates."""
         engine = TemplateEngine()
-        templates = engine.list_templates()
-        # Rename 'phases' count key to 'phases_count' for the UI
+        raw_templates = engine.list_templates()
+        # Rename 'phases' count key to 'phases_count' for the UI, and add
+        # category, author, and basic phases info for the template selector UI.
         result = []
-        for t in templates:
+        for t in raw_templates:
+            # Load the full template object to get category, author, and phases.
+            try:
+                from pathlib import Path as _Path
+                tpl = engine.load_template(_Path(t["path"]))
+                category = tpl.category or (
+                    tpl.phases[0].task_type if tpl.phases else "general"
+                )
+                author = tpl.author or ""
+                phases_summary = [
+                    {
+                        "id": p.id,
+                        "name": p.name,
+                        "model_tier": p.model_tier,
+                    }
+                    for p in tpl.phases
+                ]
+            except Exception:
+                category = "general"
+                author = ""
+                phases_summary = []
+
             result.append(
                 {
                     "id": t["id"],
@@ -128,6 +150,9 @@ def create_app():  # noqa: C901
                     "phases_count": t["phases"],
                     "description": t.get("description", ""),
                     "source": t.get("source", ""),
+                    "category": category,
+                    "author": author,
+                    "phases": phases_summary,
                 }
             )
         return JSONResponse(result)

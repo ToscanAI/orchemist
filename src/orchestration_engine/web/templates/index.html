@@ -40,7 +40,7 @@
     #app {
       display: grid;
       grid-template-rows: 48px 1fr 220px;
-      grid-template-columns: 260px 1fr;
+      grid-template-columns: 220px 1fr;
       grid-template-areas:
         "header  header"
         "sidebar main"
@@ -107,6 +107,15 @@
       justify-content: space-between;
     }
 
+    .sidebar-section-label {
+      padding: 10px 16px 4px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
     .refresh-btn {
       background: none;
       border: none;
@@ -118,50 +127,256 @@
     }
     .refresh-btn:hover { color: var(--text); background: var(--bg-active); }
 
-    #template-list { padding: 4px 0; flex: 1; }
+    .back-btn {
+      display: none;
+      background: none;
+      border: none;
+      color: var(--info);
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 3px;
+      font-size: 12px;
+    }
+    .back-btn:hover { background: var(--bg-active); }
+    .back-btn.visible { display: inline-block; }
 
-    .template-item {
-      padding: 8px 16px;
+    /* Sidebar template list (mini list for quick jumping when in detail view) */
+    #sidebar-template-list { padding: 4px 0; flex: 1; }
+
+    .sidebar-template-item {
+      padding: 7px 16px;
       cursor: pointer;
       border-left: 3px solid transparent;
       transition: background 0.1s;
     }
-    .template-item:hover { background: var(--bg-hover); }
-    .template-item.active {
+    .sidebar-template-item:hover { background: var(--bg-hover); }
+    .sidebar-template-item.active {
       background: var(--bg-active);
       border-left-color: var(--info);
     }
-
-    .template-item .t-name {
-      font-size: 13px;
+    .sidebar-template-item .st-name {
+      font-size: 12px;
       font-weight: 500;
       color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    .template-item .t-meta {
-      font-size: 11px;
-      color: var(--text-muted);
-      margin-top: 2px;
-    }
-    .template-item .badge {
-      display: inline-block;
+    .sidebar-template-item .st-meta {
       font-size: 10px;
-      padding: 1px 6px;
-      border-radius: 10px;
-      background: var(--bg-active);
-      border: 1px solid var(--border);
-      margin-left: 4px;
+      color: var(--text-muted);
+      margin-top: 1px;
     }
 
     /* ── Main area ───────────────────────────────────────────────── */
     #main {
       grid-area: main;
       overflow-y: auto;
-      padding: 20px 24px;
+      padding: 0;
       display: flex;
       flex-direction: column;
-      gap: 16px;
     }
 
+    /* ── Template Browser (card grid view) ───────────────────────── */
+    #template-browser {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+    }
+
+    /* Filter bar */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 20px 10px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-panel);
+      flex-wrap: wrap;
+    }
+
+    .category-tabs {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .cat-tab {
+      padding: 5px 12px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--bg-active);
+      color: var(--text-muted);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+      text-transform: capitalize;
+    }
+    .cat-tab:hover {
+      background: var(--bg-hover);
+      color: var(--text);
+    }
+    .cat-tab.active {
+      background: #1f3a5f;
+      border-color: var(--info);
+      color: var(--info);
+    }
+
+    .search-wrap {
+      flex: 1;
+      min-width: 160px;
+      max-width: 320px;
+      position: relative;
+    }
+    .search-wrap .search-icon {
+      position: absolute;
+      left: 9px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      font-size: 12px;
+      pointer-events: none;
+    }
+    #template-search {
+      width: 100%;
+      padding: 6px 10px 6px 28px;
+      background: var(--bg-active);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    #template-search:focus { border-color: var(--info); }
+    #template-search::placeholder { color: var(--text-muted); }
+
+    /* Card grid */
+    .card-grid-wrap {
+      padding: 20px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .template-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+
+    @media (max-width: 900px) {
+      .template-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 560px) {
+      .template-grid { grid-template-columns: 1fr; }
+      #app {
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "header"
+          "main"
+          "log";
+      }
+      #sidebar { display: none; }
+    }
+
+    /* Template card */
+    .template-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      cursor: pointer;
+      transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 140px;
+    }
+    .template-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--info);
+      box-shadow: 0 4px 16px rgba(88, 166, 255, 0.12);
+    }
+    .template-card:active {
+      transform: translateY(0);
+    }
+
+    .card-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .card-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.3;
+    }
+
+    .card-badges {
+      display: flex;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      background: var(--bg-active);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .badge.cat-content  { border-color: #388bfd55; color: #79c0ff; }
+    .badge.cat-code     { border-color: #3fb95055; color: #56d364; }
+    .badge.cat-research { border-color: #e3b34155; color: #e3b341; }
+    .badge.cat-general  { border-color: #8b949e55; color: #8b949e; }
+
+    .card-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      /* Clamp to 2 lines */
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .card-footer {
+      margin-top: auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .card-author {
+      font-size: 11px;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .card-phases {
+      font-size: 11px;
+      color: var(--text-muted);
+      background: var(--bg-active);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 2px 7px;
+      white-space: nowrap;
+    }
+
+    /* Empty state */
     .empty-state {
       display: flex;
       flex-direction: column;
@@ -173,9 +388,43 @@
       padding: 60px 0;
     }
     .empty-state .icon { font-size: 32px; }
-    .empty-state p { font-size: 13px; }
+    .empty-state p { font-size: 13px; text-align: center; }
+    .empty-state code {
+      background: var(--bg-active);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12px;
+    }
 
-    /* Template detail */
+    /* ── Template detail (shown when a card is selected) ──────────── */
+    #detail-area {
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      flex: 1;
+    }
+
+    .detail-back {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .detail-back-btn {
+      background: none;
+      border: none;
+      color: var(--info);
+      cursor: pointer;
+      font-size: 13px;
+      padding: 4px 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .detail-back-btn:hover { text-decoration: underline; }
+
     .detail-header {
       display: flex;
       align-items: flex-start;
@@ -446,13 +695,16 @@
       <span class="spacer"></span>
     </header>
 
-    <!-- Sidebar -->
+    <!-- Sidebar: quick template navigation -->
     <nav id="sidebar">
       <div class="sidebar-header">
         Templates
-        <button class="refresh-btn" onclick="loadTemplates()" title="Refresh">↻</button>
+        <div style="display:flex;gap:4px;align-items:center;">
+          <button class="back-btn" id="sidebar-back-btn" onclick="showBrowser()" title="Back to all templates">← All</button>
+          <button class="refresh-btn" onclick="loadTemplates()" title="Refresh">↻</button>
+        </div>
       </div>
-      <div id="template-list">
+      <div id="sidebar-template-list">
         <div class="empty-state" style="padding:30px 0">
           <span class="spinner"></span>
         </div>
@@ -461,11 +713,45 @@
 
     <!-- Main content -->
     <main id="main">
-      <div class="empty-state" id="empty-state">
-        <span class="icon">🔌</span>
-        <p>Select a template from the sidebar to get started.</p>
+
+      <!-- Template Browser (default view) -->
+      <div id="template-browser">
+        <!-- Filter bar -->
+        <div class="filter-bar">
+          <div class="category-tabs" id="category-tabs">
+            <button class="cat-tab active" data-cat="all" onclick="filterByCategory('all', this)">All</button>
+          </div>
+          <div class="search-wrap">
+            <span class="search-icon">🔍</span>
+            <input
+              id="template-search"
+              type="text"
+              placeholder="Search templates…"
+              oninput="filterCards()"
+              autocomplete="off"
+              aria-label="Search templates"
+            />
+          </div>
+        </div>
+
+        <!-- Card grid -->
+        <div class="card-grid-wrap">
+          <div class="template-grid" id="template-grid">
+            <!-- Cards injected by JS -->
+            <div class="empty-state" style="grid-column: 1/-1; padding: 60px 0;">
+              <span class="spinner"></span>
+            </div>
+          </div>
+          <!-- No-match empty state (hidden by default) -->
+          <div id="no-match-state" style="display:none;" class="empty-state">
+            <span class="icon">🔍</span>
+            <p>No templates found. Run <code>orch new</code> to create one.</p>
+          </div>
+        </div>
       </div>
-      <div id="detail-area" style="display:none; flex-direction:column; gap:16px;">
+
+      <!-- Template detail (shown when a card is selected) -->
+      <div id="detail-area" style="display:none;">
         <!-- injected by JS -->
       </div>
     </main>
@@ -481,7 +767,7 @@
         <button class="log-clear-btn" onclick="clearLog()">Clear</button>
       </div>
       <div id="log-entries">
-        <div class="log-entry start"><span class="ts">--:--:--</span><span class="msg">Ready. Select a template and press Run.</span></div>
+        <div class="log-entry start"><span class="ts">--:--:--</span><span class="msg">Ready. Select a template to get started.</span></div>
       </div>
     </section>
 
@@ -493,6 +779,8 @@
     let totalPhases = 0;
     let completedPhases = 0;
     let activeEventSource = null;
+    let allTemplates = [];       // Full template list from API
+    let activeCategory = 'all'; // Currently selected category filter
 
     // ── Bootstrap ────────────────────────────────────────────────────
     async function bootstrap() {
@@ -506,40 +794,152 @@
 
     // ── Load template list ────────────────────────────────────────────
     async function loadTemplates() {
-      const list = document.getElementById('template-list');
-      list.innerHTML = '<div class="empty-state" style="padding:30px 0"><span class="spinner"></span></div>';
+      const grid = document.getElementById('template-grid');
+      grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;padding:60px 0"><span class="spinner"></span></div>';
+      document.getElementById('no-match-state').style.display = 'none';
+
       try {
         const res = await fetch('/api/templates');
-        const templates = await res.json();
-        if (!templates.length) {
-          list.innerHTML = '<div class="empty-state" style="padding:20px 0"><p>No templates found.</p></div>';
-          return;
-        }
-        list.innerHTML = templates.map(t => `
-          <div class="template-item" id="tpl-${t.id}" onclick="selectTemplate('${t.id}')">
-            <div class="t-name">${escHtml(t.name)}</div>
-            <div class="t-meta">
-              ${escHtml(t.source)}
-              <span class="badge">${t.phases_count} phases</span>
-              <span class="badge">${escHtml(t.version)}</span>
+        allTemplates = await res.json();
+        buildCategoryTabs(allTemplates);
+        renderSidebar(allTemplates);
+        renderCards(allTemplates);
+      } catch(e) {
+        grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><p>Error loading templates: ${escHtml(String(e))}</p></div>`;
+      }
+    }
+
+    // ── Build dynamic category tabs ───────────────────────────────────
+    function buildCategoryTabs(templates) {
+      const cats = new Set(['all']);
+      templates.forEach(t => {
+        const c = normCat(t.category);
+        if (c) cats.add(c);
+      });
+
+      const tabsEl = document.getElementById('category-tabs');
+      tabsEl.innerHTML = '';
+      cats.forEach(cat => {
+        const btn = document.createElement('button');
+        btn.className = 'cat-tab' + (cat === activeCategory ? ' active' : '');
+        btn.dataset.cat = cat;
+        btn.textContent = cat === 'all' ? 'All' : capitalize(cat);
+        btn.onclick = () => filterByCategory(cat, btn);
+        tabsEl.appendChild(btn);
+      });
+    }
+
+    // ── Render mini sidebar list ──────────────────────────────────────
+    function renderSidebar(templates) {
+      const list = document.getElementById('sidebar-template-list');
+      if (!templates.length) {
+        list.innerHTML = '<div class="empty-state" style="padding:20px 0"><p style="font-size:11px">No templates.</p></div>';
+        return;
+      }
+      list.innerHTML = templates.map(t => `
+        <div class="sidebar-template-item" id="stpl-${escHtml(t.id)}" onclick="selectTemplate('${escHtml(t.id)}')">
+          <div class="st-name">${escHtml(t.name)}</div>
+          <div class="st-meta">${escHtml(t.category || 'general')} · ${t.phases_count} phases</div>
+        </div>
+      `).join('');
+    }
+
+    // ── Render template cards ─────────────────────────────────────────
+    function renderCards(templates) {
+      const grid = document.getElementById('template-grid');
+      const noMatch = document.getElementById('no-match-state');
+
+      if (!templates.length) {
+        grid.innerHTML = '';
+        noMatch.style.display = 'flex';
+        return;
+      }
+
+      noMatch.style.display = 'none';
+      grid.innerHTML = templates.map(t => {
+        const catClass = 'cat-' + normCat(t.category || 'general');
+        return `
+          <div class="template-card" onclick="selectTemplate('${escHtml(t.id)}')" role="button" tabindex="0"
+               onkeydown="if(event.key==='Enter')selectTemplate('${escHtml(t.id)}')"
+               data-id="${escHtml(t.id)}"
+               data-name="${escHtml(t.name).toLowerCase()}"
+               data-desc="${escHtml(t.description || '').toLowerCase()}"
+               data-cat="${escHtml(normCat(t.category || 'general'))}">
+            <div class="card-top">
+              <div class="card-name">${escHtml(t.name)}</div>
+              <div class="card-badges">
+                <span class="badge ${catClass}">${escHtml(capitalize(normCat(t.category || 'general')))}</span>
+              </div>
+            </div>
+            ${t.description ? `<div class="card-desc">${escHtml(t.description)}</div>` : '<div class="card-desc" style="color:transparent">—</div>'}
+            <div class="card-footer">
+              <span class="card-author">${t.author ? '👤 ' + escHtml(t.author) : ''}</span>
+              <span class="card-phases">${t.phases_count} phase${t.phases_count !== 1 ? 's' : ''}</span>
             </div>
           </div>
-        `).join('');
-      } catch(e) {
-        list.innerHTML = `<div class="empty-state" style="padding:20px 0"><p>Error loading templates: ${escHtml(String(e))}</p></div>`;
-      }
+        `;
+      }).join('');
+    }
+
+    // ── Filter by category tab ────────────────────────────────────────
+    function filterByCategory(cat, btn) {
+      activeCategory = cat;
+      document.querySelectorAll('.cat-tab').forEach(el => el.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+      filterCards();
+    }
+
+    // ── Client-side filter (search + category) ────────────────────────
+    function filterCards() {
+      const query = (document.getElementById('template-search').value || '').toLowerCase().trim();
+      const cards = document.querySelectorAll('.template-card');
+      const noMatch = document.getElementById('no-match-state');
+
+      let visible = 0;
+      cards.forEach(card => {
+        const name = card.dataset.name || '';
+        const desc = card.dataset.desc || '';
+        const cat  = card.dataset.cat  || '';
+
+        const catOk = activeCategory === 'all' || cat === activeCategory;
+        const searchOk = !query || name.includes(query) || desc.includes(query);
+
+        if (catOk && searchOk) {
+          card.style.display = '';
+          visible++;
+        } else {
+          card.style.display = 'none';
+        }
+      });
+
+      noMatch.style.display = visible === 0 ? 'flex' : 'none';
+    }
+
+    // ── Show card browser (back from detail) ──────────────────────────
+    function showBrowser() {
+      document.getElementById('template-browser').style.display = 'flex';
+      document.getElementById('detail-area').style.display = 'none';
+      document.getElementById('sidebar-back-btn').classList.remove('visible');
+      // Deselect sidebar item
+      document.querySelectorAll('.sidebar-template-item').forEach(el => el.classList.remove('active'));
+      currentTemplate = null;
     }
 
     // ── Select + load template detail ────────────────────────────────
     async function selectTemplate(id) {
       // Highlight sidebar item
-      document.querySelectorAll('.template-item').forEach(el => el.classList.remove('active'));
-      const el = document.getElementById('tpl-' + id);
-      if (el) el.classList.add('active');
+      document.querySelectorAll('.sidebar-template-item').forEach(el => el.classList.remove('active'));
+      const sidebarEl = document.getElementById('stpl-' + id);
+      if (sidebarEl) sidebarEl.classList.add('active');
 
-      document.getElementById('empty-state').style.display = 'none';
+      // Show back button
+      document.getElementById('sidebar-back-btn').classList.add('visible');
+
+      // Swap views
+      document.getElementById('template-browser').style.display = 'none';
       const detail = document.getElementById('detail-area');
       detail.style.display = 'flex';
+      detail.style.flexDirection = 'column';
       detail.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
 
       try {
@@ -558,6 +958,9 @@
     function renderDetail(t) {
       const detail = document.getElementById('detail-area');
       detail.innerHTML = `
+        <div class="detail-back">
+          <button class="detail-back-btn" onclick="showBrowser()">← All templates</button>
+        </div>
         <div class="detail-header">
           <div>
             <h2>${escHtml(t.name)}</h2>
@@ -768,6 +1171,21 @@
         .replace(/</g,'&lt;')
         .replace(/>/g,'&gt;')
         .replace(/"/g,'&quot;');
+    }
+
+    function normCat(cat) {
+      // Normalize category to one of known buckets
+      if (!cat) return 'general';
+      const c = cat.toLowerCase().trim();
+      if (c === 'content' || c === 'writing') return 'content';
+      if (c === 'code' || c === 'development' || c === 'coding') return 'code';
+      if (c === 'research' || c === 'analysis') return 'research';
+      return c;
+    }
+
+    function capitalize(s) {
+      if (!s) return s;
+      return s.charAt(0).toUpperCase() + s.slice(1);
     }
 
     // ── Init ─────────────────────────────────────────────────────────

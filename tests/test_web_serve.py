@@ -287,3 +287,141 @@ class TestRunRequestValidation:
             assert res.status_code != 422, (
                 f"Mode '{mode}' should be valid but got 422"
             )
+
+
+# ---------------------------------------------------------------------------
+# Template Selector UI — Feature #80
+# ---------------------------------------------------------------------------
+
+class TestTemplateListEnhanced:
+    """Verify that GET /api/templates returns enriched fields for the card UI."""
+
+    def test_template_has_category_field(self, client):
+        data = client.get("/api/templates").json()
+        first = data[0]
+        assert "category" in first, "Template listing should include 'category' field"
+
+    def test_template_has_author_field(self, client):
+        data = client.get("/api/templates").json()
+        first = data[0]
+        assert "author" in first, "Template listing should include 'author' field"
+
+    def test_template_has_phases_summary(self, client):
+        data = client.get("/api/templates").json()
+        first = data[0]
+        assert "phases" in first, "Template listing should include 'phases' summary list"
+        assert isinstance(first["phases"], list)
+
+    def test_phases_summary_keys(self, client):
+        data = client.get("/api/templates").json()
+        # Find a template with at least one phase summary
+        for t in data:
+            if t.get("phases"):
+                phase = t["phases"][0]
+                for key in ("id", "name", "model_tier"):
+                    assert key in phase, f"Phase summary missing key '{key}'"
+                break
+
+    def test_content_pipeline_has_known_category(self, client):
+        data = client.get("/api/templates").json()
+        cp = next((t for t in data if t["id"] == "content-pipeline-v23"), None)
+        assert cp is not None
+        assert cp["category"], "content-pipeline-v23 should have a non-empty category"
+
+    def test_content_pipeline_has_author(self, client):
+        data = client.get("/api/templates").json()
+        cp = next((t for t in data if t["id"] == "content-pipeline-v23"), None)
+        assert cp is not None
+        assert cp["author"], "content-pipeline-v23 should have a non-empty author"
+
+    def test_category_is_string(self, client):
+        data = client.get("/api/templates").json()
+        for t in data:
+            assert isinstance(t["category"], str), (
+                f"Template '{t['id']}' category should be a string"
+            )
+
+    def test_author_is_string(self, client):
+        data = client.get("/api/templates").json()
+        for t in data:
+            assert isinstance(t["author"], str), (
+                f"Template '{t['id']}' author should be a string"
+            )
+
+
+class TestTemplateSelectorHTML:
+    """Verify the SPA HTML contains the template selector UI elements."""
+
+    def test_html_contains_search_input(self, client):
+        body = client.get("/").text
+        assert 'id="template-search"' in body, (
+            "HTML should contain a search input with id='template-search'"
+        )
+
+    def test_html_contains_category_tabs(self, client):
+        body = client.get("/").text
+        assert 'category-tabs' in body, (
+            "HTML should contain category filter tabs container"
+        )
+
+    def test_html_contains_template_card_class(self, client):
+        body = client.get("/").text
+        assert 'template-card' in body, (
+            "HTML should reference 'template-card' CSS class for card layout"
+        )
+
+    def test_html_contains_template_grid(self, client):
+        body = client.get("/").text
+        assert 'template-grid' in body, (
+            "HTML should contain a template grid container"
+        )
+
+    def test_html_contains_empty_state_orch_new(self, client):
+        body = client.get("/").text
+        assert 'orch new' in body, (
+            "HTML should mention 'orch new' in the empty state message"
+        )
+
+    def test_html_has_responsive_meta_tag(self, client):
+        body = client.get("/").text
+        assert 'name="viewport"' in body, (
+            "HTML should include a responsive viewport meta tag"
+        )
+
+    def test_html_contains_filter_bar(self, client):
+        body = client.get("/").text
+        assert 'filter-bar' in body, (
+            "HTML should contain a filter bar element"
+        )
+
+    def test_html_contains_cat_tab_class(self, client):
+        body = client.get("/").text
+        assert 'cat-tab' in body, (
+            "HTML should define category tab CSS class"
+        )
+
+    def test_html_contains_back_navigation(self, client):
+        body = client.get("/").text
+        assert 'showBrowser' in body, (
+            "HTML should contain showBrowser() function for back navigation"
+        )
+
+
+class TestTemplateDetailEnhanced:
+    """Verify that GET /api/templates/{name} returns phases for the card detail view."""
+
+    def test_detail_has_phases(self, client):
+        data = client.get("/api/templates/content-pipeline-v23").json()
+        assert "phases" in data
+        assert len(data["phases"]) > 0
+
+    def test_detail_phases_have_full_keys(self, client):
+        data = client.get("/api/templates/content-pipeline-v23").json()
+        phase = data["phases"][0]
+        for key in ("id", "name", "model_tier", "thinking_level", "depends_on", "task_type"):
+            assert key in phase, f"Detail phase missing key '{key}'"
+
+    def test_detail_has_author(self, client):
+        data = client.get("/api/templates/content-pipeline-v23").json()
+        assert "author" in data, "Template detail should include 'author'"
+        assert data["author"], "content-pipeline-v23 author should be non-empty"
