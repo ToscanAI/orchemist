@@ -1707,8 +1707,8 @@ function handleProgressEvent(evt) {
       if (pill) { pill.className = 'phase-pill done'; pill.innerHTML = escHtml(d.phase_name || d.phase_id || d.id) + ' [done]'; }
       const ti = document.getElementById('total-tokens');
       const tc = document.getElementById('total-cost');
-      if (ti) ti.textContent = parseInt(ti.textContent || '0') + (d.tokens_in||0) + (d.tokens_out||0);
-      if (tc) tc.textContent = (parseFloat(tc.textContent || '0') + (d.cost_usd||0)).toFixed(4);
+      if (ti) ti.textContent = (parseInt(ti.textContent) || 0) + (d.tokens_in||0) + (d.tokens_out||0);
+      if (tc) tc.textContent = ((parseFloat(tc.textContent) || 0) + (d.cost_usd||0)).toFixed(4);
       const completed = document.querySelectorAll('.phase-pill.done').length;
       const total = document.querySelectorAll('.phase-pill').length;
       const fill = document.getElementById('progress-fill');
