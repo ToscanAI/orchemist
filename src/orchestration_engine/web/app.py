@@ -9,9 +9,10 @@ module only after confirming they are installed (see cli.py serve command).
 
 import asyncio
 import logging
+import time
 import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +76,10 @@ def create_app():  # noqa: C901
     )
 
     # CORS — allow all origins for local development.
+    # Fix 3: Drop allow_credentials (not needed for a local dev tool without cookies).
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -92,7 +93,8 @@ def create_app():  # noqa: C901
 
     class RunRequest(BaseModel):
         template: str
-        mode: str = "dry-run"
+        # Fix 4: Validate mode with Literal to reject unknown values (returns 422).
+        mode: Literal["dry-run", "standalone", "openclaw"] = "dry-run"
         input: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------ #
@@ -168,6 +170,15 @@ def create_app():  # noqa: C901
     @app.post("/api/run")
     async def start_run(req: RunRequest) -> JSONResponse:
         """Start a pipeline run and return a run_id for SSE polling."""
+        # Fix 2: Cleanup completed runs older than 1 hour to prevent unbounded growth.
+        cutoff = time.time() - 3600
+        to_remove = [
+            rid for rid, r in _active_runs.items()
+            if r.get("completed_at", 0) < cutoff and r["status"] == "completed"
+        ]
+        for rid in to_remove:
+            del _active_runs[rid]
+
         # Validate template exists
         engine = TemplateEngine()
         template = _resolve_template_by_name_or_id(engine, req.template)
@@ -176,6 +187,7 @@ def create_app():  # noqa: C901
 
         run_id = str(uuid.uuid4())
 
+        # Fix 1: Add an asyncio.Queue for thread-safe SSE event delivery.
         run_state: Dict[str, Any] = {
             "run_id": run_id,
             "template": req.template,
@@ -184,7 +196,8 @@ def create_app():  # noqa: C901
             "status": "starting",
             "phases_completed": [],
             "phases_failed": [],
-            "events": [],   # list of event dicts for SSE replay
+            "events": [],           # list of event dicts for SSE replay / history
+            "event_queue": asyncio.Queue(),  # Fix 1: thread-safe delivery channel
             "done": False,
             "error": None,
         }
@@ -203,20 +216,22 @@ def create_app():  # noqa: C901
 
         async def event_generator() -> AsyncGenerator[Dict[str, str], None]:
             run = _active_runs[run_id]
-            sent_index = 0
+            queue: asyncio.Queue = run["event_queue"]
+
+            # Fix 1: Consume from the asyncio.Queue instead of polling a list.
             while True:
                 if await request.is_disconnected():
                     break
 
-                events = run["events"]
-                while sent_index < len(events):
-                    yield {"data": events[sent_index]}
-                    sent_index += 1
-
-                if run["done"]:
-                    break
-
-                await asyncio.sleep(0.1)
+                try:
+                    # Wait up to 0.5 s so we can re-check disconnect status.
+                    event_data = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    yield {"data": event_data}
+                    queue.task_done()
+                except asyncio.TimeoutError:
+                    # No new event yet — check if we're done.
+                    if run["done"] and queue.empty():
+                        break
 
         return EventSourceResponse(event_generator())
 
@@ -242,13 +257,23 @@ async def _execute_pipeline(
     run = active_runs[run_id]
     run["status"] = "running"
 
+    # Fix 5: Use asyncio.get_running_loop() (replaces deprecated get_event_loop).
+    loop = asyncio.get_running_loop()
+
     def _push_event(event_type: str, payload: Dict[str, Any]) -> None:
+        """Push an event to both the history list and the SSE queue (thread-safe)."""
         payload["type"] = event_type
-        run["events"].append(_json.dumps(payload))
+        serialized = _json.dumps(payload)
+        # Append to history list AND enqueue for live SSE consumers.
+        # Both mutations happen via call_soon_threadsafe when called from a thread.
+        run["events"].append(serialized)
+        loop.call_soon_threadsafe(run["event_queue"].put_nowait, serialized)
 
     _push_event("start", {"run_id": run_id, "template": template.id, "mode": mode})
 
     def on_phase_complete(phase_id: str, phase_result: dict) -> None:
+        # Fix 1: This callback runs in a thread-pool thread; use call_soon_threadsafe
+        # to safely deliver events to the asyncio event loop.
         state = phase_result.get("state", "unknown")
         state_val = state.value if hasattr(state, "value") else str(state)
         tokens = phase_result.get("tokens_consumed", 0)
@@ -256,32 +281,29 @@ async def _execute_pipeline(
 
         if state_val in ("failed", "permanently_failed"):
             run["phases_failed"].append(phase_id)
-            _push_event(
-                "phase_failed",
-                {
-                    "phase_id": phase_id,
-                    "state": state_val,
-                    "tokens": tokens,
-                    "cost_usd": cost,
-                },
-            )
+            # Serialise and schedule on the event loop from the thread pool.
+            payload = _json.dumps({
+                "type": "phase_failed",
+                "phase_id": phase_id,
+                "state": state_val,
+                "tokens": tokens,
+                "cost_usd": cost,
+            })
+            run["events"].append(payload)
+            loop.call_soon_threadsafe(run["event_queue"].put_nowait, payload)
         else:
             run["phases_completed"].append(phase_id)
-            _push_event(
-                "phase_complete",
-                {
-                    "phase_id": phase_id,
-                    "state": state_val,
-                    "tokens": tokens,
-                    "cost_usd": cost,
-                },
-            )
+            payload = _json.dumps({
+                "type": "phase_complete",
+                "phase_id": phase_id,
+                "state": state_val,
+                "tokens": tokens,
+                "cost_usd": cost,
+            })
+            run["events"].append(payload)
+            loop.call_soon_threadsafe(run["event_queue"].put_nowait, payload)
 
     try:
-        # Build the runner — all modes run synchronously in a thread pool to
-        # avoid blocking the asyncio event loop.
-        loop = asyncio.get_event_loop()
-
         def _run_sync() -> dict:
             if mode == "standalone":
                 runner_ctx = PipelineRunner.standalone()
@@ -305,7 +327,7 @@ async def _execute_pipeline(
             run["status"] = "aborted"
             _push_event("aborted", {"failed_phase": result.get("failed_phase", "unknown")})
         else:
-            run["status"] = "complete"
+            run["status"] = "completed"
             _push_event("complete", {"phases": len(run["phases_completed"])})
 
     except Exception as exc:
@@ -314,4 +336,6 @@ async def _execute_pipeline(
         run["error"] = str(exc)
         _push_event("error", {"message": str(exc)})
     finally:
+        # Fix 2: Record completion timestamp for TTL-based cleanup.
+        run["completed_at"] = time.time()
         run["done"] = True

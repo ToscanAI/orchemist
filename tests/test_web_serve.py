@@ -5,6 +5,7 @@ Tests are skipped if the optional [web] dependencies are not installed.
 """
 
 import json
+import time
 import pytest
 
 # Skip the entire module when FastAPI is not installed.
@@ -201,3 +202,88 @@ class TestCLIServeCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["serve", "--help"])
         assert "host" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# SSE streaming (Fix 6)
+# ---------------------------------------------------------------------------
+
+class TestSSEStreaming:
+    """Verify that the /api/run/{id}/status SSE endpoint delivers events."""
+
+    def test_sse_delivers_phase_and_complete_events(self, client):
+        """POST a dry-run, then stream SSE and assert we get at least one
+        phase event followed by a 'complete' event."""
+        # 1. Start a run
+        res = client.post(
+            "/api/run",
+            json={"template": "content-pipeline-v23", "mode": "dry-run", "input": {}},
+        )
+        assert res.status_code == 200
+        run_id = res.json()["run_id"]
+
+        # 2. Stream SSE — TestClient supports iter_lines() on a streaming response.
+        received_events = []
+        deadline = time.time() + 30  # generous timeout for CI
+
+        with client.stream("GET", f"/api/run/{run_id}/status") as stream:
+            for raw_line in stream.iter_lines():
+                if time.time() > deadline:
+                    break
+                # SSE lines look like: "data: {json}" or empty keep-alive lines.
+                if raw_line.startswith("data:"):
+                    payload_str = raw_line[len("data:"):].strip()
+                    if not payload_str:
+                        continue
+                    try:
+                        event = json.loads(payload_str)
+                        received_events.append(event)
+                    except json.JSONDecodeError:
+                        continue
+                    # Stop after we see the terminal event.
+                    if event.get("type") in ("complete", "aborted", "error"):
+                        break
+
+        event_types = [e.get("type") for e in received_events]
+
+        # Must have at least one phase-level event (phase_complete or start).
+        assert any(
+            t in event_types for t in ("phase_complete", "phase_failed", "start")
+        ), f"Expected at least one phase event, got: {event_types}"
+
+        # Must end with 'complete' (dry-run never aborts or errors).
+        assert "complete" in event_types, (
+            f"Expected a 'complete' event in SSE stream, got: {event_types}"
+        )
+
+    def test_sse_unknown_run_returns_404(self, client):
+        res = client.get("/api/run/nonexistent-run-id/status")
+        assert res.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Invalid mode validation (Fix 7)
+# ---------------------------------------------------------------------------
+
+class TestRunRequestValidation:
+    """Verify that unknown mode values are rejected with 422."""
+
+    def test_invalid_mode_returns_422(self, client):
+        res = client.post(
+            "/api/run",
+            json={"template": "content-pipeline-v23", "mode": "bogus", "input": {}},
+        )
+        assert res.status_code == 422, (
+            f"Expected 422 Unprocessable Entity for invalid mode, got {res.status_code}"
+        )
+
+    def test_valid_modes_are_accepted(self, client):
+        for mode in ("dry-run", "standalone", "openclaw"):
+            res = client.post(
+                "/api/run",
+                json={"template": "content-pipeline-v23", "mode": mode, "input": {}},
+            )
+            # 200 OK or 404 (if template doesn't exist in CI) — but NOT 422.
+            assert res.status_code != 422, (
+                f"Mode '{mode}' should be valid but got 422"
+            )
