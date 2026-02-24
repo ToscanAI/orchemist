@@ -544,6 +544,7 @@ class TestTimeoutHandling:
 
     def test_timeout_returns_failed(self, executor, sample_task):
         executor.timeout_seconds = 1
+        sample_task.timeout_seconds = 1
         mock = self._make_running_mock("sess-timeout")
 
         with patch.object(executor, "_http_post", side_effect=mock), \
@@ -557,6 +558,7 @@ class TestTimeoutHandling:
 
     def test_timeout_error_message_contains_session_key(self, executor, sample_task):
         executor.timeout_seconds = 1
+        sample_task.timeout_seconds = 1
         mock = self._make_running_mock("my-session-xyz")
 
         with patch.object(executor, "_http_post", side_effect=mock), \

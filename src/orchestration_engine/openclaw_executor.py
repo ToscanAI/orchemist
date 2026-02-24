@@ -162,8 +162,16 @@ class OpenClawExecutor(TaskExecutor):
             return self._dry_run_result(task_id, task, model, start_time)
 
         # ── 4. Real execution ────────────────────────────────────────────────
+        # Use per-task timeout if available, otherwise fall back to executor default
+        effective_timeout = (
+            task.timeout_seconds
+            if hasattr(task, "timeout_seconds") and task.timeout_seconds
+            else self.timeout_seconds
+        )
         try:
-            output_text, tokens_consumed = self._run_session(prompt, model, thinking)
+            output_text, tokens_consumed = self._run_session(
+                prompt, model, thinking, timeout=effective_timeout
+            )
         except TimeoutError as exc:
             elapsed = (datetime.now() - start_time).total_seconds()
             logger.error(f"OpenClaw session timed out for task {task_id}: {exc}")
@@ -317,6 +325,7 @@ class OpenClawExecutor(TaskExecutor):
         prompt: str,
         model: str,
         thinking: Optional[str],
+        timeout: Optional[int] = None,
     ) -> str:
         """Spawn a sub-agent session and poll until completion.
 
@@ -327,6 +336,7 @@ class OpenClawExecutor(TaskExecutor):
             prompt:   The prompt text to execute.
             model:    Full model string (e.g. "anthropic/claude-sonnet-4-6").
             thinking: Thinking level string or None.
+            timeout:  Timeout in seconds (overrides self.timeout_seconds).
 
         Returns:
             The output text from the completed session.
@@ -342,9 +352,13 @@ class OpenClawExecutor(TaskExecutor):
         }
         if thinking is not None:
             spawn_args["thinking"] = thinking
-        spawn_args["runTimeoutSeconds"] = self.timeout_seconds
+        effective_timeout = timeout or self.timeout_seconds
+        spawn_args["runTimeoutSeconds"] = effective_timeout
 
-        logger.debug(f"Spawning session via /tools/invoke → sessions_spawn")
+        logger.debug(
+            f"Spawning session via /tools/invoke → sessions_spawn "
+            f"(timeout={effective_timeout}s)"
+        )
         spawn_result = self._invoke_tool("sessions_spawn", spawn_args)
 
         # Extract session key from details or parse from text
@@ -368,13 +382,13 @@ class OpenClawExecutor(TaskExecutor):
         logger.info(f"Session spawned: {session_key}")
 
         # ── 2. Poll via /tools/invoke → sessions_history ─────────────
-        deadline = time.monotonic() + self.timeout_seconds
+        deadline = time.monotonic() + effective_timeout
 
         while True:
             if time.monotonic() > deadline:
                 raise TimeoutError(
                     f"OpenClaw session {session_key} did not complete within "
-                    f"{self.timeout_seconds}s"
+                    f"{effective_timeout}s"
                 )
 
             time.sleep(POLL_INTERVAL_SECONDS)

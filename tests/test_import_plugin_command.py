@@ -1159,3 +1159,387 @@ class TestCLITemplateIdDerivation:
         assert expected.exists(), (
             f"Expected '{expected}' to be created. CLI output: {result.output}"
         )
+
+
+# ===========================================================================
+# Bug-fix regression tests and coverage gaps
+# ===========================================================================
+
+
+class TestMultipleParentheticals:
+    """Regression tests for the _INPUT_FIELD_RE multi-parenthetical fix.
+
+    Previously ``(?:\\([^)]*\\)\\s*)?`` (exactly-one-optional) caused any
+    input field that carried *two* parentheticals before the separator to be
+    silently dropped from the config_schema.  The fix uses ``*`` (zero-or-more).
+    """
+
+    def test_two_parentheticals_before_dash_parsed(self):
+        """Field with (note) (optional) before dash must appear in properties."""
+        body = textwrap.dedent(
+            """\
+            1. **Budget** (USD) (optional) — approximate budget in USD
+            2. **Qty** (positive integer) (required) — item count
+            3. **Topic** — main subject
+            """
+        )
+        schema = _parse_inputs_section(body)
+        props = schema["properties"]
+        assert "budget" in props, (
+            "Field 'Budget' with two parentheticals was silently dropped (multi-paren bug)"
+        )
+        assert "qty" in props, "Field 'Qty' with two parentheticals was silently dropped"
+        assert "topic" in props
+
+    def test_two_parentheticals_optional_detection(self):
+        """(optional) in second parenthetical correctly marks field as non-required."""
+        body = "1. **Budget** (USD) (optional) — approximate budget"
+        schema = _parse_inputs_section(body)
+        assert "budget" not in schema.get("required", []), (
+            "Field marked (optional) in second parenthetical must not appear in required"
+        )
+
+    def test_two_parentheticals_required_detection(self):
+        """Absence of (optional) in multi-paren field means it's still required."""
+        body = "1. **Qty** (positive integer) (must be > 0) — item count"
+        schema = _parse_inputs_section(body)
+        assert "qty" in schema.get("required", []), (
+            "Field without (optional) in any parenthetical must appear in required"
+        )
+
+    def test_description_clean_from_multi_paren(self):
+        """Description text must not contain the parenthetical content."""
+        body = "1. **Budget** (USD) (optional) — approximate budget in USD"
+        schema = _parse_inputs_section(body)
+        desc = schema["properties"]["budget"]["description"]
+        assert desc == "approximate budget in USD"
+        assert "(USD)" not in desc
+        assert "(optional)" not in desc
+
+
+class TestDescriptionOptionalStripping:
+    """Regression tests for (optional) stripping from description text.
+
+    Previously ``re.sub(r\"\\s*\\(optional\\)\\s*$\", ...)`` only stripped a
+    *trailing* occurrence.  The fix strips all occurrences regardless of position.
+    """
+
+    def test_optional_stripped_from_start_of_description(self):
+        """Leading (optional) in description must be removed from stored desc."""
+        body = "1. **Extra** — (optional) extra context"
+        schema = _parse_inputs_section(body)
+        desc = schema["properties"]["extra"]["description"]
+        assert "(optional)" not in desc.lower(), (
+            f"Leading (optional) not stripped from description: {desc!r}"
+        )
+        assert "extra context" in desc
+
+    def test_optional_stripped_from_middle_of_description(self):
+        """Mid-sentence (optional) in description must be removed."""
+        body = "1. **Note** — add (optional) notes here for context"
+        schema = _parse_inputs_section(body)
+        desc = schema["properties"]["note"]["description"]
+        assert "(optional)" not in desc.lower(), (
+            f"Mid-sentence (optional) not stripped from description: {desc!r}"
+        )
+        assert "add" in desc
+        assert "notes here for context" in desc
+
+    def test_optional_stripped_from_end_of_description(self):
+        """Trailing (optional) is still stripped (regression guard)."""
+        body = "1. **Comment** — supporting comment (optional)"
+        schema = _parse_inputs_section(body)
+        desc = schema["properties"]["comment"]["description"]
+        assert "(optional)" not in desc.lower()
+        assert "supporting comment" in desc
+
+    def test_optional_case_insensitive_stripping(self):
+        """(OPTIONAL) and (Optional) must also be stripped."""
+        body = "1. **Note** — (OPTIONAL) extra note"
+        schema = _parse_inputs_section(body)
+        desc = schema["properties"]["note"]["description"]
+        assert "optional" not in desc.lower()
+
+    def test_optional_field_still_excluded_from_required_after_desc_fix(self):
+        """After fixing description stripping, optional detection must still work."""
+        body = textwrap.dedent(
+            """\
+            1. **Required field** — mandatory input
+            2. **Optional field** — (optional) extra information
+            """
+        )
+        schema = _parse_inputs_section(body)
+        required = schema.get("required", [])
+        assert "required_field" in required
+        assert "optional_field" not in required
+
+
+class TestTagsPreservation:
+    """Regression tests for the tags: [] falsy-coercion fix.
+
+    Previously ``tags or ['imported', 'plugin-command']`` replaced an
+    explicitly empty ``tags: []`` with the hardcoded defaults.
+    """
+
+    def test_explicit_empty_tags_preserved(self):
+        """tags: [] in frontmatter must produce an empty list, not defaults."""
+        doc = textwrap.dedent(
+            """\
+            ---
+            description: Empty tags test
+            tags: []
+            ---
+
+            # Tags Test
+
+            ## Step One
+            Do something.
+            """
+        )
+        yaml_text = import_plugin_command_from_string(doc)
+        data = _load_yaml(yaml_text)
+        assert data["tags"] == [], (
+            f"tags: [] in frontmatter was coerced to defaults: {data['tags']!r}"
+        )
+
+    def test_absent_tags_produces_defaults(self):
+        """When tags is absent from frontmatter, defaults are used."""
+        doc = textwrap.dedent(
+            """\
+            ---
+            description: No tags test
+            ---
+
+            # No Tags
+
+            ## Step One
+            Do something.
+            """
+        )
+        yaml_text = import_plugin_command_from_string(doc)
+        data = _load_yaml(yaml_text)
+        assert "imported" in data["tags"] or "plugin-command" in data["tags"], (
+            f"Absent tags should produce defaults, got: {data['tags']!r}"
+        )
+
+    def test_null_tags_produces_defaults(self):
+        """tags: null (explicit null) should also produce defaults."""
+        doc = textwrap.dedent(
+            """\
+            ---
+            description: Null tags test
+            tags: null
+            ---
+
+            # Null Tags
+
+            ## Step One
+            Do something.
+            """
+        )
+        yaml_text = import_plugin_command_from_string(doc)
+        data = _load_yaml(yaml_text)
+        # null is treated same as absent: use defaults
+        assert data["tags"] != [], (
+            f"tags: null should fall through to defaults, got: {data['tags']!r}"
+        )
+
+    def test_explicit_tags_list_preserved(self):
+        """Non-empty tags list from frontmatter is preserved exactly."""
+        doc = textwrap.dedent(
+            """\
+            ---
+            description: Has tags
+            tags:
+              - marketing
+              - campaign
+            ---
+
+            # Tagged Pipeline
+
+            ## Step One
+            Do something.
+            """
+        )
+        yaml_text = import_plugin_command_from_string(doc)
+        data = _load_yaml(yaml_text)
+        assert "marketing" in data["tags"]
+        assert "campaign" in data["tags"]
+
+
+class TestPhasePromptContent:
+    """Coverage for _build_phase_prompt and _build_review_prompt internals."""
+
+    def test_empty_body_uses_fallback_text(self):
+        """_build_phase_prompt with empty body emits a sensible default."""
+        from orchestration_engine.importers.plugin_command import _build_phase_prompt
+        prompt = _build_phase_prompt("Analysis", "")
+        # Falls back to completing the named step
+        assert "Analysis" in prompt
+        assert "Complete the" in prompt or "step" in prompt.lower()
+
+    def test_prompt_contains_both_placeholders(self):
+        """Content phase prompt always contains {input} and {previous_output}."""
+        from orchestration_engine.importers.plugin_command import _build_phase_prompt
+        prompt = _build_phase_prompt("Draft", "Write a draft about {subject}.")
+        assert "{input}" in prompt, "Content phase prompt must contain {input}"
+        assert "{previous_output}" in prompt, "Content phase prompt must contain {previous_output}"
+
+    def test_body_tokens_survive_verbatim(self):
+        """Curly-brace tokens in body text are passed through unchanged."""
+        from orchestration_engine.importers.plugin_command import _build_phase_prompt
+        prompt = _build_phase_prompt("Step", "Use {custom_var} and {another_var} here.")
+        assert "{custom_var}" in prompt
+        assert "{another_var}" in prompt
+
+    def test_review_prompt_contains_phase_reference(self):
+        """_build_review_prompt must embed a {previous_output[phase_id]} reference."""
+        from orchestration_engine.importers.plugin_command import _build_review_prompt
+        import re
+        prompt = _build_review_prompt("draft", "Draft")
+        match = re.search(r"\{previous_output\[draft\]\}", prompt)
+        assert match is not None, (
+            f"Review prompt does not contain {{previous_output[draft]}}: {prompt[:200]!r}"
+        )
+
+    def test_review_prompt_contains_criteria(self):
+        """Auto-generated review prompt must include evaluation criteria."""
+        from orchestration_engine.importers.plugin_command import _build_review_prompt
+        prompt = _build_review_prompt("research", "Research")
+        # The review prompt includes standard quality criteria
+        assert "Completeness" in prompt or "completeness" in prompt
+        assert "Quality" in prompt or "quality" in prompt
+
+    def test_review_prompt_references_phase_name(self):
+        """Review prompt must name the phase being reviewed."""
+        from orchestration_engine.importers.plugin_command import _build_review_prompt
+        prompt = _build_review_prompt("brand-voice", "Brand Voice")
+        assert "Brand Voice" in prompt
+
+
+class TestPhaseStructure:
+    """Coverage gaps for phase-level fields not otherwise tested."""
+
+    def test_content_phase_task_type_is_content(self):
+        """Content phases must have task_type='content'."""
+        yaml_text = import_plugin_command_from_string(MINIMAL_COMMAND)
+        data = _load_yaml(yaml_text)
+        content_phase = next(p for p in data["phases"] if "review" not in p["id"])
+        assert content_phase["task_type"] == "content", (
+            f"Content phase task_type should be 'content', got {content_phase['task_type']!r}"
+        )
+
+    def test_review_phase_task_type_is_review(self):
+        """Auto-inserted review phases must have task_type='review'."""
+        yaml_text = import_plugin_command_from_string(MINIMAL_COMMAND)
+        data = _load_yaml(yaml_text)
+        review_phase = next(p for p in data["phases"] if "review" in p["id"])
+        assert review_phase["task_type"] == "review", (
+            f"Review phase task_type should be 'review', got {review_phase['task_type']!r}"
+        )
+
+    def test_content_phase_timeout_minutes(self):
+        """Content phases have timeout_minutes=30."""
+        yaml_text = import_plugin_command_from_string(MINIMAL_COMMAND)
+        data = _load_yaml(yaml_text)
+        content_phase = next(p for p in data["phases"] if "review" not in p["id"])
+        assert content_phase["timeout_minutes"] == 30
+
+    def test_review_phase_timeout_minutes(self):
+        """Review phases have timeout_minutes=20 (shorter than content)."""
+        yaml_text = import_plugin_command_from_string(MINIMAL_COMMAND)
+        data = _load_yaml(yaml_text)
+        review_phase = next(p for p in data["phases"] if "review" in p["id"])
+        assert review_phase["timeout_minutes"] == 20
+
+    def test_review_phase_name_format(self):
+        """Review phase name is '<content_phase_name> — Review'."""
+        yaml_text = import_plugin_command_from_string(MINIMAL_COMMAND)
+        data = _load_yaml(yaml_text)
+        review_phase = next(p for p in data["phases"] if p["task_type"] == "review")
+        assert "Review" in review_phase["name"], (
+            f"Review phase name should contain 'Review': {review_phase['name']!r}"
+        )
+        # Em-dash separator (—) is part of the format
+        assert "—" in review_phase["name"], (
+            f"Review phase name should use em-dash separator: {review_phase['name']!r}"
+        )
+
+    def test_content_phase_description_mentions_step(self):
+        """Content phase description must mention the section/step name."""
+        yaml_text = import_plugin_command_from_string(MINIMAL_COMMAND)
+        data = _load_yaml(yaml_text)
+        content_phase = next(p for p in data["phases"] if p["task_type"] == "content")
+        assert content_phase["description"], "Content phase must have a non-empty description"
+        # Description should reference the phase name in some form
+        phase_name_lower = content_phase["name"].lower()
+        desc_lower = content_phase["description"].lower()
+        # At least one word from the phase name should appear in the description
+        words = [w for w in phase_name_lower.split() if len(w) > 3]
+        assert any(w in desc_lower for w in words), (
+            f"Content phase description {desc_lower!r} doesn't mention phase '{phase_name_lower}'"
+        )
+
+    def test_template_category_is_imported(self):
+        """Generated templates always carry category='imported'."""
+        yaml_text = import_plugin_command_from_string(MINIMAL_COMMAND)
+        data = _load_yaml(yaml_text)
+        assert data.get("category") == "imported", (
+            f"Template category should be 'imported', got {data.get('category')!r}"
+        )
+
+
+class TestSkillRefSectionFilter:
+    """Coverage for _skill_refs_for_section heuristic matching."""
+
+    def test_skill_mentioned_in_section_is_included(self, tmp_path):
+        """A skill whose directory name appears in a section body is assigned."""
+        from orchestration_engine.importers.plugin_command import _skill_refs_for_section
+
+        skill_file = tmp_path / "brand-voice" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# Brand Voice Skill")
+
+        body = "Apply brand voice guidelines when writing the copy."
+        result = _skill_refs_for_section(body, [str(skill_file)])
+        assert str(skill_file) in result, (
+            "Skill whose name appears in the section body should be included"
+        )
+
+    def test_skill_not_mentioned_in_section_is_excluded(self, tmp_path):
+        """A skill whose directory name does not appear in the section is excluded."""
+        from orchestration_engine.importers.plugin_command import _skill_refs_for_section
+
+        skill_file = tmp_path / "seo-guide" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# SEO Guide")
+
+        body = "Write a compelling brand story in the appropriate voice."
+        result = _skill_refs_for_section(body, [str(skill_file)])
+        assert str(skill_file) not in result, (
+            "Skill not mentioned in section body must be excluded"
+        )
+
+    def test_empty_all_refs_returns_empty(self, tmp_path):
+        """When all_refs is empty, result is always empty."""
+        from orchestration_engine.importers.plugin_command import _skill_refs_for_section
+        result = _skill_refs_for_section("some body text", [])
+        assert result == []
+
+
+class TestImportFromStringAuthor:
+    """Coverage for import_plugin_command_from_string's author parameter."""
+
+    def test_default_author_is_importer_name(self):
+        """Without an explicit author, the author field identifies the importer."""
+        yaml_text = import_plugin_command_from_string(MINIMAL_COMMAND)
+        data = _load_yaml(yaml_text)
+        assert data["author"] == "orch import plugin-command"
+
+    def test_explicit_author_overrides_default(self):
+        """Explicit author kwarg appears verbatim in the generated YAML."""
+        yaml_text = import_plugin_command_from_string(
+            MINIMAL_COMMAND, author="my-test-suite"
+        )
+        data = _load_yaml(yaml_text)
+        assert data["author"] == "my-test-suite"

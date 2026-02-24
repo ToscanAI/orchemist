@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import re
 import textwrap
+import unicodedata
 from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
@@ -124,15 +125,27 @@ class _ParsedCommand:
 def slugify(text: str) -> str:
     """Convert *text* to a URL-safe, hyphenated slug.
 
-    Algorithm: lowercase → replace runs of non-alphanumeric characters with
-    ``-`` → strip leading/trailing hyphens.
+    Algorithm: NFKD-normalise → encode to ASCII (drops combining diacritics,
+    transliterates accented Latin characters) → lowercase → replace runs of
+    non-alphanumeric characters with ``-`` → strip leading/trailing hyphens.
+
+    Transliteration covers the common case of accented Latin characters
+    (``Ü`` → ``U``, ``é`` → ``e``, etc.), preventing silent ID collisions
+    between titles that differ only in diacritics.  Characters with no ASCII
+    approximation (CJK, emoji, etc.) are dropped after transliteration, so
+    purely non-ASCII titles may still produce a short or empty slug — callers
+    should handle the empty-string case (see ``_make_unique_id``).
 
     Examples::
 
-        slugify("Campaign Plan")  # "campaign-plan"
-        slugify("  Hello, World! ")  # "hello-world"
-        slugify("Brand Voice & Tone")  # "brand-voice-tone"
+        slugify("Campaign Plan")      # "campaign-plan"
+        slugify("  Hello, World! ")   # "hello-world"
+        slugify("Brand Voice & Tone") # "brand-voice-tone"
+        slugify("Über Plan")          # "uber-plan"
+        slugify("🎯 Campaign")        # "campaign"
     """
+    # Transliterate: decompose Unicode, drop non-ASCII combining characters
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
     text = text.lower()
     text = re.sub(r"[^a-z0-9]+", "-", text)
     return text.strip("-")
@@ -278,10 +291,16 @@ def _classify_section(heading: str) -> str:
 # Matches: `1. **Field name** — description text`
 # Also handles:
 #   - ` - ` (hyphen) instead of ` — ` (em-dash)
-#   - `(optional)` or other parentheticals between the bold name and the dash
+#   - zero or more parentheticals between the bold name and the dash,
 #     e.g.: `2. **Budget range** (optional) — description`
+#           `3. **Budget** (USD) (optional) — approximate budget`
+#           `4. **Qty** (positive integer) (required) — count`
+#
+# BUG FIX: previously used `(?:\([^)]*\)\s*)?` (exactly-one, optional),
+# which caused fields with *two or more* parentheticals (e.g. "(USD) (optional)")
+# to be silently dropped from the config_schema.  Changed to `*` (zero-or-more).
 _INPUT_FIELD_RE = re.compile(
-    r"^\d+\.\s+\*\*([^*]+)\*\*\s*(?:\([^)]*\)\s*)?(?:—|-)\s*(.*)$",
+    r"^\d+\.\s+\*\*([^*]+)\*\*\s*(?:\([^)]*\)\s*)*(?:—|-)\s*(.*)$",
     re.MULTILINE,
 )
 
@@ -293,11 +312,18 @@ def _parse_inputs_section(body: str) -> Dict[str, Any]:
 
         1. **Field name** — description text
         2. **Another field** (optional) — description
+        3. **Budget** (USD) (optional) — approximate budget
+
+    Multiple parentheticals before the separator are fully supported; any of
+    them may carry the ``(optional)`` marker.
 
     Rules:
     - Field name → snake_case property key.
-    - If the description contains ``(optional)`` (case-insensitive), the field
-      is **not** added to the ``required`` array.
+    - If ``(optional)`` appears anywhere in the field entry (name,
+      parenthetical, or description), the field is **not** added to the
+      ``required`` array.
+    - ``(optional)`` tokens are stripped from the stored description text
+      (regardless of their position — leading, trailing, or mid-sentence).
     - All fields default to ``type: string``.
     - Returns a minimal JSON Schema object; at minimum ``{"type": "object",
       "properties": {}, "required": []}`` so ``orch validate`` never sees an
@@ -315,13 +341,22 @@ def _parse_inputs_section(body: str) -> Dict[str, Any]:
         clean_name = re.sub(r"\s*\(.*?\)\s*$", "", raw_name).strip()
         key = snake_case(clean_name)
 
-        # Strip trailing (optional) marker from description too
-        desc_clean = re.sub(r"\s*\(optional\)\s*$", "", description, flags=re.IGNORECASE).strip()
+        # Strip *all* occurrences of "(optional)" from the description (any position).
+        # Previously only the trailing occurrence was stripped, leaving "(optional)"
+        # visible in the stored description when it appeared at the start or middle.
+        # E.g. "(optional) extra context" → "extra context"
+        #      "some text (optional)"     → "some text"
+        #      "use (optional) if needed" → "use if needed"
+        desc_clean = re.sub(r"\(\s*optional\s*\)\s*", "", description, flags=re.IGNORECASE).strip()
+        # Collapse any runs of whitespace created by the removal
+        desc_clean = re.sub(r" {2,}", " ", desc_clean)
 
-        # "optional" anywhere in the full matched line (name, parenthetical, description).
-        # Matches "(optional)", "(optional;...)", "(optional if ...)", etc.
+        # "optional" marker = a *complete* "(optional)" token anywhere in the full
+        # matched line (name, parenthetical, or description).
+        # Uses \( ... \) to require the closing paren, avoiding false positives
+        # on open tokens like "(optional_extra)".  Case-insensitive.
         is_optional = bool(
-            re.search(r"\(optional\b", full_match, re.IGNORECASE)
+            re.search(r"\(\s*optional\s*\)", full_match, re.IGNORECASE)
         )
 
         properties[key] = {"type": "string", "description": desc_clean}
@@ -456,9 +491,17 @@ def _make_unique_id(base_id: str, seen: Dict[str, int]) -> str:
     documents (far beyond any realistic heading duplication).
 
     Args:
-        base_id: Slugified candidate phase ID.
+        base_id: Slugified candidate phase ID.  If empty (e.g. because the
+                 heading consisted entirely of non-ASCII/non-alphanumeric
+                 characters and ``slugify()`` produced ``""``), falls back to
+                 the generic identifier ``"section"`` so that the generated
+                 template always contains valid, non-empty phase IDs.
         seen:    Mutable mapping of ``{phase_id: 1}``.  Modified in place.
     """
+    # Guard: slugify("🎯") == "" — use a safe fallback so callers never
+    # end up with an empty string as a phase id.
+    if not base_id:
+        base_id = "section"
     if base_id not in seen:
         seen[base_id] = 1
         return base_id
@@ -596,7 +639,18 @@ def _build_template_dict(
     template_id = slugify(parsed.title)
     template_name = parsed.title
     description = fm.get("description") or ""
-    tags: List[str] = list(fm.get("tags") or [])
+
+    # BUG FIX: previously `list(fm.get("tags") or [])` coerced an *explicit*
+    # `tags: []` in frontmatter to the empty list, then `tags or [defaults]`
+    # replaced it with the hardcoded defaults — ignoring the user's intent.
+    #
+    # Correct semantics:
+    #   - tags: [foo, bar]  → use [foo, bar]
+    #   - tags: []          → use []  (user explicitly opted out of defaults)
+    #   - tags: null        → use defaults (null == "not specified")
+    #   - <key absent>      → use defaults
+    _fm_tags = fm.get("tags")
+    tags: List[str] = list(_fm_tags) if isinstance(_fm_tags, list) else []
 
     # config_schema: populated from the Inputs section (if present)
     config_schema: Dict[str, Any] = {}
@@ -694,7 +748,9 @@ def _build_template_dict(
         "description": description or f"Imported from plugin command: {template_name}",
         "author": author,
         "category": "imported",
-        "tags": tags or ["imported", "plugin-command"],
+        # Use whatever tags the frontmatter specified (even empty list).
+        # Fall back to defaults only when tags was absent or null in frontmatter.
+        "tags": tags if isinstance(_fm_tags, list) else ["imported", "plugin-command"],
         "use_cases": use_cases or [f"Execute the {template_name} workflow"],
         "example_input": example_input or {"input": "<primary input>"},
         "config_schema": config_schema,
@@ -708,21 +764,36 @@ def _skill_refs_for_section(section_body: str, all_refs: List[str]) -> List[str]
     """Filter *all_refs* to those actually mentioned in *section_body*.
 
     A skill ref is considered "mentioned" in a section if the SKILL.md
-    filename's parent directory name appears in the section text (case-
-    insensitive).  This is a best-effort heuristic — full path matching is
-    impractical since the section body contains prose, not file paths.
+    filename's parent directory name appears as a **whole word** in the section
+    text (case-insensitive).  This is a best-effort heuristic — full path
+    matching is impractical since the section body contains prose, not file
+    paths.
+
+    Word-boundary matching (``\\b``) is used instead of a bare substring check.
+    The bare-substring approach produced false positives for short skill names:
+    a skill named ``ai`` would match any section body containing words like
+    "email", "said", "brain", "maintain", "detail", etc., silently injecting
+    an irrelevant skill_ref into that phase.
+
+    Because both *normalised* and *body_lower* have hyphens and underscores
+    converted to spaces, ``\\b`` correctly delimits word boundaries around
+    multi-word skill names (e.g. ``"brand voice"`` still matches
+    ``"brand voice guidelines"``).
 
     Returns only refs whose skill name can be found in the section body.
     """
     if not all_refs:
         return []
     result: List[str] = []
+    body_lower = section_body.lower().replace("-", " ").replace("_", " ")
     for ref in all_refs:
         skill_dir = Path(ref).parent.name  # e.g. "brand-voice"
         # Normalise: hyphens/underscores/spaces all equivalent
         normalised = skill_dir.lower().replace("-", " ").replace("_", " ")
-        body_lower = section_body.lower().replace("-", " ").replace("_", " ")
-        if normalised in body_lower:
+        # Use word-boundary regex to avoid short names matching substrings.
+        # re.escape handles any residual special characters in skill dir names.
+        pattern = re.compile(r"\b" + re.escape(normalised) + r"\b")
+        if pattern.search(body_lower):
             result.append(ref)
     return result
 

@@ -2936,12 +2936,80 @@ def import_plugin_command(
 
     # ── 5. Optional: run orch validate on the result ─────────────────────────
     if run_validate:
+        # Call the validation logic directly rather than via CliRunner.
+        # CliRunner is a *testing* utility: it intercepts stdout/stderr, creates
+        # its own Click context, and does not propagate env vars reliably.
+        # Using it inside a real CLI invocation is architecturally fragile.
         click.echo()
-        from click.testing import CliRunner
-        result = CliRunner().invoke(validate_template, [str(output)], catch_exceptions=False)
-        click.echo(result.output, nl=False)
-        if result.exit_code != 0:
-            sys.exit(result.exit_code)
+        OK_v  = click.style("✓", fg="green")
+        ERR_v = click.style("✗", fg="red")
+        WRN_v = click.style("⚠", fg="yellow")
+        try:
+            from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
+
+            # 5a. YAML syntax
+            yaml_error = _check_yaml_syntax(output)
+            if yaml_error:
+                click.echo(f"{ERR_v} YAML syntax:  {yaml_error}", err=True)
+                sys.exit(1)
+            click.echo(f"{OK_v} YAML syntax")
+
+            # 5b. Load raw data
+            with open(output) as _fh:
+                _raw_data: Dict[str, Any] = yaml.safe_load(_fh)
+
+            # 5c. Structural validation
+            _engine = TemplateEngine()
+            _tpl: PipelineTemplate = _engine.load_template(output)
+            _structural_errors = _engine.validate_template(_tpl)
+
+            if _structural_errors:
+                click.echo(f"{ERR_v} Structural checks ({len(_structural_errors)} error(s)):")
+                for _e in _structural_errors:
+                    click.echo(f"    • {_e}")
+            else:
+                click.echo(f"{OK_v} Structural checks  ({len(_tpl.phases)} phases, deps OK)")
+
+            # 5d. Extended / linting checks
+            _ext_errors, _ext_warnings = _engine.validate_template_extended(_tpl, _raw_data)
+
+            if _ext_errors:
+                click.echo(f"{ERR_v} Extended checks ({len(_ext_errors)} error(s)):")
+                for _e in _ext_errors:
+                    click.echo(f"    • {_e}")
+            elif _ext_warnings:
+                click.echo(f"{WRN_v} Extended checks ({len(_ext_warnings)} warning(s)):")
+                for _w in _ext_warnings:
+                    click.echo(f"    • {_w}")
+            else:
+                click.echo(
+                    f"{OK_v} Extended checks  "
+                    "(model tiers, thinking levels, variable refs, config_schema)"
+                )
+
+            # 5e. Summary
+            _total_errors = len(_structural_errors) + len(_ext_errors)
+            _total_warnings = len(_ext_warnings)
+            if _total_errors:
+                click.echo(
+                    f"\n{ERR_v} Template {str(output)!r}: "
+                    f"{_total_errors} error(s), {_total_warnings} warning(s)"
+                )
+                sys.exit(1)
+            elif _total_warnings:
+                click.echo(
+                    f"\n{WRN_v} Template {str(output)!r}: "
+                    f"valid with {_total_warnings} warning(s)"
+                )
+            else:
+                click.echo(f"\n{OK_v} Template {str(output)!r} is valid")
+
+        except (KeyError, ValueError) as _exc:
+            click.echo(f"{ERR_v} Invalid template: {_exc}", err=True)
+            sys.exit(1)
+        except Exception as _exc:
+            click.echo(f"Error during validation: {_exc}", err=True)
+            sys.exit(1)
     else:
         click.echo(f"\nNext steps:")
         click.echo(f"  orch validate {output}           # Check the template")
