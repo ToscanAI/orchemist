@@ -3060,5 +3060,61 @@ def serve(port: int, host: str, no_open: bool) -> None:
     uvicorn.run(app, host=host, port=port)
 
 
+# ---------------------------------------------------------------------------
+# orch rubric — skill rubric generation  (AC-1)
+# ---------------------------------------------------------------------------
+
+@main.group("rubric")
+def rubric() -> None:
+    """Generate LLM Judge rubric YAML from skill markdown files."""
+
+
+@rubric.command("generate")
+@click.argument("skill_file", type=click.Path(path_type=Path))
+@click.option(
+    "--output", "-o",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Output YAML file path. Defaults to <skill-name>-rubric.yaml in cwd.",
+)
+@click.option(
+    "--force", "-f",
+    is_flag=True,
+    default=False,
+    help="Overwrite output file if it already exists.",
+)
+def rubric_generate(skill_file: Path, output: Optional[Path], force: bool) -> None:
+    """Generate a rubric YAML file from a SKILL.md file.
+
+    SKILL_FILE is the path to a skill markdown file (e.g. SKILL.md).
+
+    The generated YAML contains:
+
+    \b
+    - rubric: the rubric text to pass to LLMJudgeGrader
+    - criteria: machine-readable list of extracted checks
+    - name / generated_from / generated_at: metadata
+
+    Examples:
+
+      orch rubric generate path/to/SKILL.md
+
+      orch rubric generate path/to/SKILL.md --output my-rubric.yaml
+
+      orch rubric generate path/to/SKILL.md --output results/rubric.yaml --force
+    """
+    from .rubric_generator import generate_rubric_file
+
+    try:
+        out_path = generate_rubric_file(skill_file, output=output, force=force)
+        click.echo(f"✓ Rubric written to: {out_path}")
+    except ValueError as exc:
+        click.echo(f"✗ {exc}", err=True)
+        sys.exit(1)
+    except Exception as exc:
+        click.echo(f"✗ Unexpected error: {exc}", err=True)
+        sys.exit(1)
+
+
 if __name__ == '__main__':
     main()
