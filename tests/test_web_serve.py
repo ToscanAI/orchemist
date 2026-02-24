@@ -620,3 +620,55 @@ class TestLiveProgressHTML:
         assert "total-tokens" in r.text
         assert "total-cost" in r.text
         assert "elapsed-time" in r.text
+
+
+class TestVisualPhaseDisplay:
+    """Tests for visual phase display as connected blocks (#82)."""
+
+    def test_pipeline_viz_css(self, client):
+        r = client.get("/")
+        assert "pipeline-viz" in r.text
+
+    def test_phase_block_tiers(self, client):
+        r = client.get("/")
+        assert "tier-haiku" in r.text
+        assert "tier-sonnet" in r.text
+        assert "tier-opus" in r.text
+
+    def test_phase_connector(self, client):
+        r = client.get("/")
+        assert "phase-connector" in r.text
+
+    def test_render_function(self, client):
+        r = client.get("/")
+        assert "renderPipelineViz" in r.text
+
+
+class TestOutputViewer:
+    """Tests for Markdown output viewer (#84)."""
+
+    def test_output_viewer_css(self, client):
+        r = client.get("/")
+        assert "output-viewer" in r.text
+
+    def test_marked_js_included(self, client):
+        r = client.get("/")
+        assert "marked" in r.text
+
+    def test_output_tabs(self, client):
+        r = client.get("/")
+        assert "phase-output-tab" in r.text
+
+    def test_render_output_function(self, client):
+        r = client.get("/")
+        assert "renderOutputViewer" in r.text
+
+    def test_outputs_endpoint(self, client):
+        # Start a dry-run, then check outputs endpoint
+        r = client.post("/api/run", json={"template": "content-pipeline", "mode": "dry-run"})
+        if r.status_code == 200:
+            run_id = r.json()["run_id"]
+            import time
+            time.sleep(2)
+            r2 = client.get(f"/api/run/{run_id}/outputs")
+            assert r2.status_code == 200

@@ -261,6 +261,14 @@ def create_app():  # noqa: C901
 
         return EventSourceResponse(event_generator())
 
+    @app.get("/api/run/{run_id}/outputs")
+    async def get_run_outputs(run_id: str):
+        """Return the stored phase outputs for a completed (or in-progress) run (#84)."""
+        run = _active_runs.get(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return run.get("outputs", {})
+
     return app
 
 
@@ -370,6 +378,11 @@ async def _execute_pipeline(
             })
             run["events"].append(payload)
             loop.call_soon_threadsafe(run["event_queue"].put_nowait, payload)
+            # Store phase output for /api/run/{id}/outputs endpoint (#84)
+            if "output" in phase_result or "text" in phase_result:
+                run.setdefault("outputs", {})[phase_id] = (
+                    phase_result.get("output") or phase_result.get("text", "")
+                )
 
     try:
         def _run_sync() -> dict:
