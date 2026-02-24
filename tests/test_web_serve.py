@@ -590,3 +590,33 @@ class TestInputFormsAPI:
             assert isinstance(detail["config_schema"], dict), (
                 f"Template '{t['id']}' config_schema should be a dict (even if empty)"
             )
+
+
+class TestLiveProgressHTML:
+    """Tests for live progress UI elements (#83)."""
+
+    def test_progress_panel_css(self, client):
+        r = client.get("/")
+        assert "progress-panel" in r.text
+        assert "progress-bar-fill" in r.text
+
+    def test_phase_timeline_css(self, client):
+        r = client.get("/")
+        assert "phase-timeline" in r.text
+        assert "phase-pill" in r.text
+
+    def test_progress_js_functions(self, client):
+        r = client.get("/")
+        assert "renderProgressPanel" in r.text
+        assert "handleProgressEvent" in r.text
+        assert "startElapsedTimer" in r.text
+
+    def test_connection_indicator(self, client):
+        r = client.get("/")
+        assert "conn-dot" in r.text
+
+    def test_totals_row(self, client):
+        r = client.get("/")
+        assert "total-tokens" in r.text
+        assert "total-cost" in r.text
+        assert "elapsed-time" in r.text

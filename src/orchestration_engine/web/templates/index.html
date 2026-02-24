@@ -968,7 +968,19 @@
       flex: 1;
       max-width: 240px;
     }
-  </style>
+  
+/* Live Progress (#83) */
+.progress-bar-fill { background: linear-gradient(90deg, #4a9eff, #7c3aed); height: 100%; transition: width 0.5s ease; border-radius: 4px; }
+.phase-pill.running { border-color: #4a9eff; animation: pulse 1.5s infinite; }
+.phase-pill.done { border-color: #22c55e; background: #1a2e1a; }
+.phase-pill.failed { border-color: #ef4444; background: #2e1a1a; }
+.totals-row { display: flex; gap: 24px; margin-top: 12px; font-size: 0.9em; color: #aaa; }
+.totals-row span { color: #fff; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+.conn-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; margin-right: 6px; }
+.conn-dot.disconnected { background: #ef4444; }
+
+</style>
 </head>
 <body>
   <div id="app">
@@ -1666,6 +1678,62 @@
 
     // ── Init ─────────────────────────────────────────────────────────
     bootstrap();
-  </script>
+  
+/* Live Progress (#83) */
+let _elapsed_timer = null;
+let _run_start = null;
+
+function renderProgressPanel(phases) {
+  let pills = phases.map(p =>
+    '<div class="phase-pill" id="pill-' + escHtml(p.id) + '">' + escHtml(p.name) + ' &#x23F3;</div>'
+  ).join('');
+  return '<div class="progress-panel" id="progress-panel">'
+    + '<div style="display:flex;align-items:center"><span class="conn-dot" id="conn-dot"></span><strong>Pipeline Running</strong></div>'
+    + '<div class="progress-bar-container"><div class="progress-bar-fill" id="progress-fill" style="width:0%"></div></div>'
+    + '<div id="progress-text" style="font-size:0.85em;color:#aaa">0 of ' + phases.length + ' phases complete</div>'
+    + '<div class="phase-timeline">' + pills + '</div>'
+    + '<div class="totals-row">Tokens: <span id="total-tokens">0</span> &nbsp;|&nbsp; Cost: $<span id="total-cost">0.0000</span> &nbsp;|&nbsp; Elapsed: <span id="elapsed-time">0s</span></div>'
+    + '</div>';
+}
+
+function handleProgressEvent(evt) {
+  try {
+    const d = JSON.parse(evt.data);
+    if (d.type === 'phase_start') {
+      const pill = document.getElementById('pill-' + d.phase_id);
+      if (pill) { pill.className = 'phase-pill running'; pill.innerHTML = escHtml(d.phase_name || d.phase_id) + ' [running]'; }
+    } else if (d.type === 'phase_complete' || d.type === 'phase') {
+      const pill = document.getElementById('pill-' + (d.phase_id || d.id));
+      if (pill) { pill.className = 'phase-pill done'; pill.innerHTML = escHtml(d.phase_name || d.phase_id || d.id) + ' [done]'; }
+      const ti = document.getElementById('total-tokens');
+      const tc = document.getElementById('total-cost');
+      if (ti) ti.textContent = parseInt(ti.textContent || '0') + (d.tokens_in||0) + (d.tokens_out||0);
+      if (tc) tc.textContent = (parseFloat(tc.textContent || '0') + (d.cost_usd||0)).toFixed(4);
+      const completed = document.querySelectorAll('.phase-pill.done').length;
+      const total = document.querySelectorAll('.phase-pill').length;
+      const fill = document.getElementById('progress-fill');
+      const txt = document.getElementById('progress-text');
+      if (fill) fill.style.width = (total > 0 ? (completed/total*100) : 0) + '%';
+      if (txt) txt.textContent = completed + ' of ' + total + ' phases complete';
+    } else if (d.type === 'phase_error') {
+      const pill = document.getElementById('pill-' + d.phase_id);
+      if (pill) { pill.className = 'phase-pill failed'; pill.innerHTML = escHtml(d.phase_id) + ' [failed]'; }
+    } else if (d.type === 'pipeline_complete' || d.type === 'complete') {
+      const dot = document.getElementById('conn-dot');
+      if (dot) dot.className = 'conn-dot disconnected';
+      if (_elapsed_timer) { clearInterval(_elapsed_timer); _elapsed_timer = null; }
+    }
+  } catch(e) { console.warn('SSE parse error', e); }
+}
+
+function startElapsedTimer() {
+  _run_start = Date.now();
+  _elapsed_timer = setInterval(function() {
+    const el = document.getElementById('elapsed-time');
+    if (el) { const s = Math.floor((Date.now() - _run_start)/1000); el.textContent = s < 60 ? s+'s' : Math.floor(s/60)+'m '+s%60+'s'; }
+  }, 1000);
+}
+
+</script>
 </body>
 </html>
