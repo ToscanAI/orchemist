@@ -1214,10 +1214,10 @@ class TestDiscoverySanityGuards:
             f"Discovered: {actual}"
         )
 
-    def test_ds03_count_equals_6(self):
-        """DS-03: exactly 6 template files are discovered."""
-        assert len(ALL_TEMPLATES) == 6, (
-            f"Expected exactly 6 templates, found {len(ALL_TEMPLATES)}: "
+    def test_ds03_count_equals_7(self):
+        """DS-03: exactly 7 template files are discovered."""
+        assert len(ALL_TEMPLATES) == 7, (
+            f"Expected exactly 7 templates, found {len(ALL_TEMPLATES)}: "
             f"{[Path(p).name for p in ALL_TEMPLATES]}"
         )
 
