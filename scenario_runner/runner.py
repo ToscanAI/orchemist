@@ -18,6 +18,7 @@ from typing import Optional
 import yaml
 
 from .graders.assertion import AssertionGrader
+from .graders.keyword_grader import KeywordGrader
 from .graders.llm_judge import LLMJudgeGrader
 from .graders.url_check import URLCheckGrader
 from .models import (
@@ -53,6 +54,7 @@ class ScenarioRunner:
         self.engine_db = engine_db
 
         self._assertion_grader = AssertionGrader()
+        self._keyword_grader = KeywordGrader()
         self._llm_grader = LLMJudgeGrader()
         self._url_grader = URLCheckGrader()
 
@@ -247,6 +249,14 @@ class ScenarioRunner:
             )
             return self._llm_grader.grade(pipeline_output, rubric_text, judge_model)
 
+        elif criterion_type == "keyword":
+            keywords: list = criterion.get("keywords", [])
+            match_mode: str = criterion.get("match_mode", "all")
+            output_field: str | None = criterion.get("output_field", None)
+            return self._keyword_grader.grade(
+                pipeline_output, keywords, match_mode, output_field
+            )
+
         elif criterion_type == "url_check":
             article_text: str = pipeline_output.get("article", "")
             return self._url_grader.grade(article_text)
@@ -260,19 +270,33 @@ class ScenarioRunner:
             )
 
     def _resolve_rubric(self, criterion: dict) -> str:
-        """Return rubric text, loading from file if *rubric_file* is specified."""
+        """Return rubric text, loading from file if *rubric_file* is specified.
+
+        ``rubric_file`` paths must be relative to ``scenarios_dir`` itself
+        (not its parent).  Absolute paths or traversals that escape
+        ``scenarios_dir`` are rejected to prevent accidental or malicious
+        access to files outside the scenarios directory.
+
+        Examples of valid values (relative to scenarios_dir)::
+
+            rubric_file: "shared/rubrics/factual-accuracy.md"
+            rubric_file: "rubrics/coherence.md"
+        """
         if "rubric_file" in criterion:
-            # rubric_file is relative to the scenarios root, e.g.
-            # "shared/rubrics/factual-accuracy.md" → scenarios/shared/rubrics/...
-            scenarios_root = self.scenarios_dir.parent
+            # rubric_file is relative to scenarios_dir itself, e.g.
+            # "shared/rubrics/factual-accuracy.md"
+            #   → <scenarios_dir>/shared/rubrics/factual-accuracy.md
+            scenarios_root = self.scenarios_dir  # containment boundary
             rubric_path = (scenarios_root / criterion["rubric_file"]).resolve()
-            
-            # Prevent path traversal — rubric must stay within scenarios directory
+
+            # Prevent path traversal — rubric must stay within scenarios_dir
             if not rubric_path.is_relative_to(scenarios_root.resolve()):
                 raise ValueError(
-                    f"Rubric path escapes scenarios directory: {criterion['rubric_file']}"
+                    f"Rubric path escapes scenarios directory: {criterion['rubric_file']!r}\n"
+                    f"  Resolved to: {rubric_path}\n"
+                    f"  Allowed root: {scenarios_root.resolve()}"
                 )
-            
+
             with open(rubric_path, "r", encoding="utf-8") as fh:
                 return fh.read()
         return criterion.get("rubric", "")

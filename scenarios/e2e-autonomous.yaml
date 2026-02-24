@@ -1,0 +1,160 @@
+# e2e-autonomous.yaml — End-to-end autonomous scenario test
+#
+# Purpose:
+#   Exercises the full scoring pipeline (KeywordGrader + LLMJudgeGrader)
+#   without requiring a live Anthropic API key.
+#
+# How to run:
+#   # Dry-run mode (CI-safe, no API key needed):
+#   ORCH_DRY_RUN=1 orch scenario run e2e-autonomous --dry-run
+#
+#   # Live mode (requires ANTHROPIC_API_KEY):
+#   orch scenario run e2e-autonomous
+#
+# Acceptance criteria design:
+#   - Gate (assertion, weight 0):  output dict is non-empty → blocks scoring if pipeline stalled
+#   - Scored keyword  (weight 40): structural content check — keywords always present
+#                                  in both dry-run ("mock", "execution", "content") and
+#                                  real LLM output ("analysis", "complete", "orchestration")
+#   - Scored llm_judge (weight 60): quality rubric — returns stub score 0.8 when
+#                                   ORCH_DRY_RUN=1, makes real LLM call otherwise
+#
+# Scoring:
+#   Non-gate weights:  40 + 60 = 100
+#   pass_threshold:    0.70
+#   Expected dry-run score: (1.0×40 + 0.8×60) / 100 = 0.88  → PASS
+
+id: e2e-autonomous
+version: "1.0.0"
+name: "E2E Autonomous Pipeline Test"
+description: >
+  End-to-end autonomous scenario that validates the scoring pipeline
+  (KeywordGrader + LLMJudgeGrader) in both dry-run and live modes.
+tags:
+  - e2e
+  - testing
+  - autonomous
+
+# Template to execute.  Path is relative to the working directory when
+# `orch scenario run` is invoked from the repository root.
+pipeline: scenarios/e2e-test-template.yaml
+
+# Input data passed to the pipeline template
+input:
+  topic: "AI orchestration testing"
+
+# ---------------------------------------------------------------------------
+# Output structure note
+# ---------------------------------------------------------------------------
+#
+# When run via `orch scenario run`, the grading input ("output") is structured as:
+#
+#   {
+#     "final":  <last-phase output dict>,          # primary grading target
+#     "phases": <dict[phase_id → output dict]>,    # all phases accessible
+#   }
+#
+# When run_scenario() is called directly in tests, "output" is whatever dict
+# the test passes in (typically a flat mock dict or {}), so criteria must
+# handle both shapes gracefully.
+#
+# The KeywordGrader recurses into nested dicts automatically.
+# Assertion graders using `output` evaluate against the full top-level dict.
+# LLMJudgeGrader extracts text using the priority chain:
+#   output_field → "article" → "text"/"content" → output["final"] → JSON(output)
+#
+# ---------------------------------------------------------------------------
+# Acceptance criteria
+# ---------------------------------------------------------------------------
+acceptance:
+
+  # --- Gate (weight 0 = hard gate; failure blocks all scoring) ---
+  #
+  # The check `len(str(output)) > 10` works for both output shapes:
+  #   • CLI shape  {"final": {...}, "phases": {...}}  → always >> 10 chars
+  #   • Flat {}  → str("{}") == 2 chars → gate fails  ← empty pipeline guard
+  #   • Flat _dry_run_phase_output() → hundreds of chars → gate passes
+  #
+  - id: output_not_empty
+    type: assertion
+    check: "len(str(output)) > 10"
+    weight: 0
+    description: >
+      Hard gate: the pipeline must produce a non-trivial output.
+      If the pipeline stalls or returns an empty dict this gate fails
+      and the entire scenario is marked as failed regardless of other scores.
+
+  # --- Scored criterion 1: KeywordGrader structural check (weight 40) ---
+  #
+  # match_mode: "any" — at least one keyword must appear in the output text.
+  # KeywordGrader recurses into nested dicts, so it finds keywords regardless
+  # of whether output is a flat dict or the CLI-structured {"final":...,"phases":...}.
+  #
+  # Keywords that appear in DRY-RUN mode  (DryRunExecutor mock output):
+  #   "mock"       → "Mock execution of content task"
+  #   "execution"  → same
+  #   "content"    → same
+  #
+  # Keywords that appear in LIVE mode (LLM output from e2e-test-template):
+  #   "analysis"   → "Analysis complete." (mandatory end-marker in prompt)
+  #   "complete"   → same
+  #   "orchestration" → topic word the model will include
+  #
+  - id: output_content_check
+    type: keyword
+    keywords:
+      - "analysis"
+      - "complete"
+      - "orchestration"
+      - "mock"
+      - "execution"
+      - "content"
+    match_mode: "any"
+    threshold: 0.5
+    weight: 40
+    description: >
+      Structural keyword check verifying the output contains recognisable
+      content from either a real LLM run (analysis/complete/orchestration)
+      or a dry-run mock execution (mock/execution/content).
+      Uses match_mode "any" so a single match is sufficient (score 1.0 / 0.0).
+      KeywordGrader recurses into nested dicts so both flat and CLI-structured
+      output shapes are handled automatically.
+
+  # --- Scored criterion 2: LLMJudgeGrader quality check (weight 60) ---
+  #
+  # In dry-run mode (ORCH_DRY_RUN=1) returns stub score 0.8.
+  # In live mode makes a real judge API call.
+  #
+  - id: output_quality
+    type: llm_judge
+    judge_model: claude-haiku-4-5-20241022
+    rubric: |
+      You are evaluating whether a short AI-generated text meets basic quality standards.
+
+      Scoring criteria (each worth equal weight):
+      1. Coherence — the text forms complete, grammatically correct sentences.
+      2. Relevance — the text is on-topic (AI, orchestration, or testing).
+      3. Completeness — the text covers at least two distinct points.
+
+      Score the text on a scale from 0.0 (completely fails all criteria) to
+      1.0 (fully meets all criteria).
+
+      Respond with ONLY this format (no other text):
+      Score: <0.0–1.0>
+      Reasoning: <one sentence>
+    threshold: 0.60
+    weight: 60
+    description: >
+      LLM-as-judge quality rubric checking coherence, relevance, and completeness.
+      Uses ORCH_DRY_RUN stub score (0.8) in CI mode.
+
+# ---------------------------------------------------------------------------
+# Scoring
+# ---------------------------------------------------------------------------
+scoring:
+  method: weighted_average
+  pass_threshold: 0.70
+  gate_mode: all_or_nothing
+  notes: >
+    Non-gate criteria weights: keyword(40) + llm_judge(60) = 100.
+    Expected dry-run weighted score: (1.0×40 + 0.8×60) / 100 = 0.88.

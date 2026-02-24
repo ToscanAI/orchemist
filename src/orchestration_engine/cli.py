@@ -3116,5 +3116,352 @@ def rubric_generate(skill_file: Path, output: Optional[Path], force: bool) -> No
         sys.exit(1)
 
 
+# ---------------------------------------------------------------------------
+# orch scenario — E2E autonomous scenario test runner
+# ---------------------------------------------------------------------------
+
+
+@main.group("scenario")
+def scenario_group() -> None:
+    """Run and inspect end-to-end autonomous scenario tests.
+
+    Scenarios live in ``./scenarios/`` (by default) and combine a pipeline
+    template with grading criteria.  The ``run`` sub-command executes the
+    referenced template, grades the output, and prints a score report.
+
+    Examples::
+
+        # Dry-run (no API key needed):
+        ORCH_DRY_RUN=1 orch scenario run e2e-autonomous --dry-run
+
+        # Live run (requires ANTHROPIC_API_KEY):
+        orch scenario run e2e-autonomous
+    """
+
+
+@scenario_group.command("run")
+@click.argument("scenario_id")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help=(
+        "Execute the pipeline in dry-run mode (no real API calls). "
+        "Also sets ORCH_DRY_RUN=1 for downstream graders so LLMJudgeGrader "
+        "returns its stub score instead of making API calls."
+    ),
+)
+@click.option(
+    "--scenario-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "Directory to search for scenario YAML files.  "
+        "Defaults to ./scenarios/ in the current working directory."
+    ),
+)
+@click.option(
+    "--api-key",
+    envvar="ANTHROPIC_API_KEY",
+    default=None,
+    help="Anthropic API key for live (non-dry-run) mode.",
+)
+def scenario_run(
+    scenario_id: str,
+    dry_run: bool,
+    scenario_dir: Optional[Path],
+    api_key: Optional[str],
+) -> None:
+    """Run an E2E scenario test and print a score report.
+
+    SCENARIO_ID is the stem of a YAML file inside --scenario-dir, or a
+    path to a YAML file directly.
+
+    The command:
+
+    \b
+    1. Loads the scenario YAML (validates required keys).
+    2. Resolves and executes the referenced pipeline template.
+    3. Grades the pipeline output against all acceptance criteria.
+    4. Prints a per-criterion breakdown and overall score report.
+
+    Exit code: 0 if the scenario passes (score ≥ threshold), 1 otherwise.
+
+    Examples::
+
+        # Dry-run — safe for CI, no API key needed:
+        ORCH_DRY_RUN=1 orch scenario run e2e-autonomous --dry-run
+
+        # Override scenario directory:
+        orch scenario run my-scenario --scenario-dir tests/scenarios/ --dry-run
+
+        # Live run with explicit API key:
+        orch scenario run e2e-autonomous --api-key sk-ant-...
+    """
+    import json as _json
+    import os as _os
+
+    from rich.console import Console
+    from rich.table import Table
+
+    from .templates import TemplateEngine
+    from .pipeline_runner import PipelineRunner
+    from .sequencer import PhaseSequencer
+
+    # Import ScenarioRunner from the scenario_runner package.
+    # Try both importable forms (installed package and source layout).
+    try:
+        from scenario_runner.runner import ScenarioRunner
+    except ImportError:
+        # Fallback: add the project root to sys.path
+        import sys as _sys
+        project_root = Path(__file__).resolve().parent.parent.parent
+        _sys.path.insert(0, str(project_root))
+        from scenario_runner.runner import ScenarioRunner
+
+    console = Console(highlight=False)
+
+    # ------------------------------------------------------------------
+    # 1. Resolve scenario file path
+    # ------------------------------------------------------------------
+    cwd = Path.cwd()
+    default_scenarios_dir = cwd / "scenarios"
+    base_dir = Path(scenario_dir) if scenario_dir else default_scenarios_dir
+
+    # Accept: bare ID ("e2e-autonomous"), stem with extension, or full path
+    if scenario_id.endswith(".yaml") or scenario_id.endswith(".yml"):
+        candidate = Path(scenario_id)
+    else:
+        candidate = base_dir / f"{scenario_id}.yaml"
+        if not candidate.exists():
+            candidate = base_dir / f"{scenario_id}.yml"
+
+    if not candidate.exists():
+        click.echo(
+            f"✗ Scenario not found: '{scenario_id}'\n"
+            f"  Searched: {candidate}",
+            err=True,
+        )
+        sys.exit(1)
+
+    scenario_file = candidate.resolve()
+
+    # ------------------------------------------------------------------
+    # 2. Load scenario via ScenarioRunner
+    # ------------------------------------------------------------------
+    runner_dir = scenario_file.parent
+    scenario_runner = ScenarioRunner(scenarios_dir=runner_dir)
+
+    try:
+        scenario = scenario_runner.load_scenario(scenario_file)
+    except (ValueError, yaml.YAMLError) as exc:
+        click.echo(f"✗ Invalid scenario '{scenario_file.name}': {exc}", err=True)
+        sys.exit(1)
+
+    scenario_name = scenario.get("name", scenario["id"])
+    console.print(
+        f"\n[bold]Scenario:[/bold] {scenario_name} "
+        f"[dim]({scenario_file.name})[/dim]"
+    )
+    console.print(
+        f"[bold]Mode:[/bold]     {'dry-run' if dry_run else 'live'}"
+    )
+    console.print()
+
+    # ------------------------------------------------------------------
+    # 3. Execute the pipeline referenced by the scenario
+    # ------------------------------------------------------------------
+    pipeline_ref: Optional[str] = scenario.get("pipeline")
+    if not pipeline_ref:
+        click.echo(
+            "✗ Scenario has no 'pipeline' key — cannot execute pipeline.\n"
+            "  Proceeding with empty pipeline output (all criteria will grade against {}).",
+            err=True,
+        )
+        pipeline_output: dict = {}
+    else:
+        # Resolve template path: relative to scenario file first, then cwd
+        template_path_candidate = scenario_file.parent / pipeline_ref
+        if not template_path_candidate.exists():
+            template_path_candidate = cwd / pipeline_ref
+        if not template_path_candidate.exists():
+            # Try resolving as a template name
+            template_path_candidate = _resolve_template_arg(pipeline_ref)
+
+        # Load + validate template
+        engine = TemplateEngine()
+        try:
+            template = engine.load_template(template_path_candidate)
+        except (FileNotFoundError, KeyError, ValueError, yaml.YAMLError) as exc:
+            click.echo(f"✗ Cannot load pipeline template '{pipeline_ref}': {exc}", err=True)
+            sys.exit(1)
+
+        template_errors = engine.validate_template(template)
+        if template_errors:
+            click.echo(
+                f"✗ Template '{pipeline_ref}' has {len(template_errors)} error(s):",
+                err=True,
+            )
+            for err in template_errors:
+                click.echo(f"  • {err}", err=True)
+            sys.exit(1)
+
+        # Build initial input from scenario
+        initial_input: Dict[str, Any] = scenario.get("input", {}) or {}
+
+        # Build PipelineRunner
+        try:
+            if dry_run:
+                pipe_runner = PipelineRunner.dry_run(delay_seconds=0.0)
+            else:
+                pipe_runner = PipelineRunner.standalone(api_key=api_key)
+        except ValueError as exc:
+            click.echo(f"✗ {exc}", err=True)
+            sys.exit(1)
+
+        # Execute
+        console.print(
+            f"[bold]Pipeline:[/bold] {template.name!r}  "
+            f"({len(template.phases)} phase{'s' if len(template.phases) != 1 else ''})"
+        )
+        console.print()
+
+        with pipe_runner:
+            sequencer = PhaseSequencer(template, pipe_runner, config=initial_input)
+            try:
+                exec_result = sequencer.execute(initial_input)
+            except Exception as exc:
+                click.echo(f"✗ Pipeline execution failed: {exc}", err=True)
+                sys.exit(1)
+
+        if exec_result.get("aborted"):
+            failed_phase = exec_result.get("failed_phase", "unknown")
+            click.echo(f"✗ Pipeline aborted at phase '{failed_phase}'", err=True)
+            sys.exit(2)
+
+        # Build grading input: expose both the final phase output AND all
+        # phase outputs so that criteria can inspect earlier phases.
+        #
+        # Schema seen by graders:
+        #   {
+        #     "final":  <last phase output dict>,   # most criteria use this
+        #     "phases": <dict[phase_id → output]>,  # allows inspecting earlier phases
+        #   }
+        #
+        # Backward-compatibility note: graders that call output.get("article")
+        # will still work for any pipeline whose final phase emits an "article"
+        # key (the "final" sub-dict is preserved verbatim).
+        final_output = exec_result.get("final_output", {})
+        phase_outputs = exec_result.get("phase_outputs", {})
+        pipeline_output = {"final": final_output, "phases": phase_outputs}
+
+        phase_count = len(phase_outputs)
+        console.print(
+            f"[green]✓[/green] Pipeline completed  "
+            f"({phase_count} phase{'s' if phase_count != 1 else ''})"
+        )
+        console.print()
+
+    # ------------------------------------------------------------------
+    # 4. Grade the pipeline output against scenario criteria.
+    #
+    #    ORCH_DRY_RUN=1 is set here (not at function entry) so that it is
+    #    only active during grading and is ALWAYS cleaned up afterwards —
+    #    even when sys.exit() is called.  This prevents the env var from
+    #    leaking into subsequent test invocations in Click's CliRunner
+    #    (single-process) context.
+    # ------------------------------------------------------------------
+    _dry_run_env_owned = dry_run and _os.environ.get("ORCH_DRY_RUN") != "1"
+    if dry_run:
+        _os.environ["ORCH_DRY_RUN"] = "1"
+    try:
+        score_result = scenario_runner.run_scenario(scenario, pipeline_output)
+    except Exception as exc:
+        click.echo(f"✗ Scenario grading failed: {exc}", err=True)
+        sys.exit(1)
+    finally:
+        # Only remove the var if WE set it (don't clobber a pre-existing value).
+        if _dry_run_env_owned:
+            _os.environ.pop("ORCH_DRY_RUN", None)
+
+    # ------------------------------------------------------------------
+    # 5. Print score report
+    # ------------------------------------------------------------------
+    _print_score_report(console, score_result, scenario)
+
+    # ------------------------------------------------------------------
+    # 6. Exit with appropriate code
+    # ------------------------------------------------------------------
+    sys.exit(0 if score_result.passed else 1)
+
+
+def _print_score_report(console, score_result, scenario: dict) -> None:
+    """Print a rich score report to stdout.
+
+    Format (AC-5):
+    - Scenario ID, overall weighted score (0–100), pass/fail verdict
+    - Per-criterion rows: ID, type, weight/gate, score (0–100), pass/fail
+    - Gate criteria are labelled [GATE]
+    - Overall summary line at the bottom
+    """
+    from rich.table import Table
+
+    # ── Per-criterion table ────────────────────────────────────────────
+    crit_table = Table(
+        title="Acceptance Criteria",
+        show_header=True,
+        header_style="bold cyan",
+    )
+    crit_table.add_column("Criterion", style="cyan", no_wrap=True)
+    crit_table.add_column("Type", justify="center")
+    crit_table.add_column("Weight", justify="center")
+    crit_table.add_column("Score", justify="right")
+    crit_table.add_column("Result", justify="center")
+
+    for cr in score_result.criterion_results:
+        weight_label = "[GATE]" if cr.is_gate else str(cr.weight)
+        score_pct = f"{cr.grade.score * 100:.1f}"
+        result_icon = (
+            "[green]✓ PASS[/green]"
+            if cr.grade.passed
+            else "[red]✗ FAIL[/red]"
+        )
+        crit_table.add_row(
+            cr.criterion_id,
+            cr.grade.grader_type,
+            weight_label,
+            score_pct,
+            result_icon,
+        )
+
+    console.print(crit_table)
+    console.print()
+
+    # ── Summary ────────────────────────────────────────────────────────
+    overall_pct = score_result.weighted_score * 100
+    threshold_pct = float(scenario.get("scoring", {}).get("pass_threshold", 0.70)) * 100
+    verdict = (
+        "[bold green]✓ PASS[/bold green]"
+        if score_result.passed
+        else "[bold red]✗ FAIL[/bold red]"
+    )
+    gate_status = (
+        "[green]all passed[/green]"
+        if score_result.gates_passed
+        else "[red]one or more FAILED[/red]"
+    )
+
+    console.print(
+        f"[bold]Scenario:[/bold]  {score_result.scenario_id}"
+    )
+    console.print(
+        f"[bold]Score:[/bold]     {overall_pct:.1f} / 100  "
+        f"(threshold {threshold_pct:.0f})"
+    )
+    console.print(f"[bold]Gates:[/bold]     {gate_status}")
+    console.print(f"[bold]Verdict:[/bold]   {verdict}")
+    console.print()
+
+
 if __name__ == '__main__':
     main()

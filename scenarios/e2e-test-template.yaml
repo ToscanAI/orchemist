@@ -1,0 +1,74 @@
+# e2e-test-template.yaml — Minimal 2-phase pipeline for E2E autonomous scenario testing
+#
+# Purpose: Used by scenarios/e2e-autonomous.yaml to validate the full
+#          scoring pipeline (KeywordGrader + LLMJudgeGrader) in both
+#          dry-run (CI) and live mode.
+#
+# Design decisions:
+#   - model_tier: haiku on all phases (fast + cheap)
+#   - Phase 1 (outline) produces a structured list that Phase 2 (draft) expands
+#   - Prompt asks the model to include the literal string "Analysis complete"
+#     in its final response, making the output deterministic and assertable
+#     in live mode.  In dry-run mode the keyword grader uses the mock
+#     "execution" string that DryRunExecutor always emits.
+
+id: e2e-test-template
+name: "E2E Autonomous Test Pipeline"
+version: "1.0.0"
+description: >
+  Two-phase test pipeline used by the E2E autonomous scenario runner.
+  Phase 1 outlines key points; Phase 2 drafts a short summary.
+  Designed to be fast (haiku) and produce verifiable output.
+author: "Orchestration Engine Team"
+category: "testing"
+tags:
+  - e2e
+  - testing
+  - smoke-test
+use_cases:
+  - "Validate the E2E scenario scoring pipeline in CI (dry-run mode)"
+  - "Smoke-test KeywordGrader and LLMJudgeGrader integration"
+example_input:
+  topic: "AI orchestration testing"
+
+phases:
+  - id: outline
+    name: "Outline Phase"
+    description: >
+      Generate a 3-point bullet outline on the given topic.
+      Each bullet should be a single declarative sentence.
+    task_type: content
+    model_tier: haiku
+    thinking_level: off
+    depends_on: []
+    timeout_minutes: 5
+    prompt_template: |
+      You are a technical writer producing an outline.
+
+      Topic: {input[topic]}
+
+      Write exactly 3 bullet points (use "- " prefix) that cover the most
+      important aspects of this topic.  Each bullet must be a single
+      sentence.  No introduction or conclusion needed — bullets only.
+
+  - id: draft
+    name: "Draft Phase"
+    description: >
+      Expand the outline into a short summary paragraph and append the
+      literal line "Analysis complete." at the end so downstream graders
+      can assert on a known string.
+    task_type: content
+    model_tier: haiku
+    thinking_level: off
+    depends_on: [outline]
+    timeout_minutes: 5
+    prompt_template: |
+      You are a technical writer producing a short summary.
+
+      Here is an outline on the topic "{input[topic]}":
+
+      {previous_output[outline]}
+
+      Write a single paragraph (3–5 sentences) that synthesises the
+      outline into a coherent summary.  After the paragraph, on its own
+      line, write exactly: "Analysis complete."

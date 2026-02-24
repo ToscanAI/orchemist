@@ -640,15 +640,20 @@ class TestRunScenario:
         assert "Unknown" in cr.grade.details
 
     def test_llm_judge_with_rubric_file(self, tmp_path: Path):
-        """Run scenario where an llm_judge criterion uses rubric_file."""
-        # Create rubric file in expected location
-        rubric_dir = tmp_path / "shared" / "rubrics"
+        """Run scenario where an llm_judge criterion uses rubric_file.
+
+        rubric_file paths are relative to scenarios_dir itself (not its
+        parent), so the rubric file must live inside scenarios_dir.
+        """
+        # Create scenarios_dir first so we can put the rubric inside it.
+        suite_dir = tmp_path / "suite"
+        suite_dir.mkdir()
+
+        # Create rubric file inside scenarios_dir (the correct containment root).
+        rubric_dir = suite_dir / "shared" / "rubrics"
         rubric_dir.mkdir(parents=True)
         rubric_file = rubric_dir / "test-rubric.md"
         rubric_file.write_text("Score: 0.90\nThis rubric evaluates quality.")
-
-        suite_dir = tmp_path / "suite"
-        suite_dir.mkdir()
 
         scenario = {
             "id": "rubric-file-test",

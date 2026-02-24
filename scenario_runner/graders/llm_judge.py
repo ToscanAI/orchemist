@@ -31,33 +31,85 @@ class LLMJudgeGrader:
 
     The grader enforces the holdout principle: the judge model only
     ever sees the article text and the rubric text — nothing else.
+
+    Dry-run mode
+    ------------
+    When the environment variable ``ORCH_DRY_RUN=1`` is set at the time
+    :meth:`grade` is called, no API request is made and a configurable
+    stub score is returned instead (default ``0.8``).  This enables
+    deterministic CI runs without an API key.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        dry_run_stub_score: float = 0.8,
+    ):
         """Initialise with an Anthropic API key.
 
         Falls back to the ANTHROPIC_API_KEY environment variable when
         *api_key* is not provided.
+
+        Parameters
+        ----------
+        api_key:
+            Anthropic API key.  If ``None``, falls back to the
+            ``ANTHROPIC_API_KEY`` environment variable.
+        dry_run_stub_score:
+            Score to return when ``ORCH_DRY_RUN=1`` env var is set.
+            Must be in ``[0.0, 1.0]``.  Defaults to ``0.8``.
         """
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        self.dry_run_stub_score = max(0.0, min(1.0, dry_run_stub_score))
 
     def grade(
         self,
         output: dict,
         rubric: str,
         judge_model: str,
+        output_field: Optional[str] = None,
     ) -> GradeResult:
         """Grade *output* against *rubric* using *judge_model*.
 
-        Holdout guarantee: only ``output['article']`` and ``rubric`` are
+        Holdout guarantee: only the extracted output text and *rubric* are
         sent to the model.  Threshold, scenario ID, pipeline config, and
         all other metadata are intentionally withheld.
+
+        Parameters
+        ----------
+        output:
+            The pipeline output dict.  Text extraction follows this priority:
+
+            1. ``output[output_field]`` — if *output_field* is given.
+            2. ``output["article"]`` — backward-compat with article pipelines.
+            3. ``output["text"]`` / ``output["content"]`` — common text keys.
+            4. ``output["final"]`` — present when output comes from the CLI
+               (structured as ``{"final": <last-phase-dict>, "phases": {...}}``).
+            5. Full JSON serialization of *output* — always produces non-empty
+               content so the judge never evaluates an empty string.
+
+        output_field:
+            Optional explicit key to extract from *output* before falling
+            back to the priority-order search above.
 
         Returns:
             GradeResult with score 0.0–1.0 and full judge reasoning as
             details.  ``passed`` is set to True when score >= 0.5; the
             runner will override this using the per-criterion threshold.
         """
+        # --- Dry-run short-circuit ---
+        if os.environ.get("ORCH_DRY_RUN") == "1":
+            stub = self.dry_run_stub_score
+            return GradeResult(
+                passed=stub >= 0.5,
+                score=stub,
+                details=(
+                    f"[dry-run stub] ORCH_DRY_RUN=1 detected — "
+                    f"returning stub score {stub:.2f} (no API call made)."
+                ),
+                grader_type="llm_judge",
+            )
+
         if not self.api_key:
             return GradeResult(
                 passed=False,
@@ -66,8 +118,33 @@ class LLMJudgeGrader:
                 grader_type="llm_judge",
             )
 
-        # --- Holdout: only article text + rubric reach the model ---
-        article_text = output.get("article", "")
+        # --- Holdout: only extracted output text + rubric reach the model ---
+        #
+        # Priority-order text extraction:
+        #  1. explicit output_field (if provided)
+        #  2. "article"  — backward compat for article-generating pipelines
+        #  3. "text" / "content"  — other common single-field outputs
+        #  4. "final"  — CLI-structured output {"final": <dict>, "phases": {...}}
+        #  5. full JSON of the output dict  — ensures the judge always gets
+        #     something meaningful; never sends an empty string.
+        if output_field is not None:
+            raw = output.get(output_field)
+            article_text = str(raw) if raw is not None else ""
+        else:
+            article_text = (
+                output.get("article")
+                or output.get("text")
+                or output.get("content")
+                or None
+            )
+            if not article_text:
+                # Try "final" sub-dict (CLI-structured output)
+                final_sub = output.get("final")
+                if final_sub and isinstance(final_sub, dict):
+                    article_text = json.dumps(final_sub, default=str, indent=2)
+                else:
+                    # Last resort: serialise the full output dict
+                    article_text = json.dumps(output, default=str, indent=2)
 
         user_message = (
             f"## Rubric\n\n{rubric}\n\n"
