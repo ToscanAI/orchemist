@@ -28,19 +28,20 @@ config_schema:
   properties:
     doc_type:
       type: string
-      description: "Type of document (e.g. CONTRIBUTING.md, API guide, tutorial)"
+      description: "Type of document (e.g. CONTRIBUTING.md, API guide, tutorial, investigation report)"
     target_file:
       type: string
       description: "Path where the document should be written"
+      default: ""
     project_context:
       type: string
       description: "Brief description of the project for context"
     requirements:
       type: string
-      description: "Specific requirements and sections to include"
+      description: "Specific requirements, sections to include, or investigation scope"
     reference_files:
       type: string
-      description: "Comma-separated list of files to read for context"
+      description: "Comma-separated list of files to read for context (note: sub-agents in OpenClaw mode cannot read local files — inline content in requirements instead)"
       default: ""
     max_lines:
       type: integer
@@ -48,7 +49,6 @@ config_schema:
       default: 500
   required:
     - doc_type
-    - target_file
     - project_context
     - requirements
 

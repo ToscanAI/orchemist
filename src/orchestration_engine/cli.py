@@ -856,8 +856,10 @@ def run_template(
 
     # --- 1b. Default output directory (Feature #72) ------------------
     if output_dir is None:
+        from uuid import uuid4
+        run_id = str(uuid4())[:8]
         output_dir = Path(
-            f"./output/{re.sub(r'[^\w\-]', '_', template.id)}-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            f"./output/{re.sub(r'[^\w\-]', '_', template.id)}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{run_id}"
         )
 
     # --- 2. Resolve pipeline input ------------------------------------
