@@ -32,7 +32,7 @@ from orchestration_engine.schemas import (
 def executor():
     """An executor pointed at a mock gateway (no real HTTP)."""
     return OpenClawExecutor(
-        gateway_url="http://localhost:4444",
+        gateway_url="http://localhost:18789",
         gateway_token="test-token",
     )
 
@@ -41,7 +41,7 @@ def executor():
 def dry_executor():
     """An executor in dry-run mode — never makes HTTP calls."""
     return OpenClawExecutor(
-        gateway_url="http://localhost:4444",
+        gateway_url="http://localhost:18789",
         dry_run=True,
     )
 
@@ -109,7 +109,7 @@ class TestOpenClawExecutorInit:
         monkeypatch.delenv("OPENCLAW_GATEWAY_URL", raising=False)
         monkeypatch.delenv("OPENCLAW_GATEWAY_TOKEN", raising=False)
         ex = OpenClawExecutor()
-        assert ex.gateway_url == "http://localhost:4444"
+        assert ex.gateway_url == "http://localhost:18789"
 
     def test_custom_gateway_url(self):
         ex = OpenClawExecutor(gateway_url="http://myhost:8888")
@@ -191,11 +191,33 @@ class TestModelTierMapping:
 
     def _run_with_mock(self, executor, task, model_tier):
         """Execute with mocked HTTP and return the spawned model."""
-        spawn_resp = {"key": "sess-001"}
-        done_resp = {"state": "done", "output": "test output"}
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": '{"status":"accepted","childSessionKey":"sess-001"}'}],
+                "details": {"status": "accepted", "childSessionKey": "sess-001"},
+            },
+        }
+        history_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": "sess-001",
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": "test output"}], "stopReason": "stop"},
+                    ],
+                })}],
+            },
+        }
 
-        with patch.object(executor, "_http_post", return_value=spawn_resp), \
-             patch.object(executor, "_http_get", return_value=done_resp):
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return spawn_resp
+            return history_resp
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(task, model_tier=model_tier)
 
         return result.model_used
@@ -227,20 +249,39 @@ class TestThinkingLevelMapping:
     """Test that thinking_level is forwarded in the spawn request body."""
 
     def _capture_spawn_body(self, executor, task, thinking_level):
-        spawn_resp = {"key": "sess-002"}
-        done_resp = {"state": "done", "output": "ok"}
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": '{"status":"accepted","childSessionKey":"sess-002"}'}],
+                "details": {"status": "accepted", "childSessionKey": "sess-002"},
+            },
+        }
+        history_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": "sess-002",
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": "ok"}], "stopReason": "stop"},
+                    ],
+                })}],
+            },
+        }
 
-        captured_body = {}
+        captured_args = {}
 
         def fake_post(url, body):
-            captured_body.update(body)
-            return spawn_resp
+            if body.get("tool") == "sessions_spawn":
+                captured_args.update(body.get("args", {}))
+                return spawn_resp
+            return history_resp
 
         with patch.object(executor, "_http_post", side_effect=fake_post), \
-             patch.object(executor, "_http_get", return_value=done_resp):
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             executor.execute(task, thinking_level=thinking_level)
 
-        return captured_body
+        return captured_args
 
     def test_off_not_in_body(self, executor, sample_task):
         body = self._capture_spawn_body(executor, sample_task, "off")
@@ -266,60 +307,107 @@ class TestThinkingLevelMapping:
 
 
 class TestSuccessfulExecution:
-    def test_returns_success_state(self, executor, sample_task):
-        spawn_resp = {"key": "sess-003"}
-        done_resp = {"state": "done", "output": "Hello, world!"}
 
-        with patch.object(executor, "_http_post", return_value=spawn_resp), \
-             patch.object(executor, "_http_get", return_value=done_resp):
+    def _make_mock_post(self, session_key, output_text, poll_rounds=0):
+        """Build a mock _http_post that handles spawn + history polling."""
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({"status": "accepted", "childSessionKey": session_key})}],
+                "details": {"status": "accepted", "childSessionKey": session_key},
+            },
+        }
+        running_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": [{"role": "user", "content": [{"type": "text", "text": "prompt"}]}],
+                })}],
+            },
+        }
+        done_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": output_text}], "stopReason": "stop"},
+                    ],
+                })}],
+            },
+        }
+        call_count = {"history": 0}
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return spawn_resp
+            # sessions_history
+            call_count["history"] += 1
+            if call_count["history"] <= poll_rounds:
+                return running_resp
+            return done_resp
+
+        return mock_post
+
+    def test_returns_success_state(self, executor, sample_task):
+        mock = self._make_mock_post("sess-003", "Hello, world!")
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.SUCCESS
 
     def test_output_text_extracted(self, executor, sample_task):
-        spawn_resp = {"key": "sess-004"}
-        done_resp = {"state": "completed", "output": "Pipeline result text"}
+        mock = self._make_mock_post("sess-004", "Pipeline result text")
 
-        with patch.object(executor, "_http_post", return_value=spawn_resp), \
-             patch.object(executor, "_http_get", return_value=done_resp):
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
         assert result.result["text"] == "Pipeline result text"
 
     def test_polls_until_done(self, executor, sample_task):
-        spawn_resp = {"key": "sess-005"}
+        mock = self._make_mock_post("sess-005", "final", poll_rounds=2)
 
-        get_responses = [
-            {"state": "running"},
-            {"state": "running"},
-            {"state": "done", "output": "final"},
-        ]
-
-        with patch.object(executor, "_http_post", return_value=spawn_resp), \
-             patch.object(executor, "_http_get", side_effect=get_responses), \
+        with patch.object(executor, "_http_post", side_effect=mock), \
              patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.SUCCESS
         assert result.result["text"] == "final"
 
-    def test_uses_result_key_as_fallback(self, executor, sample_task):
-        spawn_resp = {"key": "sess-006"}
-        done_resp = {"state": "success", "result": {"text": "from result key"}}
+    def test_session_key_from_text_fallback(self, executor, sample_task):
+        """Session key extracted from text content when details is missing."""
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": '{"status":"accepted","childSessionKey":"sess-006"}'}],
+                # No details key
+            },
+        }
+        done_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": "sess-006",
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": "via text fallback"}], "stopReason": "stop"},
+                    ],
+                })}],
+            },
+        }
 
-        with patch.object(executor, "_http_post", return_value=spawn_resp), \
-             patch.object(executor, "_http_get", return_value=done_resp):
-            result = executor.execute(sample_task)
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return spawn_resp
+            return done_resp
 
-        assert result.state == TaskState.SUCCESS
-
-    def test_session_key_from_id_field(self, executor, sample_task):
-        """Gateway may use 'id' instead of 'key'."""
-        spawn_resp = {"id": "sess-007"}
-        done_resp = {"state": "done", "output": "via id field"}
-
-        with patch.object(executor, "_http_post", return_value=spawn_resp), \
-             patch.object(executor, "_http_get", return_value=done_resp):
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.SUCCESS
@@ -340,40 +428,61 @@ class TestErrorHandling:
         assert len(result.errors) == 1
         assert "500" in result.errors[0].message
 
-    def test_http_500_on_poll_returns_failed(self, executor, sample_task):
-        spawn_resp = {"key": "sess-err"}
+    def test_spawn_not_ok_returns_failed(self, executor, sample_task):
+        spawn_resp = {"ok": False, "error": {"type": "tool_error", "message": "spawn failed"}}
 
-        with patch.object(executor, "_http_post", return_value=spawn_resp), \
-             patch.object(executor, "_http_get",
-                          side_effect=RuntimeError("Gateway HTTP error 500: Server Error")):
+        with patch.object(executor, "_http_post", return_value=spawn_resp):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
 
-    def test_empty_response_returns_failed(self, executor, sample_task):
-        spawn_resp = {"key": "sess-empty"}
-        done_resp = {"state": "done"}  # no output key
+    def test_empty_session_output_returns_failed(self, executor, sample_task):
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": '{"status":"accepted","childSessionKey":"sess-empty"}'}],
+                "details": {"childSessionKey": "sess-empty"},
+            },
+        }
+        # History shows assistant with empty text
+        done_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": "sess-empty",
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": ""}], "stopReason": "stop"},
+                    ],
+                })}],
+            },
+        }
 
-        with patch.object(executor, "_http_post", return_value=spawn_resp), \
-             patch.object(executor, "_http_get", return_value=done_resp):
+        executor.timeout_seconds = 1
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return spawn_resp
+            return done_resp
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             patch("orchestration_engine.openclaw_executor.time.monotonic",
+                   side_effect=[0.0, 0.0, 0.5, 2.0]):
             result = executor.execute(sample_task)
 
-        assert result.state == TaskState.FAILED
-        assert result.errors[0].code == "empty_output"
-
-    def test_session_failed_state_returns_failed(self, executor, sample_task):
-        spawn_resp = {"key": "sess-fail"}
-        done_resp = {"state": "failed", "error": "Out of memory"}
-
-        with patch.object(executor, "_http_post", return_value=spawn_resp), \
-             patch.object(executor, "_http_get", return_value=done_resp):
-            result = executor.execute(sample_task)
-
+        # Empty output → times out since no text is found
         assert result.state == TaskState.FAILED
 
     def test_missing_session_key_returns_failed(self, executor, sample_task):
-        # Gateway returns response with no key/id field
-        spawn_resp = {"status": "ok"}  # no key/id
+        # Gateway returns ok but no childSessionKey
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": '{"status":"accepted"}'}],
+                "details": {"status": "accepted"},
+            },
+        }
 
         with patch.object(executor, "_http_post", return_value=spawn_resp):
             result = executor.execute(sample_task)
@@ -387,31 +496,49 @@ class TestErrorHandling:
 
 
 class TestTimeoutHandling:
+    def _make_running_mock(self, session_key):
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({"status": "accepted", "childSessionKey": session_key})}],
+                "details": {"childSessionKey": session_key},
+            },
+        }
+        running_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": [{"role": "user", "content": [{"type": "text", "text": "prompt"}]}],
+                })}],
+            },
+        }
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return spawn_resp
+            return running_resp
+
+        return mock_post
+
     def test_timeout_returns_failed(self, executor, sample_task):
-        spawn_resp = {"key": "sess-timeout"}
-        running_resp = {"state": "running"}
-
-        # Set a very short timeout to force timeout quickly
         executor.timeout_seconds = 1
+        mock = self._make_running_mock("sess-timeout")
 
-        with patch.object(executor, "_http_post", return_value=spawn_resp), \
-             patch.object(executor, "_http_get", return_value=running_resp), \
+        with patch.object(executor, "_http_post", side_effect=mock), \
              patch("orchestration_engine.openclaw_executor.time.sleep"), \
              patch("orchestration_engine.openclaw_executor.time.monotonic",
-                   side_effect=[0.0, 0.0, 2.0]):  # deadline exceeded on third call
+                   side_effect=[0.0, 0.0, 2.0]):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
         assert result.errors[0].code == "timeout"
 
     def test_timeout_error_message_contains_session_key(self, executor, sample_task):
-        spawn_resp = {"key": "my-session-xyz"}
-        running_resp = {"state": "running"}
-
         executor.timeout_seconds = 1
+        mock = self._make_running_mock("my-session-xyz")
 
-        with patch.object(executor, "_http_post", return_value=spawn_resp), \
-             patch.object(executor, "_http_get", return_value=running_resp), \
+        with patch.object(executor, "_http_post", side_effect=mock), \
              patch("orchestration_engine.openclaw_executor.time.sleep"), \
              patch("orchestration_engine.openclaw_executor.time.monotonic",
                    side_effect=[0.0, 0.0, 2.0]):
@@ -488,7 +615,7 @@ phases:
             from orchestration_engine.openclaw_executor import OpenClawExecutor as OCE
             # dry_run=True so no real HTTP is attempted
             executor = OCE(
-                gateway_url=gateway_url or "http://localhost:4444",
+                gateway_url=gateway_url or "http://localhost:18789",
                 gateway_token=gateway_token,
                 dry_run=True,
             )

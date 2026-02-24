@@ -87,7 +87,7 @@ class OpenClawExecutor(TaskExecutor):
         self.gateway_url = (
             gateway_url
             if gateway_url is not None
-            else os.environ.get("OPENCLAW_GATEWAY_URL", "http://localhost:4444")
+            else os.environ.get("OPENCLAW_GATEWAY_URL", "http://localhost:18789")
         ).rstrip("/")
         # Use explicit token if provided (even empty string overrides env var)
         self.gateway_token = (
@@ -287,6 +287,31 @@ class OpenClawExecutor(TaskExecutor):
                 f"Gateway HTTP error {exc.code}: {error_body}"
             ) from exc
 
+    def _invoke_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Invoke an OpenClaw tool via the gateway's /tools/invoke endpoint.
+
+        Returns the parsed response dict. Raises RuntimeError on failure.
+        """
+        url = f"{self.gateway_url}/tools/invoke"
+        body = {"tool": tool_name, "args": args}
+        resp = self._http_post(url, body)
+
+        if not resp.get("ok"):
+            error = resp.get("error", {})
+            msg = error.get("message", str(error)) if isinstance(error, dict) else str(error)
+            raise RuntimeError(f"Gateway tool '{tool_name}' failed: {msg}")
+
+        return resp.get("result", {})
+
+    def _parse_tool_text(self, result: Dict[str, Any]) -> str:
+        """Extract the text payload from a tool invoke result."""
+        content = result.get("content", [])
+        if content and isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    return item.get("text", "")
+        return ""
+
     def _run_session(
         self,
         prompt: str,
@@ -294,6 +319,9 @@ class OpenClawExecutor(TaskExecutor):
         thinking: Optional[str],
     ) -> str:
         """Spawn a sub-agent session and poll until completion.
+
+        Uses the gateway's ``POST /tools/invoke`` endpoint to call
+        ``sessions_spawn`` and ``sessions_history``.
 
         Args:
             prompt:   The prompt text to execute.
@@ -307,30 +335,40 @@ class OpenClawExecutor(TaskExecutor):
             TimeoutError: If the session does not complete within timeout.
             RuntimeError: On HTTP errors or unexpected responses.
         """
-        spawn_url = f"{self.gateway_url}/api/sessions/spawn"
-
-        spawn_body: Dict[str, Any] = {
-            "prompt": prompt,
+        # ── 1. Spawn via /tools/invoke → sessions_spawn ──────────────
+        spawn_args: Dict[str, Any] = {
+            "task": prompt,
             "model": model,
         }
         if thinking is not None:
-            spawn_body["thinking"] = thinking
+            spawn_args["thinking"] = thinking
+        spawn_args["runTimeoutSeconds"] = self.timeout_seconds
 
-        logger.debug(f"Spawning session at {spawn_url}")
-        spawn_resp = self._http_post(spawn_url, spawn_body)
+        logger.debug(f"Spawning session via /tools/invoke → sessions_spawn")
+        spawn_result = self._invoke_tool("sessions_spawn", spawn_args)
 
-        session_key = spawn_resp.get("key") or spawn_resp.get("session_key") or spawn_resp.get("id")
+        # Extract session key from details or parse from text
+        details = spawn_result.get("details", {})
+        session_key = details.get("childSessionKey")
+        if not session_key:
+            # Fallback: parse from text content
+            text = self._parse_tool_text(spawn_result)
+            if text:
+                try:
+                    parsed = json.loads(text)
+                    session_key = parsed.get("childSessionKey")
+                except (json.JSONDecodeError, TypeError):
+                    pass
         if not session_key:
             raise RuntimeError(
                 f"Gateway spawn response missing session key. "
-                f"Response: {json.dumps(spawn_resp)}"
+                f"Response: {json.dumps(spawn_result)}"
             )
 
-        # Poll for completion
-        poll_url = f"{self.gateway_url}/api/sessions/{session_key}"
-        deadline = time.monotonic() + self.timeout_seconds
+        logger.info(f"Session spawned: {session_key}")
 
-        logger.debug(f"Polling session {session_key} (timeout={self.timeout_seconds}s)")
+        # ── 2. Poll via /tools/invoke → sessions_history ─────────────
+        deadline = time.monotonic() + self.timeout_seconds
 
         while True:
             if time.monotonic() > deadline:
@@ -339,22 +377,62 @@ class OpenClawExecutor(TaskExecutor):
                     f"{self.timeout_seconds}s"
                 )
 
-            status_resp = self._http_get(poll_url)
-            state = status_resp.get("state") or status_resp.get("status", "")
-
-            if state in ("done", "completed", "success", "finished"):
-                return self._extract_output(status_resp)
-
-            if state in ("error", "failed", "aborted"):
-                error_msg = (
-                    status_resp.get("error")
-                    or status_resp.get("message")
-                    or f"Session ended with state '{state}'"
-                )
-                raise RuntimeError(f"OpenClaw session failed: {error_msg}")
-
-            # Still running — wait before next poll
             time.sleep(POLL_INTERVAL_SECONDS)
+
+            try:
+                hist_result = self._invoke_tool("sessions_history", {
+                    "sessionKey": session_key,
+                    "limit": 5,
+                })
+            except RuntimeError as exc:
+                # Session may not be ready yet
+                logger.debug(f"Poll error (may be transient): {exc}")
+                continue
+
+            hist_text = self._parse_tool_text(hist_result)
+            if not hist_text:
+                continue
+
+            try:
+                history = json.loads(hist_text)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            messages = history.get("messages", [])
+            if not messages:
+                continue
+
+            # Find the last assistant message
+            last_assistant = None
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant":
+                    last_assistant = msg
+                    break
+
+            if not last_assistant:
+                continue
+
+            # Check if it's a final response (has content, not just tool calls)
+            content = last_assistant.get("content", [])
+            has_text = any(
+                isinstance(c, dict) and c.get("type") == "text" and c.get("text", "").strip()
+                for c in (content if isinstance(content, list) else [])
+            )
+
+            if has_text:
+                # Extract all text blocks
+                text_parts = []
+                for c in (content if isinstance(content, list) else []):
+                    if isinstance(c, dict) and c.get("type") == "text":
+                        text_parts.append(c.get("text", ""))
+                return "\n".join(text_parts)
+
+            # Check for stop reason indicating completion
+            stop = last_assistant.get("stopReason", "")
+            if stop in ("stop", "end_turn") and not has_text:
+                # Completed but empty — might have only tool calls
+                logger.debug(f"Session {session_key} stopped with no text output, continuing poll...")
+                continue
 
     @staticmethod
     def _extract_output(response: Dict[str, Any]) -> str:
