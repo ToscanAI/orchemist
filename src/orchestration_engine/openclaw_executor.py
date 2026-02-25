@@ -17,6 +17,7 @@ Usage:
 import json
 import logging
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +29,35 @@ from .runner import TaskExecutor
 from .schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 
 logger = logging.getLogger(__name__)
+
+# Patterns to redact from log messages
+_SECRET_PATTERNS = re.compile(
+    r"(Bearer\s+)[A-Za-z0-9+/=_-]{8,}|"
+    r"(Authorization:\s*)[^\s,}]+|"
+    r"(token[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9+/=_-]{8,}",
+    re.IGNORECASE,
+)
+
+
+class _SecretRedactingFilter(logging.Filter):
+    """Redact secrets (bearer tokens, API keys) from log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _SECRET_PATTERNS.sub(r"\1<REDACTED>", record.msg)
+        if record.args:
+            new_args = []
+            for arg in (record.args if isinstance(record.args, tuple) else (record.args,)):
+                if isinstance(arg, str):
+                    new_args.append(_SECRET_PATTERNS.sub(r"\1<REDACTED>", arg))
+                else:
+                    new_args.append(arg)
+            record.args = tuple(new_args)
+        return True
+
+
+# Apply filter to this module's logger
+logger.addFilter(_SecretRedactingFilter())
 
 
 # ---------------------------------------------------------------------------
