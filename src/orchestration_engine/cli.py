@@ -3170,11 +3170,37 @@ def scenario_group() -> None:
     default=None,
     help="Anthropic API key for live (non-dry-run) mode.",
 )
+@click.option(
+    "--mode",
+    type=click.Choice(["standalone", "openclaw"]),
+    default="standalone",
+    show_default=True,
+    help=(
+        "Grader routing mode for LLM judge criteria: "
+        "'standalone' uses a direct Anthropic API key (--api-key / ANTHROPIC_API_KEY), "
+        "'openclaw' routes judge calls through the OpenClaw gateway subscription token "
+        "(OPENCLAW_GATEWAY_URL / OPENCLAW_GATEWAY_TOKEN env vars or --gateway-url / "
+        "--gateway-token options)."
+    ),
+)
+@click.option(
+    "--gateway-url",
+    default=None,
+    help="OpenClaw gateway URL for openclaw grader mode (or set OPENCLAW_GATEWAY_URL).",
+)
+@click.option(
+    "--gateway-token",
+    default=None,
+    help="OpenClaw gateway bearer token for openclaw grader mode (or set OPENCLAW_GATEWAY_TOKEN).",
+)
 def scenario_run(
     scenario_id: str,
     dry_run: bool,
     scenario_dir: Optional[Path],
     api_key: Optional[str],
+    mode: str,
+    gateway_url: Optional[str],
+    gateway_token: Optional[str],
 ) -> None:
     """Run an E2E scenario test and print a score report.
 
@@ -3251,10 +3277,38 @@ def scenario_run(
     scenario_file = candidate.resolve()
 
     # ------------------------------------------------------------------
-    # 2. Load scenario via ScenarioRunner
+    # 2. Build LLM judge executor and create ScenarioRunner
+    #
+    #    In 'openclaw' mode the LLM judge is routed through the OpenClaw
+    #    gateway so that scoring can use the subscription token rather than
+    #    a raw Anthropic API key.  In 'standalone' mode the grader falls
+    #    back to the api_key / ANTHROPIC_API_KEY path as before.
+    #    In dry-run mode no executor is needed (ORCH_DRY_RUN=1 handles it).
     # ------------------------------------------------------------------
     runner_dir = scenario_file.parent
-    scenario_runner = ScenarioRunner(scenarios_dir=runner_dir)
+
+    # Resolve gateway credentials once here so that both the grader executor
+    # (section 2) and the pipeline runner (section 3) can reuse the values
+    # without duplicating the env-var lookup logic.
+    effective_gw_url = gateway_url or _os.environ.get("OPENCLAW_GATEWAY_URL")
+    effective_gw_token = gateway_token or _os.environ.get("OPENCLAW_GATEWAY_TOKEN")
+
+    grader_executor = None
+    if not dry_run and mode == "openclaw":
+        try:
+            from .openclaw_executor import OpenClawExecutor
+            grader_executor = OpenClawExecutor(
+                gateway_url=effective_gw_url,
+                gateway_token=effective_gw_token,
+            )
+        except Exception as exc:
+            click.echo(
+                f"⚠ Could not create OpenClawExecutor for grader: {exc}\n"
+                f"  LLM judge criteria will fall back to ANTHROPIC_API_KEY.",
+                err=True,
+            )
+
+    scenario_runner = ScenarioRunner(scenarios_dir=runner_dir, executor=grader_executor)
 
     try:
         scenario = scenario_runner.load_scenario(scenario_file)
@@ -3267,9 +3321,8 @@ def scenario_run(
         f"\n[bold]Scenario:[/bold] {scenario_name} "
         f"[dim]({scenario_file.name})[/dim]"
     )
-    console.print(
-        f"[bold]Mode:[/bold]     {'dry-run' if dry_run else 'live'}"
-    )
+    display_mode = "dry-run" if dry_run else mode
+    console.print(f"[bold]Mode:[/bold]     {display_mode}")
     console.print()
 
     # ------------------------------------------------------------------
@@ -3317,6 +3370,11 @@ def scenario_run(
         try:
             if dry_run:
                 pipe_runner = PipelineRunner.dry_run(delay_seconds=0.0)
+            elif mode == "openclaw":
+                pipe_runner = PipelineRunner.openclaw(
+                    gateway_url=effective_gw_url,
+                    gateway_token=effective_gw_token,
+                )
             else:
                 pipe_runner = PipelineRunner.standalone(api_key=api_key)
         except ValueError as exc:

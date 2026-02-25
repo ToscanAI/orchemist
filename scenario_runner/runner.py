@@ -43,19 +43,29 @@ class ScenarioRunner:
     engine_db:
         Optional reference to the orchestration engine Database (reserved
         for future integration; not used in the MVP).
+    executor:
+        Optional executor to route LLM judge calls through (e.g.
+        ``OpenClawExecutor`` or ``AnthropicExecutor``).  When provided,
+        :class:`~scenario_runner.graders.llm_judge.LLMJudgeGrader` will
+        use ``executor.execute()`` instead of making direct urllib calls.
+        This allows the OpenClaw subscription token to be used for judge
+        scoring without a separate API key.  When ``None``, the grader
+        falls back to the ``ANTHROPIC_API_KEY`` environment variable (or
+        returns a stub score when ``ORCH_DRY_RUN=1`` is set).
     """
 
     def __init__(
         self,
         scenarios_dir: Path,
         engine_db=None,
+        executor=None,
     ) -> None:
         self.scenarios_dir = Path(scenarios_dir)
         self.engine_db = engine_db
 
         self._assertion_grader = AssertionGrader()
         self._keyword_grader = KeywordGrader()
-        self._llm_grader = LLMJudgeGrader()
+        self._llm_grader = LLMJudgeGrader(executor=executor)
         self._url_grader = URLCheckGrader()
 
     # ------------------------------------------------------------------
