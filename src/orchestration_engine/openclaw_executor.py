@@ -119,14 +119,32 @@ class OpenClawExecutor(TaskExecutor):
             if gateway_url is not None
             else os.environ.get("OPENCLAW_GATEWAY_URL", "http://localhost:18789")
         ).rstrip("/")
-        # Use explicit token if provided (even empty string overrides env var)
+        # Token priority: explicit arg > env var > openclaw.json config > empty
         self.gateway_token = (
             gateway_token
             if gateway_token is not None
-            else os.environ.get("OPENCLAW_GATEWAY_TOKEN", "")
+            else os.environ.get("OPENCLAW_GATEWAY_TOKEN")
+            or self._read_token_from_config()
+            or ""
         )
         self.timeout_seconds = timeout_seconds
         self.dry_run = dry_run
+
+    @staticmethod
+    def _read_token_from_config() -> Optional[str]:
+        """Try to read gateway token from ~/.openclaw/openclaw.json."""
+        try:
+            config_path = os.path.expanduser("~/.openclaw/openclaw.json")
+            if os.path.exists(config_path):
+                with open(config_path) as f:
+                    config = json.load(f)
+                token = config.get("gateway", {}).get("auth", {}).get("token", "")
+                if token:
+                    logger.debug("Auto-discovered gateway token from %s", config_path)
+                    return token
+        except (json.JSONDecodeError, OSError, KeyError) as exc:
+            logger.debug("Could not read token from openclaw.json: %s", exc)
+        return None
 
     # ------------------------------------------------------------------
     # TaskExecutor interface
