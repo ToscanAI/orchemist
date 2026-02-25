@@ -1,12 +1,30 @@
 id: code-development-pipeline
 name: Code Development Pipeline
-version: "1.0.0"
+version: "1.1.0"
 author: "Conny Lazo & Toscan"
 description: >
   Full software development pipeline: from requirements analysis through
   implementation, code review, security scan, and testing. Each phase uses
   a separate agent to avoid confirmation bias. The code review phase catches
   bugs, security issues, and architectural problems that the implementer missed.
+  Git integration: each coding phase commits to a feature branch; the review
+  phase receives the live git diff; a merge gate pauses for human approval.
+
+# Git integration — creates a feature branch, commits after each code phase,
+# injects the live diff into the review phase, and pauses for human approval.
+# Set enabled: false (or remove this section) to run without git.
+git:
+  enabled: true
+  branch_pattern: "feat/{pipeline_id}-{run_id}"
+  auto_commit: true
+  commit_phases:
+    - implement
+    - fix
+    - test_generation
+  working_dir: "."
+  push: true
+  merge_gate: true
+  create_pr: false   # set true to run `gh pr create` on approval
 
 config_schema:
   type: object
@@ -91,10 +109,16 @@ phases:
     prompt_template: |
       You are a senior code reviewer. You did NOT write this code. Review it critically.
 
+      ## Branch: {context.branch_name}
+      ## Diff against {context.base_branch}
+      ```diff
+      {context.git_diff}
+      ```
+
       ## Requirements
       {requirements.output}
 
-      ## Implementation
+      ## Implementation (full text)
       {implement.output}
 
       ## Review Checklist

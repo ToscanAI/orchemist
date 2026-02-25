@@ -1,0 +1,331 @@
+id: content-pipeline-gemini-v231
+name: "Content Pipeline v2.3.1 — Gemini Phases 1-3"
+description: >
+  Hybrid content pipeline: Gemini 3 Pro handles research, writing, and fact-checking
+  (phases 1-3) via subscription proxy. Claude handles review, red team, fixes, and
+  selection (phases 4+). Built to test cross-model orchestration and leverage Gemini's
+  native search grounding for research quality.
+author: "Toscan"
+version: "2.3.1"
+category: "content"
+tags: [content, writing, articles, gemini, hybrid, cross-model]
+use_cases:
+  - "Blog articles with Gemini research + Claude review"
+  - "Cross-model quality comparison"
+  - "Subscription-only content production (zero API cost)"
+example_input:
+  topic: "AI agents in production"
+  audience: "technical leaders"
+  tone: "professional"
+  word_count: 1500
+  publication: "blog"
+
+config_schema:
+  type: object
+  required: [topic]
+  properties:
+    topic:
+      type: string
+      description: "What to write about"
+    audience:
+      type: string
+      default: "general"
+      description: "Target audience"
+    tone:
+      type: string
+      default: "professional"
+      description: "Writing tone"
+    word_count:
+      type: integer
+      default: 1500
+      description: "Target word count"
+    publication:
+      type: string
+      default: "blog"
+      description: "Where this will be published"
+    source_url:
+      type: string
+      default: ""
+      description: "Optional source URL (video, article) to base content on"
+
+# ---------------------------------------------------------------------------
+# Executor configuration
+# ---------------------------------------------------------------------------
+# Phases 1-3 use Gemini 3 Pro via gemini-cli-proxy (localhost:8765)
+# Phases 4+ use Claude via the default executor (OpenClaw or Anthropic)
+#
+# The executor_override field tells the orchestrator to route that phase
+# through the OpenAI-compatible fallback executor instead of the default.
+# ---------------------------------------------------------------------------
+
+phases:
+  # =========================================================================
+  # PHASE 1: Research (Gemini 3 Pro)
+  # Gemini's native search grounding makes it ideal for source discovery.
+  # =========================================================================
+  - id: research
+    name: "Research"
+    description: "Gather sources on the topic — Gemini 3 Pro"
+    executor_override: gemini
+    model_tier: gemini-3-pro-preview
+    thinking_level: low
+    prompt_template: |
+      Research the topic '{config.topic}' for a {config.audience} audience.
+
+      {%- if config.source_url %}
+      PRIMARY SOURCE: {config.source_url}
+      Analyze this source first, then find additional supporting and contrasting sources.
+      {%- endif %}
+
+      Find 5-10 credible sources. For each source provide:
+      - Title
+      - URL
+      - Key findings
+      - Relevance to the topic
+      - Publication date (if available)
+
+      Focus on recent data, expert opinions, and primary sources.
+      Prioritize quality over quantity. Flag any sources you're uncertain about.
+
+  # =========================================================================
+  # PHASE 2: Outline (Gemini 3 Pro)
+  # =========================================================================
+  - id: outline
+    name: "Outline"
+    description: "Create article structure — Gemini 3 Pro"
+    executor_override: gemini
+    model_tier: gemini-3-pro-preview
+    thinking_level: medium
+    depends_on: [research]
+    human_review: true
+    prompt_template: |
+      Based on the research:
+
+      {research.output}
+
+      Create a detailed outline for a {config.word_count}-word {config.tone} article
+      about '{config.topic}' for {config.audience}.
+
+      Include:
+      - Headline (compelling, specific)
+      - Subheadings (clear hierarchy)
+      - Key points per section
+      - Suggested quotes/data points from research
+      - Opening hook strategy
+      - Conclusion approach
+
+  # =========================================================================
+  # PHASE 3: Draft (Gemini 3 Pro)
+  # =========================================================================
+  - id: draft
+    name: "Draft"
+    description: "Write full article — Gemini 3 Pro"
+    executor_override: gemini
+    model_tier: gemini-3-pro-preview
+    thinking_level: medium
+    depends_on: [research, outline]
+    prompt_template: |
+      Write a {config.word_count}-word {config.tone} article for {config.publication}
+      about '{config.topic}' targeting {config.audience}.
+
+      Research:
+      {research.output}
+
+      Outline:
+      {outline.output}
+
+      Write the complete article following the outline.
+      - Use data and quotes from research with proper attribution
+      - Match the tone throughout
+      - Include a compelling opening and strong conclusion
+      - Every factual claim must trace to a researched source
+
+  # =========================================================================
+  # PHASE 3b: Fact-Check (Gemini 3 Pro)
+  # NEW in v2.3.1 — explicit fact-check phase using Gemini's search grounding
+  # =========================================================================
+  - id: fact-check
+    name: "Fact-Check"
+    description: "Verify claims against sources — Gemini 3 Pro"
+    executor_override: gemini
+    model_tier: gemini-3-pro-preview
+    thinking_level: medium
+    depends_on: [draft, research]
+    prompt_template: |
+      You are a fact-checker. You did NOT write this article. Review it critically.
+
+      ARTICLE:
+      {draft.output}
+
+      RESEARCH SOURCES:
+      {research.output}
+
+      For EVERY factual claim in the article:
+      1. Identify the claim
+      2. Find the supporting source (or note if unsourced)
+      3. Verify the claim matches what the source actually says
+      4. Flag any: misquotes, exaggerations, numbers that don't match, unsourced claims
+
+      Output a structured report:
+      - ✅ VERIFIED: [claim] — [source]
+      - ⚠️ INACCURATE: [claim] — [what source actually says]
+      - ❌ UNSOURCED: [claim] — no source found
+      - 🔄 NEEDS CONTEXT: [claim] — [missing nuance]
+
+      End with: FACT-CHECK SCORE: X/Y claims verified
+
+  # =========================================================================
+  # PHASE 4: Flow Review (Claude — Sonnet)
+  # =========================================================================
+  - id: flow-review
+    name: "Flow Review"
+    description: "Check logical flow and readability — Claude"
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: [draft]
+    prompt_template: |
+      Review this article for logical flow and readability:
+
+      {draft.output}
+
+      Check: argument progression, paragraph transitions, section coherence,
+      conclusion strength. List specific issues with line references and suggested fixes.
+
+  # =========================================================================
+  # PHASE 5: Red Team (Claude — Opus)
+  # =========================================================================
+  - id: red-team
+    name: "Red Team"
+    description: "Adversarial review for claims and tone — Claude Opus"
+    model_tier: opus
+    thinking_level: medium
+    depends_on: [draft, fact-check]
+    human_review: true
+    prompt_template: |
+      You are an adversarial reviewer. You did NOT write this article.
+
+      ARTICLE:
+      {draft.output}
+
+      FACT-CHECK RESULTS:
+      {fact-check.output}
+
+      Critically analyze:
+      1. Unsupported claims (cross-reference with fact-check)
+      2. Logical fallacies
+      3. Tone issues — are we writing about a domain we haven't earned authority in?
+      4. Potential backlash from practitioners in this field
+      5. Missing counterarguments
+      6. Fabricated anecdotes or quotes (ZERO TOLERANCE)
+
+      Score backlash risk 0-100. List every problematic phrase with explanation.
+
+  # =========================================================================
+  # PHASE 6: Consistency Check (Claude — Sonnet)
+  # =========================================================================
+  - id: consistency
+    name: "Consistency Check"
+    description: "Verify factual consistency — Claude"
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: [draft]
+    prompt_template: |
+      Check this article for factual consistency:
+
+      {draft.output}
+
+      Verify: numbers match across sections, claims align with cited sources,
+      no contradictions between paragraphs, technical terms used consistently.
+      List any inconsistencies found.
+
+  # =========================================================================
+  # PHASE 7a: Flow Fixes (Claude — Haiku)
+  # =========================================================================
+  - id: final-7a
+    name: "Final Draft 7a - Flow Fixes"
+    description: "Apply flow review fixes — Claude Haiku"
+    model_tier: haiku
+    thinking_level: low
+    depends_on: [draft, flow-review]
+    prompt_template: |
+      Apply these flow fixes to the article:
+
+      Original:
+      {draft.output}
+
+      Flow issues:
+      {flow-review.output}
+
+      Rewrite the article incorporating all flow fixes. Preserve the original voice and content.
+
+  # =========================================================================
+  # PHASE 7b: Red Team Fixes (Claude — Sonnet)
+  # =========================================================================
+  - id: final-7b
+    name: "Final Draft 7b - Red Team Fixes"
+    description: "Apply red team fixes — Claude Sonnet"
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: [draft, red-team]
+    prompt_template: |
+      Apply these red team fixes to the article:
+
+      Original:
+      {draft.output}
+
+      Red team issues:
+      {red-team.output}
+
+      Fact-check results:
+      {fact-check.output}
+
+      Rewrite addressing all concerns. Soften problematic claims, add nuance,
+      remove unsupported statements. Fix any fact-check failures. Keep the core argument intact.
+
+  # =========================================================================
+  # PHASE 7c: Consistency Fixes (Claude — Haiku)
+  # =========================================================================
+  - id: final-7c
+    name: "Final Draft 7c - Consistency Fixes"
+    description: "Apply consistency fixes — Claude Haiku"
+    model_tier: haiku
+    thinking_level: low
+    depends_on: [draft, consistency]
+    prompt_template: |
+      Apply these consistency fixes to the article:
+
+      Original:
+      {draft.output}
+
+      Consistency issues:
+      {consistency.output}
+
+      Fix all inconsistencies. Ensure numbers, terms, and claims are consistent throughout.
+
+  # =========================================================================
+  # PHASE 8: Select Best (Claude — Opus)
+  # =========================================================================
+  - id: select-best
+    name: "Select Best Draft"
+    description: "Compare three drafts and select the best — Claude Opus"
+    model_tier: opus
+    thinking_level: medium
+    depends_on: [final-7a, final-7b, final-7c]
+    prompt_template: |
+      Compare these three final drafts and select the best one:
+
+      Draft A (flow-focused):
+      {final-7a.output}
+
+      Draft B (red-team-hardened):
+      {final-7b.output}
+
+      Draft C (consistency-fixed):
+      {final-7c.output}
+
+      Fact-check results for reference:
+      {fact-check.output}
+
+      Evaluate each on: accuracy, readability, tone, argument strength, backlash risk.
+      Prefer the draft with the fewest fact-check failures.
+      Select the best and output it in full. Explain your choice briefly at the top.

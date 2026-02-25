@@ -853,9 +853,9 @@ def run_template(
         sys.exit(1)
 
     # --- 1b. Default output directory (Feature #72) ------------------
+    from uuid import uuid4
+    run_id = str(uuid4())[:8]
     if output_dir is None:
-        from uuid import uuid4
-        run_id = str(uuid4())[:8]
         output_dir = Path(
             f"./output/{re.sub(r'[^\w\-]', '_', template.id)}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{run_id}"
         )
@@ -910,6 +910,94 @@ def run_template(
     console.print(f"[bold]Output:[/bold]   {output_dir}/")
     console.print()
 
+    # --- 3b. Set up git integration if template has it enabled --------
+    from .git_integration import GitContext, GitError
+
+    git_ctx: Optional[GitContext] = None
+    _gate_result = None  # MergeGateResult set by on_pipeline_complete hook
+
+    if (
+        template.git_config is not None
+        and template.git_config.enabled
+        and mode != 'dry-run'
+    ):
+        git_ctx = GitContext(
+            config=template.git_config,
+            pipeline_id=template.id,
+            run_id=run_id,
+            output_dir=output_dir,
+        )
+        console.print(
+            f"[bold]Git:[/bold]      enabled  "
+            f"(branch_pattern={template.git_config.branch_pattern!r})"
+        )
+    elif (
+        template.git_config is not None
+        and template.git_config.enabled
+        and mode == 'dry-run'
+    ):
+        console.print(
+            "[yellow]Git:[/yellow]      skipped in dry-run mode"
+        )
+
+    # Build git lifecycle hooks (no-ops when git_ctx is None)
+    def _on_pipeline_start_hook(pipeline_context: dict) -> None:
+        """Create feature branch and populate pipeline_context."""
+        if git_ctx is None:
+            return
+        try:
+            branch_info = git_ctx.on_pipeline_start()
+            pipeline_context["branch_name"] = branch_info.branch_name
+            pipeline_context["base_branch"] = branch_info.base_branch
+            console.print(
+                f"  [cyan]git[/cyan] branch created: "
+                f"[bold]{branch_info.branch_name}[/bold] "
+                f"(from {branch_info.base_branch})"
+            )
+        except GitError as exc:
+            console.print(f"  [red]✗ git setup failed:[/red] {exc}", highlight=False)
+            raise
+
+    def _on_phase_complete_git(phase_id: str, phase_result: dict) -> None:
+        """Stage + commit after code phases, and refresh diff in context."""
+        if git_ctx is None:
+            return
+        try:
+            commit = git_ctx.on_phase_complete(phase_id, phase_result)
+            if commit:
+                console.print(
+                    f"  [cyan]git[/cyan] committed phase '{phase_id}' → "
+                    f"{commit.sha[:8]}  ({commit.files_changed} file(s))"
+                )
+            # Refresh diff in context so downstream review phases see it
+            diff = git_ctx.get_branch_diff()
+            if diff and hasattr(git_ctx, '_branch_info') and git_ctx._branch_info:
+                # Update pipeline_context (accessed via sequencer reference)
+                _pipeline_context_ref[0]["git_diff"] = diff
+        except GitError as exc:
+            console.print(f"  [yellow]⚠ git commit failed:[/yellow] {exc}", highlight=False)
+
+    # We need a mutable reference so the nested closure can update pipeline_context.
+    # The list is populated after the sequencer is created.
+    _pipeline_context_ref: list = [{}]
+
+    def _on_pipeline_complete_hook(pipeline_context: dict, result: Optional[dict]) -> None:
+        """Push and enter merge gate (or cleanup on failure)."""
+        nonlocal _gate_result
+        if git_ctx is None:
+            return
+        success = result is not None and not result.get("aborted", False)
+        try:
+            gate_result = git_ctx.on_pipeline_complete(success=success)
+            _gate_result = gate_result
+        except GitError as exc:
+            console.print(
+                f"  [yellow]⚠ git pipeline-complete failed:[/yellow] {exc}",
+                highlight=False,
+            )
+        finally:
+            git_ctx.cleanup(success=success)
+
     # Live phase-completion callback (Feature #70)
     def _on_phase_complete(phase_id: str, phase_result: dict) -> None:
         _st = phase_result.get('state', 'unknown')
@@ -928,17 +1016,30 @@ def run_template(
                 f"  [green]✓[/green] {safe_pid:30s}  state={state_val}  "
                 f"tokens={tokens}  cost={cost_str}"
             )
+        # Run git commit hook after progress display
+        _on_phase_complete_git(phase_id, phase_result)
 
     with runner:
         sequencer = PhaseSequencer(
             template, runner, config=initial_input,
             on_phase_complete=_on_phase_complete,
+            on_pipeline_start=_on_pipeline_start_hook,
+            on_pipeline_complete=_on_pipeline_complete_hook,
         )
+        # Give the git diff closure access to the sequencer's pipeline_context
+        _pipeline_context_ref[0] = sequencer.pipeline_context
 
         try:
             result = sequencer.execute(initial_input)
+        except GitError as exc:
+            console.print(f"\n[red]✗ Git error:[/red] {exc}", highlight=False)
+            if git_ctx:
+                git_ctx.cleanup(success=False)
+            sys.exit(1)
         except Exception as exc:
             click.echo(f"✗ Pipeline execution crashed: {exc}", err=True)
+            if git_ctx:
+                git_ctx.cleanup(success=False)
             sys.exit(1)
 
     # --- 5. Report result (Feature #70 — rich summary table) ---------
@@ -990,6 +1091,27 @@ def run_template(
     )
     console.print()
     console.print(table)
+
+    # --- 5b. Git merge gate output ------------------------------------
+    if _gate_result is not None:
+        if _gate_result.status == "awaiting_approval":
+            console.print()
+            console.print("[bold cyan]═══ Merge Gate ═══════════════════════════[/bold cyan]")
+            console.print(
+                f"  Branch ready for review.  Run ID: [bold]{run_id}[/bold]"
+            )
+            if git_ctx and git_ctx._branch_info:
+                console.print(
+                    f"  Branch: [bold]{git_ctx._branch_info.branch_name}[/bold]"
+                    f" → {git_ctx._branch_info.base_branch}"
+                )
+            console.print()
+            console.print(f"  [green]Approve:[/green]  orch gate approve {run_id}")
+            console.print(f"  [red]Reject:[/red]   orch gate reject {run_id}")
+            console.print(f"  [cyan]Info:[/cyan]     orch gate info {run_id}")
+            console.print("[bold cyan]══════════════════════════════════════════[/bold cyan]")
+        elif _gate_result.status == "skipped" and _gate_result.message:
+            console.print(f"\n[dim]Git: {_gate_result.message}[/dim]")
 
     # --- 6. Write outputs to disk (always — default dir if not specified) ---
     try:
@@ -1055,6 +1177,184 @@ def run_template(
     (output_dir / "_summary.md").write_text("\n".join(summary_lines))
 
     console.print(f"\n[bold]Outputs written to:[/bold] {output_dir}/")
+
+
+# ---------------------------------------------------------------------------
+# orch gate — merge gate management commands
+# ---------------------------------------------------------------------------
+
+@main.group("gate")
+def gate_group() -> None:
+    """Manage coding pipeline merge gates.
+
+    After a git-enabled pipeline completes, it creates a merge gate that
+    requires human approval before the feature branch is merged.
+
+    Examples:
+
+      orch gate list                      # show all pending gates
+      orch gate approve abc12345          # approve a gate (run ID)
+      orch gate reject abc12345           # reject a gate
+      orch gate info abc12345             # show gate details
+    """
+
+
+@gate_group.command("list")
+@click.option(
+    "--all", "show_all", is_flag=True, default=False,
+    help="Show all gates including approved/rejected."
+)
+def gate_list(show_all: bool) -> None:
+    """List pending merge gates."""
+    from .git_integration import GitContext
+
+    gates = GitContext.list_gates()
+    if not gates:
+        click.echo("No merge gates found.")
+        return
+
+    if not show_all:
+        gates = [g for g in gates if g.get("status") == "awaiting_approval"]
+        if not gates:
+            click.echo("No pending merge gates.  Use --all to see all gates.")
+            return
+
+    headers = ["Run ID", "Pipeline", "Branch", "Status", "Created"]
+    rows = []
+    for g in gates:
+        rows.append([
+            g.get("run_id", "?")[:10],
+            g.get("pipeline_id", "?")[:25],
+            g.get("branch", "?")[:40],
+            g.get("status", "?"),
+            (g.get("created_at") or "?")[:19],
+        ])
+    print_table(headers, rows)
+
+
+@gate_group.command("approve")
+@click.argument("run_id")
+@click.option("--message", "-m", default=None, help="Optional approval message.")
+def gate_approve(run_id: str, message: Optional[str]) -> None:
+    """Approve a merge gate (run ID from ``orch gate list``)."""
+    from .git_integration import GitContext, GitError
+
+    gate = GitContext.load_gate(run_id)
+    if gate is None:
+        click.echo(f"✗ No gate found for run ID '{run_id}'", err=True)
+        sys.exit(1)
+
+    if gate.get("status") not in ("awaiting_approval",):
+        current = gate.get("status", "?")
+        click.echo(
+            f"⚠ Gate '{run_id}' is in status '{current}' — "
+            f"can only approve 'awaiting_approval' gates."
+        )
+        if current in ("approved", "rejected"):
+            sys.exit(0)
+        sys.exit(1)
+
+    try:
+        updated = GitContext.update_gate_status(
+            run_id, "approved", message=message or "Approved via orch gate approve"
+        )
+    except GitError as exc:
+        click.echo(f"✗ {exc}", err=True)
+        sys.exit(1)
+
+    branch = updated.get("branch", "?")
+    base = updated.get("base_branch", "main")
+    click.echo(f"✓ Gate '{run_id}' approved.")
+    click.echo(f"  Branch: {branch}")
+    click.echo(f"  Merge into {base}:")
+    click.echo(f"    git checkout {base} && git merge --no-ff {branch}")
+
+    # Optionally create PR if template configured create_pr: true
+    if updated.get("create_pr"):
+        from .git_integration import GitConfig, GitContext as _GC
+
+        _cfg = GitConfig(create_pr=True)
+        _tmp_ctx = _GC(config=_cfg, pipeline_id=updated.get("pipeline_id", ""),
+                       run_id=run_id)
+        pr_url = _tmp_ctx.create_pr(updated)
+        if pr_url:
+            click.echo(f"  PR created: {pr_url}")
+        else:
+            click.echo(
+                "  ⚠ PR creation failed — run `gh pr create` manually or check gh CLI."
+            )
+
+
+@gate_group.command("reject")
+@click.argument("run_id")
+@click.option("--message", "-m", default=None, help="Optional rejection reason.")
+def gate_reject(run_id: str, message: Optional[str]) -> None:
+    """Reject a merge gate.  The feature branch is preserved for inspection."""
+    from .git_integration import GitContext, GitError
+
+    gate = GitContext.load_gate(run_id)
+    if gate is None:
+        click.echo(f"✗ No gate found for run ID '{run_id}'", err=True)
+        sys.exit(1)
+
+    try:
+        updated = GitContext.update_gate_status(
+            run_id, "rejected", message=message or "Rejected via orch gate reject"
+        )
+    except GitError as exc:
+        click.echo(f"✗ {exc}", err=True)
+        sys.exit(1)
+
+    branch = updated.get("branch", "?")
+    click.echo(f"✓ Gate '{run_id}' rejected.")
+    click.echo(f"  Branch '{branch}' preserved for inspection.")
+    click.echo(
+        f"  To delete it:  git branch -d {branch}"
+    )
+
+
+@gate_group.command("info")
+@click.argument("run_id")
+def gate_info(run_id: str) -> None:
+    """Show details about a merge gate."""
+    import json as _json
+    from .git_integration import GitContext
+
+    gate = GitContext.load_gate(run_id)
+    if gate is None:
+        click.echo(f"✗ No gate found for run ID '{run_id}'", err=True)
+        sys.exit(1)
+
+    status = gate.get("status", "?")
+    status_emoji = {
+        "awaiting_approval": "⏳",
+        "approved": "✅",
+        "rejected": "❌",
+        "skipped": "⏭",
+    }
+    emoji = status_emoji.get(status, "❓")
+
+    click.echo(f"Gate: {run_id}")
+    click.echo(f"├─ Status:   {emoji} {status}")
+    click.echo(f"├─ Pipeline: {gate.get('pipeline_id', '?')}")
+    click.echo(f"├─ Branch:   {gate.get('branch', '?')}")
+    click.echo(f"├─ Base:     {gate.get('base_branch', '?')}")
+    click.echo(f"├─ Changes:  {gate.get('diff_stats', 'n/a')}")
+    click.echo(f"├─ Created:  {(gate.get('created_at') or '?')[:19]}")
+    if gate.get("updated_at"):
+        click.echo(f"├─ Updated:  {gate['updated_at'][:19]}")
+    if gate.get("message"):
+        click.echo(f"├─ Message:  {gate['message']}")
+    if gate.get("output_dir"):
+        click.echo(f"├─ Output:   {gate['output_dir']}")
+
+    commits = gate.get("commits", [])
+    if commits:
+        click.echo(f"└─ Commits ({len(commits)}):")
+        for c in commits:
+            click.echo(f"   • {c.get('sha', '?')[:8]}  {c.get('message', '?')}")
+    else:
+        click.echo(f"└─ Commits:  none")
 
 
 def _check_yaml_syntax(template_file: Path) -> Optional[str]:

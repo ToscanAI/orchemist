@@ -24,24 +24,41 @@ class PhaseSequencer:
     """
 
     def __init__(self, template: PipelineTemplate, runner, config: dict = None,
-                 on_phase_complete=None, on_phase_start=None) -> None:
+                 on_phase_complete=None, on_phase_start=None,
+                 on_pipeline_start=None, on_pipeline_complete=None) -> None:
         """Initialise the sequencer.
 
         Args:
-            template:            The pipeline template to execute.
-            runner:              A TaskRunner instance (must have ``.queue`` and ``.executors``).
-            config:              Optional pipeline-level configuration dict (passed to templates).
-            on_phase_complete:   Optional callable(phase_id: str, result: dict) → None.
-                                 Called after each phase completes (success or failure).
-            on_phase_start:      Optional callable(phase_id: str, phase, wave_index: int) → None.
-                                 Called just before a phase starts executing.
+            template:               The pipeline template to execute.
+            runner:                 A TaskRunner instance (must have ``.queue`` and
+                                    ``.executors``).
+            config:                 Optional pipeline-level configuration dict (passed to
+                                    templates).
+            on_phase_complete:      Optional callable(phase_id: str, result: dict) → None.
+                                    Called after each phase completes (success or failure).
+            on_phase_start:         Optional callable(phase_id: str, phase, wave_index: int)
+                                    → None.  Called just before a phase starts executing.
+            on_pipeline_start:      Optional callable(pipeline_context: dict) → None.
+                                    Called once before the first phase executes.  The
+                                    ``pipeline_context`` dict may be mutated by the hook to
+                                    inject values (e.g. ``branch_name``, ``base_branch``,
+                                    ``git_diff``) that are then available to all phase
+                                    prompt templates via ``{context.key}``.
+            on_pipeline_complete:   Optional callable(pipeline_context: dict,
+                                    result: dict | None) → None.
+                                    Called after the last phase (or when the pipeline
+                                    aborts).  ``result`` is ``None`` on abort/exception.
         """
         self.template = template
         self.runner = runner
         self.config = config or {}
         self.phase_outputs: Dict[str, Any] = {}
+        self.pipeline_context: Dict[str, Any] = {}
+        """Mutable context dict available to all phase prompt templates via ``{context.key}``."""
         self.on_phase_complete = on_phase_complete
         self.on_phase_start = on_phase_start
+        self.on_pipeline_start = on_pipeline_start
+        self.on_pipeline_complete = on_pipeline_complete
 
     # ------------------------------------------------------------------
     # Public API
@@ -65,81 +82,125 @@ class PhaseSequencer:
             logger.warning("Template has no executable phases (empty or fully cyclic)")
             return {"phase_outputs": {}, "final_output": {}}
 
-        for wave_index, wave in enumerate(execution_order):
-            # MVP: sequential within each wave (no actual parallelism)
-            for phase_id in wave:
-                phase = self._get_phase(phase_id)
-
-                # Notify caller that phase is about to start
-                if self.on_phase_start is not None:
-                    try:
-                        self.on_phase_start(phase_id, phase, wave_index)
-                    except Exception:
-                        pass  # Never let a callback crash the pipeline
-
-                # Build the prompt for this phase
-                phase_input = self._build_phase_input(phase, initial_input)
-
-                # Resolve model tier to a ModelTier enum value (if possible)
-                preferred_model = self._resolve_model_tier(phase.model_tier)
-
-                # Create and queue the TaskSpec
-                task = TaskSpec(
-                    type=self._resolve_task_type(phase.task_type),
-                    payload={
-                        "prompt": phase_input,
-                        "phase_id": phase.id,
-                        "pipeline_id": self.template.id,
-                    },
-                    priority=Priority.HIGH,
-                    preferred_model=preferred_model,
-                    timeout_seconds=phase.timeout_minutes * 60,
+        # Call pipeline-start hook (e.g. git branch creation)
+        if self.on_pipeline_start is not None:
+            try:
+                self.on_pipeline_start(self.pipeline_context)
+            except Exception as exc:
+                logger.error(
+                    f"Pipeline {self.template.id}: on_pipeline_start hook failed: {exc}"
                 )
+                raise
 
-                task_id = self.runner.queue.submit_task(task)
-                logger.info(
-                    f"Pipeline {self.template.id}: submitted phase '{phase_id}' "
-                    f"(task_id={task_id})"
-                )
+        final_result: dict = {}
+        try:
+            for wave_index, wave in enumerate(execution_order):
+                # MVP: sequential within each wave (no actual parallelism)
+                for phase_id in wave:
+                    phase = self._get_phase(phase_id)
 
-                # Execute synchronously and store output
-                result = self._execute_and_wait(task_id, phase)
-                self.phase_outputs[phase_id] = result
+                    # Notify caller that phase is about to start
+                    if self.on_phase_start is not None:
+                        try:
+                            self.on_phase_start(phase_id, phase, wave_index)
+                        except Exception:
+                            pass  # Never let a callback crash the pipeline
 
-                # Notify caller (e.g. CLI progress display)
-                if self.on_phase_complete is not None:
-                    try:
-                        self.on_phase_complete(phase_id, result)
-                    except Exception:
-                        pass  # Never let a callback crash the pipeline
+                    # Build the prompt for this phase
+                    phase_input = self._build_phase_input(phase, initial_input)
 
-                phase_state = result.get('state', 'unknown')
-                logger.info(
-                    f"Pipeline {self.template.id}: phase '{phase_id}' completed "
-                    f"(state={phase_state})"
-                )
+                    # Resolve model tier to a ModelTier enum value (if possible)
+                    preferred_model = self._resolve_model_tier(phase.model_tier)
 
-                # Stop pipeline on phase failure — don't feed errors downstream
-                if phase_state in ('failed', 'permanently_failed'):
-                    logger.error(
-                        f"Pipeline {self.template.id}: phase '{phase_id}' failed, "
-                        f"aborting pipeline."
+                    # Create and queue the TaskSpec
+                    task = TaskSpec(
+                        type=self._resolve_task_type(phase.task_type),
+                        payload={
+                            "prompt": phase_input,
+                            "phase_id": phase.id,
+                            "pipeline_id": self.template.id,
+                        },
+                        priority=Priority.HIGH,
+                        preferred_model=preferred_model,
+                        timeout_seconds=phase.timeout_minutes * 60,
                     )
-                    return {
-                        "phase_outputs": self.phase_outputs,
-                        "final_output": result,
-                        "failed_phase": phase_id,
-                        "aborted": True,
-                    }
 
-        # Determine the final output (last phase of the last wave)
-        last_phase_id = execution_order[-1][-1]
-        final_output = self.phase_outputs.get(last_phase_id, {})
+                    task_id = self.runner.queue.submit_task(task)
+                    logger.info(
+                        f"Pipeline {self.template.id}: submitted phase '{phase_id}' "
+                        f"(task_id={task_id})"
+                    )
 
-        return {
-            "phase_outputs": self.phase_outputs,
-            "final_output": final_output,
-        }
+                    # Execute synchronously and store output
+                    result = self._execute_and_wait(task_id, phase)
+                    self.phase_outputs[phase_id] = result
+
+                    # Notify caller (e.g. CLI progress display)
+                    if self.on_phase_complete is not None:
+                        try:
+                            self.on_phase_complete(phase_id, result)
+                        except Exception:
+                            pass  # Never let a callback crash the pipeline
+
+                    phase_state = result.get('state', 'unknown')
+                    logger.info(
+                        f"Pipeline {self.template.id}: phase '{phase_id}' completed "
+                        f"(state={phase_state})"
+                    )
+
+                    # Stop pipeline on phase failure — don't feed errors downstream
+                    if phase_state in ('failed', 'permanently_failed'):
+                        logger.error(
+                            f"Pipeline {self.template.id}: phase '{phase_id}' failed, "
+                            f"aborting pipeline."
+                        )
+                        final_result = {
+                            "phase_outputs": self.phase_outputs,
+                            "final_output": result,
+                            "failed_phase": phase_id,
+                            "aborted": True,
+                        }
+                        # Call pipeline-complete hook signalling failure
+                        if self.on_pipeline_complete is not None:
+                            try:
+                                self.on_pipeline_complete(self.pipeline_context, None)
+                            except Exception as hook_exc:
+                                logger.warning(
+                                    f"Pipeline {self.template.id}: "
+                                    f"on_pipeline_complete hook failed: {hook_exc}"
+                                )
+                        return final_result
+
+            # Determine the final output (last phase of the last wave)
+            last_phase_id = execution_order[-1][-1]
+            final_output = self.phase_outputs.get(last_phase_id, {})
+            final_result = {
+                "phase_outputs": self.phase_outputs,
+                "final_output": final_output,
+            }
+
+        except Exception:
+            # Call pipeline-complete hook on unexpected exception
+            if self.on_pipeline_complete is not None:
+                try:
+                    self.on_pipeline_complete(self.pipeline_context, None)
+                except Exception as hook_exc:
+                    logger.warning(
+                        f"Pipeline {self.template.id}: "
+                        f"on_pipeline_complete hook (exception path) failed: {hook_exc}"
+                    )
+            raise
+
+        # Call pipeline-complete hook on success
+        if self.on_pipeline_complete is not None:
+            try:
+                self.on_pipeline_complete(self.pipeline_context, final_result)
+            except Exception as hook_exc:
+                logger.warning(
+                    f"Pipeline {self.template.id}: on_pipeline_complete hook failed: {hook_exc}"
+                )
+
+        return final_result
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -226,6 +287,9 @@ class PhaseSequencer:
             for pid, pout in self.phase_outputs.items()
         }
 
+        # Wrap pipeline_context so {context.key} works in prompt templates
+        safe_context = _SafeDict(self.pipeline_context)
+
         try:
             prompt = phase.prompt_template.format(
                 input=safe_input,
@@ -233,6 +297,7 @@ class PhaseSequencer:
                 config=safe_config,
                 skill_context=safe_skills,
                 files=safe_files,
+                context=safe_context,
                 **phase_kwargs,
             )
         except (KeyError, IndexError, AttributeError) as exc:
@@ -494,6 +559,13 @@ class _SafeDict(dict):
     def __missing__(self, key: str) -> str:
         logger.debug(f"Template referenced missing key: '{key}'")
         return f"<MISSING:{key}>"
+
+    def __getattr__(self, key: str) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            logger.debug(f"Template referenced missing attribute: '{key}'")
+            return f"<MISSING:{key}>"
 
 
 class _PhaseOutput:

@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from .git_integration import GitConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,6 +26,44 @@ def _is_within_dir(path: Path, directory: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _parse_git_config(raw: Any) -> Optional[GitConfig]:
+    """Parse the ``git:`` section of a pipeline YAML into a :class:`GitConfig`.
+
+    Args:
+        raw: The value of ``data.get("git")`` — a dict, ``None``, or a
+             non-dict value (treated as absent).
+
+    Returns:
+        A :class:`GitConfig` instance if ``raw`` is a non-empty dict, else
+        ``None`` (preserving full backward compatibility when ``git:`` is
+        absent or ``git.enabled`` is ``False``).
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    known_fields = {
+        "enabled", "branch_pattern", "auto_commit", "commit_phases",
+        "working_dir", "push", "merge_gate", "create_pr", "base_branch",
+    }
+    unknown = set(raw.keys()) - known_fields
+    if unknown:
+        logger.warning(
+            f"Template git config has unknown fields (ignored): {sorted(unknown)}"
+        )
+
+    return GitConfig(
+        enabled=bool(raw.get("enabled", False)),
+        branch_pattern=str(raw.get("branch_pattern", "feat/{pipeline_id}-{run_id}")),
+        auto_commit=bool(raw.get("auto_commit", True)),
+        commit_phases=list(raw.get("commit_phases") or []),
+        working_dir=str(raw.get("working_dir", ".")),
+        push=bool(raw.get("push", True)),
+        merge_gate=bool(raw.get("merge_gate", True)),
+        create_pr=bool(raw.get("create_pr", False)),
+        base_branch=raw.get("base_branch") or None,
+    )
 
 
 @dataclass
@@ -77,6 +117,8 @@ class PipelineTemplate:
     config_schema: Dict[str, Any] = field(default_factory=dict)
     fallback: Optional[Dict[str, Any]] = None
     template_path: Optional[Path] = field(default=None, repr=False)  # set by load_template
+    git_config: Optional[GitConfig] = field(default=None)
+    """Parsed ``git:`` section from the template YAML, or ``None`` if absent."""
 
     def __post_init__(self) -> None:
         if self.phases is None:
@@ -340,6 +382,9 @@ class TemplateEngine:
             cleaned = {k: v for k, v in phase_data.items() if k in known_fields}
             phases.append(PhaseDefinition(**cleaned))
 
+        # Parse optional git: section
+        git_config: Optional[GitConfig] = _parse_git_config(data.get("git"))
+
         return PipelineTemplate(
             id=data["id"],
             name=data["name"],
@@ -354,6 +399,7 @@ class TemplateEngine:
             config_schema=data.get("config_schema") or {},
             fallback=data.get("fallback") or None,
             template_path=Path(template_path).resolve(),
+            git_config=git_config,
         )
 
     def get_execution_order(self, template: PipelineTemplate) -> List[List[str]]:
@@ -451,6 +497,16 @@ class TemplateEngine:
                     f"Cycle detected involving phase(s): "
                     f"{sorted(missing_from_order)}"
                 )
+
+        # Validate git config if present
+        if template.git_config is not None and template.git_config.enabled:
+            gc = template.git_config
+            for cp in gc.commit_phases:
+                if cp not in all_ids:
+                    errors.append(
+                        f"git.commit_phases references unknown phase '{cp}' "
+                        f"(known phases: {sorted(all_ids)})"
+                    )
 
         # Check that all skill_ref files exist (with path traversal protection)
         template_dir = (
