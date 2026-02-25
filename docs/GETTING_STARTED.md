@@ -28,6 +28,21 @@ If you're on Python 3.9 or older, install a newer version from [python.org](http
 
 - **OpenClaw** — if you're running inside OpenClaw, you're already set. The executor will use OpenClaw's session infrastructure automatically.
 
+  ```bash
+  # Set your gateway token
+  export OPENCLAW_GATEWAY_TOKEN="your-token-here"
+
+  # For short pipelines (< 10 min):
+  orch run my-pipeline.yaml --mode openclaw
+
+  # For long pipelines (5+ phases), use nohup to prevent process timeout:
+  nohup orch run my-pipeline.yaml --mode openclaw > pipeline.log 2>&1 &
+  tail -f pipeline.log
+  ```
+
+  > **Tip:** Always check `pipeline.log` for the output directory path. Long-running
+  > pipelines may take 20-30 minutes for 5 phases.
+
 ---
 
 ## Install
