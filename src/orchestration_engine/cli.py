@@ -759,13 +759,11 @@ def workers(detailed: bool) -> None:
 )
 @click.option(
     '--gateway-url',
-    envvar='OPENCLAW_GATEWAY_URL',
     default=None,
     help='OpenClaw gateway URL for openclaw mode (or set OPENCLAW_GATEWAY_URL).',
 )
 @click.option(
     '--gateway-token',
-    envvar='OPENCLAW_GATEWAY_TOKEN',
     default=None,
     help='OpenClaw gateway bearer token for openclaw mode (or set OPENCLAW_GATEWAY_TOKEN).',
 )
@@ -885,9 +883,13 @@ def run_template(
         if mode == 'standalone':
             runner = PipelineRunner.standalone(api_key=api_key)
         elif mode == 'openclaw':
+            # Read env vars only when actually needed (avoid leaking in dry-run tracebacks)
+            import os as _os_env
+            effective_url = gateway_url or _os_env.environ.get("OPENCLAW_GATEWAY_URL")
+            effective_token = gateway_token or _os_env.environ.get("OPENCLAW_GATEWAY_TOKEN")
             runner = PipelineRunner.openclaw(
-                gateway_url=gateway_url,
-                gateway_token=gateway_token,
+                gateway_url=effective_url,
+                gateway_token=effective_token,
             )
         else:  # dry-run
             runner = PipelineRunner.dry_run(

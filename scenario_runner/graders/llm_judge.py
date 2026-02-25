@@ -129,26 +129,28 @@ class LLMJudgeGrader:
         #     something meaningful; never sends an empty string.
         if output_field is not None:
             raw = output.get(output_field)
-            article_text = str(raw) if raw is not None else ""
+            extracted_text = str(raw) if raw is not None else ""
         else:
-            article_text = (
-                output.get("article")
+            extracted_text = (
+                output.get("output")
+                or output.get("result")
+                or output.get("article")
                 or output.get("text")
                 or output.get("content")
                 or None
             )
-            if not article_text:
+            if not extracted_text:
                 # Try "final" sub-dict (CLI-structured output)
                 final_sub = output.get("final")
                 if final_sub and isinstance(final_sub, dict):
-                    article_text = json.dumps(final_sub, default=str, indent=2)
+                    extracted_text = json.dumps(final_sub, default=str, indent=2)
                 else:
                     # Last resort: serialise the full output dict
-                    article_text = json.dumps(output, default=str, indent=2)
+                    extracted_text = json.dumps(output, default=str, indent=2)
 
         user_message = (
             f"## Rubric\n\n{rubric}\n\n"
-            f"## Article to Evaluate\n\n{article_text}"
+            f"## Article to Evaluate\n\n{extracted_text}"
         )
 
         payload = {
