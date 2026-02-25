@@ -1990,15 +1990,15 @@ def quickstart(ctx: click.Context) -> None:
     console.print("[bold]Next steps:[/bold]")
     console.print(
         "  [cyan]orch templates list[/cyan]"
-        "                        See all available templates"
+        "                              See all available templates"
     )
     console.print(
-        "  [cyan]orch templates info content-pipeline[/cyan]"
-        "      Explore a real pipeline"
+        "  [cyan]orch templates info hello-pipeline[/cyan]"
+        "        Explore a simple pipeline"
     )
     console.print(
-        "  [cyan]orch start content-pipeline[/cyan]"
-        "               Run interactively (needs API key)"
+        "  [cyan]orch run hello-pipeline.yaml --mode dry-run[/cyan]"
+        "  Try a test run (no API key needed)"
     )
     console.print()
 
@@ -2372,16 +2372,16 @@ def start_wizard(
 ) -> None:
     """Interactive wizard to fill in a template's inputs and run it.
 
-    TEMPLATE_NAME_OR_PATH can be a template name/ID (e.g. content-pipeline-mvp)
+    TEMPLATE_NAME_OR_PATH can be a template name/ID (e.g. hello-pipeline)
     or a path to a .yaml file.
 
     Examples:
 
       # Interactive wizard with defaults:
-      orch start content-pipeline-mvp
+      orch start hello-pipeline
 
       # Non-interactive (use all defaults), standalone mode:
-      orch start content-pipeline-mvp --mode standalone --yes
+      orch start hello-pipeline --mode standalone --yes
 
       # Point at a local file:
       orch start ./my-template.yaml --mode dry-run
@@ -2681,7 +2681,7 @@ def new_template(
       orch new --yes
 
       # Clone an existing template as a starting point:
-      orch new --from content-pipeline-mvp
+      orch new --from hello-pipeline
 
       # Custom output path:
       orch new --yes --output ./my-templates/awesome.yaml
