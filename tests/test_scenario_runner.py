@@ -748,3 +748,417 @@ class TestRunSuite:
         assert suite.total_scenarios == 0
         assert suite.satisfaction_rate == pytest.approx(0.0)
         assert suite.scenarios == []
+
+
+# ===========================================================================
+# 7 – LLMJudgeGrader: executor routing mode  (Issue #171)
+# ===========================================================================
+
+
+def _make_mock_task_result(
+    response_text: str = "Score: 0.85\nGood article.",
+    success: bool = True,
+) -> MagicMock:
+    """Build a mock TaskResult whose interface matches orchestration_engine.schemas."""
+    from orchestration_engine.schemas import TaskState
+
+    mock_result = MagicMock()
+    mock_result.state = TaskState.SUCCESS if success else TaskState.FAILED
+    mock_result.result = {"text": response_text} if success else {}
+    mock_result.errors = [] if success else [
+        MagicMock(message="Executor failed for test"),
+    ]
+    return mock_result
+
+
+def _make_mock_executor(
+    response_text: str = "Score: 0.85\nGood article.",
+    success: bool = True,
+    side_effect=None,
+) -> MagicMock:
+    """Build a mock executor that returns a controlled TaskResult."""
+    executor = MagicMock()
+    if side_effect is not None:
+        executor.execute.side_effect = side_effect
+    else:
+        executor.execute.return_value = _make_mock_task_result(response_text, success)
+    return executor
+
+
+class TestLLMJudgeGraderExecutorMode:
+    """Tests for executor-routing mode (Issue #171).
+
+    When an executor is provided to LLMJudgeGrader, the grade() method must
+    route through executor.execute() instead of making raw urllib calls.
+    """
+
+    def test_executor_is_called_instead_of_urllib(self):
+        """When executor is set, executor.execute() is called — not urllib."""
+        executor = _make_mock_executor("Score: 0.90\nExcellent.")
+
+        grader = LLMJudgeGrader(executor=executor)
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            result = grader.grade(
+                output={"article": "Some article text."},
+                rubric="Rate between 0.0 and 1.0.",
+                judge_model="claude-haiku-4-5-20241022",
+            )
+
+        executor.execute.assert_called_once()
+        mock_urlopen.assert_not_called()
+        assert result.grader_type == "llm_judge"
+
+    def test_executor_score_parsed_correctly(self):
+        """Score extracted from executor response text is parsed correctly."""
+        executor = _make_mock_executor("Score: 0.72\nDecent article.")
+
+        grader = LLMJudgeGrader(executor=executor)
+        result = grader.grade(
+            output={"article": "Article text."},
+            rubric="Quality rubric.",
+            judge_model="claude-haiku-4-5-20241022",
+        )
+
+        assert result.score == pytest.approx(0.72)
+        assert result.passed is True  # 0.72 >= 0.5 baseline
+        assert result.grader_type == "llm_judge"
+
+    def test_executor_takes_priority_over_api_key(self):
+        """When both executor AND api_key are set, executor path wins."""
+        executor = _make_mock_executor("Score: 0.60\nOK.")
+
+        grader = LLMJudgeGrader(api_key="sk-test-should-not-be-used", executor=executor)
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            result = grader.grade(
+                output={"article": "Article."},
+                rubric="Rubric.",
+                judge_model="claude-haiku-4-5-20241022",
+            )
+
+        executor.execute.assert_called_once()
+        mock_urlopen.assert_not_called()
+        assert result.score == pytest.approx(0.60)
+
+    def test_executor_failure_state_returns_zero_score(self):
+        """Non-SUCCESS state from executor → score=0.0, passed=False."""
+        executor = _make_mock_executor(success=False)
+
+        grader = LLMJudgeGrader(executor=executor)
+        result = grader.grade(
+            output={"article": "Article."},
+            rubric="Rubric.",
+            judge_model="claude-haiku-4-5-20241022",
+        )
+
+        assert result.passed is False
+        assert result.score == pytest.approx(0.0)
+        assert result.grader_type == "llm_judge"
+        assert "non-success state" in result.details.lower()
+
+    def test_executor_raises_exception_returns_error_result(self):
+        """RuntimeError from executor.execute() → score=0.0 with error details."""
+        executor = _make_mock_executor(side_effect=RuntimeError("gateway unreachable"))
+
+        grader = LLMJudgeGrader(executor=executor)
+        result = grader.grade(
+            output={"article": "Article."},
+            rubric="Rubric.",
+            judge_model="claude-haiku-4-5-20241022",
+        )
+
+        assert result.passed is False
+        assert result.score == pytest.approx(0.0)
+        assert "RuntimeError" in result.details or "gateway unreachable" in result.details
+
+    def test_executor_empty_response_returns_zero_score(self):
+        """Empty text in executor result → score=0.0."""
+        executor = _make_mock_executor(response_text="")
+
+        grader = LLMJudgeGrader(executor=executor)
+        result = grader.grade(
+            output={"article": "Article."},
+            rubric="Rubric.",
+            judge_model="claude-haiku-4-5-20241022",
+        )
+
+        assert result.passed is False
+        assert result.score == pytest.approx(0.0)
+        assert "empty" in result.details.lower()
+
+    def test_executor_no_score_in_response_defaults_to_zero(self):
+        """Executor response without 'Score: X' pattern → score=0.0."""
+        executor = _make_mock_executor("This article looks pretty good to me.")
+
+        grader = LLMJudgeGrader(executor=executor)
+        result = grader.grade(
+            output={"article": "Article."},
+            rubric="Rubric.",
+            judge_model="claude-haiku-4-5-20241022",
+        )
+
+        assert result.score == pytest.approx(0.0)
+        assert "No score found" in result.details
+
+    def test_executor_prompt_contains_article_and_rubric(self):
+        """The TaskSpec payload sent to executor contains article text and rubric."""
+        from orchestration_engine.schemas import TaskSpec
+
+        captured_tasks: list[TaskSpec] = []
+
+        def capture_execute(task: TaskSpec):
+            captured_tasks.append(task)
+            return _make_mock_task_result("Score: 0.80\nGood.")
+
+        executor = MagicMock()
+        executor.execute.side_effect = capture_execute
+
+        article = "The quantum computer operates at near-absolute zero."
+        rubric = "Evaluate technical accuracy. Score between 0.0 and 1.0."
+
+        grader = LLMJudgeGrader(executor=executor)
+        grader.grade(
+            output={"article": article},
+            rubric=rubric,
+            judge_model="claude-sonnet-4-6",
+        )
+
+        assert len(captured_tasks) == 1
+        prompt = captured_tasks[0].payload.get("prompt", "")
+        assert article in prompt, "Article text must be in the executor prompt"
+        assert rubric in prompt, "Rubric text must be in the executor prompt"
+
+    def test_executor_holdout_metadata_not_in_prompt(self):
+        """Scenario metadata must NOT appear in the prompt sent to the executor."""
+        from orchestration_engine.schemas import TaskSpec
+
+        captured_tasks: list[TaskSpec] = []
+
+        def capture_execute(task: TaskSpec):
+            captured_tasks.append(task)
+            return _make_mock_task_result("Score: 0.75\nGood.")
+
+        executor = MagicMock()
+        executor.execute.side_effect = capture_execute
+
+        article = "AI is transforming the world."
+        metadata_that_should_not_leak = {
+            "scenario_id": "secret-scenario-999",
+            "pipeline": "ultra-secret-pipeline",
+            "threshold": 0.95,
+        }
+
+        grader = LLMJudgeGrader(executor=executor)
+        grader.grade(
+            output={"article": article, **metadata_that_should_not_leak},
+            rubric="Rate the article.",
+            judge_model="claude-haiku-4-5-20241022",
+        )
+
+        prompt = captured_tasks[0].payload.get("prompt", "")
+        for forbidden in ("secret-scenario-999", "ultra-secret-pipeline", "0.95"):
+            assert forbidden not in prompt, (
+                f"Holdout violated: '{forbidden}' found in executor prompt"
+            )
+
+    def test_executor_model_tier_mapped_from_judge_model(self):
+        """judge_model string is mapped to appropriate ModelTier in TaskSpec."""
+        from orchestration_engine.schemas import ModelTier, TaskSpec
+
+        captured_tasks: list[TaskSpec] = []
+
+        def capture_execute(task: TaskSpec):
+            captured_tasks.append(task)
+            return _make_mock_task_result("Score: 0.80\nGood.")
+
+        executor = MagicMock()
+        executor.execute.side_effect = capture_execute
+
+        grader = LLMJudgeGrader(executor=executor)
+
+        # Haiku judge model → ModelTier.HAIKU
+        captured_tasks.clear()
+        grader.grade(
+            output={"article": "Text."},
+            rubric="Rubric.",
+            judge_model="claude-haiku-4-5-20241022",
+        )
+        assert captured_tasks[0].preferred_model == ModelTier.HAIKU
+
+        # Sonnet judge model → ModelTier.SONNET
+        captured_tasks.clear()
+        grader.grade(
+            output={"article": "Text."},
+            rubric="Rubric.",
+            judge_model="claude-sonnet-4-6",
+        )
+        assert captured_tasks[0].preferred_model == ModelTier.SONNET
+
+        # Opus judge model → ModelTier.OPUS
+        captured_tasks.clear()
+        grader.grade(
+            output={"article": "Text."},
+            rubric="Rubric.",
+            judge_model="claude-opus-4-6",
+        )
+        assert captured_tasks[0].preferred_model == ModelTier.OPUS
+
+
+# ===========================================================================
+# 8 – LLMJudgeGrader: dry-run mode
+# ===========================================================================
+
+
+class TestLLMJudgeGraderDryRunMode:
+    """Tests for the ORCH_DRY_RUN=1 short-circuit path.
+
+    Dry-run mode must take absolute priority over both executor and api-key
+    paths — no external calls are made when the env var is set.
+    """
+
+    def test_dry_run_returns_default_stub_score(self):
+        """ORCH_DRY_RUN=1 → score=0.8 (default stub), no API call."""
+        grader = LLMJudgeGrader(api_key=None)
+
+        with patch.dict("os.environ", {"ORCH_DRY_RUN": "1"}):
+            result = grader.grade(
+                output={"article": "Some text."},
+                rubric="Rate it.",
+                judge_model="claude-haiku-4-5-20241022",
+            )
+
+        assert result.score == pytest.approx(0.8)
+        assert result.passed is True  # 0.8 >= 0.5
+        assert result.grader_type == "llm_judge"
+        assert "dry-run" in result.details.lower() or "ORCH_DRY_RUN" in result.details
+
+    def test_dry_run_custom_stub_score(self):
+        """dry_run_stub_score parameter controls the returned score."""
+        grader = LLMJudgeGrader(api_key=None, dry_run_stub_score=0.3)
+
+        with patch.dict("os.environ", {"ORCH_DRY_RUN": "1"}):
+            result = grader.grade(
+                output={"article": "Some text."},
+                rubric="Rate it.",
+                judge_model="claude-haiku-4-5-20241022",
+            )
+
+        assert result.score == pytest.approx(0.3)
+        assert result.passed is False  # 0.3 < 0.5
+
+    def test_dry_run_skips_executor(self):
+        """ORCH_DRY_RUN=1 → executor.execute() is never called."""
+        executor = _make_mock_executor("Score: 0.90\nExcellent.")
+        grader = LLMJudgeGrader(executor=executor)
+
+        with patch.dict("os.environ", {"ORCH_DRY_RUN": "1"}):
+            result = grader.grade(
+                output={"article": "Some text."},
+                rubric="Rate it.",
+                judge_model="claude-haiku-4-5-20241022",
+            )
+
+        executor.execute.assert_not_called()
+        assert result.score == pytest.approx(0.8)
+
+    def test_dry_run_skips_urllib(self):
+        """ORCH_DRY_RUN=1 → urllib.request.urlopen is never called."""
+        grader = LLMJudgeGrader(api_key="sk-test-fake-key")
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            with patch.dict("os.environ", {"ORCH_DRY_RUN": "1"}):
+                grader.grade(
+                    output={"article": "Some text."},
+                    rubric="Rate it.",
+                    judge_model="claude-haiku-4-5-20241022",
+                )
+
+        mock_urlopen.assert_not_called()
+
+    def test_dry_run_stub_score_clamped_to_valid_range(self):
+        """dry_run_stub_score > 1.0 is clamped to 1.0; < 0.0 clamped to 0.0."""
+        grader_high = LLMJudgeGrader(dry_run_stub_score=1.5)
+        grader_low = LLMJudgeGrader(dry_run_stub_score=-0.5)
+
+        with patch.dict("os.environ", {"ORCH_DRY_RUN": "1"}):
+            result_high = grader_high.grade({}, "rubric", "model")
+            result_low = grader_low.grade({}, "rubric", "model")
+
+        assert result_high.score == pytest.approx(1.0)
+        assert result_low.score == pytest.approx(0.0)
+
+
+# ===========================================================================
+# 9 – ScenarioRunner: executor forwarding
+# ===========================================================================
+
+
+class TestScenarioRunnerExecutorForwarding:
+    """Tests that ScenarioRunner accepts and forwards the executor parameter."""
+
+    def test_runner_accepts_executor_parameter(self, tmp_path: Path):
+        """ScenarioRunner(executor=...) constructs without error."""
+        executor = _make_mock_executor("Score: 0.85\nGood.")
+        runner = ScenarioRunner(scenarios_dir=tmp_path, executor=executor)
+        # Executor is forwarded to the internal LLMJudgeGrader
+        assert runner._llm_grader.executor is executor
+
+    def test_runner_without_executor_uses_none(self, tmp_path: Path):
+        """ScenarioRunner() without executor → grader.executor is None (backward compat)."""
+        runner = ScenarioRunner(scenarios_dir=tmp_path)
+        assert runner._llm_grader.executor is None
+
+    def test_runner_routes_llm_judge_through_executor(self, tmp_path: Path):
+        """run_scenario dispatches llm_judge criteria through the executor."""
+        executor = _make_mock_executor("Score: 0.88\nWell written.")
+        runner = ScenarioRunner(scenarios_dir=tmp_path, executor=executor)
+
+        scenario = {
+            "id": "executor-routing-test",
+            "acceptance": [
+                {
+                    "id": "quality",
+                    "type": "llm_judge",
+                    "rubric": "Rate the article quality. Score: [0.0-1.0]",
+                    "judge_model": "claude-haiku-4-5-20241022",
+                    "threshold": 0.5,
+                    "weight": 1,
+                }
+            ],
+            "scoring": {"pass_threshold": 0.5},
+        }
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            result = runner.run_scenario(scenario, {"article": "A well-crafted article."})
+
+        executor.execute.assert_called_once()
+        mock_urlopen.assert_not_called()
+        assert result.criterion_results[0].grade.score == pytest.approx(0.88)
+
+    def test_runner_dry_run_overrides_executor(self, tmp_path: Path):
+        """ORCH_DRY_RUN=1 takes priority even when executor is provided."""
+        executor = _make_mock_executor("Score: 0.99\nPerfect.")
+        runner = ScenarioRunner(scenarios_dir=tmp_path, executor=executor)
+
+        scenario = {
+            "id": "dry-run-override-test",
+            "acceptance": [
+                {
+                    "id": "judge",
+                    "type": "llm_judge",
+                    "rubric": "Rate quality.",
+                    "judge_model": "claude-haiku-4-5-20241022",
+                    "threshold": 0.5,
+                    "weight": 1,
+                }
+            ],
+            "scoring": {"pass_threshold": 0.5},
+        }
+
+        with patch.dict("os.environ", {"ORCH_DRY_RUN": "1"}):
+            result = runner.run_scenario(scenario, {"article": "Some text."})
+
+        executor.execute.assert_not_called()
+        # Stub score (0.8 default) used
+        assert result.criterion_results[0].grade.score == pytest.approx(0.8)
