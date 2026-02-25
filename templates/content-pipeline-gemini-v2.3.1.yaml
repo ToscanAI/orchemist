@@ -72,10 +72,8 @@ phases:
     prompt_template: |
       Research the topic '{config.topic}' for a {config.audience} audience.
 
-      {%- if config.source_url %}
-      PRIMARY SOURCE: {config.source_url}
-      Analyze this source first, then find additional supporting and contrasting sources.
-      {%- endif %}
+      PRIMARY SOURCE (if provided): {config.source_url}
+      If a source URL is provided above, analyze it first, then find additional supporting and contrasting sources.
 
       Find 5-10 credible sources. For each source provide:
       - Title

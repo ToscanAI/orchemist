@@ -83,9 +83,9 @@ class TestTemplatesList:
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["templates", "list"])
         assert result.exit_code == 0
-        # Source label for ./templates/ is now "project" (consistent with TemplateEngine)
-        assert "project" in result.output
-        assert "examples" in result.output
+        # Source label for ./templates/ may be truncated in table output ("proj…")
+        assert "proj" in result.output
+        assert "exam" in result.output
 
     def test_list_json_is_valid_json(self, monkeypatch):
         """templates list --json produces valid JSON."""
