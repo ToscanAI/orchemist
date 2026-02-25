@@ -828,7 +828,13 @@ def run_template(
     from .pipeline_runner import PipelineRunner
     from .sequencer import PhaseSequencer
 
-    console = Console(highlight=False)
+    import sys as _sys
+    # Force plain text output in non-TTY environments (background, nohup, pipes)
+    console = Console(
+        highlight=False,
+        force_terminal=_sys.stdout.isatty(),
+        no_color=not _sys.stdout.isatty(),
+    )
     run_start = time.time()
 
     # --- 1. Resolve template path (name or path) ----------------------
