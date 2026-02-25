@@ -1,0 +1,172 @@
+# ux-audit-smoke.yaml — Smoke test for the UX Audit Pipeline template
+#
+# Purpose:
+#   Validates that the ux-audit-pipeline.yaml template produces a structurally
+#   correct developer-experience audit: a scored UX evaluation with issues and
+#   recommendations, a prioritised action plan, and an independent senior review.
+#
+# How to run:
+#   # Dry-run mode (CI-safe, no API key needed):
+#   ORCH_DRY_RUN=1 orch scenario run ux-audit-smoke --dry-run
+#
+#   # Live mode (requires ANTHROPIC_API_KEY):
+#   orch scenario run ux-audit-smoke
+#
+# Acceptance criteria design:
+#   - Gate (assertion, weight 0):   output dict is non-empty → blocks scoring if pipeline stalled
+#   - Scored keyword  (weight 40):  structural content check — keywords always present in both
+#                                   dry-run ("mock", "execution", "content") and real LLM output
+#                                   ("score", "onboarding", "recommendation", "APPROVE")
+#   - Scored llm_judge (weight 60): UX audit quality rubric — returns stub score 0.8 when
+#                                   ORCH_DRY_RUN=1, makes real LLM call otherwise
+#
+# Scoring:
+#   Non-gate weights:  40 + 60 = 100
+#   pass_threshold:    0.70
+#   Expected dry-run score: (1.0×40 + 0.8×60) / 100 = 0.88  → PASS
+
+id: ux-audit-smoke
+version: "1.0.0"
+name: "UX Audit Pipeline Smoke Test"
+description: >
+  Smoke test for the bundled ux-audit-pipeline template.
+  Validates the 3-phase UX review loop: evaluation with per-area scores →
+  prioritised action plan → senior review verdict, using a realistic
+  developer-experience focus for a CLI-based AI orchestration tool.
+tags:
+  - smoke
+  - ux-audit
+  - bundled-template
+
+# Template under test.  Path is relative to the repository root.
+pipeline: examples/ux-audit-pipeline.yaml
+
+# Input data passed to the pipeline template
+input:
+  audit_focus: "CLI command discoverability and error messages, getting-started onboarding flow (time to first successful pipeline run), template authoring ergonomics (YAML schema clarity), and consistency of terminology across docs and CLI output."
+  project_context: "An open-source AI pipeline orchestration engine with a CLI interface, YAML-driven pipeline templates, and an LLM judge scoring system. Target audience is developers building or evaluating AI pipelines."
+
+# ---------------------------------------------------------------------------
+# Output structure note
+# ---------------------------------------------------------------------------
+#
+# The grading input ("output") from `orch scenario run` is:
+#
+#   {
+#     "final":  <last-phase output dict>,          # review phase
+#     "phases": <dict[phase_id → output dict]>,    # all 3 phases accessible
+#   }
+#
+# The KeywordGrader recurses into nested dicts automatically.
+# LLMJudgeGrader falls back to JSON(output) when no canonical text field is found.
+#
+# ---------------------------------------------------------------------------
+# Acceptance criteria
+# ---------------------------------------------------------------------------
+acceptance:
+
+  # --- Gate (weight 0 = hard gate; failure blocks all scoring) ---
+  #
+  # The check `len(str(output)) > 10` works for both output shapes:
+  #   • CLI shape  {"final": {...}, "phases": {...}}  → always >> 10 chars
+  #   • Flat {}  → str("{}") == 2 chars → gate fails  ← empty pipeline guard
+  #   • Flat _dry_run_phase_output() → hundreds of chars → gate passes
+  #
+  - id: output_not_empty
+    type: assertion
+    check: "len(str(output)) > 10"
+    weight: 0
+    description: >
+      Hard gate: the pipeline must produce a non-trivial output.
+      If the pipeline stalls or returns an empty dict this gate fails
+      and the entire scenario is marked as failed regardless of other scores.
+
+  # --- Scored criterion 1: KeywordGrader structural check (weight 40) ---
+  #
+  # match_mode: "any" — at least one keyword must appear in the output text.
+  # KeywordGrader recurses into nested dicts, so it finds keywords regardless
+  # of whether output is flat or the CLI-structured {"final":...,"phases":...}.
+  #
+  # Keywords that appear in DRY-RUN mode (DryRunExecutor mock output):
+  #   "mock"           → "Mock execution of content task"
+  #   "execution"      → same
+  #   "content"        → same
+  #
+  # Keywords that appear in LIVE mode (real LLM output from this template):
+  #   "score"          → evaluate phase rates each focus area 1-10
+  #   "onboarding"     → one of the explicit focus areas in the input
+  #   "recommendation" → recommendations phase headline output type
+  #   "APPROVE"        → review phase verdict (APPROVE or REQUEST_CHANGES)
+  #
+  - id: output_structure_check
+    type: keyword
+    keywords:
+      - "score"
+      - "onboarding"
+      - "recommendation"
+      - "APPROVE"
+      - "mock"
+      - "execution"
+      - "content"
+    match_mode: "any"
+    threshold: 0.5
+    weight: 40
+    description: >
+      Structural keyword check verifying the output contains recognisable
+      content from a UX audit pipeline run. Live mode: per-area numeric scores
+      from the evaluation phase, the onboarding focus area, prioritised
+      recommendations, and a review verdict (APPROVE/REQUEST_CHANGES).
+      Dry-run mode: mock/execution/content from the DryRunExecutor stub.
+      Uses match_mode "any" so a single keyword hit scores 1.0. KeywordGrader
+      recurses into nested dicts automatically.
+
+  # --- Scored criterion 2: LLMJudgeGrader quality check (weight 60) ---
+  #
+  # In dry-run mode (ORCH_DRY_RUN=1) returns stub score 0.8.
+  # In live mode makes a real judge API call against the pipeline output.
+  #
+  - id: output_quality
+    type: llm_judge
+    judge_model: claude-haiku-4-5-20241022
+    rubric: |
+      You are evaluating the output of a 3-phase UX audit pipeline that assessed the
+      developer experience of a CLI-based AI pipeline orchestration tool.
+
+      The audit covered: CLI discoverability, onboarding flow, template authoring
+      ergonomics, and terminology consistency. Phases were: evaluation → recommendations
+      → senior review.
+
+      Score the overall output quality using these criteria (each worth equal weight):
+
+      1. Scored evaluation — At least one area is rated with a numeric score (e.g. 7/10
+         or Score: 6). Prose-only assessments without scores fail this criterion.
+      2. Specific issues — At least one issue references a concrete location (a specific
+         CLI command, doc file name, or YAML field), not just a general complaint.
+      3. Actionable recommendations — At least one recommendation is specific enough
+         to become a GitHub issue title (e.g. "Add --help examples to orch run command").
+      4. Prioritisation — Recommendations are grouped or labelled by priority (critical,
+         important, nice-to-have, or equivalent tiers). A flat unordered list fails this.
+
+      Score on a scale from 0.0 (none of the criteria met) to 1.0 (all four met).
+
+      Respond with ONLY this format (no other text):
+      Score: <0.0–1.0>
+      Reasoning: <one sentence>
+    threshold: 0.60
+    weight: 60
+    description: >
+      LLM-as-judge rubric specific to UX audit pipelines: checks for numeric
+      per-area scores, specific issue locations, actionable GitHub-ready
+      recommendations, and prioritised action tiers. Uses ORCH_DRY_RUN stub
+      score (0.8) in CI mode.
+
+# ---------------------------------------------------------------------------
+# Scoring
+# ---------------------------------------------------------------------------
+scoring:
+  method: weighted_average
+  pass_threshold: 0.70
+  gate_mode: all_or_nothing
+  notes: >
+    Non-gate criteria weights: keyword(40) + llm_judge(60) = 100.
+    Expected dry-run weighted score: (1.0×40 + 0.8×60) / 100 = 0.88.

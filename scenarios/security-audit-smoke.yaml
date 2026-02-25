@@ -1,0 +1,168 @@
+# security-audit-smoke.yaml — Smoke test for the Security Audit Pipeline template
+#
+# Purpose:
+#   Validates that the security-audit-pipeline.yaml template produces a
+#   structurally correct security audit output: code investigation with
+#   severity-rated findings, a compiled audit report, and an independent review.
+#
+# How to run:
+#   # Dry-run mode (CI-safe, no API key needed):
+#   ORCH_DRY_RUN=1 orch scenario run security-audit-smoke --dry-run
+#
+#   # Live mode (requires ANTHROPIC_API_KEY):
+#   orch scenario run security-audit-smoke
+#
+# Acceptance criteria design:
+#   - Gate (assertion, weight 0):   output dict is non-empty → blocks scoring if pipeline stalled
+#   - Scored keyword  (weight 40):  structural content check — keywords always present in both
+#                                   dry-run ("mock", "execution", "content") and real LLM output
+#                                   ("severity", "findings", "vulnerability", "APPROVE")
+#   - Scored llm_judge (weight 60): security-audit quality rubric — returns stub score 0.8 when
+#                                   ORCH_DRY_RUN=1, makes real LLM call otherwise
+#
+# Scoring:
+#   Non-gate weights:  40 + 60 = 100
+#   pass_threshold:    0.70
+#   Expected dry-run score: (1.0×40 + 0.8×60) / 100 = 0.88  → PASS
+
+id: security-audit-smoke
+version: "1.0.0"
+name: "Security Audit Pipeline Smoke Test"
+description: >
+  Smoke test for the bundled security-audit-pipeline template.
+  Validates the 3-phase audit loop: code investigation → audit report →
+  independent review, using a realistic input scope about common web
+  application security warnings.
+tags:
+  - smoke
+  - security-audit
+  - bundled-template
+
+# Template under test.  Path is relative to the repository root.
+pipeline: examples/security-audit-pipeline.yaml
+
+# Input data passed to the pipeline template
+input:
+  audit_scope: "Review input validation and sanitisation in the CLI argument parser and template loader. Check for potential path traversal via user-supplied file paths, unsafe eval/exec patterns in assertion graders, and any secrets or API keys that might be logged."
+  project_context: "An open-source Python AI pipeline orchestration engine with a CLI interface, YAML-driven templates, and an LLM judge grader that calls external APIs."
+
+# ---------------------------------------------------------------------------
+# Output structure note
+# ---------------------------------------------------------------------------
+#
+# The grading input ("output") from `orch scenario run` is:
+#
+#   {
+#     "final":  <last-phase output dict>,          # review phase
+#     "phases": <dict[phase_id → output dict]>,    # all 3 phases accessible
+#   }
+#
+# The KeywordGrader recurses into nested dicts automatically.
+# LLMJudgeGrader falls back to JSON(output) when no canonical text field is found.
+#
+# ---------------------------------------------------------------------------
+# Acceptance criteria
+# ---------------------------------------------------------------------------
+acceptance:
+
+  # --- Gate (weight 0 = hard gate; failure blocks all scoring) ---
+  #
+  # The check `len(str(output)) > 10` works for both output shapes:
+  #   • CLI shape  {"final": {...}, "phases": {...}}  → always >> 10 chars
+  #   • Flat {}  → str("{}") == 2 chars → gate fails  ← empty pipeline guard
+  #   • Flat _dry_run_phase_output() → hundreds of chars → gate passes
+  #
+  - id: output_not_empty
+    type: assertion
+    check: "len(str(output)) > 10"
+    weight: 0
+    description: >
+      Hard gate: the pipeline must produce a non-trivial output.
+      If the pipeline stalls or returns an empty dict this gate fails
+      and the entire scenario is marked as failed regardless of other scores.
+
+  # --- Scored criterion 1: KeywordGrader structural check (weight 40) ---
+  #
+  # match_mode: "any" — at least one keyword must appear in the output text.
+  # KeywordGrader recurses into nested dicts, so it finds keywords regardless
+  # of whether output is flat or the CLI-structured {"final":...,"phases":...}.
+  #
+  # Keywords that appear in DRY-RUN mode (DryRunExecutor mock output):
+  #   "mock"       → "Mock execution of content task"
+  #   "execution"  → same
+  #   "content"    → same
+  #
+  # Keywords that appear in LIVE mode (real LLM output from this template):
+  #   "severity"       → investigate phase always assigns CRITICAL/HIGH/MEDIUM/LOW
+  #   "findings"       → report phase includes a Findings section
+  #   "vulnerability"  → investigation context naturally uses this term
+  #   "APPROVE"        → review phase verdict (APPROVE or REQUEST_CHANGES)
+  #
+  - id: output_structure_check
+    type: keyword
+    keywords:
+      - "severity"
+      - "findings"
+      - "vulnerability"
+      - "APPROVE"
+      - "mock"
+      - "execution"
+      - "content"
+    match_mode: "any"
+    threshold: 0.5
+    weight: 40
+    description: >
+      Structural keyword check verifying the output contains recognisable
+      content from a security audit pipeline run. Live mode: severity-rated
+      findings from the investigation, a compiled findings section in the
+      report, and a review verdict (APPROVE/REQUEST_CHANGES). Dry-run mode:
+      mock/execution/content from the DryRunExecutor stub. Uses match_mode
+      "any" so a single keyword hit scores 1.0. KeywordGrader recurses into
+      nested dicts automatically.
+
+  # --- Scored criterion 2: LLMJudgeGrader quality check (weight 60) ---
+  #
+  # In dry-run mode (ORCH_DRY_RUN=1) returns stub score 0.8.
+  # In live mode makes a real judge API call against the pipeline output.
+  #
+  - id: output_quality
+    type: llm_judge
+    judge_model: claude-haiku-4-5-20241022
+    rubric: |
+      You are evaluating the output of a 3-phase security audit pipeline that
+      investigated path traversal and unsafe eval/exec patterns in a Python CLI tool.
+
+      The pipeline ran: code investigation → audit report → independent review.
+      Score the overall output quality using these criteria (each worth equal weight):
+
+      1. Severity classification — Findings are rated with recognised severity labels
+         (CRITICAL, HIGH, MEDIUM, or LOW). Vague or absent ratings score 0 for this criterion.
+      2. Concrete locations — At least one finding references a specific file, function,
+         or line number. Generic statements without code locations score 0.
+      3. Actionable fixes — At least one finding includes a concrete fix (code snippet,
+         configuration change, or step-by-step instruction), not just a description of the problem.
+      4. Report structure — The output contains identifiable report sections such as
+         an executive summary, findings table, or recommended fix order.
+
+      Score on a scale from 0.0 (none of the criteria met) to 1.0 (all four met).
+
+      Respond with ONLY this format (no other text):
+      Score: <0.0–1.0>
+      Reasoning: <one sentence>
+    threshold: 0.60
+    weight: 60
+    description: >
+      LLM-as-judge rubric specific to security audit pipelines: checks for
+      severity classification, concrete finding locations, actionable fixes,
+      and structured report sections. Uses ORCH_DRY_RUN stub score (0.8) in CI mode.
+
+# ---------------------------------------------------------------------------
+# Scoring
+# ---------------------------------------------------------------------------
+scoring:
+  method: weighted_average
+  pass_threshold: 0.70
+  gate_mode: all_or_nothing
+  notes: >
+    Non-gate criteria weights: keyword(40) + llm_judge(60) = 100.
+    Expected dry-run weighted score: (1.0×40 + 0.8×60) / 100 = 0.88.
