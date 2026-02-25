@@ -184,8 +184,8 @@ Open `final_output.json` to see the complete result. The `result` field contains
 **Checking history from the database:**
 ```bash
 orch status                  # Show recent pipeline runs
-orch tasks list              # List all tasks with their states
-orch tasks show <task-id>    # Show details for a specific task
+orch list                    # List all tasks with their states
+orch status <task-id>         # Show details for a specific task
 ```
 
 ---
@@ -226,7 +226,7 @@ scoring:
 
 Run a scenario:
 ```bash
-orch scenario run scenarios/happy-path.yaml --output final_output.json
+orch scenario run scenarios/happy-path.yaml
 ```
 
 ### Custom Graders
@@ -282,7 +282,7 @@ After=network.target
 User=pi
 WorkingDirectory=/home/pi/orchestration-engine
 Environment="ANTHROPIC_API_KEY=sk-ant-..."
-ExecStart=/home/pi/orch-env/bin/orch start
+ExecStart=/home/pi/orch-env/bin/orch serve --host 0.0.0.0 --port 8080
 Restart=always
 
 [Install]
@@ -297,7 +297,7 @@ sudo systemctl start orch-engine
 - **Memory:** The engine itself uses ~50–80MB RAM. You're fine on a Pi 4 with 4GB. On a Pi 4 with 2GB, close browser tabs and other services if you're running many concurrent pipelines.
 - **SD card longevity:** SQLite writes frequently. If you're running pipelines 24/7, consider mounting the database on a USB SSD rather than the SD card:
   ```bash
-  orch start --db-path /mnt/usb/engine.db
+  orch serve --host 0.0.0.0 --port 8080 --db-path /mnt/usb/engine.db
   ```
 
 The Pi is a great choice for a local automation box that runs pipelines on a schedule — say, generating a weekly content digest or monitoring a topic and summarizing updates overnight.

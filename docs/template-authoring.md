@@ -28,7 +28,7 @@ id: my-pipeline                          # required · unique slug
 name: "My Pipeline"                      # required · display name
 version: "1.0.0"                         # semver · default "1.0.0"
 description: "What this pipeline does."  # shown in orch templates list
-author: "Your Name"                      # required by orch validate --extended
+author: "Your Name"                      # recommended for completeness
 category: "content"                      # content | code | research | etc.
 tags: [content, writing]                 # for search
 use_cases:                               # shown in orch templates info
@@ -856,7 +856,7 @@ Check for missing fields, duplicate IDs, unknown `depends_on` references, and de
 orch validate my-pipeline.yaml
 
 # Extended linting (also checks model_tier, thinking_level, prompt refs, docs fields)
-orch validate my-pipeline.yaml --extended
+orch validate my-pipeline.yaml
 ```
 
 Example output:
@@ -1105,7 +1105,7 @@ Phases
 
 Testing
   [ ] orch validate passes (0 errors)
-  [ ] orch validate --extended passes or warnings are understood
+  [ ] orch validate passes or warnings are understood
   [ ] orch list-phases shows expected execution waves
   [ ] orch run --mode dry-run completes without <MISSING:*> placeholders
   [ ] At least one live run tested with real input

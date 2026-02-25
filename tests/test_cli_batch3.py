@@ -82,18 +82,18 @@ class TestQuickstart:
         assert "orch templates list" in result.output
 
     def test_quickstart_shows_templates_info_command(self, monkeypatch):
-        """quickstart mentions 'orch templates info content-pipeline' in Next steps."""
+        """quickstart mentions 'orch templates info hello-pipeline' in Next steps."""
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["quickstart"])
         assert result.exit_code == 0
-        assert "content-pipeline" in result.output
+        assert "hello-pipeline" in result.output
 
-    def test_quickstart_shows_start_command(self, monkeypatch):
-        """quickstart mentions 'orch start content-pipeline' in Next steps."""
+    def test_quickstart_shows_run_command(self, monkeypatch):
+        """quickstart mentions 'orch run hello-pipeline.yaml' in Next steps."""
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["quickstart"])
         assert result.exit_code == 0
-        assert "orch start" in result.output
+        assert "orch run" in result.output
 
     def test_quickstart_runs_dry_run(self, monkeypatch):
         """quickstart runs the pipeline in dry-run mode (shows mode=dry-run)."""
