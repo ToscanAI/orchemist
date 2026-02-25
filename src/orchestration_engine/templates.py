@@ -592,6 +592,25 @@ class TemplateEngine:
                     "config_schema has type='object' but is missing 'properties'"
                 )
 
+        # ---- config_schema defaults validation (#145) -----------------
+        if schema and schema.get("type") == "object":
+            props = schema.get("properties", {})
+            for prop_name, prop_def in props.items():
+                if "default" in prop_def and "type" in prop_def:
+                    default_val = prop_def["default"]
+                    expected_type = prop_def["type"]
+                    type_map = {
+                        "string": str, "integer": int, "number": (int, float),
+                        "boolean": bool, "array": list, "object": dict,
+                    }
+                    py_type = type_map.get(expected_type)
+                    if py_type and default_val is not None and not isinstance(default_val, py_type):
+                        warnings.append(
+                            f"config_schema property '{prop_name}' has default "
+                            f"{default_val!r} ({type(default_val).__name__}) but "
+                            f"declares type '{expected_type}'"
+                        )
+
         # ---- documentation field checks (#78) -----------------------
         # Required: description, author, version
         if not (raw_data.get("description") or "").strip():

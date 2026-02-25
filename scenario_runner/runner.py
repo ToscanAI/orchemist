@@ -75,7 +75,7 @@ class ScenarioRunner:
         if not isinstance(data, dict):
             raise ValueError(
                 f"Scenario file must be a YAML mapping, got {type(data).__name__}: "
-                f"{scenario_path}"
+                f"{Path(scenario_path).name}"
             )
 
         for key in _REQUIRED_KEYS:
@@ -293,8 +293,7 @@ class ScenarioRunner:
             if not rubric_path.is_relative_to(scenarios_root.resolve()):
                 raise ValueError(
                     f"Rubric path escapes scenarios directory: {criterion['rubric_file']!r}\n"
-                    f"  Resolved to: {rubric_path}\n"
-                    f"  Allowed root: {scenarios_root.resolve()}"
+                    f"  Rubric files must be within the scenarios/ directory."
                 )
 
             with open(rubric_path, "r", encoding="utf-8") as fh:
