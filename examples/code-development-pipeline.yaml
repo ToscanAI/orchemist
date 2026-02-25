@@ -162,7 +162,7 @@ phases:
       1. Write tests for every acceptance criterion
       2. Write tests for every identified edge case
       3. Include happy path and error path tests
-      4. Use {input} as the test framework
+      4. Use {input[test_framework]} as the test framework
       5. Tests should be runnable independently
       6. Include clear test names that describe what they verify
 
