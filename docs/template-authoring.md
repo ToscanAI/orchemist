@@ -938,7 +938,7 @@ scenarios:
 ```
 
 ```bash
-orch test scenarios/my-pipeline-smoke.yaml
+orch scenario run scenarios/my-pipeline-smoke.yaml
 ```
 
 ---
@@ -961,6 +961,62 @@ Guidelines from production use:
 **Key insight:** If a phase consistently times out, the prompt is too broad. Tighten the spec instead of increasing the timeout. A focused 10-minute agent produces better output than a wandering 30-minute one.
 
 **OpenClaw mode note:** When running via `orch run --mode openclaw`, the pipeline process itself must stay alive for the full duration. Use `nohup` or a process manager for pipelines expected to run >10 minutes.
+
+---
+
+### 7.5 Configuring Graders for Scenario Testing
+
+Graders evaluate pipeline output quality. Attach them via scenario YAML files.
+
+**Available graders:**
+
+| Grader | Use for | Config |
+|--------|---------|--------|
+| `keyword` | Structural checks (required terms, format) | `keywords: [list]`, `min_matches: N` |
+| `llm_judge` | Quality assessment (coherence, accuracy) | `rubric: <text>`, `model: <model-id>` |
+| `regex` | Pattern matching (dates, URLs, code blocks) | `pattern: <regex>`, `must_match: true` |
+
+**Example scenario with graders:**
+
+```yaml
+id: my-pipeline-quality-check
+template: my-pipeline.yaml
+input:
+  task: "Summarize recent AI developments"
+
+acceptance:
+  - criterion: "Contains key topics"
+    grader: keyword
+    weight: 30
+    config:
+      keywords: ["transformer", "language model", "training"]
+      min_matches: 2
+
+  - criterion: "Output is coherent and well-structured"
+    grader: llm_judge
+    weight: 50
+    config:
+      rubric: |
+        Score the output on:
+        1. Logical flow (0-25)
+        2. Factual accuracy (0-25)
+        3. Completeness (0-25)
+        4. Clarity (0-25)
+      model: "anthropic/claude-sonnet-4-6"
+
+  - criterion: "Includes at least one source URL"
+    grader: regex
+    weight: 20
+    config:
+      pattern: "https?://[\\w./\\-]+"
+      must_match: true
+
+pass_threshold: 70
+```
+
+**Run with:** `orch scenario run scenarios/my-check.yaml --mode dry-run`
+
+**Writing custom graders:** Implement the `Grader` base class in `scenario_runner/graders/`. See `keyword_grader.py` for a minimal example (~50 lines).
 
 ---
 
