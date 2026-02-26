@@ -95,6 +95,7 @@ phases:
   - id: flow_review
     name: "Flow Review"
     description: "Check logical flow and readability"
+    depends_on: [editorial_rewrite]
     model_tier: sonnet
     prompt_template: |
       Review this article for logical flow and readability:
@@ -107,6 +108,7 @@ phases:
   - id: red_team
     name: "Red Team"
     description: "Adversarial review for claims, tone, and biographical accuracy"
+    depends_on: [editorial_rewrite]
     model_tier: opus
     prompt_template: |
       You are an adversarial reviewer. Critically analyze this article:
@@ -131,6 +133,7 @@ phases:
   - id: consistency
     name: "Consistency Check"
     description: "Verify factual consistency and citation compliance"
+    depends_on: [editorial_rewrite]
     model_tier: sonnet
     prompt_template: |
       Check this article for factual consistency and citation compliance:
@@ -155,6 +158,7 @@ phases:
   - id: final_flow
     name: "Final Draft - Flow Fixes"
     description: "Apply flow review fixes"
+    depends_on: [editorial_rewrite, flow_review]
     model_tier: haiku
     prompt_template: |
       Apply these flow fixes to the article:
@@ -170,6 +174,7 @@ phases:
   - id: final_redteam
     name: "Final Draft - Red Team Fixes"
     description: "Apply red team fixes with editorial judgment"
+    depends_on: [editorial_rewrite, red_team]
     model_tier: sonnet
     prompt_template: |
       Apply these red team fixes to the article:
@@ -185,6 +190,7 @@ phases:
   - id: final_consistency
     name: "Final Draft - Consistency Fixes"
     description: "Apply consistency fixes"
+    depends_on: [editorial_rewrite, consistency]
     model_tier: haiku
     prompt_template: |
       Apply these consistency fixes to the article:
@@ -200,6 +206,7 @@ phases:
   - id: select_best
     name: "Select Best Draft"
     description: "Compare three final drafts and produce the best version"
+    depends_on: [final_flow, final_redteam, final_consistency]
     model_tier: opus
     prompt_template: |
       Compare these three final drafts and produce the best version:
