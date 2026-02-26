@@ -1,4 +1,4 @@
-id: editorial-rewrite
+id: editorial_rewrite
 name: "Editorial Rewrite Pipeline"
 description: "Takes an existing article and editorial brief, rewrites with new material, then runs through fact-check, red team, consistency, parallel final drafts, and best-selection. Starts at phase 2 (writing) — research is pre-provided."
 author: "Toscan"
@@ -53,7 +53,7 @@ config_schema:
       default: "blog"
 
 phases:
-  - id: editorial-rewrite
+  - id: editorial_rewrite
     name: "Editorial Rewrite"
     description: "Rewrite the article incorporating new material and editorial direction"
     model_tier: sonnet
@@ -92,26 +92,26 @@ phases:
 
       Output the complete rewritten article.
 
-  - id: flow-review
+  - id: flow_review
     name: "Flow Review"
     description: "Check logical flow and readability"
     model_tier: sonnet
     prompt_template: |
       Review this article for logical flow and readability:
 
-      {editorial-rewrite.output}
+      {editorial_rewrite.output}
 
       Check: argument progression, paragraph transitions, section coherence, conclusion strength, humor integration (does it land naturally or feel forced?).
       List specific issues with suggested fixes.
 
-  - id: red-team
+  - id: red_team
     name: "Red Team"
     description: "Adversarial review for claims, tone, and biographical accuracy"
     model_tier: opus
     prompt_template: |
       You are an adversarial reviewer. Critically analyze this article:
 
-      {editorial-rewrite.output}
+      {editorial_rewrite.output}
 
       ## Author-Provided Facts (ground truth)
       {author_facts}
@@ -135,7 +135,7 @@ phases:
     prompt_template: |
       Check this article for factual consistency and citation compliance:
 
-      {editorial-rewrite.output}
+      {editorial_rewrite.output}
 
       ## Author-Provided Facts (ground truth)
       {author_facts}
@@ -152,7 +152,7 @@ phases:
 
       List any issues found.
 
-  - id: final-flow
+  - id: final_flow
     name: "Final Draft - Flow Fixes"
     description: "Apply flow review fixes"
     model_tier: haiku
@@ -160,14 +160,14 @@ phases:
       Apply these flow fixes to the article:
 
       Original:
-      {editorial-rewrite.output}
+      {editorial_rewrite.output}
 
       Flow issues:
-      {flow-review.output}
+      {flow_review.output}
 
       Rewrite incorporating all flow fixes. Preserve the original voice, humor, and content.
 
-  - id: final-redteam
+  - id: final_redteam
     name: "Final Draft - Red Team Fixes"
     description: "Apply red team fixes with editorial judgment"
     model_tier: sonnet
@@ -175,14 +175,14 @@ phases:
       Apply these red team fixes to the article:
 
       Original:
-      {editorial-rewrite.output}
+      {editorial_rewrite.output}
 
       Red team issues:
-      {red-team.output}
+      {red_team.output}
 
       Address all concerns. Soften problematic claims, add nuance, remove unsupported statements. Keep the core argument and humor intact. Do NOT water down the article's personality.
 
-  - id: final-consistency
+  - id: final_consistency
     name: "Final Draft - Consistency Fixes"
     description: "Apply consistency fixes"
     model_tier: haiku
@@ -190,14 +190,14 @@ phases:
       Apply these consistency fixes to the article:
 
       Original:
-      {editorial-rewrite.output}
+      {editorial_rewrite.output}
 
       Consistency issues:
       {consistency.output}
 
       Fix all inconsistencies. Ensure numbers, terms, and claims are consistent throughout. Preserve voice and humor.
 
-  - id: select-best
+  - id: select_best
     name: "Select Best Draft"
     description: "Compare three final drafts and produce the best version"
     model_tier: opus
@@ -205,13 +205,13 @@ phases:
       Compare these three final drafts and produce the best version:
 
       Draft A (flow-focused):
-      {final-flow.output}
+      {final_flow.output}
 
       Draft B (red-team-hardened):
-      {final-redteam.output}
+      {final_redteam.output}
 
       Draft C (consistency-fixed):
-      {final-consistency.output}
+      {final_consistency.output}
 
       Evaluate each on: accuracy, readability, tone, argument strength, humor effectiveness, competitive claim fairness, backlash risk.
 
