@@ -8,8 +8,8 @@ class TestContentPipelineV23:
     def test_loads_successfully(self):
         engine = TemplateEngine()
         tmpl = engine.load_template(TEMPLATE_PATH)
-        assert tmpl.id == "content-pipeline-v23"
-        assert tmpl.version == "2.3.0"
+        assert tmpl.id == "content-pipeline-v24"
+        assert tmpl.version == "2.4.0"
 
     def test_has_10_phases(self):
         engine = TemplateEngine()
