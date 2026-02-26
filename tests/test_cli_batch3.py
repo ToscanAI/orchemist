@@ -244,7 +244,7 @@ class TestStartWithName:
             ["start", "content-pipeline", "--mode", "dry-run", "--yes"],
         )
         assert result.exit_code == 0
-        assert "Content Pipeline v2.3" in result.output
+        assert "Content Pipeline v2.4" in result.output
 
     def test_start_by_name_hello_pipeline(self, monkeypatch):
         """start by display name 'hello-pipeline' works."""
@@ -280,7 +280,7 @@ class TestStartWithName:
             ["start", "content-pipe", "--mode", "dry-run"],
         )
         assert result.exit_code != 0
-        assert "Content Pipeline v2.3" in result.output or "content-pipeline" in result.output
+        assert "Content Pipeline v2.4" in result.output or "content-pipeline" in result.output
 
 
 class TestStartYesFlag:

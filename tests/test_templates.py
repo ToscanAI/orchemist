@@ -116,9 +116,9 @@ class TestTemplateLoading:
         """Loading the real content-pipeline.yaml succeeds."""
         tpl = engine.load_template(content_pipeline_yaml)
 
-        assert tpl.id == "content-pipeline-v23"
-        assert tpl.name == "Content Pipeline v2.3"
-        assert tpl.version == "2.3.0"
+        assert tpl.id == "content-pipeline-v24"
+        assert tpl.name == "Content Pipeline v2.4"
+        assert tpl.version == "2.4.0"
         assert len(tpl.phases) == 10
 
     def test_load_phase_fields(self, engine, content_pipeline_yaml):

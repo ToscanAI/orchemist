@@ -6,6 +6,7 @@ Covers:
 """
 
 import json
+import yaml
 from pathlib import Path
 
 import pytest
@@ -53,7 +54,7 @@ class TestTemplatesList:
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["templates", "list"])
         assert result.exit_code == 0, result.output
-        assert "Content Pipeline v2.3" in result.output
+        assert "Content Pipeline v2.4" in result.output
 
     def test_list_finds_hello_pipeline(self, monkeypatch):
         """templates list finds hello-pipeline in ./examples/."""
@@ -67,7 +68,7 @@ class TestTemplatesList:
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["templates", "list"])
         assert result.exit_code == 0
-        assert "2.3.0" in result.output  # content-pipeline version
+        assert "2.4.0" in result.output  # content-pipeline version
 
     def test_list_shows_phase_count(self, monkeypatch):
         """templates list shows phase count."""
@@ -117,7 +118,7 @@ class TestTemplatesList:
         result = _invoke(["templates", "list", "--json"])
         data = json.loads(result.output)
         names = [e["name"] for e in data]
-        assert "Content Pipeline v2.3" in names
+        assert "Content Pipeline v2.4" in names
         assert "Hello Pipeline" in names
 
     def test_list_json_phases_is_integer(self, monkeypatch):
@@ -158,9 +159,9 @@ class TestTemplatesList:
         result = _invoke(["templates", "list"])
         assert result.exit_code == 0
         # The full description of content-pipeline is >60 chars; it should be truncated.
-        full_desc = (
-            "An 11-phase content creation pipeline implementing the v2.3 protocol."
-        )
+        # Load dynamically so this test stays correct across template version bumps.
+        full_desc = yaml.safe_load(CONTENT_YAML.read_text()).get("description", "")
+        assert len(full_desc) > 60, "Fixture assumption broken: description must be >60 chars for truncation test"
         # Full desc should NOT appear verbatim (it's too long)
         assert full_desc not in result.output
 
@@ -230,7 +231,7 @@ class TestTemplatesInfo:
         assert "audience" in result.output
 
     def test_info_content_pipeline_shows_phases_table(self):
-        """templates info shows key phase IDs for content-pipeline v2.3."""
+        """templates info shows key phase IDs for content-pipeline v2.4."""
         result = _invoke(["templates", "info", str(CONTENT_YAML)])
         for phase_id in ("research", "outline", "draft", "red-team", "select-best"):
             assert phase_id in result.output, (
@@ -238,7 +239,7 @@ class TestTemplatesInfo:
             )
 
     def test_info_content_pipeline_execution_order_6_waves(self):
-        """content-pipeline v2.3 has 10 phases across 6 waves."""
+        """content-pipeline v2.4 has 10 phases across 6 waves."""
         result = _invoke(["templates", "info", str(CONTENT_YAML)])
         assert "Wave 6" in result.output
 
@@ -254,7 +255,7 @@ class TestTemplatesInfo:
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["templates", "info", "content-pipeline"])
         assert result.exit_code == 0, result.output
-        assert "Content Pipeline v2.3" in result.output
+        assert "Content Pipeline v2.4" in result.output
 
     def test_info_name_lookup_by_name(self, monkeypatch):
         """templates info finds template by name (case-insensitive)."""
@@ -296,9 +297,9 @@ class TestTemplatesInfo:
         # "content-pipe" doesn't exactly match "content-pipeline"
         # but IS a substring of it → should show as suggestion
         result = _invoke(["templates", "info", "content-pipe"])
-        # Should suggest "Content Pipeline v2.3"
+        # Should suggest "Content Pipeline v2.4"
         assert result.exit_code != 0
-        assert "Content Pipeline v2.3" in result.output or "content-pipeline" in result.output
+        assert "Content Pipeline v2.4" in result.output or "content-pipeline" in result.output
 
     def test_info_missing_file_path_exits_nonzero(self):
         """templates info with a non-existent .yaml path exits with error."""
