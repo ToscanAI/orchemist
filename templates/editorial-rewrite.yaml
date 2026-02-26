@@ -1,0 +1,218 @@
+id: editorial-rewrite
+name: "Editorial Rewrite Pipeline"
+description: "Takes an existing article and editorial brief, rewrites with new material, then runs through fact-check, red team, consistency, parallel final drafts, and best-selection. Starts at phase 2 (writing) — research is pre-provided."
+author: "Toscan"
+version: "1.0.0"
+category: "content"
+tags: [content, editorial, rewrite, fact-checking, red-team]
+use_cases:
+  - "Expanding an existing article with new themes"
+  - "Editorial revision with quality pipeline"
+  - "Article evolution with competitive/research data"
+example_input:
+  source_article: "[full text of existing article]"
+  editorial_brief: "Add humor per Jennifer Aaker framework, weave in competitive landscape, expand orchestrator framing beyond content"
+  research_data: "[research synthesis from competitive research pipeline]"
+  author_name: "Conny Lazo"
+  author_facts: "[author biographical facts]"
+  audience: "technical leaders and AI practitioners"
+  tone: "professional with humor"
+  word_count: 3000
+  publication: "LinkedIn newsletter / blog"
+
+config_schema:
+  type: object
+  required: [source_article, editorial_brief, research_data, author_name, author_facts]
+  properties:
+    source_article:
+      type: string
+      description: "The full text of the existing article to rewrite/expand"
+    editorial_brief:
+      type: string
+      description: "Specific additions, changes, and themes to weave in"
+    research_data:
+      type: string
+      description: "Research synthesis to incorporate (from research pipeline)"
+    author_name:
+      type: string
+      description: "Author's name for byline and first-person references"
+    author_facts:
+      type: string
+      description: "Author-provided biographical facts. Agents MUST use these verbatim — never invent."
+    audience:
+      type: string
+      default: "technical leaders"
+    tone:
+      type: string
+      default: "professional"
+    word_count:
+      type: integer
+      default: 3000
+    publication:
+      type: string
+      default: "blog"
+
+phases:
+  - id: editorial-rewrite
+    name: "Editorial Rewrite"
+    description: "Rewrite the article incorporating new material and editorial direction"
+    model_tier: sonnet
+    prompt_template: |
+      You are a senior editor and writer. You have an excellent published article that needs to evolve with new material and editorial direction.
+
+      ## Source Article
+      {source_article}
+
+      ## Editorial Brief
+      {editorial_brief}
+
+      ## Research Data (new material to incorporate)
+      {research_data}
+
+      ## Author: {author_name}
+
+      ## CRITICAL: Author-Provided Facts
+      Use ONLY these for any first-person claims, anecdotes, or biographical details. Do NOT invent:
+      {author_facts}
+
+      ## Task
+      Rewrite the article incorporating:
+      1. All editorial brief directives
+      2. Relevant research data with INLINE CITATIONS for every factual claim
+      3. The existing article's strongest sections (preserve what works)
+      4. Target: {word_count} words, {tone} tone, for {audience}
+
+      ## Rules
+      - Preserve the author's voice and first-person perspective
+      - Every factual claim needs a source citation
+      - First-person anecdotes MUST come from author_facts — never invent
+      - Weave new material naturally — don't bolt it on
+      - If the editorial brief asks for humor, make it organic, not forced
+      - The article should feel like a natural evolution, not a Frankenstein
+
+      Output the complete rewritten article.
+
+  - id: flow-review
+    name: "Flow Review"
+    description: "Check logical flow and readability"
+    model_tier: sonnet
+    prompt_template: |
+      Review this article for logical flow and readability:
+
+      {editorial-rewrite.output}
+
+      Check: argument progression, paragraph transitions, section coherence, conclusion strength, humor integration (does it land naturally or feel forced?).
+      List specific issues with suggested fixes.
+
+  - id: red-team
+    name: "Red Team"
+    description: "Adversarial review for claims, tone, and biographical accuracy"
+    model_tier: opus
+    prompt_template: |
+      You are an adversarial reviewer. Critically analyze this article:
+
+      {editorial-rewrite.output}
+
+      ## Author-Provided Facts (ground truth)
+      {author_facts}
+
+      Check for:
+      1. Unsupported claims — every factual statement needs a source citation
+      2. Logical fallacies
+      3. Tone issues and potential backlash from practitioners in ANY domain mentioned
+      4. Missing counterarguments
+      5. HALLUCINATED BIOGRAPHY — compare every first-person claim against author facts. Flag ANY detail not found as FABRICATED.
+      6. Invented quotes or statistics
+      7. Competitive claims — are comparisons with other tools fair and accurate?
+      8. Humor — does it enhance or undermine credibility?
+
+      Score backlash risk 0-100. List every problematic phrase.
+
+  - id: consistency
+    name: "Consistency Check"
+    description: "Verify factual consistency and citation compliance"
+    model_tier: sonnet
+    prompt_template: |
+      Check this article for factual consistency and citation compliance:
+
+      {editorial-rewrite.output}
+
+      ## Author-Provided Facts (ground truth)
+      {author_facts}
+
+      Verify:
+      1. Numbers match across sections
+      2. Claims align with cited sources
+      3. No contradictions between paragraphs
+      4. Technical terms used consistently
+      5. EVERY factual claim has an inline citation
+      6. ALL first-person anecdotes match author facts exactly
+      7. Competitive comparisons are fair and sourced
+      8. No fabricated quotes or statistics
+
+      List any issues found.
+
+  - id: final-flow
+    name: "Final Draft - Flow Fixes"
+    description: "Apply flow review fixes"
+    model_tier: haiku
+    prompt_template: |
+      Apply these flow fixes to the article:
+
+      Original:
+      {editorial-rewrite.output}
+
+      Flow issues:
+      {flow-review.output}
+
+      Rewrite incorporating all flow fixes. Preserve the original voice, humor, and content.
+
+  - id: final-redteam
+    name: "Final Draft - Red Team Fixes"
+    description: "Apply red team fixes with editorial judgment"
+    model_tier: sonnet
+    prompt_template: |
+      Apply these red team fixes to the article:
+
+      Original:
+      {editorial-rewrite.output}
+
+      Red team issues:
+      {red-team.output}
+
+      Address all concerns. Soften problematic claims, add nuance, remove unsupported statements. Keep the core argument and humor intact. Do NOT water down the article's personality.
+
+  - id: final-consistency
+    name: "Final Draft - Consistency Fixes"
+    description: "Apply consistency fixes"
+    model_tier: haiku
+    prompt_template: |
+      Apply these consistency fixes to the article:
+
+      Original:
+      {editorial-rewrite.output}
+
+      Consistency issues:
+      {consistency.output}
+
+      Fix all inconsistencies. Ensure numbers, terms, and claims are consistent throughout. Preserve voice and humor.
+
+  - id: select-best
+    name: "Select Best Draft"
+    description: "Compare three final drafts and produce the best version"
+    model_tier: opus
+    prompt_template: |
+      Compare these three final drafts and produce the best version:
+
+      Draft A (flow-focused):
+      {final-flow.output}
+
+      Draft B (red-team-hardened):
+      {final-redteam.output}
+
+      Draft C (consistency-fixed):
+      {final-consistency.output}
+
+      Evaluate each on: accuracy, readability, tone, argument strength, humor effectiveness, competitive claim fairness, backlash risk.
+
+      Select the best and output it in full. If the best version can be improved by cherry-picking specific passages from other drafts, do so. Explain your choice briefly at the top.
