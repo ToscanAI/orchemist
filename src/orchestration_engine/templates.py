@@ -373,7 +373,7 @@ class TemplateEngine:
             phase_data.setdefault("output_schema", {})
 
             # Accept common field aliases (postmortem fix 2026-02-26)
-            _PHASE_ALIASES = {
+            _PHASE_ALIASES: Dict[str, str] = {
                 "prompt": "prompt_template",
                 "model": "model_tier",
             }
@@ -543,8 +543,8 @@ class TemplateEngine:
         for phase in template.phases:
             if not phase.prompt_template or not phase.prompt_template.strip():
                 errors.append(
-                    f"Phase '{phase.id}' has empty prompt_template. "
-                    f"Did you use 'prompt:' instead of 'prompt_template:'?"
+                    f"Phase '{phase.id}' has empty prompt_template — "
+                    f"every phase must define a prompt."
                 )
 
         # Check that all skill_ref files exist (with path traversal protection)
