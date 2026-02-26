@@ -67,7 +67,7 @@ class TestTemplatesList:
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["templates", "list"])
         assert result.exit_code == 0
-        assert "2.3.0" in result.output  # content-pipeline version
+        assert "2.4.0" in result.output  # content-pipeline version
 
     def test_list_shows_phase_count(self, monkeypatch):
         """templates list shows phase count."""
