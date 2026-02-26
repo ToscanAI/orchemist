@@ -371,6 +371,28 @@ class TemplateEngine:
             # Guard against YAML nulls for list/dict fields
             phase_data.setdefault("depends_on", [])
             phase_data.setdefault("output_schema", {})
+
+            # Accept common field aliases (postmortem fix 2026-02-26)
+            _PHASE_ALIASES = {
+                "prompt": "prompt_template",
+                "model": "model_tier",
+            }
+            for alias, canonical in _PHASE_ALIASES.items():
+                if alias in phase_data and canonical not in phase_data:
+                    logger.info(
+                        f"Phase '{phase_data.get('id', '?')}': "
+                        f"aliased '{alias}' → '{canonical}'"
+                    )
+                    phase_data[canonical] = phase_data.pop(alias)
+                elif alias in phase_data and canonical in phase_data:
+                    # Both present — canonical wins, drop alias
+                    logger.warning(
+                        f"Phase '{phase_data.get('id', '?')}': "
+                        f"both '{alias}' and '{canonical}' present; "
+                        f"using '{canonical}', ignoring '{alias}'"
+                    )
+                    phase_data.pop(alias)
+
             # Filter to only known PhaseDefinition fields to avoid TypeError
             known_fields = {
                 "id", "name", "description", "task_type", "model_tier",
@@ -379,6 +401,15 @@ class TemplateEngine:
                 "skill_refs",
                 "context_files",
             }
+
+            # Warn on unknown fields (prevents silent data loss)
+            unknown = set(phase_data.keys()) - known_fields
+            if unknown:
+                logger.warning(
+                    f"Phase '{phase_data.get('id', '?')}': "
+                    f"unknown fields dropped: {unknown}"
+                )
+
             cleaned = {k: v for k, v in phase_data.items() if k in known_fields}
             phases.append(PhaseDefinition(**cleaned))
 
@@ -507,6 +538,14 @@ class TemplateEngine:
                         f"git.commit_phases references unknown phase '{cp}' "
                         f"(known phases: {sorted(all_ids)})"
                     )
+
+        # Check for empty prompt_template (postmortem fix 2026-02-26)
+        for phase in template.phases:
+            if not phase.prompt_template or not phase.prompt_template.strip():
+                errors.append(
+                    f"Phase '{phase.id}' has empty prompt_template. "
+                    f"Did you use 'prompt:' instead of 'prompt_template:'?"
+                )
 
         # Check that all skill_ref files exist (with path traversal protection)
         template_dir = (

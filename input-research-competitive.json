@@ -1,0 +1,7 @@
+{
+  "research_topic": "AI orchestration engines and multi-agent frameworks",
+  "competitors": "LangGraph, CrewAI, AutoGen, Dify, Semantic Kernel, Haystack, Promptflow, Langflow",
+  "our_product": "YAML-based pipeline orchestrator with scenario testing, multi-executor support (Anthropic/OpenClaw/Gemini), intent preservation through phase-level prompt engineering, and built-in quality gates. Open source, runs on a Raspberry Pi. 2100+ tests. Think Docker Compose for AI pipelines.",
+  "focus_areas": "intent preservation, quality gates, bias mitigation, ease of use, YAML vs code, testing frameworks, multi-model support",
+  "additional_research": "Jennifer Aaker humor framework for business communication; how humor increases engagement and trust in technical content; StrongDM dark factory testing methodology"
+}

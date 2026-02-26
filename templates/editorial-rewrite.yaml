@@ -56,9 +56,8 @@ phases:
   - id: editorial-rewrite
     name: "Editorial Rewrite"
     description: "Rewrite the article incorporating new material and editorial direction"
-    model: "anthropic/claude-sonnet-4-6"
-    temperature: 0.6
-    prompt: |
+    model_tier: sonnet
+    prompt_template: |
       You are a senior editor and writer. You have an excellent published article that needs to evolve with new material and editorial direction.
 
       ## Source Article
@@ -96,9 +95,8 @@ phases:
   - id: flow-review
     name: "Flow Review"
     description: "Check logical flow and readability"
-    model: "anthropic/claude-sonnet-4-6"
-    temperature: 0.3
-    prompt: |
+    model_tier: sonnet
+    prompt_template: |
       Review this article for logical flow and readability:
 
       {editorial-rewrite.output}
@@ -109,9 +107,8 @@ phases:
   - id: red-team
     name: "Red Team"
     description: "Adversarial review for claims, tone, and biographical accuracy"
-    model: "anthropic/claude-opus-4-6"
-    temperature: 0.4
-    prompt: |
+    model_tier: opus
+    prompt_template: |
       You are an adversarial reviewer. Critically analyze this article:
 
       {editorial-rewrite.output}
@@ -134,9 +131,8 @@ phases:
   - id: consistency
     name: "Consistency Check"
     description: "Verify factual consistency and citation compliance"
-    model: "anthropic/claude-sonnet-4-6"
-    temperature: 0.2
-    prompt: |
+    model_tier: sonnet
+    prompt_template: |
       Check this article for factual consistency and citation compliance:
 
       {editorial-rewrite.output}
@@ -159,9 +155,8 @@ phases:
   - id: final-flow
     name: "Final Draft - Flow Fixes"
     description: "Apply flow review fixes"
-    model: "anthropic/claude-haiku-4-5-20251001"
-    temperature: 0.3
-    prompt: |
+    model_tier: haiku
+    prompt_template: |
       Apply these flow fixes to the article:
 
       Original:
@@ -175,9 +170,8 @@ phases:
   - id: final-redteam
     name: "Final Draft - Red Team Fixes"
     description: "Apply red team fixes with editorial judgment"
-    model: "anthropic/claude-sonnet-4-6"
-    temperature: 0.4
-    prompt: |
+    model_tier: sonnet
+    prompt_template: |
       Apply these red team fixes to the article:
 
       Original:
@@ -191,9 +185,8 @@ phases:
   - id: final-consistency
     name: "Final Draft - Consistency Fixes"
     description: "Apply consistency fixes"
-    model: "anthropic/claude-haiku-4-5-20251001"
-    temperature: 0.2
-    prompt: |
+    model_tier: haiku
+    prompt_template: |
       Apply these consistency fixes to the article:
 
       Original:
@@ -207,9 +200,8 @@ phases:
   - id: select-best
     name: "Select Best Draft"
     description: "Compare three final drafts and produce the best version"
-    model: "anthropic/claude-opus-4-6"
-    temperature: 0.5
-    prompt: |
+    model_tier: opus
+    prompt_template: |
       Compare these three final drafts and produce the best version:
 
       Draft A (flow-focused):

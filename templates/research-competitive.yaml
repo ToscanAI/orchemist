@@ -39,7 +39,7 @@ config_schema:
 phases:
   - id: market_scan
     name: "Market Scan"
-    prompt: |
+    prompt_template: |
       You are a market research analyst. Conduct a thorough scan of the current landscape for: {research_topic}
 
       **Competitors to analyze:** {competitors}
@@ -64,12 +64,12 @@ phases:
       Aim for 80+ sources total across all competitors and topics.
 
       Output a structured research brief with clear sections per competitor and per additional topic.
-    model: "anthropic/claude-sonnet-4-6"
-    temperature: 0.3
+    model_tier: sonnet
+
 
   - id: competitive_analysis
     name: "Competitive Deep-Dive"
-    prompt: |
+    prompt_template: |
       You are a competitive strategy analyst. Using the market research below, produce a deep competitive analysis.
 
       **Our product:** {our_product}
@@ -101,12 +101,12 @@ phases:
       How do the additional research findings (e.g., humor frameworks, communication strategies) apply to our product positioning and content strategy?
 
       **Be rigorous.** If a competitor does something better than us, say so. Credibility comes from honesty.
-    model: "anthropic/claude-sonnet-4-6"
-    temperature: 0.4
+    model_tier: sonnet
+
 
   - id: synthesis
     name: "Research Synthesis"
-    prompt: |
+    prompt_template: |
       You are a senior strategist. Synthesize the market scan and competitive analysis into an actionable brief.
 
       ## Market Scan
@@ -142,5 +142,5 @@ phases:
          - Each with supporting evidence from the research
 
       Keep it dense. No filler. Every sentence should carry information.
-    model: "anthropic/claude-sonnet-4-6"
-    temperature: 0.5
+    model_tier: sonnet
+
