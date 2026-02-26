@@ -87,6 +87,20 @@ DEFAULT_TIMEOUT_SECONDS = 600
 # How long to sleep between each poll of the session status endpoint.
 POLL_INTERVAL_SECONDS = 3.0
 
+# Instruction appended to every sub-agent prompt so it returns its full output
+# as text instead of writing it to workspace files.  The orchestrator reads the
+# final assistant message text — anything written to files is invisible to it.
+OUTPUT_CAPTURE_INSTRUCTION = (
+    "\n\n---\n"
+    "ORCHESTRATOR INSTRUCTION (do not remove):\n"
+    "You are running as a sub-agent inside an orchestration pipeline.\n"
+    "Return your COMPLETE output as text in your final response.\n"
+    "Do NOT write output to workspace files — the orchestrator reads your\n"
+    "text reply directly and cannot access files you write.\n"
+    "Your final assistant message is what gets passed to the next pipeline phase.\n"
+    "---"
+)
+
 
 class OpenClawExecutor(TaskExecutor):
     """Executor that spawns real OpenClaw sub-agent sessions per pipeline phase.
@@ -199,6 +213,11 @@ class OpenClawExecutor(TaskExecutor):
         prompt = task.payload.get("prompt", "")
         if not prompt:
             prompt = json.dumps(task.payload, indent=2)
+
+        # Append the output-capture instruction so sub-agents return their
+        # full output as text rather than writing it to workspace files
+        # (see issue #210).
+        prompt = prompt + OUTPUT_CAPTURE_INSTRUCTION
 
         logger.info(
             f"OpenClawExecutor: task={task_id}, model={model}, "
@@ -481,31 +500,24 @@ class OpenClawExecutor(TaskExecutor):
                 logger.debug(f"Session {session_key}: stopReason='{stop}', still running...")
                 continue
 
-            # Session completed — extract text from the last assistant message
-            content = last_assistant.get("content", [])
+            # Session completed — extract text from ALL assistant messages in
+            # order so that sub-agents which produce output across multiple
+            # turns (or whose final message is a brief summary after earlier
+            # substantive replies) are captured fully.  This addresses #210
+            # where the orchestrator only received the ~2 KB final summary
+            # instead of the full ~17-30 KB output.
             text_parts = []
-            for c in (content if isinstance(content, list) else []):
-                if isinstance(c, dict) and c.get("type") == "text":
-                    text = c.get("text", "").strip()
-                    if text:
-                        text_parts.append(text)
+            for msg in messages:
+                if msg.get("role") != "assistant":
+                    continue
+                mc = msg.get("content", [])
+                for c in (mc if isinstance(mc, list) else []):
+                    if isinstance(c, dict) and c.get("type") == "text":
+                        text = c.get("text", "").strip()
+                        if text:
+                            text_parts.append(text)
 
-            # If the last assistant message has no text (only tool calls that
-            # completed), look backwards for the most recent text-bearing message
-            if not text_parts:
-                for msg in reversed(messages):
-                    if msg.get("role") != "assistant":
-                        continue
-                    mc = msg.get("content", [])
-                    for c in (mc if isinstance(mc, list) else []):
-                        if isinstance(c, dict) and c.get("type") == "text":
-                            text = c.get("text", "").strip()
-                            if text:
-                                text_parts.append(text)
-                    if text_parts:
-                        break
-
-            output = "\n".join(text_parts)
+            output = "\n\n".join(text_parts)
 
             # Extract token usage — sessions_history doesn't include per-message
             # usage, so we query sessions_list for the session's totalTokens
