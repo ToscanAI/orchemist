@@ -740,3 +740,266 @@ phases:
 
         assert captured_kwargs.get("gateway_url") == "http://custom-host:9999"
         assert captured_kwargs.get("gateway_token") == "my-secret-token"
+
+
+# ---------------------------------------------------------------------------
+# Issue #210 — Output capture tests
+# ---------------------------------------------------------------------------
+
+
+class TestOutputCaptureInstruction:
+    """The OUTPUT_CAPTURE_INSTRUCTION must exist and be appended to prompts."""
+
+    def test_constant_exists_and_non_empty(self):
+        from orchestration_engine.openclaw_executor import OUTPUT_CAPTURE_INSTRUCTION
+
+        assert isinstance(OUTPUT_CAPTURE_INSTRUCTION, str)
+        assert len(OUTPUT_CAPTURE_INSTRUCTION) > 0
+
+    def test_constant_contains_key_guidance(self):
+        from orchestration_engine.openclaw_executor import OUTPUT_CAPTURE_INSTRUCTION
+
+        # Must tell the sub-agent to return output as text
+        assert "COMPLETE output" in OUTPUT_CAPTURE_INSTRUCTION or "complete output" in OUTPUT_CAPTURE_INSTRUCTION.lower()
+        # Must warn against writing to files
+        assert "file" in OUTPUT_CAPTURE_INSTRUCTION.lower()
+
+    def test_instruction_appended_to_prompt(self, executor, sample_task):
+        """The spawn payload must include the capture instruction in the task text."""
+        from orchestration_engine.openclaw_executor import OUTPUT_CAPTURE_INSTRUCTION
+
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": '{"status":"accepted","childSessionKey":"sess-210a"}'}],
+                "details": {"childSessionKey": "sess-210a"},
+            },
+        }
+        done_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": "sess-210a",
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": "done"}],
+                         "stopReason": "stop"},
+                    ],
+                })}],
+            },
+        }
+
+        captured_task_texts = []
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                captured_task_texts.append(body.get("args", {}).get("task", ""))
+                return spawn_resp
+            return done_resp
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            executor.execute(sample_task)
+
+        assert captured_task_texts, "sessions_spawn was never called"
+        task_text = captured_task_texts[0]
+        assert OUTPUT_CAPTURE_INSTRUCTION in task_text, (
+            f"OUTPUT_CAPTURE_INSTRUCTION not found in spawn payload. "
+            f"Payload: {task_text[:200]!r}"
+        )
+
+    def test_instruction_appended_to_non_empty_prompt(self, executor):
+        """When task has a prompt, instruction is appended after it."""
+        from orchestration_engine.openclaw_executor import OUTPUT_CAPTURE_INSTRUCTION
+
+        task = TaskSpec(
+            type=TaskType.CONTENT,
+            payload={"prompt": "Write a summary of the following article: ..."},
+            priority=Priority.NORMAL,
+        )
+
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": '{"childSessionKey":"sess-210b"}'}],
+                "details": {"childSessionKey": "sess-210b"},
+            },
+        }
+        done_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": "sess-210b",
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "x"}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": "result"}],
+                         "stopReason": "stop"},
+                    ],
+                })}],
+            },
+        }
+
+        captured = {}
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                captured["task"] = body.get("args", {}).get("task", "")
+                return spawn_resp
+            return done_resp
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            executor.execute(task)
+
+        task_text = captured.get("task", "")
+        # Original prompt must still be present
+        assert "Write a summary" in task_text
+        # Instruction must follow it
+        assert task_text.index("Write a summary") < task_text.index(OUTPUT_CAPTURE_INSTRUCTION)
+
+    def test_dry_run_still_works_with_instruction(self, dry_executor, sample_task):
+        """Dry-run mode must not break when instruction is appended."""
+        result = dry_executor.execute(sample_task)
+        assert result.state == TaskState.SUCCESS
+        assert result.result.get("dry_run") is True
+
+
+class TestFullTranscriptCapture:
+    """After fix for #210, _run_session collects text from ALL assistant messages."""
+
+    def _make_multi_turn_mock(self, session_key, messages):
+        """Helper: build mock that returns a multi-turn conversation."""
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({"childSessionKey": session_key})}],
+                "details": {"childSessionKey": session_key},
+            },
+        }
+        done_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": messages,
+                })}],
+            },
+        }
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return spawn_resp
+            # sessions_list token query
+            if body.get("tool") == "sessions_list":
+                return {
+                    "ok": True,
+                    "result": {"content": [{"type": "text", "text": json.dumps({"sessions": []})}]},
+                }
+            return done_resp
+
+        return mock_post
+
+    def test_all_assistant_messages_collected(self, executor, sample_task):
+        """Text from every assistant turn is included in the output."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "do the thing"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "PART ONE: analysis here"}]},
+            {"role": "user", "content": [{"type": "text", "text": "continue"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "PART TWO: implementation here"}],
+             "stopReason": "stop"},
+        ]
+
+        mock = self._make_multi_turn_mock("sess-multi", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.SUCCESS
+        output = result.result["text"]
+        assert "PART ONE: analysis here" in output, "First assistant message missing from output"
+        assert "PART TWO: implementation here" in output, "Last assistant message missing from output"
+
+    def test_final_summary_only_session_still_works(self, executor, sample_task):
+        """Single-turn session (original pattern) still captured correctly."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Single complete output"}],
+             "stopReason": "stop"},
+        ]
+
+        mock = self._make_multi_turn_mock("sess-single", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.SUCCESS
+        assert result.result["text"] == "Single complete output"
+
+    def test_tool_using_session_captures_text_across_turns(self, executor, sample_task):
+        """Session that uses tools between text messages — all text parts captured."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "research this"}]},
+            # First assistant turn: thinking + tool call (tool_use block, no text)
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "web_search", "id": "tu1", "input": {"query": "topic"}},
+            ]},
+            # Tool result
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu1", "content": "search results here"},
+            ]},
+            # Second assistant turn: substantive output
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "RESEARCH FINDINGS: detailed 20KB analysis..."},
+                {"type": "tool_use", "name": "write", "id": "tu2",
+                 "input": {"path": "/tmp/out.md", "content": "written content"}},
+            ]},
+            # Tool result for write
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "tu2", "content": "file written"},
+            ]},
+            # Final brief summary
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Done. Output saved."},
+            ], "stopReason": "stop"},
+        ]
+
+        mock = self._make_multi_turn_mock("sess-tools", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.SUCCESS
+        output = result.result["text"]
+        # Must include the substantive research text, not just the brief "Done."
+        assert "RESEARCH FINDINGS" in output, "Substantive research text not in output"
+        # Must also include the final summary
+        assert "Done. Output saved." in output
+        # Must NOT include the tool_use JSON or tool_result text
+        assert "search results here" not in output
+
+    def test_output_is_not_empty_when_first_turn_has_text(self, executor, sample_task):
+        """Regression: output is non-empty even if final assistant msg is tool-only."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "go"}]},
+            # First turn has text
+            {"role": "assistant", "content": [{"type": "text", "text": "Here is the output: big content"}]},
+            # Tool use
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]},
+            # Final turn: only a tool call, no text
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "write", "id": "x", "input": {}},
+            ], "stopReason": "stop"},
+        ]
+
+        mock = self._make_multi_turn_mock("sess-tool-final", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        # With the fix, we collect text from ALL messages → non-empty
+        assert result.state == TaskState.SUCCESS
+        assert "big content" in result.result["text"]
