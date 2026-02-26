@@ -6,6 +6,7 @@ Covers:
 """
 
 import json
+import yaml
 from pathlib import Path
 
 import pytest
@@ -158,9 +159,9 @@ class TestTemplatesList:
         result = _invoke(["templates", "list"])
         assert result.exit_code == 0
         # The full description of content-pipeline is >60 chars; it should be truncated.
-        full_desc = (
-            "Full content production pipeline with research, drafting, multi-reviewer feedback, parallel final drafts, and best-selection."
-        )
+        # Load dynamically so this test stays correct across template version bumps.
+        full_desc = yaml.safe_load(CONTENT_YAML.read_text()).get("description", "")
+        assert len(full_desc) > 60, "Fixture assumption broken: description must be >60 chars for truncation test"
         # Full desc should NOT appear verbatim (it's too long)
         assert full_desc not in result.output
 
