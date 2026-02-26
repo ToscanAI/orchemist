@@ -61,26 +61,26 @@ phases:
       You are a senior editor and writer. You have an excellent published article that needs to evolve with new material and editorial direction.
 
       ## Source Article
-      {source_article}
+      {config[source_article]}
 
       ## Editorial Brief
-      {editorial_brief}
+      {config[editorial_brief]}
 
       ## Research Data (new material to incorporate)
-      {research_data}
+      {config[research_data]}
 
-      ## Author: {author_name}
+      ## Author: {config[author_name]}
 
       ## CRITICAL: Author-Provided Facts
       Use ONLY these for any first-person claims, anecdotes, or biographical details. Do NOT invent:
-      {author_facts}
+      {config[author_facts]}
 
       ## Task
       Rewrite the article incorporating:
       1. All editorial brief directives
       2. Relevant research data with INLINE CITATIONS for every factual claim
       3. The existing article's strongest sections (preserve what works)
-      4. Target: {word_count} words, {tone} tone, for {audience}
+      4. Target: {config[word_count]} words, {config[tone]} tone, for {config[audience]}
 
       ## Rules
       - Preserve the author's voice and first-person perspective
@@ -116,7 +116,7 @@ phases:
       {editorial_rewrite.output}
 
       ## Author-Provided Facts (ground truth)
-      {author_facts}
+      {config[author_facts]}
 
       Check for:
       1. Unsupported claims — every factual statement needs a source citation
@@ -141,7 +141,7 @@ phases:
       {editorial_rewrite.output}
 
       ## Author-Provided Facts (ground truth)
-      {author_facts}
+      {config[author_facts]}
 
       Verify:
       1. Numbers match across sections
