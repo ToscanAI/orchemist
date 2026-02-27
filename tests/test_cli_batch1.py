@@ -315,3 +315,94 @@ class TestRichTerminalOutput:
         ])
         assert result.exit_code == 2
         assert "aborted" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# Issue #186 — Heartbeat wiring integration
+# ---------------------------------------------------------------------------
+
+class TestHeartbeatWiring:
+    """Verify that run_template() correctly wires ProgressHeartbeat callbacks.
+
+    These tests patch ProgressHeartbeat so they run without wall-clock delays
+    and confirm the actual CLI wiring (not just the heartbeat class in isolation).
+    """
+
+    def test_set_current_phase_called_for_each_phase(self, hello_yaml, tmp_path):
+        """on_phase_start wiring: set_current_phase() should be called once per phase."""
+        from unittest.mock import MagicMock, patch as upatch
+
+        mock_hb_instance = MagicMock()
+        mock_hb_instance.__enter__ = MagicMock(return_value=mock_hb_instance)
+        mock_hb_instance.__exit__ = MagicMock(return_value=False)
+
+        # ProgressHeartbeat is imported locally inside run_template(), so we must
+        # patch at the source module (orchestration_engine.heartbeat) rather than
+        # at cli-module level.
+        with upatch(
+            "orchestration_engine.heartbeat.ProgressHeartbeat",
+            return_value=mock_hb_instance,
+        ):
+            result = _invoke([
+                "run", str(hello_yaml), "--mode", "dry-run",
+                "--output-dir", str(tmp_path / "out"),
+            ])
+
+        assert result.exit_code == 0, result.output
+        # hello-pipeline has phases: greet, summarize — set_current_phase should
+        # be called at least once for each.
+        assert mock_hb_instance.set_current_phase.call_count >= 1, (
+            "set_current_phase() must be called via _on_phase_start_cb"
+        )
+        called_phase_ids = {
+            call.args[0]
+            for call in mock_hb_instance.set_current_phase.call_args_list
+        }
+        assert "greet" in called_phase_ids, (
+            f"Expected 'greet' in set_current_phase calls; got: {called_phase_ids}"
+        )
+
+    def test_on_phase_complete_called_for_each_phase(self, hello_yaml, tmp_path):
+        """on_phase_complete wiring: on_phase_complete() should be called once per phase."""
+        from unittest.mock import MagicMock, patch as upatch
+
+        mock_hb_instance = MagicMock()
+        mock_hb_instance.__enter__ = MagicMock(return_value=mock_hb_instance)
+        mock_hb_instance.__exit__ = MagicMock(return_value=False)
+
+        with upatch(
+            "orchestration_engine.heartbeat.ProgressHeartbeat",
+            return_value=mock_hb_instance,
+        ):
+            result = _invoke([
+                "run", str(hello_yaml), "--mode", "dry-run",
+                "--output-dir", str(tmp_path / "out"),
+            ])
+
+        assert result.exit_code == 0, result.output
+        # hello-pipeline has 2 phases (greet + summarize)
+        assert mock_hb_instance.on_phase_complete.call_count == 2, (
+            f"Expected on_phase_complete() called 2 times (one per phase); "
+            f"got: {mock_hb_instance.on_phase_complete.call_count}"
+        )
+
+    def test_heartbeat_context_manager_entered_and_exited(self, hello_yaml, tmp_path):
+        """The heartbeat context manager must be entered and exited (thread lifecycle)."""
+        from unittest.mock import MagicMock, patch as upatch
+
+        mock_hb_instance = MagicMock()
+        mock_hb_instance.__enter__ = MagicMock(return_value=mock_hb_instance)
+        mock_hb_instance.__exit__ = MagicMock(return_value=False)
+
+        with upatch(
+            "orchestration_engine.heartbeat.ProgressHeartbeat",
+            return_value=mock_hb_instance,
+        ):
+            result = _invoke([
+                "run", str(hello_yaml), "--mode", "dry-run",
+                "--output-dir", str(tmp_path / "out"),
+            ])
+
+        assert result.exit_code == 0, result.output
+        mock_hb_instance.__enter__.assert_called_once()
+        mock_hb_instance.__exit__.assert_called_once()

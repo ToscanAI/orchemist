@@ -1044,7 +1044,8 @@ def run_template(
                 f"  [green]✓[/green] {safe_pid:30s}  state={state_val}  "
                 f"tokens={tokens}  cost={cost_str}"
             )
-        # Advance the heartbeat completed-phase counter (Issue #186)
+        # Advance the heartbeat completed-phase counter (Issue #186).
+        # Counts both successful and failed phases (pipeline aborts on first failure).
         heartbeat.on_phase_complete()
         # Run git commit hook after progress display
         _on_phase_complete_git(phase_id, phase_result)
@@ -1062,7 +1063,7 @@ def run_template(
 
         try:
             # Start the non-TTY heartbeat for the duration of pipeline execution.
-            # In TTY mode heartbeat._active is False so this is a transparent no-op.
+            # In TTY mode the heartbeat is automatically inactive, so this is a no-op.
             with heartbeat:
                 result = sequencer.execute(initial_input)
         except GitError as exc:
