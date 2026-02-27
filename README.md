@@ -84,6 +84,7 @@ Each use case is a template. Browse them with `orch templates list` or search wi
 - ✅ **Scenario-based grading** — YAML acceptance criteria, LLM judges, assertion graders
 - ✅ **Human-in-the-loop** — pause phases for review, inject feedback, resume
 - ✅ **OpenClaw integration** — run phases as sub-agents with full tool access
+- ✅ **Local web UI** — browse templates, start runs, and watch live progress in your browser (`orch serve`)
 
 ---
 
@@ -247,7 +248,7 @@ pytest
 - 🔌 **Executors** — add support for new model providers (Gemini, Mistral, local models)
 - 📖 **Documentation** — improve examples, add tutorials, translate docs
 
-Please read CONTRIBUTING.md (coming soon) for code style and PR guidelines.
+Please read CONTRIBUTING.md for code style and PR guidelines.
 
 ---
 
@@ -256,6 +257,7 @@ Please read CONTRIBUTING.md (coming soon) for code style and PR guidelines.
 - [Getting Started](docs/GETTING_STARTED.md) — detailed setup guide
 - [Architecture](docs/ARCHITECTURE.md) — system design
 - [API Reference](docs/api-reference.md) — CLI commands + Python classes
+- [Web UI](docs/web-ui.md) — browser interface (`orch serve`)
 - [Tech Stack](docs/tech-stack.md) — dependencies and choices
 
 ---

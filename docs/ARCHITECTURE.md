@@ -22,6 +22,11 @@ Here's the full flow from your YAML file to a finished result:
 │                    (defines phases, prompts, models)                │
 └─────────────────────────┬───────────────────────────────────────────┘
                           │
+               ┌──────────┴──────────┐
+               │  CLI: orch run      │  Web UI: orch serve
+               │  (terminal)         │  (browser)
+               └──────────┬──────────┘
+                          │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                       Template Engine                               │
@@ -33,29 +38,41 @@ Here's the full flow from your YAML file to a finished result:
                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                       Phase Sequencer                               │
-│   • Walks through phases in order                                   │
+│   • Walks through phases in order (or in parallel within a wave)   │
 │   • Fills in the prompt for each phase (inserting previous outputs) │
 │   • Submits each phase as a Task to the runner                      │
-│   • Stops the pipeline if any phase fails                           │
+│   • Retries failed phases (phase.retries + retry_delay_seconds)    │
+│   • Stops the pipeline if any phase permanently fails               │
 └─────────────────────────┬───────────────────────────────────────────┘
                           │  TaskSpec (prompt + model + timeout)
+                          │
+               ┌──────────┴──────────┐
+               │  Progress Heartbeat  │  (non-TTY: emits status every
+               │  (heartbeat.py)      │   30s to stdout for CI/cron)
+               └──────────┬──────────┘
+                          │
                           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Task Runner                                  │
 │   • Picks the right Executor for the task type                      │
 │   • Manages retries and model escalation on failure                 │
 │   • Logs everything to SQLite                                       │
-└───────────┬─────────────────────────────────────┬───────────────────┘
-            │                                     │
-            ▼                                     ▼
-┌───────────────────────┐             ┌───────────────────────────────┐
-│   LocalExecutor       │             │      OpenClawExecutor         │
-│   (shell commands,    │             │   • Formats a clean prompt    │
-│    code tasks)        │             │   • Spawns a sub-agent via    │
-│                       │             │     OpenClaw CLI or file IPC  │
-└───────────────────────┘             └───────────────┬───────────────┘
-                                                      │
-                                                      ▼
+└──┬──────────┬───────────────────────┬────────────────────┬──────────┘
+   │          │                       │                    │
+   ▼          ▼                       ▼                    ▼
+┌──────────┐ ┌────────────────┐ ┌──────────────────┐ ┌──────────────┐
+│ DryRun   │ │ Anthropic      │ │ OpenClaw         │ │ OpenAI-      │
+│ Executor │ │ Executor       │ │ Executor         │ │ Compatible   │
+│ (testing)│ │ (direct API,   │ │ (sub-agents via  │ │ Executor     │
+│          │ │  stdlib only)  │ │  CLI / file IPC) │ │ (Gemini,     │
+└──────────┘ └────────────────┘ └────────────────┬─┘ │  Ollama, …)  │
+                                                  │   └──────────────┘
+                                                  │         ▲
+                                                  │   (fallback via
+                                                  │    FallbackHandler
+                                                  │    on rate_limit/
+                                                  │    timeout)
+                                                  ▼
                                       ┌───────────────────────────────┐
                                       │          Sub-Agent            │
                                       │   (Claude Haiku / Sonnet /    │
@@ -127,15 +144,22 @@ If a key is missing — say, you reference `{previous_output[some_phase]}` but t
 
 ### Executors — The Workers
 
-An **executor** is the thing that actually *does* the work. There are three built in:
+An **executor** is the thing that actually *does* the work. There are five built in:
 
 | Executor | What it does | When it's used |
 |---|---|---|
-| **DryRunExecutor** | Returns fake results instantly | Testing and development |
-| **LocalExecutor** | Runs shell commands on your machine | Code tasks, scripts |
-| **OpenClawExecutor** | Calls an AI sub-agent via OpenClaw | Everything AI-powered |
+| **AnthropicExecutor** | Calls the Anthropic Messages API directly via `urllib` | `standalone` mode; no framework dependency |
+| **OpenClawExecutor** | Calls an AI sub-agent via the OpenClaw CLI or file-based IPC | `openclaw` mode; full tool access via sub-agents |
+| **OpenAICompatibleExecutor** | Calls any OpenAI-compatible `/v1/chat/completions` endpoint | Gemini-via-proxy, Ollama, LM Studio, or other providers |
+| **DryRunExecutor** | Returns mock results instantly | Testing, development, and CI pipelines |
+| **FallbackHandler** | Wraps a primary executor; retries via `OpenAICompatibleExecutor` on retriable errors | Automatic fallback when Anthropic rate-limits or times out |
 
-The `OpenClawExecutor` is the heart of the system. It:
+The `AnthropicExecutor` is the primary executor for standalone use. It:
+1. Resolves the model tier (`haiku` / `sonnet` / `opus`) to the exact Anthropic model string
+2. Optionally enables extended thinking (2 K–32 K tokens budget)
+3. Calls the Anthropic Messages API using only stdlib `urllib` — no third-party HTTP library required
+
+The `OpenClawExecutor` is the integration executor. It:
 1. Formats the phase prompt into a clean task
 2. Tries to run `openclaw agent run` — a CLI that spawns a sub-agent
 3. If the CLI isn't installed, it falls back to writing an `input.json` file to `~/.orchestration-engine/tasks/<id>/` and polling for an `output.json` file that another process will produce
@@ -143,6 +167,8 @@ The `OpenClawExecutor` is the heart of the system. It:
 This file-based handoff is a simple but robust integration contract: the engine and OpenClaw communicate through the filesystem, which means they can run in different processes, even on different schedules.
 
 **Model escalation on failure:** If a task fails, the engine automatically retries with a more capable model. A content task might start on Haiku, fail, retry on Sonnet, fail again, and finally retry on Opus. This means you get cheap results when things go well and more thorough results when they don't — without manual intervention.
+
+**Phase-level retry logic:** Independently from the executor-level retry, each phase in a template can declare its own `retries` count and `retry_delay_seconds` delay. When a phase fails, the sequencer retries it up to `retries` additional times (default 0 = no retries), waiting `retry_delay_seconds` between attempts. This is coarser-grained than the executor's internal retry but useful for transient network errors or model overload.
 
 ---
 
