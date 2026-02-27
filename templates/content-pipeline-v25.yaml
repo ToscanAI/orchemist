@@ -1,0 +1,289 @@
+id: content-pipeline-v25
+name: "Content Pipeline v2.5"
+description: "Content production pipeline with humor preservation, sequential fixes, and voice checking. v2.5 fixes the humor death problem: adds voice_style config, sequential fix chain (not parallel), explicit humor preservation in all prompts, voice check phase, and no Haiku for prose-touching phases."
+author: "Toscan"
+version: "2.5.0"
+category: "content"
+tags: [content, writing, articles, fact-checking, red-team, humor]
+use_cases:
+  - "Blog articles with personality and fact-checking"
+  - "LinkedIn newsletter content with author voice"
+  - "Technical writing with humor and peer review"
+example_input:
+  topic: "AI agents in production"
+  author_name: "Conny Lazo"
+  author_facts: "Day-one ChatGPT user. Built orchestration engine Feb 2026 with OpenClaw + Claude. 2,322 tests. First pipeline: 9 agents, 8 phases, 15 min."
+  voice_style: "Self-deprecating builder humor. Earned wit, never forced. Jennifer Aaker framework: humor builds trust when it's honest about mistakes."
+  source_material: "[transcripts, research briefs, prior articles]"
+  audience: "technical leaders and AI practitioners"
+  tone: "professional with personality"
+  word_count: 3000
+  publication: "LinkedIn newsletter / blog"
+
+config_schema:
+  type: object
+  required: [topic, author_name, author_facts, voice_style, source_material]
+  properties:
+    topic:
+      type: string
+      description: "What to write about"
+    author_name:
+      type: string
+      description: "Author's name for byline and first-person references"
+    author_facts:
+      type: string
+      description: "Author-provided biographical facts. Agents MUST use these verbatim — never invent."
+    voice_style:
+      type: string
+      description: "Author's humor and personality style. Guides tone throughout all phases. Humor that matches this style must be PRESERVED through reviews and fixes."
+    source_material:
+      type: string
+      description: "Transcripts, research briefs, and reference material to draw from"
+    audience:
+      type: string
+      default: "technical leaders"
+    tone:
+      type: string
+      default: "professional with personality"
+    word_count:
+      type: integer
+      default: 3000
+    publication:
+      type: string
+      default: "blog"
+
+phases:
+  - id: research
+    name: "Research & Synthesis"
+    description: "Synthesize source material into a structured research brief"
+    model_tier: sonnet
+    prompt_template: |
+      You are a research analyst preparing a structured brief for an article writer.
+
+      ## Topic
+      {config[topic]}
+
+      ## Source Material
+      {config[source_material]}
+
+      ## Task
+      1. Extract ALL key facts, statistics, quotes, and arguments from the source material
+      2. For each fact/stat/quote, note the EXACT source (speaker, publication, date)
+      3. Identify the strongest narrative threads
+      4. Flag any claims that need external verification
+      5. Note opportunities for humor or personality (surprising facts, ironic contrasts, self-deprecating angles)
+      6. Rate each source on credibility (primary vs. secondary vs. opinion)
+
+      Output a structured research brief organized by theme, with inline source attribution for every claim.
+
+  - id: outline
+    name: "Outline"
+    description: "Create article structure with humor beats"
+    model_tier: sonnet
+    depends_on: [research]
+    prompt_template: |
+      Create a detailed outline for a {config[word_count]}-word article.
+
+      ## Topic: {config[topic]}
+      ## Audience: {config[audience]}
+      ## Tone: {config[tone]}
+      ## Voice Style: {config[voice_style]}
+
+      ## Research Brief
+      {research.output}
+
+      ## Requirements
+      1. Strong headline and subtitle
+      2. Section headings that have personality (not generic)
+      3. For each section: key points, data to include, suggested quotes
+      4. Mark 3-5 specific HUMOR BEATS — places where a joke, self-deprecating aside, or witty observation would land naturally
+      5. Opening hook that grabs attention
+      6. Closing that resonates emotionally
+      7. Logical flow: problem → personal story → framework → evidence → solution → call to action
+
+      The humor beats should match the voice style: {config[voice_style]}
+
+  - id: draft
+    name: "Draft"
+    description: "Write full article with personality"
+    model_tier: sonnet
+    depends_on: [research, outline]
+    prompt_template: |
+      Write a {config[word_count]}-word article for {config[publication]}.
+
+      ## Author: {config[author_name]}
+      ## Topic: {config[topic]}
+      ## Audience: {config[audience]}
+      ## Tone: {config[tone]}
+
+      ## CRITICAL: Voice Style
+      {config[voice_style]}
+      This is NOT optional. The article must have personality. Humor should feel organic — earned, not forced. Self-deprecating moments build MORE trust than pure authority.
+
+      ## CRITICAL: Author-Provided Facts
+      Use ONLY these for any first-person claims, anecdotes, or biographical details. Do NOT invent:
+      {config[author_facts]}
+
+      ## Research Brief
+      {research.output}
+
+      ## Outline
+      {outline.output}
+
+      ## Rules
+      1. Follow the outline structure and hit the humor beats
+      2. INLINE CITATIONS for every factual claim (e.g., "According to [Source]..." or "...[Source, Date]")
+      3. First-person anecdotes MUST come verbatim from author facts — NEVER invent
+      4. The article should read like a person wrote it, not a committee
+      5. Humor should be woven in naturally — not bolted on as asides
+      6. Do NOT fabricate quotes, statistics, or personal stories
+      7. Strong opening, strong closing, personality throughout
+
+  - id: fact-check
+    name: "Fact Check"
+    description: "Verify all claims against sources"
+    model_tier: sonnet
+    depends_on: [draft, research]
+    prompt_template: |
+      You are a professional fact-checker. Verify every claim in this article against the research brief and author facts.
+
+      ## Article
+      {draft.output}
+
+      ## Research Brief (ground truth for external claims)
+      {research.output}
+
+      ## Author Facts (ground truth for personal claims)
+      {config[author_facts]}
+
+      ## Check:
+      1. Every statistic has an inline citation that matches the research brief
+      2. Every quote is accurately attributed
+      3. Every personal anecdote matches author facts EXACTLY — flag ANY detail not found as FABRICATED
+      4. No logical contradictions between sections
+      5. Numbers are consistent throughout
+      6. Technical terms used correctly and consistently
+      7. Competitive claims are fair and sourced
+
+      List every issue found. For each: location, the claim, what's wrong, severity (critical/high/moderate/low), suggested fix.
+
+      NOTE: Do NOT flag humor or personality as issues. Self-deprecating jokes and witty observations are intentional features, not errors.
+
+  - id: red-team
+    name: "Red Team"
+    description: "Adversarial review for claims, tone, and backlash risk"
+    model_tier: opus
+    depends_on: [draft]
+    prompt_template: |
+      You are an adversarial reviewer. Critically analyze this article.
+
+      ## Article
+      {draft.output}
+
+      ## Author Facts (ground truth)
+      {config[author_facts]}
+
+      ## Voice Style (intentional — do not flag as a problem)
+      {config[voice_style]}
+
+      ## Check:
+      1. Unsupported claims — every factual statement needs a source
+      2. Logical fallacies
+      3. Tone issues and potential backlash from practitioners in ANY domain mentioned
+      4. Missing counterarguments the audience will think of
+      5. HALLUCINATED BIOGRAPHY — flag ANY personal detail not in author facts as FABRICATED
+      6. Invented quotes or statistics
+      7. Competitive claims — are comparisons fair and accurate?
+
+      ## HUMOR CALIBRATION (important):
+      Distinguish between:
+      - Humor that BUILDS TRUST (self-deprecation, admitting mistakes, earned wit) → DO NOT FLAG
+      - Humor that RISKS BACKLASH (punching down, dismissive snark, mocking professions) → FLAG
+
+      Self-deprecating humor is an intentional strategy per Jennifer Aaker's research — it increases perceived competence and warmth. Only flag humor that punches down or could genuinely offend a specific group.
+
+      Score backlash risk 0-100. List every problematic phrase. But do NOT recommend removing humor that works.
+
+  - id: apply-fixes
+    name: "Apply All Fixes"
+    description: "Single-pass fix incorporating fact-check and red team feedback"
+    model_tier: sonnet
+    depends_on: [draft, fact-check, red-team]
+    prompt_template: |
+      Apply all fixes from the fact-check and red team reviews to this article in a SINGLE PASS.
+
+      ## Original Article
+      {draft.output}
+
+      ## Fact-Check Issues
+      {fact-check.output}
+
+      ## Red Team Issues
+      {red-team.output}
+
+      ## CRITICAL RULES:
+      1. Fix all factual errors, unsupported claims, and fabricated details
+      2. Address legitimate red team concerns (backlash risk, missing counterarguments)
+      3. Soften claims where evidence is weak — add qualifiers, not removals
+      4. **PRESERVE ALL HUMOR THAT WORKS** — self-deprecating jokes, witty observations, personality. If a joke was NOT flagged by the red team as risky, it STAYS.
+      5. If humor WAS flagged: IMPROVE it rather than removing it. Make it land better, don't delete it.
+      6. The article must still sound like {config[author_name]}, not like a committee
+      7. Keep the voice style: {config[voice_style]}
+      8. Maintain all inline citations — fix them where noted, don't remove valid ones
+
+      Output the COMPLETE fixed article. It should be MORE accurate AND equally entertaining as the original.
+
+  - id: voice-check
+    name: "Voice & Personality Check"
+    description: "Ensure the fixed article still sounds like the author"
+    model_tier: sonnet
+    depends_on: [draft, apply-fixes]
+    prompt_template: |
+      Compare the original draft with the fixed version. Check if the author's voice and personality survived the editing process.
+
+      ## Original Draft (before fixes)
+      {draft.output}
+
+      ## Fixed Version (after all edits)
+      {apply-fixes.output}
+
+      ## Author's Voice Style
+      {config[voice_style]}
+
+      ## Check:
+      1. Has humor been removed or diluted? List specific jokes/moments that were in the original but missing from the fixed version.
+      2. Has the tone shifted from personal to generic? Flag any sections that sound like they were written by a different person.
+      3. Has personality been flattened? Compare opening energy, closing energy, and section transitions.
+      4. Are the humor beats from the outline still present?
+      5. Does the fixed version still sound like {config[author_name]}?
+
+      For each issue found: quote the original line, quote what it became, and suggest how to restore the personality while keeping the factual fix.
+
+      If the voice is intact, say so. Don't invent problems.
+
+  - id: final-polish
+    name: "Final Polish"
+    description: "Apply voice fixes and final polish"
+    model_tier: sonnet
+    depends_on: [apply-fixes, voice-check]
+    prompt_template: |
+      Apply the voice check feedback and do a final polish pass on this article.
+
+      ## Current Article
+      {apply-fixes.output}
+
+      ## Voice Check Feedback
+      {voice-check.output}
+
+      ## Voice Style
+      {config[voice_style]}
+
+      ## Task:
+      1. Restore any humor or personality that was lost during fixes
+      2. Ensure the opening hooks immediately
+      3. Ensure the closing resonates
+      4. Tighten any sections that drag
+      5. Make sure transitions between sections feel natural
+      6. Final read: does this sound like one person with opinions wrote it? Or does it sound like it was produced by a pipeline? It should sound like the former.
+
+      Output the COMPLETE final article. This is what goes to human review.

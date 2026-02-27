@@ -53,3 +53,5 @@ config.toml
 .hatch/
 output/
 my-first-run/
+input-sprint-*.json
+input-intent-*.json

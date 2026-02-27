@@ -1,0 +1,259 @@
+id: content-pipeline-v26
+name: "Content Pipeline v2.6"
+description: "7-phase content pipeline with Opus drafting, Mark Twain humor, mandatory sources section, sequential fixes, and voice checking. Removed outline phase (redundant). v2.6 fixes: concrete humor examples in voice_style, Opus for draft, sources encoded in pipeline, section word budgets."
+author: "Toscan"
+version: "2.6.0"
+category: "content"
+tags: [content, writing, articles, fact-checking, red-team, humor]
+use_cases:
+  - "Blog articles with personality and fact-checking"
+  - "LinkedIn newsletter content with author voice"
+  - "Technical writing with humor and peer review"
+
+config_schema:
+  type: object
+  required: [topic, author_name, author_facts, voice_style, source_material]
+  properties:
+    topic:
+      type: string
+      description: "What to write about — include section budgets if needed"
+    author_name:
+      type: string
+      description: "Author's name for byline and first-person references"
+    author_facts:
+      type: string
+      description: "Author-provided biographical facts. Agents MUST use these verbatim — never invent."
+    voice_style:
+      type: string
+      description: "Author's humor and personality style with CONCRETE EXAMPLES. Not just descriptions — actual sample lines."
+    source_material:
+      type: string
+      description: "Transcripts, research briefs, and reference material to draw from"
+    audience:
+      type: string
+      default: "technical leaders"
+    tone:
+      type: string
+      default: "professional with personality"
+    word_count:
+      type: integer
+      default: 2500
+    publication:
+      type: string
+      default: "blog"
+
+phases:
+  - id: research
+    name: "Research & Synthesis"
+    description: "Synthesize source material into a structured research brief"
+    model_tier: sonnet
+    prompt_template: |
+      You are a research analyst preparing a structured brief for an article writer.
+
+      ## Topic
+      {config[topic]}
+
+      ## Source Material
+      {config[source_material]}
+
+      ## Task
+      1. Extract ALL key facts, statistics, quotes, and arguments from the source material
+      2. For each fact/stat/quote, note the EXACT source (speaker, publication, date, URL if available)
+      3. Identify the strongest narrative threads
+      4. Flag any claims that need external verification
+      5. Note opportunities for humor — surprising facts, ironic contrasts, absurd situations, self-deprecating angles
+      6. Rate each source on credibility (primary vs. secondary vs. opinion)
+      7. Build a SOURCES LIST at the end with full attribution for every source referenced
+
+      Output a structured research brief organized by theme, with inline source attribution for every claim, and a complete sources list at the end.
+
+  - id: draft
+    name: "Draft"
+    description: "Write full article with personality and humor"
+    model_tier: opus
+    depends_on: [research]
+    prompt_template: |
+      Write a {config[word_count]}-word article for {config[publication]}.
+
+      ## Author: {config[author_name]}
+      ## Topic: {config[topic]}
+      ## Audience: {config[audience]}
+      ## Tone: {config[tone]}
+
+      ## CRITICAL: Voice Style & Humor
+      {config[voice_style]}
+
+      This is NOT optional. The article MUST have personality. You are writing as a real person with opinions, not as a content mill. The humor should make the reader smile, nod, or think "this person is honest." If a line doesn't serve the argument AND entertain, cut the line — don't cut the entertainment.
+
+      ## CRITICAL: Author-Provided Facts
+      Use ONLY these for any first-person claims, anecdotes, or biographical details. Do NOT invent:
+      {config[author_facts]}
+
+      ## Research Brief
+      {research.output}
+
+      ## Rules
+      1. Target {config[word_count]} words MAXIMUM — be ruthless about cutting filler
+      2. INLINE CITATIONS for every factual claim — "(Source Name, Date)" format
+      3. First-person anecdotes MUST come verbatim from author facts — NEVER invent
+      4. Do NOT fabricate quotes, statistics, or personal stories
+      5. The article should read like a person wrote it after thinking hard, not like a pipeline produced it
+      6. Strong opening hook, strong closing that resonates
+      7. MANDATORY: End with a "Sources" section listing every source cited, with full attribution and URLs
+
+      ## Structure guidance
+      - Opening: hook the reader in 2 sentences
+      - Body: alternate between personal experience, external evidence, and practical insight
+      - Don't spend more than 20% of word count on any single topic
+      - Closing: leave the reader with something they'll think about later
+
+  - id: fact-check
+    name: "Fact Check"
+    description: "Verify all claims against sources"
+    model_tier: sonnet
+    depends_on: [draft, research]
+    prompt_template: |
+      You are a professional fact-checker. Verify every claim in this article.
+
+      ## Article
+      {draft.output}
+
+      ## Research Brief (ground truth for external claims)
+      {research.output}
+
+      ## Author Facts (ground truth for personal claims)
+      {config[author_facts]}
+
+      ## Check:
+      1. Every statistic has an inline citation matching the research brief
+      2. Every quote is accurately attributed
+      3. Every personal anecdote matches author facts EXACTLY — flag ANY invented detail as FABRICATED
+      4. No logical contradictions between sections
+      5. Numbers consistent throughout
+      6. Sources section at the end is complete and accurate
+      7. No missing citations for factual claims
+
+      List every issue. For each: location, claim, what's wrong, severity (critical/high/moderate/low), suggested fix.
+
+      NOTE: Do NOT flag humor, personality, or self-deprecating observations as issues. They are intentional.
+
+  - id: red-team
+    name: "Red Team"
+    description: "Adversarial review with humor calibration"
+    model_tier: opus
+    depends_on: [draft]
+    prompt_template: |
+      You are an adversarial reviewer. Critically analyze this article.
+
+      ## Article
+      {draft.output}
+
+      ## Author Facts (ground truth)
+      {config[author_facts]}
+
+      ## Voice Style (intentional — understand before flagging)
+      {config[voice_style]}
+
+      ## Check:
+      1. Unsupported claims — every factual statement needs a source
+      2. Logical fallacies
+      3. Tone issues and potential backlash from practitioners
+      4. Missing counterarguments the audience will think of
+      5. HALLUCINATED BIOGRAPHY — flag ANY personal detail not in author facts
+      6. Invented quotes or statistics
+      7. Is the Sources section complete?
+
+      ## HUMOR CALIBRATION:
+      This article is MEANT to be funny and personal. Distinguish:
+      - TRUST-BUILDING humor (self-deprecation, admitting mistakes, absurd honesty, ironic observations) → PROTECT THIS. Do not flag.
+      - BACKLASH-RISK humor (punching down, dismissive snark, mocking professions) → Flag this.
+
+      The author's style is influenced by Mark Twain — dry wit, deadpan delivery, making serious points through humor. This is INTENTIONAL. If a joke makes a valid point while making the reader smile, it's working as designed.
+
+      Score backlash risk 0-100. List genuinely problematic phrases only.
+
+  - id: apply-fixes
+    name: "Apply All Fixes"
+    description: "Single-pass fix preserving humor and adding sources"
+    model_tier: sonnet
+    depends_on: [draft, fact-check, red-team]
+    prompt_template: |
+      Apply all fixes from fact-check and red team reviews in a SINGLE PASS.
+
+      ## Original Article
+      {draft.output}
+
+      ## Fact-Check Issues
+      {fact-check.output}
+
+      ## Red Team Issues
+      {red-team.output}
+
+      ## RULES:
+      1. Fix all factual errors, unsupported claims, and fabricated details
+      2. Address legitimate red team concerns
+      3. Soften claims where evidence is weak — add qualifiers, not removals
+      4. **PRESERVE ALL HUMOR** — every joke, witty aside, self-deprecating observation that wasn't flagged as backlash-risky STAYS EXACTLY AS WRITTEN
+      5. If humor WAS flagged: IMPROVE the joke, don't delete it
+      6. Voice style: {config[voice_style]}
+      7. MANDATORY: Keep the Sources section at the end. Fix any citation errors noted by fact-check.
+      8. Stay within {config[word_count]} words
+      9. The article must sound like {config[author_name]} wrote it, not like it was edited by committee
+
+      Output the COMPLETE fixed article including the Sources section.
+
+  - id: voice-check
+    name: "Voice & Personality Check"
+    description: "Ensure humor and personality survived editing"
+    model_tier: sonnet
+    depends_on: [draft, apply-fixes]
+    prompt_template: |
+      Compare the original draft with the fixed version. Your ONLY job: did the author's voice survive?
+
+      ## Original Draft
+      {draft.output}
+
+      ## Fixed Version
+      {apply-fixes.output}
+
+      ## Author's Voice Style
+      {config[voice_style]}
+
+      ## Check:
+      1. List every joke/funny line in the original. Is it still in the fixed version? If removed or diluted, quote both versions.
+      2. Has the tone shifted from personal to generic anywhere?
+      3. Does the opening still hook?
+      4. Does the closing still resonate?
+      5. Is the Sources section intact?
+
+      For each lost humor moment: quote the original, quote what it became, suggest how to restore it.
+
+      If the voice is intact, say "Voice intact — no restoration needed." Don't invent problems.
+
+  - id: final-polish
+    name: "Final Polish"
+    description: "Restore personality, tighten prose, ensure sources"
+    model_tier: opus
+    depends_on: [apply-fixes, voice-check]
+    prompt_template: |
+      Final pass. Make this article the best version of itself.
+
+      ## Current Article
+      {apply-fixes.output}
+
+      ## Voice Check Feedback
+      {voice-check.output}
+
+      ## Voice Style
+      {config[voice_style]}
+
+      ## Task:
+      1. Restore any humor that was lost during fixes
+      2. Tighten — if it's over {config[word_count]} words, cut filler, never cut personality
+      3. Opening must hook in the first two sentences
+      4. Closing must leave the reader thinking
+      5. Every section transition should feel natural
+      6. MANDATORY: Sources section at the end with full attribution
+      7. Read it as a reader, not an editor. Does this make you want to share it? If not, fix that.
+
+      Output the COMPLETE final article. This goes to human review.
