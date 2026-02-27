@@ -89,9 +89,9 @@ class PhaseSequencer:
         self.on_pipeline_complete = on_pipeline_complete
 
         # Thread-safety locks (Issue #102)
-        self._phase_outputs_lock: threading.RLock = threading.RLock()
+        self._phase_outputs_lock: threading.Lock = threading.Lock()
         """Protects ``phase_outputs`` during concurrent wave execution."""
-        self._callback_lock: threading.RLock = threading.RLock()
+        self._callback_lock: threading.Lock = threading.Lock()
         """Serialises on_phase_start / on_phase_complete callback invocations."""
 
     # ------------------------------------------------------------------
@@ -424,7 +424,11 @@ class PhaseSequencer:
                 if phase_state in ("failed", "permanently_failed"):
                     failed_phases.append((phase_id, result))
                     if fail_fast:
-                        # Signal remaining queued (not yet running) workers to skip
+                        # Signal remaining queued (not yet running) workers to skip.
+                        # NOTE: fail_fast is best-effort — phases already executing
+                        # (e.g. mid-LLM-call) will run to completion because Python
+                        # threads cannot be forcibly interrupted.  Only queued (not
+                        # yet started) futures are prevented from running.
                         abort_event.set()
                         # Cancel futures that haven't started yet (best-effort)
                         for other_fut, other_pid in future_to_phase.items():
