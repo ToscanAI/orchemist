@@ -9,6 +9,18 @@ The heartbeat is *only* active when ``sys.stdout.isatty()`` returns ``False``
 (i.e. stdout is not connected to an interactive terminal).  In TTY mode the
 existing Rich progress display is used unchanged.
 
+Parallel phase support (Issue #102)
+-------------------------------------
+``ProgressHeartbeat`` now tracks a **set** of concurrently active phase names
+(``active_phases``) rather than a single ``current_phase`` string.  The legacy
+``set_current_phase(name)`` API still works — it adds the name to the set —
+and a new ``remove_active_phase(name)`` API removes a phase once it completes.
+
+The :meth:`on_phase_complete` method accepts an optional ``phase_name``
+parameter to remove the specific phase from the active set.  When called
+without a name (backward-compat), the set is **not** modified (the legacy
+behaviour of just incrementing the counter is preserved).
+
 Usage (in ``cli.py``)::
 
     heartbeat = ProgressHeartbeat(
@@ -32,7 +44,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from typing import Optional
+from typing import FrozenSet, Optional, Set
 
 
 class ProgressHeartbeat:
@@ -40,9 +52,13 @@ class ProgressHeartbeat:
 
     Designed for non-TTY contexts (piped output, cron, CI).  Emits a line like::
 
-        [2m30s] Running phase 3/7 'fact-check'... (2 completed)
+        [2m30s] Running phases 3/7 'fact-check, edit'... (2 completed)
 
     every *interval_seconds* while the pipeline is running.
+
+    With parallel execution the output shows **all active phases**::
+
+        [1m5s] Running phases 5/10 'write, fact-check, review'... (4 completed)
 
     Thread-safety: all mutable state is updated under ``_lock`` so that the
     background thread always sees a consistent snapshot.
@@ -72,7 +88,8 @@ class ProgressHeartbeat:
 
         # Mutable state — protected by _lock
         self._lock = threading.Lock()
-        self._current_phase: str = "starting"
+        self._current_phase: str = "starting"          # legacy compat
+        self._active_phases: Set[str] = set()          # Issue #102: multi-phase support
         self._completed: int = 0
 
         # Thread control
@@ -110,20 +127,67 @@ class ProgressHeartbeat:
         self._thread = None
 
     def set_current_phase(self, phase_name: str) -> None:
-        """Update the currently executing phase name.
+        """Record that *phase_name* has started executing.
+
+        Backward-compatible API: in the original implementation this replaced
+        ``_current_phase`` with a single string.  In the parallel-aware
+        implementation it **adds** the name to the ``active_phases`` set so
+        multiple concurrent phases are tracked simultaneously.
 
         Should be called from the ``on_phase_start`` callback.
+
+        Args:
+            phase_name: Display name of the phase that just started.
         """
         with self._lock:
-            self._current_phase = phase_name
+            self._current_phase = phase_name   # legacy field (keep for compat)
+            self._active_phases.add(phase_name)
 
-    def on_phase_complete(self) -> None:
-        """Increment the completed-phase counter.
+    def remove_active_phase(self, phase_name: str) -> None:
+        """Remove *phase_name* from the set of active phases.
+
+        Should be called when a phase completes (success or failure) to keep
+        the ``active_phases`` display accurate during parallel execution.
+
+        Args:
+            phase_name: Display name of the phase that just finished.
+        """
+        with self._lock:
+            self._active_phases.discard(phase_name)
+
+    def on_phase_complete(self, phase_name: Optional[str] = None) -> None:
+        """Increment the completed-phase counter and optionally deregister the phase.
 
         Should be called from the ``on_phase_complete`` callback.
+
+        Args:
+            phase_name: If provided, also removes the phase from
+                        ``active_phases`` (useful when the caller passes the
+                        phase ID here instead of calling
+                        :meth:`remove_active_phase` separately).  When
+                        ``None`` (the backward-compatible default) the active
+                        set is **not** modified — only the counter is
+                        incremented.
         """
         with self._lock:
             self._completed += 1
+            if phase_name is not None:
+                self._active_phases.discard(phase_name)
+
+    @property
+    def active_phases(self) -> FrozenSet[str]:
+        """Return an immutable snapshot of the currently active phase names.
+
+        Thread-safe: takes the internal lock so callers always see a
+        consistent set (no torn reads from concurrent ``set_current_phase``
+        or ``remove_active_phase`` calls).
+
+        Returns:
+            A :class:`frozenset` of phase name strings.  Empty when no phases
+            are currently running.
+        """
+        with self._lock:
+            return frozenset(self._active_phases)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -139,19 +203,40 @@ class ProgressHeartbeat:
             self._stop_event.wait(timeout=self.interval_seconds)
 
     def _emit(self) -> None:
-        """Format and print a single heartbeat line."""
+        """Format and print a single heartbeat line.
+
+        When multiple phases are active (parallel execution) the line lists
+        all of them::
+
+            [1m5s] Running phases 5/10 'write, fact-check, review'... (4 completed)
+
+        With only one active phase (or no phase tracked yet) the output is
+        identical to the original format::
+
+            [2m30s] Running phase 3/7 'fact-check'... (2 completed)
+        """
         with self._lock:
-            phase_name = self._current_phase
+            active = frozenset(self._active_phases)
             completed = self._completed
+            legacy_name = self._current_phase
 
         elapsed_str = _format_elapsed(time.time() - self.start_time)
         phase_num = completed + 1  # 1-indexed "currently running" phase
         # Clamp to total in case of race between counter increment and display
         phase_num = min(phase_num, self.total_phases)
 
+        if active:
+            # Sort for deterministic output
+            names = ", ".join(sorted(active))
+            phase_word = "phases" if len(active) > 1 else "phase"
+        else:
+            # Fallback to legacy _current_phase when active set is empty
+            names = legacy_name
+            phase_word = "phase"
+
         line = (
-            f"[{elapsed_str}] Running phase {phase_num}/{self.total_phases}"
-            f" '{phase_name}'... ({completed} completed)"
+            f"[{elapsed_str}] Running {phase_word} {phase_num}/{self.total_phases}"
+            f" '{names}'... ({completed} completed)"
         )
         try:
             print(line, file=self._stream, flush=True)
