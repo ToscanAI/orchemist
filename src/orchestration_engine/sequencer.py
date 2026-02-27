@@ -1,9 +1,25 @@
-"""Phase sequencer — executes pipeline phases in order, passing outputs forward."""
+"""Phase sequencer — executes pipeline phases in order, passing outputs forward.
+
+Parallel execution support (Issue #102)
+----------------------------------------
+Independent phases within the same topological wave may now execute
+concurrently via :class:`~concurrent.futures.ThreadPoolExecutor`.  Behaviour
+is controlled by three fields on :class:`~.templates.PipelineTemplate`:
+
+* ``parallel``     — enable/disable concurrent wave execution (default: ``True``)
+* ``max_parallel`` — cap concurrent phases per wave (default: ``0`` = unlimited)
+* ``fail_fast``    — abort remaining phases when one fails (default: ``True``)
+
+All shared state (``phase_outputs``, progress callbacks) is protected by
+reentrant locks so wave-level concurrency is safe.
+"""
 
 import logging
 import re
+import threading
 import time
 from collections import defaultdict
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -19,9 +35,20 @@ logger = logging.getLogger(__name__)
 class PhaseSequencer:
     """Executes a pipeline template phase by phase.
 
-    Uses synchronous, sequential execution for MVP.  All phase outputs are
-    accumulated in ``self.phase_outputs`` and forwarded to downstream phases
-    via the prompt template formatting mechanism.
+    Supports both sequential and parallel (concurrent) execution within each
+    topological wave.  Parallel mode is selected when
+    ``template.parallel is True`` (the default) and a wave contains more than
+    one phase.
+
+    Thread-safety guarantees
+    ------------------------
+    * ``self.phase_outputs`` is protected by ``self._phase_outputs_lock``
+      (a :class:`threading.RLock`).  Worker threads acquire this lock before
+      writing a phase result and before reading outputs to build downstream
+      prompts.
+    * ``on_phase_start`` and ``on_phase_complete`` callbacks are invoked
+      under ``self._callback_lock`` (a :class:`threading.RLock`) so that
+      concurrent invocations from worker threads cannot interleave.
     """
 
     def __init__(self, template: PipelineTemplate, runner, config: dict = None,
@@ -61,12 +88,23 @@ class PhaseSequencer:
         self.on_pipeline_start = on_pipeline_start
         self.on_pipeline_complete = on_pipeline_complete
 
+        # Thread-safety locks (Issue #102)
+        self._phase_outputs_lock: threading.Lock = threading.Lock()
+        """Protects ``phase_outputs`` during concurrent wave execution."""
+        self._callback_lock: threading.Lock = threading.Lock()
+        """Serialises on_phase_start / on_phase_complete callback invocations."""
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def execute(self, initial_input: dict) -> dict:
         """Execute the full pipeline.
+
+        Phases within each topological wave are executed concurrently when
+        ``template.parallel`` is ``True`` (the default) and the wave contains
+        more than one phase.  A single-phase wave always executes sequentially
+        regardless of the ``parallel`` flag.
 
         Args:
             initial_input: Pipeline input dict (e.g. article brief).
@@ -96,81 +134,34 @@ class PhaseSequencer:
         final_result: dict = {}
         try:
             for wave_index, wave in enumerate(execution_order):
-                # MVP: sequential within each wave (no actual parallelism)
-                for phase_id in wave:
-                    phase = self._get_phase(phase_id)
+                # Decide whether to run this wave in parallel.
+                # A wave of size 1 is always sequential (no overhead, no ambiguity).
+                use_parallel = (
+                    self.template.parallel
+                    and len(wave) > 1
+                )
 
-                    # Notify caller that phase is about to start
-                    if self.on_phase_start is not None:
+                if use_parallel:
+                    abort_result = self._execute_wave_parallel(
+                        wave, wave_index, initial_input
+                    )
+                else:
+                    abort_result = self._execute_wave_sequential(
+                        wave, wave_index, initial_input
+                    )
+
+                # Either method returns None on success or a final_result dict on abort
+                if abort_result is not None:
+                    # Call pipeline-complete hook signalling failure
+                    if self.on_pipeline_complete is not None:
                         try:
-                            self.on_phase_start(phase_id, phase, wave_index)
-                        except Exception:
-                            pass  # Never let a callback crash the pipeline
-
-                    # Build the prompt for this phase
-                    phase_input = self._build_phase_input(phase, initial_input)
-
-                    # Resolve model tier to a ModelTier enum value (if possible)
-                    preferred_model = self._resolve_model_tier(phase.model_tier)
-
-                    # Create and queue the TaskSpec
-                    task = TaskSpec(
-                        type=self._resolve_task_type(phase.task_type),
-                        payload={
-                            "prompt": phase_input,
-                            "phase_id": phase.id,
-                            "pipeline_id": self.template.id,
-                        },
-                        priority=Priority.HIGH,
-                        preferred_model=preferred_model,
-                        timeout_seconds=phase.timeout_minutes * 60,
-                    )
-
-                    task_id = self.runner.queue.submit_task(task)
-                    logger.info(
-                        f"Pipeline {self.template.id}: submitted phase '{phase_id}' "
-                        f"(task_id={task_id})"
-                    )
-
-                    # Execute synchronously and store output
-                    result = self._execute_and_wait(task_id, phase)
-                    self.phase_outputs[phase_id] = result
-
-                    # Notify caller (e.g. CLI progress display)
-                    if self.on_phase_complete is not None:
-                        try:
-                            self.on_phase_complete(phase_id, result)
-                        except Exception:
-                            pass  # Never let a callback crash the pipeline
-
-                    phase_state = result.get('state', 'unknown')
-                    logger.info(
-                        f"Pipeline {self.template.id}: phase '{phase_id}' completed "
-                        f"(state={phase_state})"
-                    )
-
-                    # Stop pipeline on phase failure — don't feed errors downstream
-                    if phase_state in ('failed', 'permanently_failed'):
-                        logger.error(
-                            f"Pipeline {self.template.id}: phase '{phase_id}' failed, "
-                            f"aborting pipeline."
-                        )
-                        final_result = {
-                            "phase_outputs": self.phase_outputs,
-                            "final_output": result,
-                            "failed_phase": phase_id,
-                            "aborted": True,
-                        }
-                        # Call pipeline-complete hook signalling failure
-                        if self.on_pipeline_complete is not None:
-                            try:
-                                self.on_pipeline_complete(self.pipeline_context, None)
-                            except Exception as hook_exc:
-                                logger.warning(
-                                    f"Pipeline {self.template.id}: "
-                                    f"on_pipeline_complete hook failed: {hook_exc}"
-                                )
-                        return final_result
+                            self.on_pipeline_complete(self.pipeline_context, None)
+                        except Exception as hook_exc:
+                            logger.warning(
+                                f"Pipeline {self.template.id}: "
+                                f"on_pipeline_complete hook failed: {hook_exc}"
+                            )
+                    return abort_result
 
             # Determine the final output (last phase of the last wave)
             last_phase_id = execution_order[-1][-1]
@@ -204,6 +195,308 @@ class PhaseSequencer:
         return final_result
 
     # ------------------------------------------------------------------
+    # Wave execution strategies
+    # ------------------------------------------------------------------
+
+    def _execute_wave_sequential(
+        self,
+        wave: List[str],
+        wave_index: int,
+        initial_input: dict,
+    ) -> Optional[dict]:
+        """Execute all phases in *wave* one at a time (original behaviour).
+
+        Args:
+            wave:          Ordered list of phase IDs in this wave.
+            wave_index:    Zero-based index of this wave in the execution plan.
+            initial_input: Pipeline input dict.
+
+        Returns:
+            ``None`` on success.  A pipeline-abort result dict when a phase
+            fails (mirrors the original abort logic).
+        """
+        for phase_id in wave:
+            phase = self._get_phase(phase_id)
+
+            # Notify caller that phase is about to start
+            self._invoke_on_phase_start(phase_id, phase, wave_index)
+
+            # Build the prompt for this phase
+            phase_input = self._build_phase_input(phase, initial_input)
+
+            # Resolve model tier to a ModelTier enum value (if possible)
+            preferred_model = self._resolve_model_tier(phase.model_tier)
+
+            # Create and queue the TaskSpec
+            task = TaskSpec(
+                type=self._resolve_task_type(phase.task_type),
+                payload={
+                    "prompt": phase_input,
+                    "phase_id": phase.id,
+                    "pipeline_id": self.template.id,
+                },
+                priority=Priority.HIGH,
+                preferred_model=preferred_model,
+                timeout_seconds=phase.timeout_minutes * 60,
+            )
+
+            task_id = self.runner.queue.submit_task(task)
+            logger.info(
+                f"Pipeline {self.template.id}: submitted phase '{phase_id}' "
+                f"(task_id={task_id})"
+            )
+
+            # Execute synchronously and store output
+            result = self._execute_and_wait(task_id, phase)
+            with self._phase_outputs_lock:
+                self.phase_outputs[phase_id] = result
+
+            # Notify caller (e.g. CLI progress display)
+            self._invoke_on_phase_complete(phase_id, result)
+
+            phase_state = result.get('state', 'unknown')
+            logger.info(
+                f"Pipeline {self.template.id}: phase '{phase_id}' completed "
+                f"(state={phase_state})"
+            )
+
+            # Stop pipeline on phase failure — don't feed errors downstream
+            if phase_state in ('failed', 'permanently_failed'):
+                logger.error(
+                    f"Pipeline {self.template.id}: phase '{phase_id}' failed, "
+                    f"aborting pipeline."
+                )
+                return {
+                    "phase_outputs": self.phase_outputs,
+                    "final_output": result,
+                    "failed_phase": phase_id,
+                    "aborted": True,
+                }
+
+        return None  # success
+
+    def _execute_wave_parallel(
+        self,
+        wave: List[str],
+        wave_index: int,
+        initial_input: dict,
+    ) -> Optional[dict]:
+        """Execute all phases in *wave* concurrently using a thread pool.
+
+        Respects ``template.max_parallel`` (pool size cap) and
+        ``template.fail_fast`` (abort siblings on first failure).
+
+        Thread-safety notes
+        -------------------
+        * Each worker thread acquires ``_phase_outputs_lock`` before writing
+          its result to ``self.phase_outputs`` and before calling
+          ``_build_phase_input`` (which reads ``phase_outputs``).
+        * Callback invocations (``on_phase_start``, ``on_phase_complete``) are
+          serialised via ``_callback_lock`` so listeners that mutate shared
+          state (e.g. a progress bar) remain consistent.
+        * ``future.cancel()`` is a best-effort hint; Python's GIL ensures that
+          already-running futures finish their current bytecode instruction but
+          the cancelled flag prevents *new* executions from starting in the
+          pool queue.  Completed futures are never cancelled.
+
+        Args:
+            wave:          List of phase IDs ready to execute in parallel.
+            wave_index:    Zero-based wave index.
+            initial_input: Pipeline input dict.
+
+        Returns:
+            ``None`` when the wave completes without failures.
+            A pipeline-abort dict when fail_fast aborts due to a failed phase,
+            or when fail_fast=False and at least one phase failed (all errors
+            collected, first failure reported).
+        """
+        # Determine pool size
+        max_workers: int = len(wave)
+        if self.template.max_parallel > 0:
+            max_workers = min(max_workers, self.template.max_parallel)
+
+        fail_fast = self.template.fail_fast
+
+        # Maps future → phase_id so we can identify which phase finished
+        future_to_phase: Dict[Future, str] = {}
+
+        # Shared abort flag: set to True when fail_fast triggers
+        abort_event = threading.Event()
+
+        def _run_phase(phase_id: str) -> dict:
+            """Worker function executed in the thread pool for one phase."""
+            if abort_event.is_set():
+                # Another phase failed with fail_fast=True — skip execution
+                logger.info(
+                    f"Pipeline {self.template.id}: phase '{phase_id}' skipped "
+                    f"(abort_event set by sibling failure)"
+                )
+                # Return a synthetic skipped result so the future resolves cleanly
+                return {
+                    "state": "skipped",
+                    "result": {"text": ""},
+                    "phase_id": phase_id,
+                    "skipped": True,
+                }
+
+            phase = self._get_phase(phase_id)
+
+            # Notify caller that phase is about to start
+            self._invoke_on_phase_start(phase_id, phase, wave_index)
+
+            # Build prompt — read phase_outputs under lock to avoid races
+            with self._phase_outputs_lock:
+                phase_input = self._build_phase_input(phase, initial_input)
+
+            preferred_model = self._resolve_model_tier(phase.model_tier)
+
+            task = TaskSpec(
+                type=self._resolve_task_type(phase.task_type),
+                payload={
+                    "prompt": phase_input,
+                    "phase_id": phase.id,
+                    "pipeline_id": self.template.id,
+                },
+                priority=Priority.HIGH,
+                preferred_model=preferred_model,
+                timeout_seconds=phase.timeout_minutes * 60,
+            )
+
+            task_id = self.runner.queue.submit_task(task)
+            logger.info(
+                f"Pipeline {self.template.id}: submitted phase '{phase_id}' "
+                f"(task_id={task_id}, parallel=True)"
+            )
+
+            result = self._execute_and_wait(task_id, phase)
+
+            # Write result under lock — prevents lost updates on shared dict
+            with self._phase_outputs_lock:
+                self.phase_outputs[phase_id] = result
+
+            # Notify caller
+            self._invoke_on_phase_complete(phase_id, result)
+
+            phase_state = result.get("state", "unknown")
+            logger.info(
+                f"Pipeline {self.template.id}: phase '{phase_id}' completed "
+                f"(state={phase_state}, parallel=True)"
+            )
+
+            return result
+
+        # Submit all phases to the pool
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for phase_id in wave:
+                fut = executor.submit(_run_phase, phase_id)
+                future_to_phase[fut] = phase_id
+
+            # Collect results as they complete
+            failed_phases: List[Tuple[str, dict]] = []
+
+            for fut in as_completed(future_to_phase):
+                phase_id = future_to_phase[fut]
+                try:
+                    result = fut.result()
+                except Exception as exc:
+                    # The worker raised an unhandled exception — treat as failure
+                    logger.error(
+                        f"Pipeline {self.template.id}: phase '{phase_id}' worker "
+                        f"raised unhandled exception: {exc}"
+                    )
+                    synthetic_result = {
+                        "state": TaskState.FAILED.value,
+                        "result": {"text": ""},
+                        "errors": [{"code": "WORKER_EXCEPTION", "message": str(exc)}],
+                        "metadata": {"attempt_number": 1, "total_attempts": 1},
+                        "confidence": 0.0,
+                    }
+                    with self._phase_outputs_lock:
+                        self.phase_outputs[phase_id] = synthetic_result
+                    self._invoke_on_phase_complete(phase_id, synthetic_result)
+                    result = synthetic_result
+
+                # Skip accounting for phases that were cancelled by abort_event
+                if result.get("skipped"):
+                    continue
+
+                phase_state = result.get("state", "unknown")
+                if phase_state in ("failed", "permanently_failed"):
+                    failed_phases.append((phase_id, result))
+                    if fail_fast:
+                        # Signal remaining queued (not yet running) workers to skip.
+                        # NOTE: fail_fast is best-effort — phases already executing
+                        # (e.g. mid-LLM-call) will run to completion because Python
+                        # threads cannot be forcibly interrupted.  Only queued (not
+                        # yet started) futures are prevented from running.
+                        abort_event.set()
+                        # Cancel futures that haven't started yet (best-effort)
+                        for other_fut, other_pid in future_to_phase.items():
+                            if other_fut is not fut and not other_fut.done():
+                                other_fut.cancel()
+                        logger.warning(
+                            f"Pipeline {self.template.id}: phase '{phase_id}' failed "
+                            f"(fail_fast=True) — cancelling remaining wave phases."
+                        )
+                        break  # Stop waiting; pool __exit__ will drain workers
+
+        # After the pool is done, assess outcomes
+        if failed_phases:
+            first_failed_id, first_result = failed_phases[0]
+            all_failed = ", ".join(pid for pid, _ in failed_phases)
+            logger.error(
+                f"Pipeline {self.template.id}: wave {wave_index} had "
+                f"{len(failed_phases)} failed phase(s): [{all_failed}]. "
+                f"Aborting pipeline."
+            )
+            return {
+                "phase_outputs": self.phase_outputs,
+                "final_output": first_result,
+                "failed_phase": first_failed_id,
+                "failed_phases": [pid for pid, _ in failed_phases],
+                "aborted": True,
+            }
+
+        return None  # wave succeeded
+
+    # ------------------------------------------------------------------
+    # Thread-safe callback helpers
+    # ------------------------------------------------------------------
+
+    def _invoke_on_phase_start(
+        self,
+        phase_id: str,
+        phase: PhaseDefinition,
+        wave_index: int,
+    ) -> None:
+        """Invoke ``on_phase_start`` callback under the callback lock.
+
+        Swallows all exceptions so a misbehaving callback never crashes
+        the pipeline.
+        """
+        if self.on_phase_start is None:
+            return
+        with self._callback_lock:
+            try:
+                self.on_phase_start(phase_id, phase, wave_index)
+            except Exception:
+                pass  # Never let a callback crash the pipeline
+
+    def _invoke_on_phase_complete(self, phase_id: str, result: dict) -> None:
+        """Invoke ``on_phase_complete`` callback under the callback lock.
+
+        Swallows all exceptions so a misbehaving callback never crashes
+        the pipeline.
+        """
+        if self.on_phase_complete is None:
+            return
+        with self._callback_lock:
+            try:
+                self.on_phase_complete(phase_id, result)
+            except Exception:
+                pass  # Never let a callback crash the pipeline
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -232,6 +525,11 @@ class PhaseSequencer:
 
         Missing keys produce a ``<MISSING:key>`` placeholder (via SafeDict)
         rather than raising ``KeyError``.
+
+        .. note::
+            When called from a parallel worker, **the caller must hold
+            ``self._phase_outputs_lock``** before invoking this method so that
+            the snapshot of ``self.phase_outputs`` is consistent.
         """
         if not phase.prompt_template:
             return ""

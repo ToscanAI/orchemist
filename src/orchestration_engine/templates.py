@@ -113,7 +113,29 @@ class PhaseDefinition:
 
 @dataclass
 class PipelineTemplate:
-    """A complete pipeline template."""
+    """A complete pipeline template.
+
+    Parallel-execution fields (Issue #102)
+    ---------------------------------------
+    parallel : bool
+        When ``True`` (the default), independent phases within the same
+        topological wave execute concurrently using
+        :class:`~concurrent.futures.ThreadPoolExecutor`.  Set to ``False``
+        for purely sequential execution (the pre-#102 behaviour).
+
+    max_parallel : int
+        Maximum number of phases that may run concurrently within a single
+        wave.  ``0`` (the default) means unlimited — the executor pool size
+        equals the wave size.  Positive values clamp the pool to at most
+        ``max_parallel`` workers.
+
+    fail_fast : bool
+        When ``True`` (the default), the pipeline aborts as soon as any
+        phase in a parallel wave fails — remaining futures are cancelled and
+        the error is propagated immediately after the wave completes.  When
+        ``False``, all phases in a wave run to completion regardless of
+        individual failures; all errors are collected and reported together.
+    """
 
     id: str
     name: str
@@ -130,6 +152,16 @@ class PipelineTemplate:
     template_path: Optional[Path] = field(default=None, repr=False)  # set by load_template
     git_config: Optional[GitConfig] = field(default=None)
     """Parsed ``git:`` section from the template YAML, or ``None`` if absent."""
+
+    # --- Parallel execution control (Issue #102) ---
+    parallel: bool = True
+    """Execute independent phases within a wave concurrently (default: True)."""
+
+    max_parallel: int = 0
+    """Max concurrent phases per wave; 0 = unlimited (default: 0)."""
+
+    fail_fast: bool = True
+    """Abort remaining phases in a wave when one fails (default: True)."""
 
     def __post_init__(self) -> None:
         if self.phases is None:
@@ -148,6 +180,16 @@ class PipelineTemplate:
             self.tags = []
         if self.category is None:
             self.category = ""
+        # Normalise parallel execution fields
+        if self.parallel is None:
+            self.parallel = True
+        if self.max_parallel is None:
+            self.max_parallel = 0
+        if self.fail_fast is None:
+            self.fail_fast = True
+        self.parallel = bool(self.parallel)
+        self.max_parallel = max(0, int(self.max_parallel))
+        self.fail_fast = bool(self.fail_fast)
 
 
 class TemplateNotFoundError(FileNotFoundError):
@@ -354,6 +396,16 @@ class TemplateEngine:
     def load_template(self, template_path: Path) -> PipelineTemplate:
         """Load a pipeline template from a YAML file.
 
+        Supports the new parallel-execution fields (Issue #102):
+
+        * ``parallel``     — bool, default ``true``
+        * ``max_parallel`` — int, default ``0`` (unlimited)
+        * ``fail_fast``    — bool, default ``true``
+
+        All three fields are optional and backward-compatible: existing
+        templates without these fields continue to work unchanged (they
+        receive the default values shown above).
+
         Args:
             template_path: Path to the YAML template file.
 
@@ -429,6 +481,27 @@ class TemplateEngine:
         # Parse optional git: section
         git_config: Optional[GitConfig] = _parse_git_config(data.get("git"))
 
+        # --- Parse parallel-execution control fields (Issue #102) ---
+        # Use explicit sentinel check so that `parallel: false` (which is falsy)
+        # is correctly distinguished from "field absent" (→ default True).
+        raw_parallel = data.get("parallel", None)
+        if raw_parallel is None:
+            parallel = True
+        else:
+            parallel = bool(raw_parallel)
+
+        raw_max_parallel = data.get("max_parallel", None)
+        if raw_max_parallel is None:
+            max_parallel = 0
+        else:
+            max_parallel = max(0, int(raw_max_parallel))
+
+        raw_fail_fast = data.get("fail_fast", None)
+        if raw_fail_fast is None:
+            fail_fast = True
+        else:
+            fail_fast = bool(raw_fail_fast)
+
         return PipelineTemplate(
             id=data["id"],
             name=data["name"],
@@ -444,6 +517,9 @@ class TemplateEngine:
             fallback=data.get("fallback") or None,
             template_path=Path(template_path).resolve(),
             git_config=git_config,
+            parallel=parallel,
+            max_parallel=max_parallel,
+            fail_fast=fail_fast,
         )
 
     def get_execution_order(self, template: PipelineTemplate) -> List[List[str]]:
