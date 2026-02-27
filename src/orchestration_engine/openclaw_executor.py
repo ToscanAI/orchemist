@@ -263,12 +263,18 @@ class OpenClawExecutor(TaskExecutor):
         except Exception as exc:
             elapsed = (datetime.now() - start_time).total_seconds()
             logger.error(f"OpenClaw execution failed for task {task_id}: {exc}")
+            # Capture partial output from sub-agent error sessions (#212)
+            partial = getattr(exc, "partial_output", "")
+            partial_tokens = getattr(exc, "partial_tokens", 0)
+            result_data = (
+                {"partial_output": partial} if partial else {}
+            )
             return TaskResult(
                 task_id=task_id,
                 task_type=task.type,
                 state=TaskState.FAILED,
                 confidence=0.0,
-                result={},
+                result=result_data,
                 errors=[
                     TaskError(
                         code="execution_error",
@@ -280,6 +286,7 @@ class OpenClawExecutor(TaskExecutor):
                 completed_at=datetime.now(),
                 model_used=model,
                 execution_time_seconds=elapsed,
+                tokens_used=partial_tokens,
             )
 
         elapsed = (datetime.now() - start_time).total_seconds()
@@ -495,10 +502,18 @@ class OpenClawExecutor(TaskExecutor):
 
             # Check for stop reason indicating completion
             stop = last_assistant.get("stopReason", "")
-            if stop not in ("stop", "end_turn"):
+            _TERMINAL_REASONS = {"stop", "end_turn", "error"}
+            if stop not in _TERMINAL_REASONS:
                 # Not yet complete — still generating or using tools
                 logger.debug(f"Session {session_key}: stopReason='{stop}', still running...")
                 continue
+
+            is_error = stop == "error"
+            if is_error:
+                logger.warning(
+                    f"Session {session_key}: sub-agent ended with stopReason='error'. "
+                    "Capturing partial output and marking phase as failed."
+                )
 
             # Session completed — extract text from ALL assistant messages in
             # order so that sub-agents which produce output across multiple
@@ -545,6 +560,20 @@ class OpenClawExecutor(TaskExecutor):
                 f"Session {session_key} completed: {len(output)} chars, "
                 f"{total_tokens} tokens"
             )
+
+            if is_error:
+                # Return partial output so the caller can include it in the
+                # phase result, but raise so the phase is marked FAILED.
+                # We embed the captured text in the exception so the caller's
+                # generic ``except Exception`` handler can surface it.
+                err = RuntimeError(
+                    f"Sub-agent ended with stopReason='error'. "
+                    f"Partial output ({len(output)} chars) captured."
+                )
+                err.partial_output = output  # type: ignore[attr-defined]
+                err.partial_tokens = total_tokens  # type: ignore[attr-defined]
+                raise err
+
             return output, total_tokens
 
     @staticmethod
