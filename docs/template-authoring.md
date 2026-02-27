@@ -113,6 +113,24 @@ phases:
 | `prompt_template` | string | — | `""` | The prompt sent to the model. Supports Python `str.format()`-style variable interpolation (see Section 5). Use YAML block scalar (`|`) for multi-line prompts. |
 | `output_schema` | dict | — | `{}` | Describes the expected output shape (informal documentation). Not enforced at runtime but used by tooling and human readers. |
 | `skill_refs` | list[string] | — | `[]` | Paths to skill context files. Resolved relative to the template directory first, then `~/.orch/skills/`. Contents are injected into the prompt context as `{skill_context[name]}`. Validated by `orch validate`. |
+| `retries` | int | — | `0` | Number of **additional** attempts if the phase fails. `0` means the phase is tried once and not retried on failure. `2` means up to 3 total attempts. |
+| `retry_delay_seconds` | float | — | `30.0` | Seconds to wait between retry attempts for this phase. Only meaningful when `retries > 0`. |
+
+**Phase retry example:**
+
+```yaml
+phases:
+  - id: research
+    name: "Research"
+    task_type: research
+    model_tier: sonnet
+    retries: 2                  # Retry up to 2 more times on failure (3 attempts total)
+    retry_delay_seconds: 15.0   # Wait 15 seconds between attempts
+    prompt_template: |
+      Research: {input[topic]}
+```
+
+> **Note:** `retries` is a phase-level field — it controls how many times the *sequencer* retries a phase before giving up. It is independent of the executor-level `max_retries` on `TaskSpec`, which controls retries within a single execution attempt.
 
 ### 2.3 Model Tier Quick Guide
 

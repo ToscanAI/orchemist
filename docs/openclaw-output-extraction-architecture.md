@@ -1,3 +1,5 @@
+> ⚠️ **HISTORICAL DOCUMENT** — Written February 2026. Many issues described here have since been addressed. See current documentation for up-to-date information.
+
 # Architectural Review: OpenClaw Executor Output Extraction
 
 **Date:** 2026-02-24  

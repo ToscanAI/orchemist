@@ -493,6 +493,126 @@ The executor tries to parse structured JSON from the response (including from ma
 
 ---
 
+### `OpenAICompatibleExecutor`
+
+Executor that calls any OpenAI-compatible `/v1/chat/completions` endpoint. Designed for Gemini-via-proxy, local LLMs (Ollama, LM Studio), or any other provider that speaks the OpenAI Chat Completions protocol.
+
+```python
+from orchestration_engine.openai_executor import OpenAICompatibleExecutor
+
+executor = OpenAICompatibleExecutor(
+    base_url="http://localhost:8765/v1",
+    model="gemini-3-pro-preview",
+    api_key="your-api-key",          # or "dummy" for unauthenticated proxies
+    timeout_seconds=300,
+    dry_run=False,
+)
+
+result = executor.execute(
+    task="Write a one-paragraph summary of the water cycle.",
+    worker_id="my-worker",
+)
+
+print(result.state)   # TaskState.SUCCESS
+print(result.output)  # "The water cycle describes..."
+```
+
+**Constructor parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `base_url` | str | `"http://localhost:8765/v1"` | Base URL for the OpenAI-compatible endpoint (without trailing slash) |
+| `model` | str | `"gemini-3-pro-preview"` | Model name passed in the request body |
+| `api_key` | str | `"dummy"` | Bearer token; use `"dummy"` for unauthenticated local proxies |
+| `timeout_seconds` | int | `300` | Request timeout in seconds |
+| `dry_run` | bool | `False` | When `True`, returns a mock result without making any HTTP call |
+
+**Public methods:**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `execute` | `(task: str, worker_id: str = "fallback", **kwargs) → ExecutorResult` | POST to the endpoint; returns `ExecutorResult` with `SUCCESS` or `FAILED` state |
+| `can_handle` | `(task_type: str) → bool` | Always `True` — accepts any task type |
+| `estimate_cost` | `(task: str, **kwargs) → float` | Always `0.0` — free-via-proxy assumption |
+
+**Error codes returned in `ExecutorResult.error_code`:**
+
+| Code | Cause |
+|------|-------|
+| `connection_error` | Network error or endpoint unreachable |
+| `timeout` | Request exceeded `timeout_seconds` |
+| `empty_response` | The endpoint returned an empty `content` field |
+| `invalid_response` | JSON parse error or unexpected response shape |
+
+---
+
+### `FallbackHandler`
+
+Wraps any primary executor and transparently retries through an `OpenAICompatibleExecutor` when the primary fails with a retriable error (`rate_limit`, `timeout`, or `overloaded`).
+
+```python
+from orchestration_engine.fallback import FallbackHandler
+from orchestration_engine.executors.anthropic_executor import AnthropicExecutor
+
+handler = FallbackHandler(
+    primary_executor=AnthropicExecutor(api_key="sk-ant-..."),
+    fallback_config={
+        "base_url": "http://localhost:8765/v1",
+        "model": "gemini-3-pro-preview",
+        "api_key": "secret",
+        "timeout_seconds": 300,
+    },
+)
+
+result = handler.execute("Write a haiku about cloud APIs.")
+```
+
+If `fallback_config` is `None` (the default), `FallbackHandler` is a transparent pass-through with zero overhead.
+
+**Retriable error codes:** `rate_limit`, `timeout`, `overloaded`. All other error codes (and all successes) are returned as-is from the primary executor.
+
+**Constructor parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `primary_executor` | any | required | Any executor with an `execute(task, worker_id, **kwargs)` method |
+| `fallback_config` | dict \| None | `None` | Config for the fallback `OpenAICompatibleExecutor`; `None` = no fallback |
+
+**`fallback_config` keys** (all optional; mirror `OpenAICompatibleExecutor` constructor):
+
+| Key | Default |
+|-----|---------|
+| `base_url` | `"http://localhost:8765/v1"` |
+| `model` | `"gemini-3-pro-preview"` |
+| `api_key` | `"dummy"` |
+| `timeout_seconds` | `300` |
+
+#### Configuring fallback in a template
+
+Add a `fallback:` block at the top level of your pipeline YAML:
+
+```yaml
+id: my-pipeline
+name: "My Pipeline"
+
+fallback:
+  base_url: "http://localhost:8765/v1"   # OpenAI-compatible proxy URL
+  model: "gemini-3-pro-preview"          # Model name for the fallback
+  api_key: "my-proxy-key"                # Auth token (or "dummy" for open proxies)
+  timeout_seconds: 300                   # Fallback request timeout
+
+phases:
+  - id: draft
+    name: "Draft"
+    task_type: content
+    model_tier: sonnet
+    ...
+```
+
+When a `fallback:` block is present, the pipeline runner wraps every executor in a `FallbackHandler`. If any phase call to Anthropic returns `rate_limit`, `timeout`, or `overloaded`, the phase is automatically retried via the configured fallback endpoint — no changes to individual phases required.
+
+---
+
 ### `TemplateEngine`
 
 Loads YAML templates and computes execution order.
@@ -671,6 +791,26 @@ phases:
 - A phase runs only after all its dependencies have succeeded
 - If two phases have no dependency relationship, they are grouped into the same wave (currently executed sequentially; parallel execution is planned)
 - Cycles are detected by `validate_template()` and reported as errors
+
+---
+
+## Model Identifiers
+
+The engine uses a three-level naming system. This table maps each tier name to the exact model string sent to the API and to the Python enum constant used in code:
+
+| Tier | Full Model String | Executor Reference |
+|------|-------------------|--------------------|
+| `haiku` | `anthropic/claude-haiku-4-5-20251001` | `ModelTier.HAIKU` |
+| `sonnet` | `anthropic/claude-sonnet-4-6` | `ModelTier.SONNET` |
+| `opus` | `anthropic/claude-opus-4-6` | `ModelTier.OPUS` |
+
+**Where each name appears:**
+
+- **Tier name** (`haiku`, `sonnet`, `opus`) — used in template YAML (`model_tier: sonnet`) and CLI flags (`--model sonnet`).
+- **Full model string** — the exact identifier sent to the Anthropic Messages API or an OpenAI-compatible endpoint. Also used in OpenClaw configuration (`anthropic/claude-sonnet-4-6`).
+- **Executor reference** — the `ModelTier` enum value used in Python code and returned in `TaskResult.model_used`.
+
+**Example:** A phase with `model_tier: haiku` results in an API call using `claude-haiku-4-5-20251001` and a `TaskResult` where `model_used == "claude-haiku-4-5-20251001"` and `preferred_model == ModelTier.HAIKU`.
 
 ---
 

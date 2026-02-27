@@ -1,3 +1,5 @@
+> ⚠️ **HISTORICAL DOCUMENT** — Written February 2026. Many issues described here have since been addressed. See current documentation for up-to-date information.
+
 # Orchestration Engine — Scenario-Based Testing Strategy
 
 **Author:** Independent strategy review  

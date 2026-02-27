@@ -1,3 +1,5 @@
+> ⚠️ **HISTORICAL DOCUMENT** — Written February 2026. Many issues described here have since been addressed. See current documentation for up-to-date information.
+
 # Architectural Review: Sub-Agent Output Capture in the Orchestration Engine
 
 **Author:** Toscan (Architectural Review)  

@@ -1,3 +1,5 @@
+> ⚠️ **HISTORICAL DOCUMENT** — Written February 2026. Many issues described here have since been addressed. See current documentation for up-to-date information.
+
 # Orchestration Engine — External Architecture Audit v2
 
 **Auditor:** Independent senior distributed systems architect (no prior involvement)  

@@ -1,3 +1,5 @@
+> ⚠️ **HISTORICAL DOCUMENT** — Written February 2026. Many issues described here have since been addressed. See current documentation for up-to-date information.
+
 # Architecture Review: OpenClaw Output Extraction (D+E Hybrid)
 
 **Reviewer:** Toscan (subagent, Opus 4.6)  
