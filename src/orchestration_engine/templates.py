@@ -104,6 +104,11 @@ class PhaseDefinition:
             self.retries = 0
         if self.retry_delay_seconds is None:
             self.retry_delay_seconds = 30
+        # Clamp and coerce to int to guard against negative values or YAML floats.
+        # range(1, 0) is empty → last_result stays None → crash; -5 → time.sleep raises
+        # ValueError; 1.5 from YAML → range(1, 2.5) raises TypeError.
+        self.retries = max(0, int(self.retries))
+        self.retry_delay_seconds = max(0, int(self.retry_delay_seconds))
 
 
 @dataclass

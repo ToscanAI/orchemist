@@ -697,6 +697,144 @@ phases:
                 f"'retry_delay_seconds' was incorrectly flagged as an unknown field: {msg}"
             )
 
+    def test_negative_retries_clamped_to_zero(self) -> None:
+        """Negative retries (e.g. -1) must be clamped to 0, not crash."""
+        phase = PhaseDefinition(id="p", name="p", prompt_template="x", retries=-1)
+        assert phase.retries == 0
+
+    def test_negative_retry_delay_clamped_to_zero(self) -> None:
+        """Negative retry_delay_seconds must be clamped to 0 (time.sleep(-n) raises)."""
+        phase = PhaseDefinition(id="p", name="p", prompt_template="x",
+                                retry_delay_seconds=-5)
+        assert phase.retry_delay_seconds == 0
+
+    def test_float_retries_coerced_to_int(self) -> None:
+        """YAML float retries (e.g. 1.5) must be coerced to int — range(1, 2.5) TypeError."""
+        phase = PhaseDefinition(id="p", name="p", prompt_template="x",
+                                retries=1.5)  # type: ignore[arg-type]
+        assert phase.retries == 1
+        assert isinstance(phase.retries, int)
+
+    def test_float_retry_delay_coerced_to_int(self) -> None:
+        """YAML float retry_delay_seconds coerced to int."""
+        phase = PhaseDefinition(id="p", name="p", prompt_template="x",
+                                retry_delay_seconds=7.9)  # type: ignore[arg-type]
+        assert phase.retry_delay_seconds == 7
+        assert isinstance(phase.retry_delay_seconds, int)
+
+
+# ---------------------------------------------------------------------------
+# Exception-catching retry path (WARNING #3 fix)
+# ---------------------------------------------------------------------------
+
+
+class TestExceptionRetry:
+    """executor.execute() raising an exception is retried like a FAILED result."""
+
+    def test_exception_on_first_attempt_is_retried(self) -> None:
+        """An exception on attempt 1 with retries=1 results in 2 total calls."""
+        phase = _make_phase("ex_phase", retries=1, retry_delay_seconds=0)
+        template = _make_template([phase])
+
+        call_count = 0
+
+        def execute(task_spec, **kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ConnectionError("API timeout")
+            return _success_result(task_spec)
+
+        runner = _build_runner(execute)
+
+        with patch("orchestration_engine.sequencer.time.sleep"):
+            seq = PhaseSequencer(template, runner)
+            result = seq.execute({})
+
+        assert call_count == 2
+        assert not result.get("aborted", False)
+
+    def test_all_attempts_raise_exception_pipeline_aborts_gracefully(self) -> None:
+        """All attempts raising exceptions → graceful pipeline abort (not crash)."""
+        phase = _make_phase("ex_phase", retries=1, retry_delay_seconds=0)
+        template = _make_template([phase])
+
+        def always_raise(task_spec, **kw):
+            raise RuntimeError("network down")
+
+        runner = _build_runner(always_raise)
+
+        with patch("orchestration_engine.sequencer.time.sleep"):
+            seq = PhaseSequencer(template, runner)
+            result = seq.execute({})
+
+        # Should abort gracefully, NOT raise
+        assert result.get("aborted") is True
+        assert result.get("failed_phase") == "ex_phase"
+
+    def test_exception_then_failure_result_exhausts_all_retries(self) -> None:
+        """Mix of exception and FAILED return: all retries exhausted properly."""
+        phase = _make_phase("mixed", retries=2, retry_delay_seconds=0)
+        template = _make_template([phase])
+
+        call_count = 0
+
+        def execute(task_spec, **kw):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise ValueError("transient error")
+            return _failure_result(task_spec, "persistent failure")
+
+        runner = _build_runner(execute)
+
+        with patch("orchestration_engine.sequencer.time.sleep"):
+            seq = PhaseSequencer(template, runner)
+            result = seq.execute({})
+
+        assert call_count == 3  # 1 exception + 2 FAILED returns
+        assert result.get("aborted") is True
+
+    def test_exception_path_logs_warning_with_exception_message(self, caplog) -> None:
+        """WARNING is logged when executor raises (not returns FAILED)."""
+        phase = _make_phase("ex_log_phase", retries=0, retry_delay_seconds=0)
+        template = _make_template([phase])
+
+        def raise_os_error(task_spec, **kw):
+            raise OSError("disk full")
+
+        runner = _build_runner(raise_os_error)
+
+        with caplog.at_level(logging.WARNING, logger="orchestration_engine.sequencer"):
+            with patch("orchestration_engine.sequencer.time.sleep"):
+                seq = PhaseSequencer(template, runner)
+                seq.execute({})
+
+        warn_messages = [
+            r.message for r in caplog.records
+            if r.levelno == logging.WARNING and "ex_log_phase" in r.message
+        ]
+        assert any("disk full" in m for m in warn_messages), (
+            f"Exception message not found in warnings: {warn_messages}"
+        )
+
+    def test_exception_path_sleeps_between_attempts(self) -> None:
+        """Sleep is called between exception-raising attempts."""
+        phase = _make_phase("ex_sleep_phase", retries=2, retry_delay_seconds=7)
+        template = _make_template([phase])
+
+        def always_timeout(task_spec, **kw):
+            raise TimeoutError("timeout")
+
+        runner = _build_runner(always_timeout)
+
+        with patch("orchestration_engine.sequencer.time.sleep") as mock_sleep:
+            seq = PhaseSequencer(template, runner)
+            seq.execute({})
+
+        assert mock_sleep.call_count == 2  # between attempt 1→2 and 2→3
+        mock_sleep.assert_called_with(7)
+
 
 # ---------------------------------------------------------------------------
 # Integration: multi-phase pipeline with retry on one phase

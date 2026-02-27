@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from .schemas import Priority, TaskResult, TaskSpec, TaskState, TaskType
+from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
 
 logger = logging.getLogger(__name__)
@@ -418,8 +418,10 @@ class PhaseSequencer:
         - The phase is attempted up to ``phase.retries + 1`` times in total.
         - If ``phase.retries == 0`` (the default), the phase is attempted
           exactly once — identical to the original behaviour.
-        - On each failed attempt a WARNING is logged that includes the phase ID,
-          the current attempt number (e.g. ``1/4``), and the error message.
+        - On each failed attempt (whether the executor returns
+          ``state=FAILED`` **or raises an exception**) a WARNING is logged
+          that includes the phase ID, the current attempt number (e.g.
+          ``1/4``), and the error message.
         - ``time.sleep(phase.retry_delay_seconds)`` is called between failed
           attempts.  No sleep is performed after the final (exhausted) attempt.
         - When all attempts are exhausted an ERROR log is emitted and the
@@ -430,6 +432,25 @@ class PhaseSequencer:
           ``metadata["attempt_number"]`` (1-indexed, which attempt this was)
           and ``metadata["total_attempts"]`` (how many attempts were made in
           total).
+
+        .. note:: **Dual retry mechanisms**
+
+            :class:`~orchestration_engine.schemas.TaskSpec` also carries a
+            ``max_retries`` field (default 3) and a ``retry_count`` counter
+            used by :func:`~orchestration_engine.schemas.calculate_retry_delay`
+            for exponential back-off and by
+            :func:`~orchestration_engine.schemas.select_model_tier` for model
+            escalation.  Those fields are managed by executor implementations
+            and govern retry behaviour *inside* a single ``executor.execute()``
+            call.
+
+            ``PhaseDefinition.retries`` is an independent, **phase-level**
+            mechanism that re-invokes ``executor.execute()`` from scratch on
+            failure.  It does **not** increment ``TaskSpec.retry_count``, so
+            model escalation (``select_model_tier``) is not triggered between
+            phase-level retries.  Both mechanisms can coexist; the executor's
+            internal retries happen transparently within each attempt that
+            ``_execute_and_wait()`` counts.
 
         Args:
             task_id: ID of the task previously submitted to the runner queue.
@@ -465,13 +486,33 @@ class PhaseSequencer:
         last_error_msg: str = "Phase execution failed"
 
         for attempt in range(1, total_attempts + 1):
-            # Execute synchronously (blocking)
-            result: TaskResult = executor.execute(
-                task_spec,
-                worker_id="sequencer-worker",
-                model_tier=phase.model_tier,
-                thinking_level=phase.thinking_level,
-            )
+            # Execute synchronously (blocking).
+            # Wrap in try/except so that transient exceptions (network timeouts,
+            # API rate limits, etc.) are also retried rather than propagating
+            # immediately.  If every attempt raises, a synthetic FAILED
+            # TaskResult is created after the loop so the pipeline abort path
+            # handles the failure consistently.
+            try:
+                result: TaskResult = executor.execute(
+                    task_spec,
+                    worker_id="sequencer-worker",
+                    model_tier=phase.model_tier,
+                    thinking_level=phase.thinking_level,
+                )
+            except Exception as exc:
+                last_error_msg = str(exc)
+                logger.warning(
+                    f"Phase '{phase.id}': attempt {attempt}/{total_attempts} "
+                    f"raised exception — {exc}"
+                )
+                if attempt < total_attempts:
+                    logger.debug(
+                        f"Phase '{phase.id}': waiting {phase.retry_delay_seconds}s "
+                        f"before retry attempt {attempt + 1}/{total_attempts}"
+                    )
+                    time.sleep(phase.retry_delay_seconds)
+                continue
+
             last_result = result
 
             if result.state == TaskState.SUCCESS:
@@ -517,8 +558,28 @@ class PhaseSequencer:
         # Persist failure in queue
         self.runner.queue.fail_task(task_id, last_error_msg)
 
-        # Annotate final failed result with retry telemetry
-        assert last_result is not None  # loop ran at least once
+        # Annotate final failed result with retry telemetry.
+        # last_result may be None when every attempt raised an exception (as
+        # opposed to returning a graceful FAILED TaskResult).  Rather than
+        # propagating a RuntimeError — which would bypass the pipeline's abort
+        # logic — we synthesise a FAILED TaskResult so the caller sees a
+        # consistent failure and triggers the standard abort path.
+        # Explicit guard (not assert) survives Python -O.
+        if last_result is None:
+            last_result = TaskResult(
+                task_id=task_spec.id,
+                task_type=task_spec.type,
+                state=TaskState.FAILED,
+                confidence=0.0,
+                result={"text": ""},
+                errors=[
+                    TaskError(
+                        code="EXEC_EXCEPTION",
+                        message=last_error_msg,
+                        severity="error",
+                    )
+                ],
+            )
         last_result.metadata["attempt_number"] = total_attempts
         last_result.metadata["total_attempts"] = total_attempts
 
