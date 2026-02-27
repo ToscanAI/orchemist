@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -409,15 +410,35 @@ class PhaseSequencer:
         """Execute a queued task synchronously and return its result as a dict.
 
         Retrieves the TaskSpec from the queue, runs it through the runner's
-        first available executor, marks the task complete (or failed) in the
-        queue, and returns a plain dict representation of the result.
+        first available executor, and implements a retry loop controlled by
+        ``phase.retries`` and ``phase.retry_delay_seconds``.
+
+        Retry behaviour
+        ---------------
+        - The phase is attempted up to ``phase.retries + 1`` times in total.
+        - If ``phase.retries == 0`` (the default), the phase is attempted
+          exactly once — identical to the original behaviour.
+        - On each failed attempt a WARNING is logged that includes the phase ID,
+          the current attempt number (e.g. ``1/4``), and the error message.
+        - ``time.sleep(phase.retry_delay_seconds)`` is called between failed
+          attempts.  No sleep is performed after the final (exhausted) attempt.
+        - When all attempts are exhausted an ERROR log is emitted and the
+          final failed :class:`~orchestration_engine.schemas.TaskResult` dict
+          is returned — the pipeline abort logic in :meth:`execute` handles it
+          as it did before.
+        - On success or final failure the returned dict always contains
+          ``metadata["attempt_number"]`` (1-indexed, which attempt this was)
+          and ``metadata["total_attempts"]`` (how many attempts were made in
+          total).
 
         Args:
             task_id: ID of the task previously submitted to the runner queue.
-            phase:   The PhaseDefinition (used for logging / context).
+            phase:   The PhaseDefinition (used for logging, retry config).
 
         Returns:
-            Dict with at least ``state``, ``result``, ``confidence`` keys.
+            Dict with at least ``state``, ``result``, ``confidence``, and
+            ``metadata`` keys.  ``metadata`` always contains
+            ``attempt_number`` and ``total_attempts``.
         """
         # Retrieve the TaskSpec we just submitted
         task_spec = self.runner.queue.get_task(task_id)
@@ -439,33 +460,72 @@ class PhaseSequencer:
                 f"'{task_spec.type.value}'"
             )
 
-        # Execute synchronously (blocking)
-        result: TaskResult = executor.execute(
-            task_spec,
-            worker_id="sequencer-worker",
-            model_tier=phase.model_tier,
-            thinking_level=phase.thinking_level,
-        )
+        total_attempts: int = phase.retries + 1
+        last_result: Optional[TaskResult] = None
+        last_error_msg: str = "Phase execution failed"
 
-        # Persist result in queue
-        if result.state == TaskState.SUCCESS:
-            self.runner.queue.complete_task(task_id, result)
-        else:
-            error_msg = "Phase execution failed"
+        for attempt in range(1, total_attempts + 1):
+            # Execute synchronously (blocking)
+            result: TaskResult = executor.execute(
+                task_spec,
+                worker_id="sequencer-worker",
+                model_tier=phase.model_tier,
+                thinking_level=phase.thinking_level,
+            )
+            last_result = result
+
+            if result.state == TaskState.SUCCESS:
+                # Persist success in queue
+                self.runner.queue.complete_task(task_id, result)
+                # Annotate metadata with retry telemetry
+                result.metadata["attempt_number"] = attempt
+                result.metadata["total_attempts"] = attempt
+                try:
+                    return result.model_dump()
+                except AttributeError:
+                    return result.dict()  # Pydantic v1 fallback
+
+            # ---- Failure path ----------------------------------------
+            last_error_msg = "Phase execution failed"
             if result.errors:
                 first = result.errors[0]
-                error_msg = (
-                    first.get("message", error_msg)
+                last_error_msg = (
+                    first.get("message", last_error_msg)
                     if isinstance(first, dict)
-                    else getattr(first, "message", error_msg)
+                    else getattr(first, "message", last_error_msg)
                 )
-            self.runner.queue.fail_task(task_id, error_msg)
 
-        # Return a serialisable dict for downstream phase templates
+            logger.warning(
+                f"Phase '{phase.id}': attempt {attempt}/{total_attempts} failed — "
+                f"{last_error_msg}"
+            )
+
+            # Sleep between attempts, but NOT after the final one
+            if attempt < total_attempts:
+                logger.debug(
+                    f"Phase '{phase.id}': waiting {phase.retry_delay_seconds}s "
+                    f"before retry attempt {attempt + 1}/{total_attempts}"
+                )
+                time.sleep(phase.retry_delay_seconds)
+
+        # ---- All attempts exhausted -----------------------------------
+        logger.error(
+            f"Phase '{phase.id}': permanently failed after {total_attempts} "
+            f"attempt(s). Last error: {last_error_msg}"
+        )
+
+        # Persist failure in queue
+        self.runner.queue.fail_task(task_id, last_error_msg)
+
+        # Annotate final failed result with retry telemetry
+        assert last_result is not None  # loop ran at least once
+        last_result.metadata["attempt_number"] = total_attempts
+        last_result.metadata["total_attempts"] = total_attempts
+
         try:
-            return result.model_dump()
+            return last_result.model_dump()
         except AttributeError:
-            return result.dict()  # Pydantic v1 fallback
+            return last_result.dict()  # Pydantic v1 fallback
 
     # ------------------------------------------------------------------
     # Static helpers
