@@ -83,6 +83,8 @@ class PhaseDefinition:
     output_schema: Dict[str, Any] = field(default_factory=dict)
     skill_refs: List[str] = field(default_factory=list)  # paths to external skill files
     context_files: List[str] = field(default_factory=list)  # local files to inline into prompt
+    retries: int = 0                # number of retry attempts after initial failure (0 = no retry)
+    retry_delay_seconds: int = 30   # seconds to wait between retry attempts
 
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
@@ -98,6 +100,15 @@ class PhaseDefinition:
             self.skill_refs = []
         if self.context_files is None:
             self.context_files = []
+        if self.retries is None:
+            self.retries = 0
+        if self.retry_delay_seconds is None:
+            self.retry_delay_seconds = 30
+        # Clamp and coerce to int to guard against negative values or YAML floats.
+        # range(1, 0) is empty → last_result stays None → crash; -5 → time.sleep raises
+        # ValueError; 1.5 from YAML → range(1, 2.5) raises TypeError.
+        self.retries = max(0, int(self.retries))
+        self.retry_delay_seconds = max(0, int(self.retry_delay_seconds))
 
 
 @dataclass
@@ -400,6 +411,8 @@ class TemplateEngine:
                 "human_review", "prompt_template", "output_schema",
                 "skill_refs",
                 "context_files",
+                "retries",
+                "retry_delay_seconds",
             }
 
             # Warn on unknown fields (prevents silent data loss)
