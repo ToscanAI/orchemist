@@ -177,7 +177,7 @@ When the pipeline finishes, you'll see output like this in your terminal:
 ✓ Phase 'write' completed    (model: sonnet-4,  tokens: 1243, cost: $0.0024)
 
 Pipeline completed in 18.4s
-Final output saved to: ~/.orchestration-engine/runs/my-first-pipeline-20260220-143205/
+Final output saved to: ./output/my-first-pipeline-20260220-143205/
 
 Phase outputs:
   research → 5 key facts about the Eiffel Tower construction...
@@ -186,15 +186,15 @@ Phase outputs:
 
 The output directory contains:
 ```
-~/.orchestration-engine/runs/my-first-pipeline-YYYYMMDD-HHMMSS/
+./output/my-first-pipeline-YYYYMMDD-HHMMSS/
 ├── phase_outputs/
-│   ├── research.json    ← Full research result
-│   └── write.json       ← Full writing result
-├── final_output.json    ← The last phase's result (what you probably want)
-└── run_summary.json     ← Timing, cost, model used per phase
+│   ├── research.md    ← Full research result
+│   └── write.md       ← Full writing result
+├── final_output.md    ← The last phase's result (what you probably want)
+└── run_summary.md     ← Timing, cost, model used per phase
 ```
 
-Open `final_output.json` to see the complete result. The `result` field contains the actual content.
+Open `final_output.md` to see the complete result. The `result` field contains the actual content.
 
 **Checking history from the database:**
 ```bash
