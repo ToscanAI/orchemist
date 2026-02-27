@@ -1003,3 +1003,121 @@ class TestFullTranscriptCapture:
         # With the fix, we collect text from ALL messages → non-empty
         assert result.state == TaskState.SUCCESS
         assert "big content" in result.result["text"]
+
+
+class TestStopReasonErrorDetection:
+    """#212: Executor must detect stopReason='error' as terminal and fail the phase."""
+
+    def _make_error_mock(self, session_key, messages):
+        """Helper: build mock that returns a session ending with stopReason=error."""
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({"childSessionKey": session_key})}],
+                "details": {"childSessionKey": session_key},
+            },
+        }
+        done_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": messages,
+                })}],
+            },
+        }
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return spawn_resp
+            if body.get("tool") == "sessions_list":
+                return {
+                    "ok": True,
+                    "result": {"content": [{"type": "text", "text": json.dumps({"sessions": []})}]},
+                }
+            return done_resp
+
+        return mock_post
+
+    def test_error_stop_reason_marks_phase_failed(self, executor, sample_task):
+        """stopReason=error should result in TaskState.FAILED."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "do work"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Partial analysis..."}]},
+            {"role": "assistant", "content": [], "stopReason": "error"},
+        ]
+        mock = self._make_error_mock("sess-err", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.FAILED
+        assert any("stopReason='error'" in e.message for e in result.errors)
+
+    def test_error_preserves_partial_output(self, executor, sample_task):
+        """Partial output from before the error should be captured in result."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "research"}]},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "SUBSTANTIAL RESEARCH OUTPUT HERE"},
+            ]},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "More findings..."},
+            ], "stopReason": "error"},
+        ]
+        mock = self._make_error_mock("sess-err-partial", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.FAILED
+        assert "SUBSTANTIAL RESEARCH OUTPUT" in result.result.get("partial_output", "")
+
+    def test_error_with_no_output_still_fails_cleanly(self, executor, sample_task):
+        """stopReason=error with empty content should fail without crash."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "do work"}]},
+            {"role": "assistant", "content": [], "stopReason": "error"},
+        ]
+        mock = self._make_error_mock("sess-err-empty", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.FAILED
+
+    def test_normal_stop_still_succeeds(self, executor, sample_task):
+        """Regression: stopReason=stop should still return SUCCESS."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "do work"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Complete output"}],
+             "stopReason": "stop"},
+        ]
+        mock = self._make_error_mock("sess-ok", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.SUCCESS
+        assert result.result["text"] == "Complete output"
+
+    def test_max_tokens_detected_as_terminal(self, executor, sample_task):
+        """stopReason=max_tokens should be detected as terminal and fail."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "write a novel"}]},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Chapter 1: It was a dark and stormy night..."},
+            ], "stopReason": "max_tokens"},
+        ]
+        mock = self._make_error_mock("sess-maxtoken", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.FAILED
+        assert "Chapter 1" in result.result.get("partial_output", "")
