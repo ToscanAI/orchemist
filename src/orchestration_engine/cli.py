@@ -827,6 +827,7 @@ def run_template(
     from .templates import TemplateEngine
     from .pipeline_runner import PipelineRunner
     from .sequencer import PhaseSequencer
+    from .heartbeat import ProgressHeartbeat
 
     import sys as _sys
     # Force plain text output in non-TTY environments (background, nohup, pipes)
@@ -916,7 +917,18 @@ def run_template(
     console.print(f"[bold]Output:[/bold]   {output_dir}/")
     console.print()
 
-    # --- 3b. Set up git integration if template has it enabled --------
+    # --- 3b. Non-TTY heartbeat (Issue #186) --------------------------
+    # In non-TTY environments (piped, nohup, CI) the CLI goes silent between
+    # phase completions.  ProgressHeartbeat emits a status line every 30s so
+    # operators can confirm the pipeline is alive.  In TTY mode (isatty==True)
+    # the class is automatically inactive and the Rich progress bar is
+    # unaffected.
+    heartbeat = ProgressHeartbeat(
+        total_phases=n_phases,
+        start_time=run_start,
+    )
+
+    # --- 3c. Set up git integration if template has it enabled --------
     from .git_integration import GitContext, GitError
 
     git_ctx: Optional[GitContext] = None
@@ -1004,6 +1016,16 @@ def run_template(
         finally:
             git_ctx.cleanup(success=success)
 
+    # Heartbeat phase-start callback (Issue #186)
+    def _on_phase_start_cb(phase_id: str, phase, wave_index: int) -> None:
+        """Notify the heartbeat that a new phase has started.
+
+        Updates the heartbeat's current-phase display so the next emitted
+        line shows the correct phase name.  This is a no-op when the
+        heartbeat is inactive (TTY mode).
+        """
+        heartbeat.set_current_phase(phase_id)
+
     # Live phase-completion callback (Feature #70)
     def _on_phase_complete(phase_id: str, phase_result: dict) -> None:
         _st = phase_result.get('state', 'unknown')
@@ -1022,6 +1044,8 @@ def run_template(
                 f"  [green]✓[/green] {safe_pid:30s}  state={state_val}  "
                 f"tokens={tokens}  cost={cost_str}"
             )
+        # Advance the heartbeat completed-phase counter (Issue #186)
+        heartbeat.on_phase_complete()
         # Run git commit hook after progress display
         _on_phase_complete_git(phase_id, phase_result)
 
@@ -1029,6 +1053,7 @@ def run_template(
         sequencer = PhaseSequencer(
             template, runner, config=initial_input,
             on_phase_complete=_on_phase_complete,
+            on_phase_start=_on_phase_start_cb,
             on_pipeline_start=_on_pipeline_start_hook,
             on_pipeline_complete=_on_pipeline_complete_hook,
         )
@@ -1036,7 +1061,10 @@ def run_template(
         _pipeline_context_ref[0] = sequencer.pipeline_context
 
         try:
-            result = sequencer.execute(initial_input)
+            # Start the non-TTY heartbeat for the duration of pipeline execution.
+            # In TTY mode heartbeat._active is False so this is a transparent no-op.
+            with heartbeat:
+                result = sequencer.execute(initial_input)
         except GitError as exc:
             console.print(f"\n[red]✗ Git error:[/red] {exc}", highlight=False)
             if git_ctx:
