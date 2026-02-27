@@ -1104,3 +1104,20 @@ class TestStopReasonErrorDetection:
 
         assert result.state == TaskState.SUCCESS
         assert result.result["text"] == "Complete output"
+
+    def test_max_tokens_detected_as_terminal(self, executor, sample_task):
+        """stopReason=max_tokens should be detected as terminal and fail."""
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "write a novel"}]},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Chapter 1: It was a dark and stormy night..."},
+            ], "stopReason": "max_tokens"},
+        ]
+        mock = self._make_error_mock("sess-maxtoken", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.FAILED
+        assert "Chapter 1" in result.result.get("partial_output", "")

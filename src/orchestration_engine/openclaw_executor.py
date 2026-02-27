@@ -286,7 +286,7 @@ class OpenClawExecutor(TaskExecutor):
                 completed_at=datetime.now(),
                 model_used=model,
                 execution_time_seconds=elapsed,
-                tokens_used=partial_tokens,
+                tokens_consumed=partial_tokens,
             )
 
         elapsed = (datetime.now() - start_time).total_seconds()
@@ -502,13 +502,13 @@ class OpenClawExecutor(TaskExecutor):
 
             # Check for stop reason indicating completion
             stop = last_assistant.get("stopReason", "")
-            _TERMINAL_REASONS = {"stop", "end_turn", "error"}
+            _TERMINAL_REASONS = {"stop", "end_turn", "error", "max_tokens"}
             if stop not in _TERMINAL_REASONS:
                 # Not yet complete — still generating or using tools
                 logger.debug(f"Session {session_key}: stopReason='{stop}', still running...")
                 continue
 
-            is_error = stop == "error"
+            is_error = stop in ("error", "max_tokens")
             if is_error:
                 logger.warning(
                     f"Session {session_key}: sub-agent ended with stopReason='error'. "
