@@ -248,7 +248,7 @@ class PhaseSequencer:
             )
 
             # Execute synchronously and store output
-            result = self._execute_and_wait(task_id, phase)
+            result = self._execute_and_wait(task_id, phase, initial_input=initial_input)
 
             # Write FILE blocks to disk if phase requests it (#189)
             if phase.write_files:
@@ -374,7 +374,7 @@ class PhaseSequencer:
                 f"(task_id={task_id}, parallel=True)"
             )
 
-            result = self._execute_and_wait(task_id, phase)
+            result = self._execute_and_wait(task_id, phase, initial_input=initial_input)
 
             # Write FILE blocks to disk if phase requests it (#189)
             if phase.write_files:
@@ -616,7 +616,7 @@ class PhaseSequencer:
                 return phase
         raise KeyError(f"Phase '{phase_id}' not found in template '{self.template.id}'")
 
-    def _build_phase_input(self, phase: PhaseDefinition, initial_input: dict) -> str:
+    def _build_phase_input(self, phase: PhaseDefinition, initial_input: dict, failure_context: str = "") -> str:
         """Build the prompt string for a phase.
 
         Uses Python's ``str.format()`` to interpolate:
@@ -626,6 +626,8 @@ class PhaseSequencer:
         - ``{previous_output[phase_id]}`` — output of a specific previous phase
         - ``{config}``          — the pipeline config dict
         - ``{skill_context[name]}`` — content of a loaded skill file (from skill_refs)
+        - ``{failure_context}`` — markdown-formatted context from the previous failed
+          attempt (empty string on the first attempt).
 
         Missing keys produce a ``<MISSING:key>`` placeholder (via SafeDict)
         rather than raising ``KeyError``.
@@ -634,6 +636,15 @@ class PhaseSequencer:
             When called from a parallel worker, **the caller must hold
             ``self._phase_outputs_lock``** before invoking this method so that
             the snapshot of ``self.phase_outputs`` is consistent.
+
+        Args:
+            phase:           The phase definition.
+            initial_input:   Pipeline input dict.
+            failure_context: Markdown-formatted failure context from the previous
+                             attempt.  Empty string on the first attempt.  Curly
+                             braces are escaped before injection so that error
+                             messages containing ``{`` / ``}`` do not confuse
+                             ``str.format()``.
         """
         if not phase.prompt_template:
             return ""
@@ -693,6 +704,11 @@ class PhaseSequencer:
         # Wrap pipeline_context so {context.key} works in prompt templates
         safe_context = _SafeDict(self.pipeline_context)
 
+        # Escape curly braces in failure_context so that error messages
+        # containing { or } do not confuse str.format() when the value is
+        # injected into the template before interpolation.
+        escaped_failure_context = failure_context.replace("{", "{{").replace("}", "}}")
+
         try:
             prompt = phase.prompt_template.format(
                 input=safe_input,
@@ -701,6 +717,7 @@ class PhaseSequencer:
                 skill_context=safe_skills,
                 files=safe_files,
                 context=safe_context,
+                failure_context=escaped_failure_context,
                 **phase_kwargs,
             )
         except (KeyError, IndexError, AttributeError) as exc:
@@ -808,7 +825,7 @@ class PhaseSequencer:
 
         return skill_name, body.strip()
 
-    def _execute_and_wait(self, task_id: str, phase: PhaseDefinition) -> dict:
+    def _execute_and_wait(self, task_id: str, phase: PhaseDefinition, initial_input: Optional[dict] = None) -> dict:
         """Execute a queued task synchronously and return its result as a dict.
 
         Retrieves the TaskSpec from the queue, runs it through the runner's
@@ -887,7 +904,20 @@ class PhaseSequencer:
         last_result: Optional[TaskResult] = None
         last_error_msg: str = "Phase execution failed"
 
+        # Retry-feedback tracking (#192)
+        attempt_history: List[dict] = []
+        failure_context: str = ""  # empty on the first attempt
+
         for attempt in range(1, total_attempts + 1):
+            # On retry (attempt > 1) rebuild the prompt with failure_context so
+            # the LLM receives a description of what went wrong last time.
+            if attempt > 1 and initial_input is not None:
+                with self._phase_outputs_lock:
+                    updated_prompt = self._build_phase_input(
+                        phase, initial_input, failure_context=failure_context
+                    )
+                task_spec.payload["prompt"] = updated_prompt
+
             # Execute synchronously (blocking).
             # Wrap in try/except so that transient exceptions (network timeouts,
             # API rate limits, etc.) are also retried rather than propagating
@@ -907,7 +937,15 @@ class PhaseSequencer:
                     f"Phase '{phase.id}': attempt {attempt}/{total_attempts} "
                     f"raised exception — {exc}"
                 )
+                sanitized = self._sanitize_error_for_prompt(last_error_msg)
+                attempt_history.append({
+                    "attempt": attempt,
+                    "error": sanitized,
+                    "partial_output": "",
+                    "tokens_used": 0,
+                })
                 if attempt < total_attempts:
+                    failure_context = self._format_failure_context(attempt, sanitized, "")
                     logger.debug(
                         f"Phase '{phase.id}': waiting {phase.retry_delay_seconds}s "
                         f"before retry attempt {attempt + 1}/{total_attempts}"
@@ -923,6 +961,7 @@ class PhaseSequencer:
                 # Annotate metadata with retry telemetry
                 result.metadata["attempt_number"] = attempt
                 result.metadata["total_attempts"] = attempt
+                result.metadata["retry_history"] = attempt_history
                 try:
                     return result.model_dump()
                 except AttributeError:
@@ -943,8 +982,25 @@ class PhaseSequencer:
                 f"{last_error_msg}"
             )
 
+            # Capture partial output and record attempt history (#192)
+            try:
+                partial_output = _extract_phase_text(result.model_dump())
+            except AttributeError:
+                partial_output = _extract_phase_text(result.dict())  # Pydantic v1
+            tokens_used = result.metadata.get("tokens_used", 0) if result.metadata else 0
+            sanitized_err = self._sanitize_error_for_prompt(last_error_msg)
+            attempt_history.append({
+                "attempt": attempt,
+                "error": sanitized_err,
+                "partial_output": partial_output,  # full output in history
+                "tokens_used": tokens_used,
+            })
+
             # Sleep between attempts, but NOT after the final one
             if attempt < total_attempts:
+                failure_context = self._format_failure_context(
+                    attempt, sanitized_err, partial_output
+                )
                 logger.debug(
                     f"Phase '{phase.id}': waiting {phase.retry_delay_seconds}s "
                     f"before retry attempt {attempt + 1}/{total_attempts}"
@@ -984,6 +1040,7 @@ class PhaseSequencer:
             )
         last_result.metadata["attempt_number"] = total_attempts
         last_result.metadata["total_attempts"] = total_attempts
+        last_result.metadata["retry_history"] = attempt_history
 
         try:
             return last_result.model_dump()
@@ -993,6 +1050,95 @@ class PhaseSequencer:
     # ------------------------------------------------------------------
     # Static helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sanitize_error_for_prompt(error: str) -> str:
+        """Strip Python tracebacks and ANSI codes from an error string, then truncate.
+
+        Intended to produce a clean, concise error message suitable for
+        inclusion in an LLM retry prompt.
+
+        Processing steps:
+        1. Strip ANSI escape codes (colour codes, cursor movement, etc.)
+        2. Remove Python traceback blocks — keeps only the final exception line
+           (e.g. ``ValueError: something``).
+        3. Truncate the result to 500 characters, appending ``"..."`` when
+           truncation occurs.
+
+        Args:
+            error: Raw error string (may contain tracebacks and/or ANSI codes).
+
+        Returns:
+            Sanitized string of at most 500 characters.
+        """
+        # 1. Remove ANSI escape codes
+        ansi_escape = re.compile(r'\x1b\[[0-9;]*[mGKHFJsr]')
+        error = ansi_escape.sub('', error)
+
+        # 2. Strip Python traceback blocks.
+        #    A traceback starts with "Traceback (most recent call last):" and
+        #    the body consists of indented lines ("  File ...", "    code...").
+        #    The block ends at the first non-indented line which is the actual
+        #    exception type/message (e.g. "ValueError: foo").  We skip the
+        #    traceback body and keep only that final exception line.
+        lines = error.splitlines()
+        in_traceback = False
+        filtered: List[str] = []
+        for line in lines:
+            if line.strip().startswith('Traceback (most recent call last):'):
+                in_traceback = True
+                continue
+            if in_traceback:
+                # Traceback body: lines indented with spaces or tabs
+                if line.startswith('  ') or line.startswith('\t'):
+                    continue
+                else:
+                    # Non-indented line → the exception class/message line
+                    in_traceback = False
+                    filtered.append(line)
+            else:
+                filtered.append(line)
+
+        error = '\n'.join(filtered).strip()
+
+        # 3. Truncate to 500 chars
+        if len(error) > 500:
+            error = error[:497] + '...'
+
+        return error
+
+    @staticmethod
+    def _format_failure_context(attempt: int, error: str, partial_output: str) -> str:
+        """Return a markdown-formatted failure context block for LLM retry prompts.
+
+        The returned string is injected into the phase prompt on the *next*
+        attempt (via the ``{failure_context}`` placeholder) so that the LLM
+        can see what went wrong and try a different approach.
+
+        Partial output is truncated to 1 000 characters inside this method;
+        pass the full partial output here and store it separately in
+        ``retry_history`` if you need the untruncated version.
+
+        Args:
+            attempt:        The 1-based attempt number that failed.
+            error:          Sanitized error message (output of
+                            :meth:`_sanitize_error_for_prompt`).
+            partial_output: Any text produced by the failed attempt before it
+                            errored.  May be an empty string.
+
+        Returns:
+            Markdown string ready for injection into a prompt template.
+        """
+        display_partial = partial_output[:1000] if partial_output else "(none)"
+
+        return (
+            f"## Previous Attempt Failed\n\n"
+            f"**Attempt:** {attempt}\n"
+            f"**Error:** {error}\n\n"
+            f"**Partial Output:**\n"
+            f"{display_partial}\n\n"
+            f"Please review the above failure and try a different approach."
+        )
 
     @staticmethod
     def _resolve_task_type(task_type_str: str) -> TaskType:
