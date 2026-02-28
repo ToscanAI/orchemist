@@ -16,6 +16,7 @@ Usage:
 
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -82,10 +83,23 @@ THINKING_MAP: Dict[str, Optional[str]] = {
 }
 
 # Default timeout for waiting on a spawned session to complete.
-DEFAULT_TIMEOUT_SECONDS = 600
+# 20 minutes — used when no per-phase or per-executor timeout is provided (#240).
+DEFAULT_TIMEOUT_SECONDS = 1200
 
 # How long to sleep between each poll of the session status endpoint.
 POLL_INTERVAL_SECONDS = 3.0
+
+# Maximum number of messages to request from sessions_history in a single call.
+#
+# NOTE (issue #239): The OpenClaw gateway's sessions_history tool does NOT support
+# offset-based pagination — no "offset" or "before" parameters are documented or
+# accepted by the /tools/invoke endpoint.  We therefore use the highest safe limit
+# as a ceiling so that even long sub-agent research sessions (web searches, multi-
+# turn conversations) are captured in full.  If a session produces MORE than
+# SESSIONS_HISTORY_LIMIT messages, a warning is emitted, but pagination cannot be
+# attempted without gateway support.  Should the gateway add offset/cursor support
+# in a future release, replace the single-call fetch with a paginating helper.
+SESSIONS_HISTORY_LIMIT: int = 1000
 
 # Instruction appended to every sub-agent prompt so it returns its full output
 # as text instead of writing it to workspace files.  The orchestrator reads the
@@ -426,7 +440,23 @@ class OpenClawExecutor(TaskExecutor):
         }
         if thinking is not None:
             spawn_args["thinking"] = thinking
-        effective_timeout = timeout or self.timeout_seconds
+
+        # Resolve effective timeout (#240).
+        # Use explicit None-check (not falsy "or") so that a caller-provided
+        # zero/small value is still respected (even though 0 is nonsensical).
+        # Infinite timeouts are re-mapped to DEFAULT_TIMEOUT_SECONDS to avoid a
+        # deadline that can never be exceeded.
+        if timeout is None:
+            effective_timeout: int = DEFAULT_TIMEOUT_SECONDS
+        elif math.isinf(float(timeout)):
+            logger.warning(
+                "Infinite timeout requested; falling back to DEFAULT_TIMEOUT_SECONDS=%ds",
+                DEFAULT_TIMEOUT_SECONDS,
+            )
+            effective_timeout = DEFAULT_TIMEOUT_SECONDS
+        else:
+            effective_timeout = timeout
+
         spawn_args["runTimeoutSeconds"] = effective_timeout
 
         logger.debug(
@@ -456,21 +486,51 @@ class OpenClawExecutor(TaskExecutor):
         logger.info(f"Session spawned: {session_key}")
 
         # ── 2. Poll via /tools/invoke → sessions_history ─────────────
-        deadline = time.monotonic() + effective_timeout
+        loop_start: float = time.monotonic()
+        deadline: float = loop_start + effective_timeout
+        # Total window in seconds — stored separately so it remains immutable
+        # across loop iterations (deadline is derived from it once).
+        total_timeout: int = effective_timeout
+
+        # 80% warning state — fired at most once per session (#240 AC-4).
+        warning_fired: bool = False
+
+        # Session cleanup detection state (#241).
+        # Tracks whether any poll has ever returned a non-empty message list.
+        # If True and the current poll returns empty, the session was GC'd.
+        had_messages: bool = False
 
         while True:
-            if time.monotonic() > deadline:
+            now: float = time.monotonic()
+
+            # ── Deadline check (AC-3, AC-5) ──────────────────────────────
+            # Evaluated on every iteration, including after successful but
+            # non-terminal gateway responses, so the loop cannot spin forever.
+            if now > deadline:
                 raise TimeoutError(
                     f"OpenClaw session {session_key} did not complete within "
                     f"{effective_timeout}s"
                 )
+
+            # ── 80% elapsed warning (AC-4) ────────────────────────────────
+            elapsed: float = now - loop_start
+            if not warning_fired and elapsed >= 0.8 * total_timeout:
+                logger.warning(
+                    "Session %s: %.0f%% of timeout elapsed (%.1fs / %ds) — "
+                    "session may not complete in time.",
+                    session_key,
+                    100.0 * elapsed / total_timeout,
+                    elapsed,
+                    total_timeout,
+                )
+                warning_fired = True
 
             time.sleep(POLL_INTERVAL_SECONDS)
 
             try:
                 hist_result = self._invoke_tool("sessions_history", {
                     "sessionKey": session_key,
-                    "limit": 200,
+                    "limit": SESSIONS_HISTORY_LIMIT,
                 })
             except RuntimeError as exc:
                 # Session may not be ready yet
@@ -486,9 +546,37 @@ class OpenClawExecutor(TaskExecutor):
             except (json.JSONDecodeError, TypeError):
                 continue
 
-            messages = history.get("messages", [])
+            messages = history.get("messages") or []
+
+            # Warn if the response is at the limit ceiling — some messages may
+            # be missing if the session produced more than SESSIONS_HISTORY_LIMIT
+            # entries.  Offset-based pagination is NOT supported by the current
+            # gateway (sessions_history has no "offset" parameter).  See #239.
+            if len(messages) == SESSIONS_HISTORY_LIMIT:
+                logger.warning(
+                    "sessions_history returned %d messages for session %s — "
+                    "response is at the limit ceiling, some earlier content may "
+                    "be lost.  Consider reducing sub-agent verbosity or requesting "
+                    "gateway-side pagination support.",
+                    SESSIONS_HISTORY_LIMIT,
+                    session_key,
+                )
+
+            # ── Session cleanup detection (#241) ──────────────────────────
+            # A session that previously had messages but now returns an empty
+            # list has been garbage-collected by the gateway.
             if not messages:
+                if had_messages:
+                    raise RuntimeError(
+                        f"Session {session_key} was garbage-collected: "
+                        f"history previously contained messages but is now empty. "
+                        f"The gateway may have evicted the session."
+                    )
+                # Session not yet started — treat as "not ready", keep polling.
                 continue
+
+            # Mark that this session has produced at least one message (AC-7).
+            had_messages = True
 
             # Find the last assistant message
             last_assistant = None

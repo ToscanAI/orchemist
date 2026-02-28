@@ -1121,3 +1121,747 @@ class TestStopReasonErrorDetection:
 
         assert result.state == TaskState.FAILED
         assert "Chapter 1" in result.result.get("partial_output", "")
+
+
+# ---------------------------------------------------------------------------
+# Issue #240 — Poll Timeout
+# ---------------------------------------------------------------------------
+
+
+class TestPollTimeout:
+    """Tests for the deadline-based poll timeout and 80% warning (#240)."""
+
+    # ── helpers ──────────────────────────────────────────────────────────
+
+    def _spawn_resp(self, session_key: str) -> dict:
+        return {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({"childSessionKey": session_key})}],
+                "details": {"childSessionKey": session_key},
+            },
+        }
+
+    def _running_resp(self, session_key: str) -> dict:
+        """A response with only a user message — no terminal stopReason."""
+        return {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
+                    ],
+                })}],
+            },
+        }
+
+    def _done_resp(self, session_key: str, output: str = "done") -> dict:
+        """A response with a terminal assistant message."""
+        return {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": output}],
+                         "stopReason": "stop"},
+                    ],
+                })}],
+            },
+        }
+
+    # ── AC-1: None timeout → DEFAULT_TIMEOUT_SECONDS = 1200 ──────────────
+
+    def test_none_timeout_uses_default_1200(self, executor, sample_task):
+        """When effective_timeout resolves to None, the session must use 1200s (#240 AC-1)."""
+        from orchestration_engine.openclaw_executor import DEFAULT_TIMEOUT_SECONDS
+
+        assert DEFAULT_TIMEOUT_SECONDS == 1200, (
+            f"DEFAULT_TIMEOUT_SECONDS must be 1200 (20 min), got {DEFAULT_TIMEOUT_SECONDS}"
+        )
+
+        captured_spawn_args: dict = {}
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                captured_spawn_args.update(body.get("args", {}))
+                return self._spawn_resp("sess-timeout-none")
+            if body.get("tool") == "sessions_list":
+                return {"ok": True, "result": {"content": [{"type": "text", "text": "[]"}]}}
+            return self._done_resp("sess-timeout-none")
+
+        # Pass timeout=None directly to _run_session
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            # Call _run_session with timeout=None
+            executor._run_session("hello", "anthropic/claude-sonnet-4-6", None, timeout=None)
+
+        assert captured_spawn_args.get("runTimeoutSeconds") == 1200, (
+            f"Expected runTimeoutSeconds=1200, got {captured_spawn_args.get('runTimeoutSeconds')}"
+        )
+
+    # ── AC-2: Large timeout → used as-is ─────────────────────────────────
+
+    def test_large_timeout_respected(self, executor, sample_task):
+        """A timeout larger than 1200 must be used unchanged (#240 AC-2)."""
+        captured: dict = {}
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                captured.update(body.get("args", {}))
+                return self._spawn_resp("sess-large-to")
+            if body.get("tool") == "sessions_list":
+                return {"ok": True, "result": {"content": [{"type": "text", "text": "[]"}]}}
+            return self._done_resp("sess-large-to")
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            executor._run_session("hello", "anthropic/claude-sonnet-4-6", None, timeout=3600)
+
+        assert captured.get("runTimeoutSeconds") == 3600
+
+    # ── AC-3: Deadline exceeded → TimeoutError ────────────────────────────
+
+    def test_deadline_exceeded_raises_timeout_error(self, executor, sample_task):
+        """When monotonic() > deadline, TimeoutError must be raised (#240 AC-3)."""
+        session_key = "sess-ac3"
+        # monotonic call sequence:
+        #   call 1 → loop_start (inside _run_session before loop)
+        #   call 2 → first "now" in loop body → 0.0 (within deadline)
+        #   call 3 → second "now" in loop body → 9999.0 (exceeds deadline)
+        # The first call (loop_start=0.0), deadline = 0.0 + effective_timeout
+        # Second iteration now=9999 → timeout
+
+        mono_values = iter([
+            0.0,    # loop_start
+            0.0,    # first iteration now (within deadline — no timeout)
+            9999.0, # second iteration now (exceeds deadline)
+        ])
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return self._spawn_resp(session_key)
+            return self._running_resp(session_key)
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             patch("orchestration_engine.openclaw_executor.time.monotonic",
+                   side_effect=mono_values):
+            with pytest.raises(TimeoutError) as exc_info:
+                executor._run_session("hello", "anthropic/claude-sonnet-4-6", None, timeout=100)
+
+        assert session_key in str(exc_info.value)
+
+    # ── AC-4: 80% warning fires exactly once ─────────────────────────────
+
+    def test_80_percent_warning_fires_once(self, executor, sample_task):
+        """Warning logged at 80% elapsed, never repeated (#240 AC-4)."""
+        session_key = "sess-ac4"
+        timeout = 100  # seconds
+        threshold = 0.8 * timeout  # 80s
+
+        # Loop: start=0, iter1=below threshold, iter2=at/above threshold,
+        #       iter3=still above, iter4=deadline exceeded → TimeoutError
+        mono_values = iter([
+            0.0,               # loop_start
+            0.0,               # iter 1 now → below threshold (0 < 80)
+            threshold + 1.0,   # iter 2 now → above threshold (81 > 80) → warning
+            threshold + 2.0,   # iter 3 now → still above (should NOT warn again)
+            9999.0,            # iter 4 now → deadline exceeded
+        ])
+
+        call_count = {"history": 0}
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return self._spawn_resp(session_key)
+            # Always return running (no terminal reason) so loop keeps going
+            return self._running_resp(session_key)
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             patch("orchestration_engine.openclaw_executor.time.monotonic",
+                   side_effect=mono_values), \
+             patch("orchestration_engine.openclaw_executor.logger") as mock_logger:
+
+            with pytest.raises(TimeoutError):
+                executor._run_session("hello", "anthropic/claude-sonnet-4-6", None, timeout=timeout)
+
+        # logger.warning must have been called exactly once with 80%+ info
+        warning_calls = [
+            c for c in mock_logger.warning.call_args_list
+            if "elapsed" in str(c).lower() or "%" in str(c)
+        ]
+        assert len(warning_calls) == 1, (
+            f"Expected exactly 1 80%-warning log call, got {len(warning_calls)}. "
+            f"All warning calls: {mock_logger.warning.call_args_list}"
+        )
+
+    # ── AC-5: Multiple non-terminal responses eventually timeout ──────────
+
+    def test_multiple_non_terminal_responses_eventually_timeout(self, executor, sample_task):
+        """Loop fires TimeoutError even after many non-terminal gateway responses (#240 AC-5)."""
+        session_key = "sess-ac5"
+        # Simulate 3 non-terminal responses, then deadline exceeded
+        # Monotonic: start=0, iter1=1, iter2=2, iter3=3, iter4=9999 (timeout)
+        mono_values = iter([0.0, 1.0, 2.0, 3.0, 9999.0])
+        poll_count = {"n": 0}
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return self._spawn_resp(session_key)
+            poll_count["n"] += 1
+            # Always return running — never completes
+            return self._running_resp(session_key)
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             patch("orchestration_engine.openclaw_executor.time.monotonic",
+                   side_effect=mono_values):
+            with pytest.raises(TimeoutError):
+                executor._run_session("hello", "anthropic/claude-sonnet-4-6", None, timeout=10)
+
+        # Must have polled at least twice before timing out
+        assert poll_count["n"] >= 2, "Expected multiple polls before TimeoutError"
+
+
+# ---------------------------------------------------------------------------
+# Issue #241 — Session Cleanup Detection
+# ---------------------------------------------------------------------------
+
+
+class TestSessionCleanupDetection:
+    """Tests for had_messages / gateway session GC detection (#241)."""
+
+    # ── helpers ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _spawn_resp(session_key: str) -> dict:
+        return {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({"childSessionKey": session_key})}],
+                "details": {"childSessionKey": session_key},
+            },
+        }
+
+    @staticmethod
+    def _make_poll_sequence(session_key: str, responses: list) -> callable:
+        """Return a mock_post that yields history responses in order."""
+        iter_responses = iter(responses)
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return TestSessionCleanupDetection._spawn_resp(session_key)
+            if body.get("tool") == "sessions_list":
+                return {"ok": True, "result": {"content": [{"type": "text", "text": "[]"}]}}
+            # sessions_history — return next in sequence
+            try:
+                hist_payload = next(iter_responses)
+            except StopIteration:
+                raise RuntimeError("Mock exhausted: no more history responses")
+            return {
+                "ok": True,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps({
+                        "sessionKey": session_key,
+                        "messages": hist_payload,
+                    })}],
+                },
+            }
+
+        return mock_post
+
+    # ── AC-6: had_messages starts False, first empty poll → no error ──────
+
+    def test_first_poll_empty_messages_no_error(self, executor):
+        """Empty messages on first poll must NOT raise — session not yet started (#241 AC-6, AC-10)."""
+        session_key = "sess-241-ac6"
+        task = TaskSpec(
+            type=TaskType.CONTENT,
+            payload={"prompt": "go"},
+            priority=Priority.NORMAL,
+        )
+
+        done_messages = [
+            {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "final output"}],
+             "stopReason": "stop"},
+        ]
+
+        # Sequence: empty, empty, done
+        mock = self._make_poll_sequence(session_key, [
+            [],            # poll 1 → empty (not yet started)
+            [],            # poll 2 → still empty
+            done_messages, # poll 3 → complete
+        ])
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            output, _ = executor._run_session("go", "anthropic/claude-sonnet-4-6", None, timeout=60)
+
+        assert "final output" in output
+
+    # ── AC-7: had_messages set to True on first non-empty poll ───────────
+
+    def test_had_messages_set_true_on_non_empty_poll(self, executor):
+        """After a non-empty poll, had_messages is implicitly True — subsequent empty raises (#241 AC-7, AC-8)."""
+        session_key = "sess-241-ac7"
+        task = TaskSpec(
+            type=TaskType.CONTENT,
+            payload={"prompt": "go"},
+            priority=Priority.NORMAL,
+        )
+
+        non_empty = [{"role": "user", "content": [{"type": "text", "text": "prompt"}]}]
+
+        # Sequence: non-empty (sets had_messages=True), then empty (should raise)
+        mock = self._make_poll_sequence(session_key, [
+            non_empty,  # poll 1 → messages present → had_messages = True
+            [],         # poll 2 → empty → RuntimeError
+        ])
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            with pytest.raises(RuntimeError):
+                executor._run_session("go", "anthropic/claude-sonnet-4-6", None, timeout=60)
+
+    # ── AC-8: [non-empty, empty] → RuntimeError on second poll ───────────
+
+    def test_gc_detected_on_second_poll(self, executor):
+        """RuntimeError raised immediately when had_messages=True and poll returns empty (#241 AC-8)."""
+        session_key = "sess-241-ac8"
+
+        non_empty = [{"role": "user", "content": [{"type": "text", "text": "x"}]}]
+
+        mock = self._make_poll_sequence(session_key, [
+            non_empty,  # poll 1 → non-empty (had_messages → True)
+            [],         # poll 2 → empty → RuntimeError
+        ])
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            with pytest.raises(RuntimeError) as exc_info:
+                executor._run_session("go", "anthropic/claude-sonnet-4-6", None, timeout=60)
+
+        assert "garbage-collected" in str(exc_info.value).lower() or \
+               "evicted" in str(exc_info.value).lower() or \
+               session_key in str(exc_info.value), (
+            f"Expected cleanup-related error message, got: {exc_info.value}"
+        )
+
+    # ── AC-9: RuntimeError message includes session_key ──────────────────
+
+    def test_gc_error_includes_session_key(self, executor):
+        """RuntimeError from GC detection must include the session key (#241 AC-9)."""
+        session_key = "my-unique-session-key-xyz"
+
+        non_empty = [{"role": "user", "content": [{"type": "text", "text": "x"}]}]
+
+        mock = self._make_poll_sequence(session_key, [
+            non_empty,
+            [],
+        ])
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            with pytest.raises(RuntimeError) as exc_info:
+                executor._run_session("go", "anthropic/claude-sonnet-4-6", None, timeout=60)
+
+        assert session_key in str(exc_info.value), (
+            f"Session key '{session_key}' not found in error: {exc_info.value}"
+        )
+
+    # ── AC-10: [empty, empty, non-empty] → no error ──────────────────────
+
+    def test_multiple_empty_polls_before_start_no_error(self, executor):
+        """Several empty polls before session starts must NOT raise (#241 AC-10)."""
+        session_key = "sess-241-ac10"
+
+        done_messages = [
+            {"role": "user", "content": [{"type": "text", "text": "prompt"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "result text"}],
+             "stopReason": "stop"},
+        ]
+
+        mock = self._make_poll_sequence(session_key, [
+            [],             # poll 1 → empty
+            [],             # poll 2 → empty
+            [],             # poll 3 → empty
+            done_messages,  # poll 4 → done
+        ])
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            output, _ = executor._run_session("go", "anthropic/claude-sonnet-4-6", None, timeout=120)
+
+        assert "result text" in output
+
+    # ── Edge: None messages treated as empty (defensive) ─────────────────
+
+    def test_none_messages_treated_as_empty(self, executor):
+        """History returning messages=None must be treated as empty, not crash (#241 edge)."""
+        session_key = "sess-241-none"
+
+        # First poll returns {"messages": null} — defensive: must not crash
+        null_messages_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": None,
+                })}],
+            },
+        }
+        done_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": "x"}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": "ok"}],
+                         "stopReason": "stop"},
+                    ],
+                })}],
+            },
+        }
+        call_count = {"n": 0}
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return TestSessionCleanupDetection._spawn_resp(session_key)
+            if body.get("tool") == "sessions_list":
+                return {"ok": True, "result": {"content": [{"type": "text", "text": "[]"}]}}
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return null_messages_resp
+            return done_resp
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            output, _ = executor._run_session("go", "anthropic/claude-sonnet-4-6", None, timeout=60)
+
+        assert "ok" in output
+
+    # ── GC detection propagates as RuntimeError → FAILED TaskResult ───────
+
+    def test_gc_detection_causes_failed_task_result(self, executor, sample_task):
+        """RuntimeError from GC detection must be caught and returned as TaskState.FAILED."""
+        session_key = "sess-gc-task"
+
+        non_empty = [{"role": "user", "content": [{"type": "text", "text": "x"}]}]
+
+        mock = self._make_poll_sequence(session_key, [
+            non_empty,
+            [],
+        ])
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            # Use execute() so the RuntimeError is caught and wrapped in TaskResult
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.FAILED
+        assert result.errors, "TaskResult should have at least one error"
+        error_message = result.errors[0].message
+        # The error message should reference the session GC or the session key
+        assert session_key in error_message or "garbage" in error_message.lower() or \
+               "evicted" in error_message.lower(), (
+            f"Expected GC-related message in error, got: {error_message!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Issue #239 — sessions_history limit raised to capture full sub-agent output
+# ---------------------------------------------------------------------------
+
+
+class TestSessionsHistoryLimit:
+    """Issue #239 — sessions_history must use SESSIONS_HISTORY_LIMIT (≥ 1000), not 200."""
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _make_mock(self, session_key: str, messages: list, *, capture_limits=None):
+        """Build a mock _http_post that records the 'limit' arg sent to sessions_history.
+
+        Args:
+            session_key:    The session key to embed in spawn/history responses.
+            messages:       The message list to return from sessions_history.
+            capture_limits: If a list is provided, each 'limit' value sent to
+                            sessions_history is appended to it.
+        """
+        spawn_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({"childSessionKey": session_key})}],
+                "details": {"childSessionKey": session_key},
+            },
+        }
+        history_resp = {
+            "ok": True,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": messages,
+                })}],
+            },
+        }
+        list_resp = {
+            "ok": True,
+            "result": {"content": [{"type": "text", "text": json.dumps({"sessions": []})}]},
+        }
+
+        def mock_post(url, body):
+            tool = body.get("tool", "")
+            if tool == "sessions_spawn":
+                return spawn_resp
+            if tool == "sessions_list":
+                return list_resp
+            if tool == "sessions_history":
+                if capture_limits is not None:
+                    capture_limits.append(body.get("args", {}).get("limit"))
+                return history_resp
+            return {"ok": True, "result": {"content": [{"type": "text", "text": "{}"}]}}
+
+        return mock_post
+
+    def _make_messages(self, n_assistant: int) -> list:
+        """Build a realistic messages list with n_assistant assistant turns.
+
+        The first message is a user prompt.  Each assistant turn contains
+        unique text ``chunk_<i>`` to allow individual verification.
+        The final assistant message carries ``stopReason='stop'`` so the
+        polling loop recognises session completion.
+        """
+        msgs = [{"role": "user", "content": [{"type": "text", "text": "do extensive research"}]}]
+        for i in range(n_assistant):
+            is_last = i == n_assistant - 1
+            entry: dict = {
+                "role": "assistant",
+                "content": [{"type": "text", "text": f"chunk_{i}"}],
+            }
+            if is_last:
+                entry["stopReason"] = "stop"
+            msgs.append(entry)
+        return msgs
+
+    # ------------------------------------------------------------------
+    # Constant existence / value
+    # ------------------------------------------------------------------
+
+    def test_limit_constant_exists_and_is_int(self):
+        """SESSIONS_HISTORY_LIMIT must be importable and be an integer."""
+        from orchestration_engine.openclaw_executor import SESSIONS_HISTORY_LIMIT
+
+        assert isinstance(SESSIONS_HISTORY_LIMIT, int), (
+            f"Expected int, got {type(SESSIONS_HISTORY_LIMIT)}"
+        )
+
+    def test_limit_constant_is_at_least_1000(self):
+        """SESSIONS_HISTORY_LIMIT must be ≥ 1000 (well above the old 200 ceiling)."""
+        from orchestration_engine.openclaw_executor import SESSIONS_HISTORY_LIMIT
+
+        assert SESSIONS_HISTORY_LIMIT >= 1000, (
+            f"SESSIONS_HISTORY_LIMIT={SESSIONS_HISTORY_LIMIT} is below required minimum of 1000"
+        )
+
+    def test_hardcoded_200_not_in_source(self):
+        """Regression guard: the old hardcoded limit=200 must be gone."""
+        import ast
+        import pathlib
+
+        src = pathlib.Path(
+            __file__
+        ).parent.parent / "src" / "orchestration_engine" / "openclaw_executor.py"
+        tree = ast.parse(src.read_text())
+
+        for node in ast.walk(tree):
+            # Look for dict literals with key="limit" and value=200
+            if isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    if (
+                        isinstance(key, ast.Constant)
+                        and key.value == "limit"
+                        and isinstance(value, ast.Constant)
+                        and value.value == 200
+                    ):
+                        pytest.fail(
+                            "Found hardcoded limit=200 in a dict literal in "
+                            "openclaw_executor.py — this should use SESSIONS_HISTORY_LIMIT"
+                        )
+
+    # ------------------------------------------------------------------
+    # Limit forwarded in HTTP call
+    # ------------------------------------------------------------------
+
+    def test_sessions_history_called_with_limit_constant(self, executor, sample_task):
+        """The SESSIONS_HISTORY_LIMIT value must be forwarded to the gateway."""
+        from orchestration_engine.openclaw_executor import SESSIONS_HISTORY_LIMIT
+
+        captured_limits: list = []
+        messages = self._make_messages(5)
+        mock = self._make_mock("sess-lim-fwd", messages, capture_limits=captured_limits)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            executor.execute(sample_task)
+
+        assert captured_limits, "sessions_history was never called"
+        assert all(lim == SESSIONS_HISTORY_LIMIT for lim in captured_limits), (
+            f"Expected every sessions_history call to use limit={SESSIONS_HISTORY_LIMIT}, "
+            f"but got limits: {captured_limits}"
+        )
+
+    def test_sessions_history_not_called_with_200(self, executor, sample_task):
+        """Regression: sessions_history must never be called with limit=200."""
+        captured_limits: list = []
+        messages = self._make_messages(5)
+        mock = self._make_mock("sess-no-200", messages, capture_limits=captured_limits)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            executor.execute(sample_task)
+
+        assert 200 not in captured_limits, (
+            "sessions_history was called with the old hardcoded limit=200; "
+            "it must use SESSIONS_HISTORY_LIMIT instead"
+        )
+
+    # ------------------------------------------------------------------
+    # AC-4 — 150+ assistant messages fully captured
+    # ------------------------------------------------------------------
+
+    def test_sessions_history_captures_all_messages_beyond_original_limit(
+        self, executor, sample_task
+    ):
+        """A session with 250 assistant messages must have ALL chunks in the output.
+
+        This is the primary regression test for issue #239.  With the old
+        limit=200, messages 0–49 would be missing from the response when the
+        gateway returns only the last 200.  With limit=SESSIONS_HISTORY_LIMIT
+        (1000), all 250 are requested and the output must contain every chunk.
+
+        The mock does NOT simulate gateway-level truncation: it always returns
+        the full 250-message list.  The test therefore verifies two invariants:
+          1. The code sends a high enough limit to request all messages.
+          2. The extraction loop collects text from every assistant message.
+        """
+        N = 250  # well above the old limit of 200
+
+        messages = self._make_messages(N)
+        mock = self._make_mock("sess-250-chunks", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.SUCCESS, (
+            f"Expected SUCCESS but got {result.state}; errors={result.errors}"
+        )
+
+        output_text = result.result.get("text", "")
+
+        missing = [f"chunk_{i}" for i in range(N) if f"chunk_{i}" not in output_text]
+        assert not missing, (
+            f"{len(missing)} / {N} chunks are missing from the output. "
+            f"First 10 missing: {missing[:10]!r}"
+        )
+
+    def test_exactly_150_assistant_messages_all_captured(self, executor, sample_task):
+        """Acceptance-criteria variant: exactly 150 assistant messages, all captured."""
+        N = 150
+
+        messages = self._make_messages(N)
+        mock = self._make_mock("sess-150-chunks", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.SUCCESS
+        output_text = result.result.get("text", "")
+        for i in range(N):
+            assert f"chunk_{i}" in output_text, (
+                f"chunk_{i} is missing from the output. "
+                f"Output excerpt: {output_text[:200]!r}"
+            )
+
+    # ------------------------------------------------------------------
+    # E-1 — Boundary warning when response is at limit ceiling
+    # ------------------------------------------------------------------
+
+    def test_warning_emitted_when_messages_equals_limit(self, executor, sample_task, caplog):
+        """A logger.warning must be emitted when len(messages) == SESSIONS_HISTORY_LIMIT.
+
+        This indicates the response may be truncated (gateway hit the ceiling).
+        """
+        import logging
+        from orchestration_engine.openclaw_executor import SESSIONS_HISTORY_LIMIT
+
+        # Build exactly SESSIONS_HISTORY_LIMIT messages: 1 user + (limit-1) assistant
+        # assistant messages + 1 final with stopReason, totalling exactly limit.
+        n_assistant = SESSIONS_HISTORY_LIMIT - 1  # last message is the user msg + n assistant
+        # Actually: 1 user + (SESSIONS_HISTORY_LIMIT-1) assistant = SESSIONS_HISTORY_LIMIT total
+        msgs = [{"role": "user", "content": [{"type": "text", "text": "prompt"}]}]
+        for i in range(n_assistant):
+            is_last = i == n_assistant - 1
+            entry: dict = {
+                "role": "assistant",
+                "content": [{"type": "text", "text": f"chunk_{i}"}],
+            }
+            if is_last:
+                entry["stopReason"] = "stop"
+            msgs.append(entry)
+
+        assert len(msgs) == SESSIONS_HISTORY_LIMIT, (
+            f"Test setup error: expected {SESSIONS_HISTORY_LIMIT} messages, got {len(msgs)}"
+        )
+
+        mock = self._make_mock("sess-at-limit", msgs)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             caplog.at_level(logging.WARNING, logger="orchestration_engine.openclaw_executor"):
+            executor.execute(sample_task)
+
+        # At least one WARNING record should mention the ceiling
+        limit_warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and str(SESSIONS_HISTORY_LIMIT) in r.getMessage()
+        ]
+        assert limit_warnings, (
+            "Expected a logger.warning mentioning SESSIONS_HISTORY_LIMIT when "
+            "response length equals the limit, but none was found. "
+            f"All log records: {[(r.levelno, r.getMessage()) for r in caplog.records]}"
+        )
+
+    def test_no_warning_when_messages_below_limit(self, executor, sample_task, caplog):
+        """No truncation warning should appear for ordinary short sessions."""
+        import logging
+        from orchestration_engine.openclaw_executor import SESSIONS_HISTORY_LIMIT
+
+        # A normal small session — way below the limit
+        messages = self._make_messages(10)
+        mock = self._make_mock("sess-small", messages)
+
+        with patch.object(executor, "_http_post", side_effect=mock), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             caplog.at_level(logging.WARNING, logger="orchestration_engine.openclaw_executor"):
+            executor.execute(sample_task)
+
+        # No warning about hitting the limit ceiling should be present
+        limit_warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "limit" in r.getMessage().lower()
+            and str(SESSIONS_HISTORY_LIMIT) in r.getMessage()
+        ]
+        assert not limit_warnings, (
+            f"Unexpected limit warning for a short session: "
+            f"{[r.getMessage() for r in limit_warnings]}"
+        )
