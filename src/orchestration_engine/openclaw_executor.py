@@ -470,7 +470,7 @@ class OpenClawExecutor(TaskExecutor):
             try:
                 hist_result = self._invoke_tool("sessions_history", {
                     "sessionKey": session_key,
-                    "limit": 50,
+                    "limit": 200,
                 })
             except RuntimeError as exc:
                 # Session may not be ready yet
