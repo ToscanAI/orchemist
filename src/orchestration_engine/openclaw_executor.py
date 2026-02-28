@@ -111,6 +111,10 @@ SESSIONS_HISTORY_LIMIT: int = 1000
 # Instruction appended to every sub-agent prompt so it returns its full output
 # as text instead of writing it to workspace files.  The orchestrator reads the
 # final assistant message text — anything written to files is invisible to it.
+#
+# Used when output_dir is NOT set (coding pipeline, content pipeline v2.6 and
+# earlier).  Preserves existing behaviour for all pipelines that do not specify
+# an output directory.
 OUTPUT_CAPTURE_INSTRUCTION = (
     "\n\n---\n"
     "ORCHESTRATOR INSTRUCTION (do not remove):\n"
@@ -119,6 +123,22 @@ OUTPUT_CAPTURE_INSTRUCTION = (
     "Do NOT write output to workspace files — the orchestrator reads your\n"
     "text reply directly and cannot access files you write.\n"
     "Your final assistant message is what gets passed to the next pipeline phase.\n"
+    "---"
+)
+
+# Alternative instruction used when output_dir IS set (content pipeline v2.7+).
+# Tells sub-agents to write their full output to the file path already specified
+# in their instructions, then return a brief summary as their final message.
+# The orchestrator reads the file directly — capture of the full text reply is
+# not required (and would duplicate content unnecessarily).
+OUTPUT_FILE_WRITE_INSTRUCTION = (
+    "\n\n---\n"
+    "ORCHESTRATOR INSTRUCTION (do not remove):\n"
+    "You are running as a sub-agent inside an orchestration pipeline.\n"
+    "Write your COMPLETE output to the file path specified in your instructions above.\n"
+    "After writing the file, return a brief summary (max 200 words) of what you produced\n"
+    "as your final message.\n"
+    "The summary should include: what was created, key decisions made, and word count.\n"
     "---"
 )
 
@@ -235,10 +255,22 @@ class OpenClawExecutor(TaskExecutor):
         if not prompt:
             prompt = json.dumps(task.payload, indent=2)
 
-        # Append the output-capture instruction so sub-agents return their
-        # full output as text rather than writing it to workspace files
-        # (see issue #210).
-        prompt = prompt + OUTPUT_CAPTURE_INSTRUCTION
+        # Append the appropriate output instruction based on whether an
+        # output_dir has been provided in the task payload (issue #245).
+        #
+        # • When output_dir is NOT set (coding pipeline, content pipeline
+        #   v2.6 and earlier): use the original capture instruction that
+        #   tells agents to return all output as text.  No behaviour change.
+        # • When output_dir IS set (content pipeline v2.7+): use the
+        #   file-write instruction that tells agents to write their full
+        #   output to disk and return only a brief summary.  The orchestrator
+        #   reads the file directly (sequencer already handles this via the
+        #   on-disk output preference added in issue #239).
+        output_dir = task.payload.get("output_dir")
+        if output_dir:
+            prompt = prompt + OUTPUT_FILE_WRITE_INSTRUCTION
+        else:
+            prompt = prompt + OUTPUT_CAPTURE_INSTRUCTION
 
         logger.info(
             f"OpenClawExecutor: task={task_id}, model={model}, "

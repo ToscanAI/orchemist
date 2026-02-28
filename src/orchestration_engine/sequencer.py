@@ -236,13 +236,18 @@ class PhaseSequencer:
             preferred_model = self._resolve_model_tier(phase.model_tier)
 
             # Create and queue the TaskSpec
+            # output_dir is included so the executor can choose the correct
+            # output instruction (file-write vs. text-capture, issue #245).
+            task_payload: dict = {
+                "prompt": phase_input,
+                "phase_id": phase.id,
+                "pipeline_id": self.template.id,
+            }
+            if self.output_dir is not None:
+                task_payload["output_dir"] = str(self.output_dir)
             task = TaskSpec(
                 type=self._resolve_task_type(phase.task_type),
-                payload={
-                    "prompt": phase_input,
-                    "phase_id": phase.id,
-                    "pipeline_id": self.template.id,
-                },
+                payload=task_payload,
                 priority=Priority.HIGH,
                 preferred_model=preferred_model,
                 timeout_seconds=phase.timeout_minutes * 60,
@@ -363,13 +368,18 @@ class PhaseSequencer:
 
             preferred_model = self._resolve_model_tier(phase.model_tier)
 
+            # output_dir is included so the executor can choose the correct
+            # output instruction (file-write vs. text-capture, issue #245).
+            task_payload: dict = {
+                "prompt": phase_input,
+                "phase_id": phase.id,
+                "pipeline_id": self.template.id,
+            }
+            if self.output_dir is not None:
+                task_payload["output_dir"] = str(self.output_dir)
             task = TaskSpec(
                 type=self._resolve_task_type(phase.task_type),
-                payload={
-                    "prompt": phase_input,
-                    "phase_id": phase.id,
-                    "pipeline_id": self.template.id,
-                },
+                payload=task_payload,
                 priority=Priority.HIGH,
                 preferred_model=preferred_model,
                 timeout_seconds=phase.timeout_minutes * 60,
