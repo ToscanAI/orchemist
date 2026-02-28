@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from .output_parser import extract_and_write, parse_output
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
 
@@ -248,6 +249,11 @@ class PhaseSequencer:
 
             # Execute synchronously and store output
             result = self._execute_and_wait(task_id, phase)
+
+            # Write FILE blocks to disk if phase requests it (#189)
+            if phase.write_files:
+                self._handle_file_write(phase, result)
+
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
 
@@ -369,6 +375,10 @@ class PhaseSequencer:
             )
 
             result = self._execute_and_wait(task_id, phase)
+
+            # Write FILE blocks to disk if phase requests it (#189)
+            if phase.write_files:
+                self._handle_file_write(phase, result)
 
             # Write result under lock — prevents lost updates on shared dict
             with self._phase_outputs_lock:
@@ -495,6 +505,100 @@ class PhaseSequencer:
                 self.on_phase_complete(phase_id, result)
             except Exception:
                 pass  # Never let a callback crash the pipeline
+
+    # ------------------------------------------------------------------
+    # File-write integration (#189)
+    # ------------------------------------------------------------------
+
+    def _handle_file_write(self, phase: PhaseDefinition, result: dict) -> None:
+        """Parse FILE blocks from *result* and write them to ``phase.working_dir``.
+
+        Modifies *result* in-place: sets ``result["metadata"]["files_written"]``
+        to the list of relative paths successfully written (empty list on
+        dry-run or when no files were produced).
+
+        Dry-run mode
+        ------------
+        When ``self.config["dry_run"]`` is truthy, files are **parsed but not
+        written**.  The paths that *would* have been written are logged at INFO
+        level and ``files_written`` is set to ``[]``.
+
+        Safety
+        ------
+        ``phase.working_dir`` must resolve to a path **inside**
+        ``phase.base_dir`` (or inside ``working_dir`` itself when ``base_dir``
+        is empty).  If this check fails an ERROR is logged and no files are
+        written.
+
+        Args:
+            phase:  The phase definition (source of ``write_files``,
+                    ``working_dir``, ``base_dir``).
+            result: Mutable result dict (TaskResult.model_dump()); updated
+                    in-place with ``metadata["files_written"]``.
+        """
+        # Only write on successful phases; leave metadata untouched on failure
+        # so callers can detect the difference between "wrote nothing" and "skipped".
+        phase_state = result.get("state", "")
+        if phase_state in ("failed", "permanently_failed"):
+            logger.debug(
+                f"Phase '{phase.id}': write_files skipped — phase state is '{phase_state}'"
+            )
+            return
+
+        text = _extract_phase_text(result)
+        if not text:
+            result.setdefault("metadata", {})["files_written"] = []
+            return
+
+        # ── Path resolution & safety check ───────────────────────────────────
+        working_dir = Path(phase.working_dir).expanduser().resolve()
+        if phase.base_dir:
+            base_dir = Path(phase.base_dir).expanduser().resolve()
+        else:
+            # No explicit base_dir → working_dir is its own safety boundary
+            base_dir = working_dir
+
+        try:
+            working_dir.relative_to(base_dir)
+        except ValueError:
+            logger.error(
+                f"Phase '{phase.id}': working_dir {str(working_dir)!r} resolves "
+                f"outside base_dir {str(base_dir)!r} — refusing file write"
+            )
+            result.setdefault("metadata", {})["files_written"] = []
+            return
+
+        # ── Dry-run: parse but don't write ───────────────────────────────────
+        dry_run = bool(self.config.get("dry_run", False))
+        if dry_run:
+            parsed = parse_output(text)
+            paths = [fb.path for fb in parsed.files]
+            if paths:
+                logger.info(
+                    f"Phase '{phase.id}': dry-run — would write {len(paths)} "
+                    f"file(s) to {str(working_dir)!r}: {paths}"
+                )
+            else:
+                logger.debug(
+                    f"Phase '{phase.id}': dry-run — no FILE blocks found in output"
+                )
+            result.setdefault("metadata", {})["files_written"] = []
+            return
+
+        # ── Normal mode: call extract_and_write ───────────────────────────────
+        written = extract_and_write(text, working_dir)
+        paths = [fb.path for fb in written]
+        if paths:
+            logger.info(
+                f"Phase '{phase.id}': wrote {len(paths)} file(s) to "
+                f"{str(working_dir)!r}: {paths}"
+            )
+        else:
+            logger.debug(
+                f"Phase '{phase.id}': write_files enabled but no FILE blocks "
+                f"found/written in output"
+            )
+        result.setdefault("metadata", {})["files_written"] = paths
 
     # ------------------------------------------------------------------
     # Internal helpers
