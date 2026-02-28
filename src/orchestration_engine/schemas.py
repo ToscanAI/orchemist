@@ -37,6 +37,7 @@ class TaskType(str, Enum):
     FINANCIAL = "financial"
     SALES = "sales"
     SUPPORT = "support"
+    COMMAND = "command"
 
 
 class TaskState(str, Enum):
@@ -433,6 +434,7 @@ def select_model_tier(task_type: TaskType, attempt_number: int) -> ModelTier:
         TaskType.FINANCIAL: [ModelTier.OPUS, ModelTier.OPUS, ModelTier.OPUS],
         TaskType.SALES: [ModelTier.SONNET, ModelTier.OPUS, ModelTier.OPUS],
         TaskType.SUPPORT: [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS],
+        TaskType.COMMAND: [ModelTier.HAIKU, ModelTier.HAIKU, ModelTier.HAIKU],
     }
     
     path = escalation_paths.get(task_type, [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS])
@@ -454,6 +456,7 @@ DEFAULT_MAX_RETRIES = {
     TaskType.FINANCIAL: 2,
     TaskType.SALES: 3,
     TaskType.SUPPORT: 3,
+    TaskType.COMMAND: 1,
 }
 
 
