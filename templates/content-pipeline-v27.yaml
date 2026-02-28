@@ -41,6 +41,10 @@ config_schema:
     publication:
       type: string
       default: "blog"
+    output_repo:
+      type: string
+      description: "Path to the git repo where content artifacts are committed"
+      default: ""
 
 phases:
   - id: research
@@ -70,7 +74,21 @@ phases:
 
       Output a structured research brief organized by theme, with inline source attribution for every claim, and a complete sources list at the end.
 
-      Write your output to: {output_dir}/research.md
+      ## Output Instructions
+      1. Before writing, pull the latest from the output repo:
+         ```bash
+         cd {output_dir}
+         git pull
+         ```
+      2. Write your complete output to: {output_dir}/research.md
+      3. Then commit and push:
+         ```bash
+         cd {output_dir}
+         git add research.md
+         git commit -m "pipeline: Research & Synthesis phase complete"
+         git push
+         ```
+      4. Return a brief summary (max 200 words) of what you produced.
 
   - id: draft
     name: "Draft"
@@ -115,7 +133,16 @@ phases:
       - Don't spend more than 20% of word count on any single topic
       - Closing: leave the reader with something they'll think about later
 
-      Write your output to: {output_dir}/draft.md
+      ## Output Instructions
+      1. Write your complete output to: {output_dir}/draft.md
+      2. Then commit and push:
+         ```bash
+         cd {output_dir}
+         git add draft.md
+         git commit -m "pipeline: Draft phase complete"
+         git push
+         ```
+      3. Return a brief summary (max 200 words) of what you produced.
 
   - id: fact-check
     name: "Fact Check"
@@ -150,7 +177,16 @@ phases:
 
       NOTE: Do NOT flag humor, personality, or self-deprecating observations as issues. They are intentional.
 
-      Write your output to: {output_dir}/fact-check.md
+      ## Output Instructions
+      1. Write your complete output to: {output_dir}/fact-check.md
+      2. Then commit and push:
+         ```bash
+         cd {output_dir}
+         git add fact-check.md
+         git commit -m "pipeline: Fact Check phase complete"
+         git push
+         ```
+      3. Return a brief summary (max 200 words) of what you produced.
 
   - id: red-team
     name: "Red Team"
@@ -190,7 +226,16 @@ phases:
 
       Score backlash risk 0-100. List genuinely problematic phrases only.
 
-      Write your output to: {output_dir}/red-team.md
+      ## Output Instructions
+      1. Write your complete output to: {output_dir}/red-team.md
+      2. Then commit and push:
+         ```bash
+         cd {output_dir}
+         git add red-team.md
+         git commit -m "pipeline: Red Team phase complete"
+         git push
+         ```
+      3. Return a brief summary (max 200 words) of what you produced.
 
   - id: apply-fixes
     name: "Apply All Fixes"
@@ -225,7 +270,16 @@ phases:
 
       Output the COMPLETE fixed article including the Sources section.
 
-      Write your output to: {output_dir}/apply-fixes.md
+      ## Output Instructions
+      1. Write your complete output to: {output_dir}/apply-fixes.md
+      2. Then commit and push:
+         ```bash
+         cd {output_dir}
+         git add apply-fixes.md
+         git commit -m "pipeline: Apply All Fixes phase complete"
+         git push
+         ```
+      3. Return a brief summary (max 200 words) of what you produced.
 
   - id: voice-check
     name: "Voice & Personality Check"
@@ -258,7 +312,16 @@ phases:
 
       If the voice is intact, say "Voice intact — no restoration needed." Don't invent problems.
 
-      Write your output to: {output_dir}/voice-check.md
+      ## Output Instructions
+      1. Write your complete output to: {output_dir}/voice-check.md
+      2. Then commit and push:
+         ```bash
+         cd {output_dir}
+         git add voice-check.md
+         git commit -m "pipeline: Voice & Personality Check phase complete"
+         git push
+         ```
+      3. Return a brief summary (max 200 words) of what you produced.
 
   - id: final-polish
     name: "Final Polish"
@@ -291,4 +354,13 @@ phases:
 
       Output the COMPLETE final article. This goes to human review.
 
-      Write your output to: {output_dir}/final-polish.md
+      ## Output Instructions
+      1. Write your complete output to: {output_dir}/final-polish.md
+      2. Then commit and push:
+         ```bash
+         cd {output_dir}
+         git add final-polish.md
+         git commit -m "pipeline: Final Polish phase complete"
+         git push
+         ```
+      3. Return a brief summary (max 200 words) of what you produced.
