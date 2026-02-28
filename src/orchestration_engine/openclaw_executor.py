@@ -637,16 +637,42 @@ class OpenClawExecutor(TaskExecutor):
             # substantive replies) are captured fully.  This addresses #210
             # where the orchestrator only received the ~2 KB final summary
             # instead of the full ~17-30 KB output.
+            #
+            # Root-cause detail (issue #210): the `content` field of a
+            # sessions_history message can be either:
+            #   (a) A list of content blocks: [{"type": "text", "text": "..."}, ...]
+            #       — standard Anthropic API format.
+            #   (b) A plain string: "..."
+            #       — used by some OpenClaw gateway response shapes.
+            #
+            # The original code `for c in (mc if isinstance(mc, list) else []):`
+            # silently dropped string content because `isinstance(str, list)` is
+            # False, causing the inner loop to iterate over an empty list.
+            # Only list-format messages contributed to `text_parts`; string-format
+            # messages — which may carry the bulk of the sub-agent's output —
+            # were invisible to the orchestrator.  This was the root cause of
+            # truncation: the assembled output was a subset of what the sub-agent
+            # actually produced.
             text_parts = []
             for msg in messages:
                 if msg.get("role") != "assistant":
                     continue
                 mc = msg.get("content", [])
-                for c in (mc if isinstance(mc, list) else []):
-                    if isinstance(c, dict) and c.get("type") == "text":
-                        text = c.get("text", "").strip()
-                        if text:
-                            text_parts.append(text)
+                if isinstance(mc, str):
+                    # Plain-string content — include directly (case b above).
+                    text = mc.strip()
+                    if text:
+                        text_parts.append(text)
+                else:
+                    # List of content blocks — extract only "text" typed blocks.
+                    # "tool_use" blocks carry tool-call parameters (not user-visible
+                    # output) and "thinking" blocks carry internal reasoning; both
+                    # are intentionally skipped.
+                    for c in (mc if isinstance(mc, list) else []):
+                        if isinstance(c, dict) and c.get("type") == "text":
+                            text = c.get("text", "").strip()
+                            if text:
+                                text_parts.append(text)
 
             output = "\n\n".join(text_parts)
 
