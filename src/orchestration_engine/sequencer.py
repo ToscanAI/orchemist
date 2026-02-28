@@ -32,6 +32,29 @@ from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
 
 logger = logging.getLogger(__name__)
 
+# Default supervisor prompt template (Issue #194).
+# Placeholders: {rubric}, {phase_output}
+_DEFAULT_SUPERVISOR_PROMPT = """\
+You are a quality supervisor evaluating the output of a pipeline phase.
+
+## RUBRIC
+{rubric}
+
+## OUTPUT
+{phase_output}
+
+## Instructions
+Review the phase output against the rubric above.
+
+Respond with exactly ONE of the following verdicts on the **first non-blank line**:
+
+- `APPROVE: <brief reason>` — output meets all criteria, pipeline may continue
+- `REVISE: <specific feedback>` — output needs improvement; describe exactly what to fix
+- `ABORT: <reason>` — output is fundamentally flawed or dangerous; pipeline must stop
+
+Your verdict line must start with APPROVE, REVISE, or ABORT.
+"""
+
 
 class PhaseSequencer:
     """Executes a pipeline template phase by phase.
@@ -264,6 +287,19 @@ class PhaseSequencer:
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
 
+            # Supervisor hook (#194) — sequential path
+            if getattr(phase, 'supervisor', False) and result.get('state') == 'success':
+                result, abort_info = self._run_supervisor_for_phase(phase, result, initial_input)
+                if abort_info:
+                    logger.error(
+                        f"Pipeline {self.template.id}: pipeline aborted by supervisor "
+                        f"on phase '{phase.id}'"
+                    )
+                    return abort_info
+                # Update phase_outputs with potentially revised result
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+
             # Notify caller (e.g. CLI progress display)
             self._invoke_on_phase_complete(phase_id, result)
 
@@ -390,6 +426,30 @@ class PhaseSequencer:
             # Write result under lock — prevents lost updates on shared dict
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
+
+            # Supervisor hook (#194) — parallel path
+            if getattr(phase, 'supervisor', False) and result.get('state') == 'success':
+                result, abort_info = self._run_supervisor_for_phase(phase, result, initial_input)
+                if abort_info:
+                    logger.error(
+                        f"Pipeline {self.template.id}: pipeline aborted by supervisor "
+                        f"on phase '{phase.id}' (parallel)"
+                    )
+                    # Return a failed-state result so outer loop triggers pipeline abort
+                    failed_result = {
+                        "state": TaskState.FAILED.value,
+                        "result": {"text": ""},
+                        "supervisor_abort": True,
+                        "supervisor_reason": abort_info.get("supervisor_reason", ""),
+                        "metadata": {"attempt_number": 1, "total_attempts": 1},
+                        "confidence": 0.0,
+                    }
+                    with self._phase_outputs_lock:
+                        self.phase_outputs[phase_id] = failed_result
+                    return failed_result
+                # Update phase_outputs with potentially revised result
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
 
             # Notify caller
             self._invoke_on_phase_complete(phase_id, result)
@@ -1443,6 +1503,10 @@ class PhaseSequencer:
         if resolved is None and model_tier_str:
             logger.debug(f"Unrecognised model_tier '{model_tier_str}'; using runner default")
         return resolved
+
+
+# Module-level alias for the supervisor response parser (convenience for tests)
+_parse_supervisor_response = PhaseSequencer._parse_supervisor_response
 
 
 def _is_within_dir(path: Path, directory: Path) -> bool:
