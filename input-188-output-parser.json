@@ -1,0 +1,31 @@
+{
+  "issue_number": 188,
+  "issue_title": "Structured output parser — extract files from phase output",
+  "issue_description": "Parse === FILE: path === ... === END FILE === blocks from LLM output into (path, content) pairs. New module output_parser.py. Path traversal protection. Backward compatible — no markers means raw text returned as-is.",
+  "acceptance_criteria": [
+    "New module src/orchestration_engine/output_parser.py",
+    "Function parse_output(text: str) -> ParsedOutput that extracts FILE blocks",
+    "ParsedOutput has: raw_text (str), files (list of FileBlock with path and content), has_files (bool)",
+    "FileBlock dataclass with path: str, content: str",
+    "Path traversal protection: reject paths with .., absolute paths, or paths outside allowed directory",
+    "Backward compatible: text without FILE markers returns ParsedOutput with raw_text=input, files=[], has_files=False",
+    "Handles edge cases: empty file blocks, multiple files, nested code fences inside file blocks",
+    "Regex-based parsing with === FILE: <path> === and === END FILE === delimiters",
+    "Optional: function extract_and_write(text: str, output_dir: Path) -> writes extracted files to disk",
+    "Comprehensive tests in tests/test_output_parser.py"
+  ],
+  "codebase_context": "The orchestration engine currently treats all phase output as raw text. The sequencer stores phase output in phase_outputs dict as strings. The OpenClaw executor extracts output from sub-agent sessions as text. This module sits between the executor output and the sequencer storage — it parses structured file blocks from LLM output so that coding pipelines can extract actual code files from phase results. The module should be standalone with no dependencies on other engine modules.",
+  "files_to_modify": [
+    "src/orchestration_engine/output_parser.py — NEW: the parser module",
+    "tests/test_output_parser.py — NEW: comprehensive tests"
+  ],
+  "constraints": [
+    "Pure Python stdlib only — no new dependencies",
+    "Dataclass-based API (no Pydantic for this module)",
+    "Path traversal protection is MANDATORY — this will write files to disk",
+    "Must handle Windows-style paths (backslash) in the traversal check",
+    "File content should preserve exact whitespace/newlines (no stripping)",
+    "The FILE delimiter format is: === FILE: relative/path.py ===",
+    "The END delimiter format is: === END FILE ==="
+  ]
+}

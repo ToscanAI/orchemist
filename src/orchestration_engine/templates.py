@@ -85,6 +85,9 @@ class PhaseDefinition:
     context_files: List[str] = field(default_factory=list)  # local files to inline into prompt
     retries: int = 0                # number of retry attempts after initial failure (0 = no retry)
     retry_delay_seconds: int = 30   # seconds to wait between retry attempts
+    write_files: bool = False       # parse output FILE blocks and write to working_dir
+    working_dir: str = "."          # directory where extracted files are written
+    base_dir: str = ""              # safety root; refuse writes outside this dir (empty = working_dir)
 
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
@@ -104,6 +107,12 @@ class PhaseDefinition:
             self.retries = 0
         if self.retry_delay_seconds is None:
             self.retry_delay_seconds = 30
+        if self.write_files is None:
+            self.write_files = False
+        if self.working_dir is None:
+            self.working_dir = "."
+        if self.base_dir is None:
+            self.base_dir = ""
         # Clamp and coerce to int to guard against negative values or YAML floats.
         # range(1, 0) is empty → last_result stays None → crash; -5 → time.sleep raises
         # ValueError; 1.5 from YAML → range(1, 2.5) raises TypeError.
@@ -465,6 +474,9 @@ class TemplateEngine:
                 "context_files",
                 "retries",
                 "retry_delay_seconds",
+                "write_files",
+                "working_dir",
+                "base_dir",
             }
 
             # Warn on unknown fields (prevents silent data loss)
