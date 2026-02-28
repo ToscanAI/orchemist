@@ -468,7 +468,7 @@ class OpenClawExecutor(TaskExecutor):
                 DEFAULT_TIMEOUT_SECONDS,
             )
             effective_timeout = float(DEFAULT_TIMEOUT_SECONDS)
-        elif timeout <= 0:
+        elif timeout <= 0 or math.isnan(float(timeout)):
             raise ValueError(
                 f"timeout must be a positive integer (got {timeout!r}). "
                 "Use timeout=None to apply the executor default."
