@@ -26,6 +26,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+from .errors import GatewayHTTPError, RateLimitError, classify_http_error
 from .runner import TaskExecutor
 from .schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 
@@ -281,6 +282,32 @@ class OpenClawExecutor(TaskExecutor):
                 model_used=model,
                 execution_time_seconds=elapsed,
             )
+        except RateLimitError as exc:
+            elapsed = (datetime.now() - start_time).total_seconds()
+            retry_msg = (
+                f" retry after {exc.retry_after}s" if exc.retry_after is not None else ""
+            )
+            logger.warning(
+                f"Rate limited (429) —{retry_msg} for task {task_id}"
+            )
+            return TaskResult(
+                task_id=task_id,
+                task_type=task.type,
+                state=TaskState.FAILED,
+                confidence=0.0,
+                result={},
+                errors=[
+                    TaskError(
+                        code="rate_limited",
+                        message=str(exc),
+                        severity="error",
+                    )
+                ],
+                started_at=start_time,
+                completed_at=datetime.now(),
+                model_used=model,
+                execution_time_seconds=elapsed,
+            )
         except Exception as exc:
             elapsed = (datetime.now() - start_time).total_seconds()
             logger.error(f"OpenClaw execution failed for task {task_id}: {exc}")
@@ -374,9 +401,7 @@ class OpenClawExecutor(TaskExecutor):
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Gateway HTTP error {exc.code}: {error_body}"
-            ) from exc
+            raise classify_http_error(exc.code, error_body, exc.headers) from exc
 
     def _http_get(self, url: str) -> Dict[str, Any]:
         """GET *url* and return the decoded response dict."""
@@ -386,9 +411,7 @@ class OpenClawExecutor(TaskExecutor):
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Gateway HTTP error {exc.code}: {error_body}"
-            ) from exc
+            raise classify_http_error(exc.code, error_body, exc.headers) from exc
 
     def _invoke_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Invoke an OpenClaw tool via the gateway's /tools/invoke endpoint.
@@ -556,8 +579,8 @@ class OpenClawExecutor(TaskExecutor):
                     "sessionKey": session_key,
                     "limit": SESSIONS_HISTORY_LIMIT,
                 })
-            except RuntimeError as exc:
-                # Session may not be ready yet
+            except (RuntimeError, GatewayHTTPError) as exc:
+                # Session may not be ready yet; includes transient HTTP errors
                 logger.debug(f"Poll error (may be transient): {exc}")
                 continue
 
