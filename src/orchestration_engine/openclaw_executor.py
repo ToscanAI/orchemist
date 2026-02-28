@@ -26,7 +26,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
-from .errors import RateLimitError, classify_http_error
+from .errors import GatewayHTTPError, RateLimitError, classify_http_error
 from .runner import TaskExecutor
 from .schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 
@@ -579,8 +579,8 @@ class OpenClawExecutor(TaskExecutor):
                     "sessionKey": session_key,
                     "limit": SESSIONS_HISTORY_LIMIT,
                 })
-            except RuntimeError as exc:
-                # Session may not be ready yet
+            except (RuntimeError, GatewayHTTPError) as exc:
+                # Session may not be ready yet; includes transient HTTP errors
                 logger.debug(f"Poll error (may be transient): {exc}")
                 continue
 

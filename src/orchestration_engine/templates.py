@@ -90,6 +90,15 @@ class PhaseDefinition:
     base_dir: str = ""              # safety root; refuse writes outside this dir (empty = working_dir)
     transitions: Dict[str, str] = field(default_factory=dict)  # outcome → phase_id
     max_iterations: int = 0         # 0 = use pipeline default
+    # Command execution fields (#190)
+    command: Optional[str] = None          # shell command to run (used when task_type=command)
+    allowed_commands: List[str] = field(default_factory=list)  # security allowlist of command prefixes
+
+    # Supervisor hook fields (Issue #194)
+    supervisor: bool = False                    # enable supervisor evaluation after this phase
+    supervisor_prompt: Optional[str] = None     # custom evaluation prompt (uses default if None)
+    supervisor_model: Optional[str] = None      # model tier override (defaults to opus)
+    supervisor_rubric: Optional[str] = None     # quality criteria / rubric text
 
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
@@ -126,6 +135,9 @@ class PhaseDefinition:
         if self.max_iterations is None:
             self.max_iterations = 0
         self.max_iterations = max(0, int(self.max_iterations))
+        # Normalise command execution fields (#190)
+        if self.allowed_commands is None:
+            self.allowed_commands = []
 
 
 @dataclass
@@ -501,6 +513,9 @@ class TemplateEngine:
                 "base_dir",
                 "transitions",
                 "max_iterations",
+                # Command execution fields (#190)
+                "command",
+                "allowed_commands",
             }
 
             # Warn on unknown fields (prevents silent data loss)
@@ -681,7 +696,10 @@ class TemplateEngine:
                     )
 
         # Check for empty prompt_template (postmortem fix 2026-02-26)
+        # Exception: command phases use the `command` field instead of a prompt (#190)
         for phase in template.phases:
+            if phase.task_type == "command":
+                continue  # command phases don't need a prompt_template
             if not phase.prompt_template or not phase.prompt_template.strip():
                 errors.append(
                     f"Phase '{phase.id}' has empty prompt_template — "
