@@ -1,0 +1,31 @@
+{
+  "issue_number": 189,
+  "issue_title": "File write action — sequencer writes parsed files to disk",
+  "issue_description": "New write_files: bool field on PhaseDefinition. When set, sequencer parses output using output_parser (from #188) and writes files to working_dir. Records files_written metadata. Dry-run mode logs but doesn't write. Safety: refuse writes outside base_dir.",
+  "acceptance_criteria": [
+    "New field write_files: bool = False on PhaseDefinition dataclass",
+    "YAML loader parses write_files from phase config",
+    "When write_files=True, sequencer calls output_parser.parse_output() on phase result",
+    "Parsed files are written to output_dir/phase_id/ (or working_dir if configured)",
+    "Phase result metadata includes files_written: list of paths that were written",
+    "Dry-run mode: logs file paths and content length but does NOT write to disk",
+    "Safety: refuse to write outside base_dir (path traversal protection from output_parser)",
+    "Creates directories as needed (mkdir -p equivalent)",
+    "Existing files are overwritten with a warning log",
+    "Tests cover: write_files=True, write_files=False (default), dry-run, path traversal rejection, directory creation"
+  ],
+  "codebase_context": "Depends on output_parser.py from #188 (parse_output, extract_and_write). The sequencer (sequencer.py) stores phase results in self.phase_outputs. After _execute_and_wait() returns, if write_files is True, the sequencer should parse the output text and write files. PhaseDefinition is in templates.py. The YAML loader is in TemplateEngine.load_template(). The pipeline output directory is available in self.pipeline_context.",
+  "files_to_modify": [
+    "src/orchestration_engine/templates.py — add write_files field to PhaseDefinition + YAML parsing",
+    "src/orchestration_engine/sequencer.py — add file writing logic after phase execution",
+    "tests/test_sequencer.py — add file write tests",
+    "tests/test_output_parser.py — add extract_and_write tests if not already covered"
+  ],
+  "constraints": [
+    "Must import from output_parser module (created in #188)",
+    "write_files defaults to False for backward compatibility",
+    "File writes happen AFTER the phase result is stored in phase_outputs",
+    "Path traversal protection is non-negotiable",
+    "Dry-run detection: check if executor is DryRunExecutor or if a dry_run flag exists"
+  ]
+}
