@@ -737,6 +737,19 @@ class PhaseSequencer:
         # injected into the template before interpolation.
         escaped_failure_context = failure_context.replace("{", "{{").replace("}", "}}")
 
+        # ── v2.7: Provide output_dir and phase_summary for file-path handoff ──
+        output_dir_str = str(self.output_dir) if self.output_dir else "<NO_OUTPUT_DIR>"
+
+        # Build a brief summary of what prior phases produced (phase name + word count)
+        summary_lines = []
+        for pid in self.phase_outputs:
+            text = _extract_phase_text(self.phase_outputs[pid])
+            word_count = len(text.split()) if text else 0
+            phase_def = self._phase_map.get(pid)
+            phase_name = phase_def.name if phase_def else pid
+            summary_lines.append(f"- {phase_name} ({pid}): completed, ~{word_count} words → {output_dir_str}/{pid.replace('-', '_')}.md")
+        phase_summary = "\n".join(summary_lines) if summary_lines else "This is the first phase — no prior work."
+
         try:
             prompt = phase.prompt_template.format(
                 input=safe_input,
@@ -746,6 +759,8 @@ class PhaseSequencer:
                 files=safe_files,
                 context=safe_context,
                 failure_context=escaped_failure_context,
+                output_dir=output_dir_str,
+                phase_summary=phase_summary,
                 **phase_kwargs,
             )
         except (KeyError, IndexError, AttributeError) as exc:
