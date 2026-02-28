@@ -451,26 +451,30 @@ class OpenClawExecutor(TaskExecutor):
         # Resolve effective timeout (#240).
         # Use explicit None-check (not falsy "or") so that a caller-provided
         # value is never silently ignored.
-        # Fallback chain: explicit timeout → self.timeout_seconds → DEFAULT_TIMEOUT_SECONDS.
+        # Fallback chain: explicit timeout → self.timeout_seconds.
+        # The module constant DEFAULT_TIMEOUT_SECONDS serves as the constructor
+        # default, not as a hard-coded override here — using self.timeout_seconds
+        # ensures that a custom per-executor timeout (e.g.
+        # OpenClawExecutor(timeout_seconds=300)) is honoured by _run_session.
         # Infinite timeouts are re-mapped to DEFAULT_TIMEOUT_SECONDS to avoid a
         # deadline that can never be exceeded.
         # Zero or negative timeouts are rejected early with a clear ValueError to avoid
-        # a ZeroDivisionError in the 80% warning path (review issue #1).
+        # a ZeroDivisionError in the 80% warning path.
         if timeout is None:
-            effective_timeout: int = self.timeout_seconds or DEFAULT_TIMEOUT_SECONDS
+            effective_timeout: float = float(self.timeout_seconds)
         elif math.isinf(float(timeout)):
             logger.warning(
                 "Infinite timeout requested; falling back to DEFAULT_TIMEOUT_SECONDS=%ds",
                 DEFAULT_TIMEOUT_SECONDS,
             )
-            effective_timeout = DEFAULT_TIMEOUT_SECONDS
+            effective_timeout = float(DEFAULT_TIMEOUT_SECONDS)
         elif timeout <= 0:
             raise ValueError(
                 f"timeout must be a positive integer (got {timeout!r}). "
                 "Use timeout=None to apply the executor default."
             )
         else:
-            effective_timeout = timeout
+            effective_timeout = float(timeout)
 
         spawn_args["runTimeoutSeconds"] = effective_timeout
 
@@ -505,7 +509,7 @@ class OpenClawExecutor(TaskExecutor):
         deadline: float = loop_start + effective_timeout
         # Total window in seconds — stored separately so it remains immutable
         # across loop iterations (deadline is derived from it once).
-        total_timeout: int = effective_timeout
+        total_timeout: float = effective_timeout
 
         # 80% warning state — fired at most once per session (#240 AC-4).
         warning_fired: bool = False
