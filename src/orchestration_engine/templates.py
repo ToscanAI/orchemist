@@ -99,6 +99,7 @@ class PhaseDefinition:
     supervisor_prompt: Optional[str] = None     # custom evaluation prompt (uses default if None)
     supervisor_model: Optional[str] = None      # model tier override (defaults to opus)
     supervisor_rubric: Optional[str] = None     # quality criteria / rubric text
+    supervisor_max_retries: int = 2             # max REVISE cycles before aborting
 
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
@@ -138,6 +139,12 @@ class PhaseDefinition:
         # Normalise command execution fields (#190)
         if self.allowed_commands is None:
             self.allowed_commands = []
+        # Normalise supervisor hook fields (#194)
+        if self.supervisor is None:
+            self.supervisor = False
+        if self.supervisor_max_retries is None:
+            self.supervisor_max_retries = 2
+        self.supervisor_max_retries = max(0, int(self.supervisor_max_retries))
 
 
 @dataclass
@@ -516,6 +523,12 @@ class TemplateEngine:
                 # Command execution fields (#190)
                 "command",
                 "allowed_commands",
+                # Supervisor hook fields (#194)
+                "supervisor",
+                "supervisor_prompt",
+                "supervisor_model",
+                "supervisor_rubric",
+                "supervisor_max_retries",
             }
 
             # Warn on unknown fields (prevents silent data loss)

@@ -26,12 +26,34 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from .command_executor import CommandExecutor
 from .output_parser import extract_and_write, parse_output
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
 
 logger = logging.getLogger(__name__)
+
+# Default supervisor prompt template (Issue #194).
+# Placeholders: {rubric}, {phase_output}
+_DEFAULT_SUPERVISOR_PROMPT = """\
+You are a quality supervisor evaluating the output of a pipeline phase.
+
+## RUBRIC
+{rubric}
+
+## OUTPUT
+{phase_output}
+
+## Instructions
+Review the phase output against the rubric above.
+
+Respond with exactly ONE of the following verdicts on the **first non-blank line**:
+
+- `APPROVE: <brief reason>` — output meets all criteria, pipeline may continue
+- `REVISE: <specific feedback>` — output needs improvement; describe exactly what to fix
+- `ABORT: <reason>` — output is fundamentally flawed or dangerous; pipeline must stop
+
+Your verdict line must start with APPROVE, REVISE, or ABORT.
+"""
 
 
 class PhaseSequencer:
@@ -102,10 +124,6 @@ class PhaseSequencer:
         """Protects ``phase_outputs`` during concurrent wave execution."""
         self._callback_lock: threading.Lock = threading.Lock()
         """Serialises on_phase_start / on_phase_complete callback invocations."""
-
-        # Shared CommandExecutor instance — instantiated once to allow
-        # configuration injection and avoid per-call overhead (Issue #190)
-        self._command_executor: CommandExecutor = CommandExecutor()
 
     # ------------------------------------------------------------------
     # Public API
@@ -269,7 +287,7 @@ class PhaseSequencer:
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
 
-            # Supervisor hook (#194)
+            # Supervisor hook (#194) — sequential path
             if getattr(phase, 'supervisor', False) and result.get('state') == 'success':
                 result, abort_info = self._run_supervisor_for_phase(phase, result, initial_input)
                 if abort_info:
@@ -666,14 +684,20 @@ class PhaseSequencer:
         and handles each outcome:
 
         * **APPROVE** — returns ``(result, None)`` to continue the pipeline.
-        * **REVISE**  — re-runs the phase with supervisor feedback injected,
-          then loops.  Bounded by ``phase.supervisor_max_retries``.
+        * **REVISE**  — re-runs the phase with the supervisor's feedback injected
+          as a failure context, then loops back.  Bounded by
+          ``phase.supervisor_max_retries``.
         * **ABORT**   — returns ``(result, abort_dict)`` to fail the pipeline.
         * **Max retries exhausted** — same as ABORT.
 
+        Args:
+            phase:         The PhaseDefinition that just completed.
+            result:        The phase result dict (TaskResult.model_dump()).
+            initial_input: The pipeline's initial input dict.
+
         Returns:
-            ``(final_result, abort_dict)`` where ``abort_dict`` is ``None`` on
-            APPROVE, or a pipeline-abort dict on ABORT / exhaustion.
+            ``(final_result, abort_dict)`` where ``abort_dict`` is ``None``
+            on APPROVE, or a pipeline-abort dict on ABORT / exhaustion.
         """
         max_retries: int = phase.supervisor_max_retries
         revise_count: int = 0
@@ -716,7 +740,7 @@ class PhaseSequencer:
                 f"'{phase.id}' (revise_count={revise_count}/{max_retries})"
             )
 
-            # Minimal PhaseDefinition for _execute_and_wait bookkeeping
+            # Create a minimal PhaseDefinition for _execute_and_wait bookkeeping
             supervisor_phase = PhaseDefinition(
                 id=f"{phase.id}__supervisor",
                 name=f"{phase.name} Supervisor",
@@ -728,7 +752,7 @@ class PhaseSequencer:
             supervisor_result = self._execute_and_wait(sup_task_id, supervisor_phase)
             supervisor_text = _extract_phase_text(supervisor_result)
 
-            verdict, reason = PhaseSequencer._parse_supervisor_response(supervisor_text)
+            verdict, reason = self._parse_supervisor_response(supervisor_text)
             logger.info(
                 f"Pipeline {self.template.id}: supervisor verdict for phase "
                 f"'{phase.id}': {verdict} — {reason[:200]}"
@@ -752,7 +776,7 @@ class PhaseSequencer:
                 }
                 return current_result, abort_result
 
-            else:  # REVISE (or UNKNOWN → treat as REVISE)
+            elif verdict == "REVISE":
                 if revise_count >= max_retries:
                     logger.error(
                         f"Pipeline {self.template.id}: supervisor max_retries "
@@ -776,6 +800,7 @@ class PhaseSequencer:
                     f"'{phase.id}' (attempt {revise_count}/{max_retries}): {reason}"
                 )
 
+                # Re-run phase with supervisor feedback injected as failure context
                 feedback_ctx = (
                     f"## Supervisor Feedback\n\n"
                     f"The supervisor reviewed your previous output and requested revisions:\n\n"
@@ -805,6 +830,7 @@ class PhaseSequencer:
                     revised_task_id, phase, initial_input=initial_input
                 )
 
+                # Store the latest result under lock
                 with self._phase_outputs_lock:
                     self.phase_outputs[phase.id] = current_result
 
@@ -817,15 +843,15 @@ class PhaseSequencer:
                         "failed_phase": phase.id,
                         "aborted": True,
                     }
-                # Loop back to re-evaluate the new output
+                # Loop back to evaluate the new output
 
     @staticmethod
     def _parse_supervisor_response(text: str):
         """Parse supervisor text response for APPROVE / REVISE / ABORT.
 
         Scans each line and checks its first word (case-insensitive).
-        Returns ``("APPROVE" | "REVISE" | "ABORT", reason_str)``.
-        Defaults to APPROVE with a warning if no match is found.
+        Returns ``("APPROVE" | "REVISE" | "ABORT" | "UNKNOWN", reason_str)``.
+        On no match defaults to APPROVE with a warning.
         """
         for line in text.splitlines():
             stripped = line.strip()
@@ -834,6 +860,7 @@ class PhaseSequencer:
             upper = stripped.upper()
             for verdict in ("APPROVE", "REVISE", "ABORT"):
                 if upper.startswith(verdict):
+                    # Extract reason after the keyword (and optional colon/space)
                     remainder = stripped[len(verdict):].lstrip(":").strip()
                     return verdict, remainder
         logger.warning(
@@ -1189,41 +1216,6 @@ class PhaseSequencer:
                 f"Phase '{phase.id}': task {task_id} not found in queue"
             )
 
-        # ── Command-phase fast path (#190) ───────────────────────────────────
-        # When the phase has an explicit ``command`` or its task_type is
-        # "command", bypass the normal LLM executor and use CommandExecutor.
-        is_command_phase = (
-            getattr(phase, "command", None) is not None
-            or task_spec.type == TaskType.COMMAND
-        )
-        if is_command_phase:
-            # Enrich task payload with command-specific fields
-            if getattr(phase, "command", None):
-                task_spec.payload["command"] = phase.command
-            if self.output_dir:
-                task_spec.payload.setdefault("output_dir", str(self.output_dir))
-            task_spec.payload.setdefault("phase_id", phase.id)
-            allowed = getattr(phase, "allowed_commands", None)
-            if allowed:
-                task_spec.payload["allowed_commands"] = list(allowed)
-
-            try:
-                cmd_result: TaskResult = self._command_executor.execute(task_spec)
-            except ValueError as exc:
-                # No command found in payload — treat as permanent failure
-                raise RuntimeError(
-                    f"Phase '{phase.id}': CommandExecutor error — {exc}"
-                ) from exc
-
-            self.runner.queue.complete_task(task_id, cmd_result)
-            cmd_result.metadata["attempt_number"] = 1
-            cmd_result.metadata["total_attempts"] = 1
-            cmd_result.metadata["retry_history"] = []
-            try:
-                return cmd_result.model_dump()
-            except AttributeError:
-                return cmd_result.dict()  # Pydantic v1 fallback
-
         # Find the first executor that can handle this task type
         executor = None
         for ex in self.runner.executors:
@@ -1513,6 +1505,10 @@ class PhaseSequencer:
         return resolved
 
 
+# Module-level alias for the supervisor response parser (convenience for tests)
+_parse_supervisor_response = PhaseSequencer._parse_supervisor_response
+
+
 def _is_within_dir(path: Path, directory: Path) -> bool:
     """Return True if *path* is the same as, or a descendant of, *directory*.
 
@@ -1665,10 +1661,6 @@ class _PreviousOutputProxy:
 
     def __repr__(self) -> str:
         return f"_PreviousOutputProxy(output_dir={self._output_dir!r}, phases={list(self._phase_outputs.keys())})"
-
-
-# Module-level alias for direct use and testing
-_parse_supervisor_response = PhaseSequencer._parse_supervisor_response
 
 
 class _PreviousOutputInlineProxy:
