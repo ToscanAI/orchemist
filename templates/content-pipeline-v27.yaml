@@ -41,11 +41,6 @@ config_schema:
     publication:
       type: string
       default: "blog"
-    output_repo:
-      type: string
-      description: "Path to the git repo where content artifacts are committed"
-      default: ""
-
 phases:
   - id: research
     name: "Research & Synthesis"
@@ -88,6 +83,7 @@ phases:
          git commit -m "pipeline: Research & Synthesis phase complete"
          git push
          ```
+         If git push fails, retry once. If it fails again, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
   - id: draft
@@ -134,15 +130,21 @@ phases:
       - Closing: leave the reader with something they'll think about later
 
       ## Output Instructions
-      1. Write your complete output to: {output_dir}/draft.md
-      2. Then commit and push:
+      1. Before writing, pull the latest from the output repo:
+         ```bash
+         cd {output_dir}
+         git pull
+         ```
+      2. Write your complete output to: {output_dir}/draft.md
+      3. Then commit and push:
          ```bash
          cd {output_dir}
          git add draft.md
          git commit -m "pipeline: Draft phase complete"
          git push
          ```
-      3. Return a brief summary (max 200 words) of what you produced.
+         If git push fails, retry once. If it fails again, return the error message in your summary.
+      4. Return a brief summary (max 200 words) of what you produced.
 
   - id: fact-check
     name: "Fact Check"
@@ -178,15 +180,21 @@ phases:
       NOTE: Do NOT flag humor, personality, or self-deprecating observations as issues. They are intentional.
 
       ## Output Instructions
-      1. Write your complete output to: {output_dir}/fact-check.md
-      2. Then commit and push:
+      1. Before writing, pull the latest from the output repo:
+         ```bash
+         cd {output_dir}
+         git pull
+         ```
+      2. Write your complete output to: {output_dir}/fact-check.md
+      3. Then commit and push:
          ```bash
          cd {output_dir}
          git add fact-check.md
          git commit -m "pipeline: Fact Check phase complete"
          git push
          ```
-      3. Return a brief summary (max 200 words) of what you produced.
+         If git push fails, retry once. If it fails again, return the error message in your summary.
+      4. Return a brief summary (max 200 words) of what you produced.
 
   - id: red-team
     name: "Red Team"
@@ -227,15 +235,21 @@ phases:
       Score backlash risk 0-100. List genuinely problematic phrases only.
 
       ## Output Instructions
-      1. Write your complete output to: {output_dir}/red-team.md
-      2. Then commit and push:
+      1. Before writing, pull the latest from the output repo:
+         ```bash
+         cd {output_dir}
+         git pull
+         ```
+      2. Write your complete output to: {output_dir}/red-team.md
+      3. Then commit and push:
          ```bash
          cd {output_dir}
          git add red-team.md
          git commit -m "pipeline: Red Team phase complete"
          git push
          ```
-      3. Return a brief summary (max 200 words) of what you produced.
+         If git push fails, retry once. If it fails again, return the error message in your summary.
+      4. Return a brief summary (max 200 words) of what you produced.
 
   - id: apply-fixes
     name: "Apply All Fixes"
@@ -271,15 +285,21 @@ phases:
       Output the COMPLETE fixed article including the Sources section.
 
       ## Output Instructions
-      1. Write your complete output to: {output_dir}/apply-fixes.md
-      2. Then commit and push:
+      1. Before writing, pull the latest from the output repo:
+         ```bash
+         cd {output_dir}
+         git pull
+         ```
+      2. Write your complete output to: {output_dir}/apply-fixes.md
+      3. Then commit and push:
          ```bash
          cd {output_dir}
          git add apply-fixes.md
          git commit -m "pipeline: Apply All Fixes phase complete"
          git push
          ```
-      3. Return a brief summary (max 200 words) of what you produced.
+         If git push fails, retry once. If it fails again, return the error message in your summary.
+      4. Return a brief summary (max 200 words) of what you produced.
 
   - id: voice-check
     name: "Voice & Personality Check"
@@ -313,15 +333,21 @@ phases:
       If the voice is intact, say "Voice intact — no restoration needed." Don't invent problems.
 
       ## Output Instructions
-      1. Write your complete output to: {output_dir}/voice-check.md
-      2. Then commit and push:
+      1. Before writing, pull the latest from the output repo:
+         ```bash
+         cd {output_dir}
+         git pull
+         ```
+      2. Write your complete output to: {output_dir}/voice-check.md
+      3. Then commit and push:
          ```bash
          cd {output_dir}
          git add voice-check.md
          git commit -m "pipeline: Voice & Personality Check phase complete"
          git push
          ```
-      3. Return a brief summary (max 200 words) of what you produced.
+         If git push fails, retry once. If it fails again, return the error message in your summary.
+      4. Return a brief summary (max 200 words) of what you produced.
 
   - id: final-polish
     name: "Final Polish"
@@ -355,12 +381,18 @@ phases:
       Output the COMPLETE final article. This goes to human review.
 
       ## Output Instructions
-      1. Write your complete output to: {output_dir}/final-polish.md
-      2. Then commit and push:
+      1. Before writing, pull the latest from the output repo:
+         ```bash
+         cd {output_dir}
+         git pull
+         ```
+      2. Write your complete output to: {output_dir}/final-polish.md
+      3. Then commit and push:
          ```bash
          cd {output_dir}
          git add final-polish.md
          git commit -m "pipeline: Final Polish phase complete"
          git push
          ```
-      3. Return a brief summary (max 200 words) of what you produced.
+         If git push fails, retry once. If it fails again, return the error message in your summary.
+      4. Return a brief summary (max 200 words) of what you produced.
