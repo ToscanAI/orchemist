@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from .command_executor import CommandExecutor
 from .output_parser import extract_and_write, parse_output
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
@@ -101,6 +102,10 @@ class PhaseSequencer:
         """Protects ``phase_outputs`` during concurrent wave execution."""
         self._callback_lock: threading.Lock = threading.Lock()
         """Serialises on_phase_start / on_phase_complete callback invocations."""
+
+        # Shared CommandExecutor instance — instantiated once to allow
+        # configuration injection and avoid per-call overhead (Issue #190)
+        self._command_executor: CommandExecutor = CommandExecutor()
 
     # ------------------------------------------------------------------
     # Public API
@@ -264,6 +269,19 @@ class PhaseSequencer:
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
 
+            # Supervisor hook (#194)
+            if getattr(phase, 'supervisor', False) and result.get('state') == 'success':
+                result, abort_info = self._run_supervisor_for_phase(phase, result, initial_input)
+                if abort_info:
+                    logger.error(
+                        f"Pipeline {self.template.id}: pipeline aborted by supervisor "
+                        f"on phase '{phase.id}'"
+                    )
+                    return abort_info
+                # Update phase_outputs with potentially revised result
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+
             # Notify caller (e.g. CLI progress display)
             self._invoke_on_phase_complete(phase_id, result)
 
@@ -390,6 +408,30 @@ class PhaseSequencer:
             # Write result under lock — prevents lost updates on shared dict
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
+
+            # Supervisor hook (#194) — parallel path
+            if getattr(phase, 'supervisor', False) and result.get('state') == 'success':
+                result, abort_info = self._run_supervisor_for_phase(phase, result, initial_input)
+                if abort_info:
+                    logger.error(
+                        f"Pipeline {self.template.id}: pipeline aborted by supervisor "
+                        f"on phase '{phase.id}' (parallel)"
+                    )
+                    # Return a failed-state result so outer loop triggers pipeline abort
+                    failed_result = {
+                        "state": TaskState.FAILED.value,
+                        "result": {"text": ""},
+                        "supervisor_abort": True,
+                        "supervisor_reason": abort_info.get("supervisor_reason", ""),
+                        "metadata": {"attempt_number": 1, "total_attempts": 1},
+                        "confidence": 0.0,
+                    }
+                    with self._phase_outputs_lock:
+                        self.phase_outputs[phase_id] = failed_result
+                    return failed_result
+                # Update phase_outputs with potentially revised result
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
 
             # Notify caller
             self._invoke_on_phase_complete(phase_id, result)
@@ -606,6 +648,199 @@ class PhaseSequencer:
                 f"found/written in output"
             )
         result.setdefault("metadata", {})["files_written"] = paths
+
+    # ------------------------------------------------------------------
+    # Supervisor hook (Issue #194)
+    # ------------------------------------------------------------------
+
+    def _run_supervisor_for_phase(
+        self,
+        phase: PhaseDefinition,
+        result: dict,
+        initial_input: dict,
+    ):
+        """Run the supervisor evaluation loop for a completed phase.
+
+        Called after a phase with ``supervisor: True`` completes successfully.
+        Builds a supervisor TaskSpec, executes it, parses APPROVE/REVISE/ABORT,
+        and handles each outcome:
+
+        * **APPROVE** — returns ``(result, None)`` to continue the pipeline.
+        * **REVISE**  — re-runs the phase with supervisor feedback injected,
+          then loops.  Bounded by ``phase.supervisor_max_retries``.
+        * **ABORT**   — returns ``(result, abort_dict)`` to fail the pipeline.
+        * **Max retries exhausted** — same as ABORT.
+
+        Returns:
+            ``(final_result, abort_dict)`` where ``abort_dict`` is ``None`` on
+            APPROVE, or a pipeline-abort dict on ABORT / exhaustion.
+        """
+        max_retries: int = phase.supervisor_max_retries
+        revise_count: int = 0
+        current_result: dict = result
+
+        while True:
+            phase_output = _extract_phase_text(current_result)
+            rubric = phase.supervisor_rubric or "(no rubric provided)"
+
+            # Build supervisor prompt
+            if phase.supervisor_prompt:
+                supervisor_prompt_text = phase.supervisor_prompt.format(
+                    rubric=rubric,
+                    phase_output=phase_output,
+                )
+            else:
+                supervisor_prompt_text = _DEFAULT_SUPERVISOR_PROMPT.format(
+                    rubric=rubric,
+                    phase_output=phase_output,
+                )
+
+            supervisor_model = phase.supervisor_model or "opus"
+            preferred_model = self._resolve_model_tier(supervisor_model)
+
+            supervisor_task = TaskSpec(
+                type=TaskType.CONTENT,
+                payload={
+                    "prompt": supervisor_prompt_text,
+                    "phase_id": f"{phase.id}__supervisor",
+                    "pipeline_id": self.template.id,
+                },
+                priority=Priority.HIGH,
+                preferred_model=preferred_model,
+                timeout_seconds=phase.timeout_minutes * 60,
+            )
+
+            sup_task_id = self.runner.queue.submit_task(supervisor_task)
+            logger.info(
+                f"Pipeline {self.template.id}: running supervisor for phase "
+                f"'{phase.id}' (revise_count={revise_count}/{max_retries})"
+            )
+
+            # Minimal PhaseDefinition for _execute_and_wait bookkeeping
+            supervisor_phase = PhaseDefinition(
+                id=f"{phase.id}__supervisor",
+                name=f"{phase.name} Supervisor",
+                prompt_template=supervisor_prompt_text,
+                model_tier=supervisor_model,
+                retries=0,
+            )
+
+            supervisor_result = self._execute_and_wait(sup_task_id, supervisor_phase)
+            supervisor_text = _extract_phase_text(supervisor_result)
+
+            verdict, reason = PhaseSequencer._parse_supervisor_response(supervisor_text)
+            logger.info(
+                f"Pipeline {self.template.id}: supervisor verdict for phase "
+                f"'{phase.id}': {verdict} — {reason[:200]}"
+            )
+
+            if verdict == "APPROVE":
+                return current_result, None
+
+            elif verdict == "ABORT":
+                logger.error(
+                    f"Pipeline {self.template.id}: supervisor ABORT on phase "
+                    f"'{phase.id}': {reason}"
+                )
+                abort_result = {
+                    "phase_outputs": self.phase_outputs,
+                    "final_output": current_result,
+                    "failed_phase": phase.id,
+                    "aborted": True,
+                    "supervisor_abort": True,
+                    "supervisor_reason": reason,
+                }
+                return current_result, abort_result
+
+            else:  # REVISE (or UNKNOWN → treat as REVISE)
+                if revise_count >= max_retries:
+                    logger.error(
+                        f"Pipeline {self.template.id}: supervisor max_retries "
+                        f"({max_retries}) exhausted for phase '{phase.id}' — aborting."
+                    )
+                    abort_result = {
+                        "phase_outputs": self.phase_outputs,
+                        "final_output": current_result,
+                        "failed_phase": phase.id,
+                        "aborted": True,
+                        "supervisor_abort": True,
+                        "supervisor_reason": (
+                            f"max_retries ({max_retries}) exhausted: {reason}"
+                        ),
+                    }
+                    return current_result, abort_result
+
+                revise_count += 1
+                logger.info(
+                    f"Pipeline {self.template.id}: supervisor REVISE on phase "
+                    f"'{phase.id}' (attempt {revise_count}/{max_retries}): {reason}"
+                )
+
+                feedback_ctx = (
+                    f"## Supervisor Feedback\n\n"
+                    f"The supervisor reviewed your previous output and requested revisions:\n\n"
+                    f"{reason}\n\n"
+                    f"Please revise your output accordingly."
+                )
+
+                with self._phase_outputs_lock:
+                    revised_prompt = self._build_phase_input(
+                        phase, initial_input, failure_context=feedback_ctx
+                    )
+
+                revised_task = TaskSpec(
+                    type=self._resolve_task_type(phase.task_type),
+                    payload={
+                        "prompt": revised_prompt,
+                        "phase_id": phase.id,
+                        "pipeline_id": self.template.id,
+                    },
+                    priority=Priority.HIGH,
+                    preferred_model=self._resolve_model_tier(phase.model_tier),
+                    timeout_seconds=phase.timeout_minutes * 60,
+                )
+
+                revised_task_id = self.runner.queue.submit_task(revised_task)
+                current_result = self._execute_and_wait(
+                    revised_task_id, phase, initial_input=initial_input
+                )
+
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase.id] = current_result
+
+                # If the revised phase itself failed, abort
+                revised_state = current_result.get("state", "unknown")
+                if revised_state in ("failed", "permanently_failed"):
+                    return current_result, {
+                        "phase_outputs": self.phase_outputs,
+                        "final_output": current_result,
+                        "failed_phase": phase.id,
+                        "aborted": True,
+                    }
+                # Loop back to re-evaluate the new output
+
+    @staticmethod
+    def _parse_supervisor_response(text: str):
+        """Parse supervisor text response for APPROVE / REVISE / ABORT.
+
+        Scans each line and checks its first word (case-insensitive).
+        Returns ``("APPROVE" | "REVISE" | "ABORT", reason_str)``.
+        Defaults to APPROVE with a warning if no match is found.
+        """
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            upper = stripped.upper()
+            for verdict in ("APPROVE", "REVISE", "ABORT"):
+                if upper.startswith(verdict):
+                    remainder = stripped[len(verdict):].lstrip(":").strip()
+                    return verdict, remainder
+        logger.warning(
+            f"Supervisor response had no APPROVE/REVISE/ABORT verdict; "
+            f"defaulting to APPROVE. Response preview: {text[:200]!r}"
+        )
+        return "APPROVE", "no verdict found — defaulting to APPROVE"
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -953,6 +1188,41 @@ class PhaseSequencer:
             raise RuntimeError(
                 f"Phase '{phase.id}': task {task_id} not found in queue"
             )
+
+        # ── Command-phase fast path (#190) ───────────────────────────────────
+        # When the phase has an explicit ``command`` or its task_type is
+        # "command", bypass the normal LLM executor and use CommandExecutor.
+        is_command_phase = (
+            getattr(phase, "command", None) is not None
+            or task_spec.type == TaskType.COMMAND
+        )
+        if is_command_phase:
+            # Enrich task payload with command-specific fields
+            if getattr(phase, "command", None):
+                task_spec.payload["command"] = phase.command
+            if self.output_dir:
+                task_spec.payload.setdefault("output_dir", str(self.output_dir))
+            task_spec.payload.setdefault("phase_id", phase.id)
+            allowed = getattr(phase, "allowed_commands", None)
+            if allowed:
+                task_spec.payload["allowed_commands"] = list(allowed)
+
+            try:
+                cmd_result: TaskResult = self._command_executor.execute(task_spec)
+            except ValueError as exc:
+                # No command found in payload — treat as permanent failure
+                raise RuntimeError(
+                    f"Phase '{phase.id}': CommandExecutor error — {exc}"
+                ) from exc
+
+            self.runner.queue.complete_task(task_id, cmd_result)
+            cmd_result.metadata["attempt_number"] = 1
+            cmd_result.metadata["total_attempts"] = 1
+            cmd_result.metadata["retry_history"] = []
+            try:
+                return cmd_result.model_dump()
+            except AttributeError:
+                return cmd_result.dict()  # Pydantic v1 fallback
 
         # Find the first executor that can handle this task type
         executor = None
@@ -1395,6 +1665,10 @@ class _PreviousOutputProxy:
 
     def __repr__(self) -> str:
         return f"_PreviousOutputProxy(output_dir={self._output_dir!r}, phases={list(self._phase_outputs.keys())})"
+
+
+# Module-level alias for direct use and testing
+_parse_supervisor_response = PhaseSequencer._parse_supervisor_response
 
 
 class _PreviousOutputInlineProxy:
