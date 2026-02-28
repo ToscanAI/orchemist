@@ -1,0 +1,27 @@
+{
+  "issue_number": 192,
+  "issue_title": "Retry loops with feedback — pass failure context to retry attempts",
+  "issue_description": "Add {failure_context} template variable that contains the previous attempt's error details when a phase is being retried. This builds on the existing retry logic from #209 (retries, retry_delay_seconds fields). The key addition is that retry attempts receive the error message from the previous attempt so the LLM can learn from the failure and try a different approach.",
+  "acceptance_criteria": [
+    "New template variable {failure_context} available in prompt_template interpolation",
+    "On first attempt, {failure_context} resolves to empty string",
+    "On retry attempts, {failure_context} contains: attempt number, error message from previous attempt, any partial output from previous attempt",
+    "Retry history tracked in phase result metadata: list of {attempt, error, partial_output, tokens_used}",
+    "Phase result includes total_attempts count",
+    "The failure_context format is human-readable markdown suitable for LLM consumption",
+    "Backward compatible: templates without {failure_context} work unchanged",
+    "Tests cover: first attempt (empty context), retry with error feedback, retry with partial output, multiple retries accumulating history"
+  ],
+  "codebase_context": "The sequencer (sequencer.py) already has retry logic in _execute_and_wait() from PR #215 (#209). It tracks attempt number and last_error. The _build_phase_input() method handles template variable interpolation using SafeDict. We need to: (1) capture error details between attempts, (2) format them as {failure_context}, (3) make them available to _build_phase_input(). The retry loop is at approximately line 409 of sequencer.py. PhaseDefinition already has retries and retry_delay_seconds fields.",
+  "files_to_modify": [
+    "src/orchestration_engine/sequencer.py — add failure_context to retry loop and _build_phase_input",
+    "tests/test_sequencer.py — add retry feedback tests"
+  ],
+  "constraints": [
+    "Build on existing retry logic from #209 — do NOT rewrite the retry loop",
+    "failure_context must be safe for prompt injection (no raw error tracebacks, sanitize)",
+    "Keep the retry loop in _execute_and_wait() — add failure tracking around it",
+    "The {failure_context} variable follows the same SafeDict pattern as other template vars",
+    "Retry history should be stored in the phase result dict under 'retry_history' key"
+  ]
+}
