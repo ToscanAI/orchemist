@@ -1047,6 +1047,20 @@ def run_template(
         # Advance the heartbeat completed-phase counter (Issue #186).
         # Counts both successful and failed phases (pipeline aborts on first failure).
         heartbeat.on_phase_complete()
+
+        # Write phase output to disk immediately (#239 follow-up).
+        # This allows the sequencer to read from disk for prompt building,
+        # avoiding truncation from in-memory session history capture.
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            phase_text = _extract_output_text(phase_result)
+            if phase_text:
+                (output_dir / f"{safe_pid}.md").write_text(
+                    f"# Phase: {phase_id}\n\n{phase_text}\n"
+                )
+        except Exception as exc:
+            logger.warning(f"Failed to write phase output to disk: {exc}")
+
         # Run git commit hook after progress display
         _on_phase_complete_git(phase_id, phase_result)
 
@@ -1057,6 +1071,7 @@ def run_template(
             on_phase_start=_on_phase_start_cb,
             on_pipeline_start=_on_pipeline_start_hook,
             on_pipeline_complete=_on_pipeline_complete_hook,
+            output_dir=output_dir,
         )
         # Give the git diff closure access to the sequencer's pipeline_context
         _pipeline_context_ref[0] = sequencer.pipeline_context

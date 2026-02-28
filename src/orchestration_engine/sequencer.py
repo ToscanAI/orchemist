@@ -54,7 +54,8 @@ class PhaseSequencer:
 
     def __init__(self, template: PipelineTemplate, runner, config: dict = None,
                  on_phase_complete=None, on_phase_start=None,
-                 on_pipeline_start=None, on_pipeline_complete=None) -> None:
+                 on_pipeline_start=None, on_pipeline_complete=None,
+                 output_dir=None) -> None:
         """Initialise the sequencer.
 
         Args:
@@ -88,6 +89,7 @@ class PhaseSequencer:
         self.on_phase_start = on_phase_start
         self.on_pipeline_start = on_pipeline_start
         self.on_pipeline_complete = on_pipeline_complete
+        self.output_dir = output_dir
 
         # Fast phase lookup by ID (Issue #231) — avoids O(n) linear scan per phase
         self._phase_map: Dict[str, PhaseDefinition] = {
@@ -701,10 +703,31 @@ class PhaseSequencer:
 
         # Build per-phase keyword args so templates can use {phase_id.output}
         # in addition to {previous_output[phase_id]}
-        phase_kwargs: Dict[str, _PhaseOutput] = {
-            pid: _PhaseOutput(_extract_phase_text(pout))
-            for pid, pout in self.phase_outputs.items()
-        }
+        # Prefer on-disk output files when available — they contain the full
+        # text even if in-memory capture was truncated (#239 follow-up).
+        phase_kwargs: Dict[str, _PhaseOutput] = {}
+        for pid, pout in self.phase_outputs.items():
+            in_memory = _extract_phase_text(pout)
+            # Check if an on-disk file exists with more content
+            if self.output_dir:
+                safe_pid = pid.replace("-", "_")
+                disk_path = Path(self.output_dir) / f"{safe_pid}.md"
+                if disk_path.exists():
+                    try:
+                        disk_text = disk_path.read_text()
+                        # Strip the "# Phase: ...\n\n" header added by CLI
+                        if disk_text.startswith("# Phase:"):
+                            disk_text = disk_text.split("\n", 2)[-1].strip()
+                        if len(disk_text) > len(in_memory):
+                            logger.info(
+                                f"Phase '{pid}': using on-disk output "
+                                f"({len(disk_text)} chars) over in-memory "
+                                f"({len(in_memory)} chars)"
+                            )
+                            in_memory = disk_text
+                    except Exception as exc:
+                        logger.debug(f"Phase '{pid}': failed to read disk output: {exc}")
+            phase_kwargs[pid] = _PhaseOutput(in_memory)
 
         # Wrap pipeline_context so {context.key} works in prompt templates
         safe_context = _SafeDict(self.pipeline_context)
