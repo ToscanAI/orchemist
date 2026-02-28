@@ -47,3 +47,43 @@ def test_command_prefix():
 def test_no_command_fails():
     with pytest.raises(ValueError):
         CommandExecutor().execute(_make_task())
+
+
+def test_shell_injection_blocked():
+    """shell=False must prevent ; and && from chaining arbitrary commands.
+
+    With the old shell=True the payload would run two echo commands,
+    producing two output lines.  With shell=False the semicolon is a
+    literal argument to echo — exactly one invocation occurs and all
+    tokens appear on a single line.
+    """
+    r = CommandExecutor().execute(_make_task(command="echo hello; echo INJECTED"))
+    assert r.state == TaskState.SUCCESS
+    lines = r.result["text"].strip().splitlines()
+    # shell=False: echo receives every token as an arg → single output line
+    assert len(lines) == 1, (
+        f"Expected 1 line (no command chaining), got {len(lines)}: {lines!r}"
+    )
+    # The right-hand side is echoed literally, not executed as a second command
+    assert "INJECTED" in lines[0]
+
+
+def test_interpolation_injection():
+    """shlex.quote on payload values must prevent metacharacter injection.
+
+    Without quoting, output_dir='/tmp; echo INJECTED' would expand the
+    template to 'echo /tmp; echo INJECTED', which (with shell=True) would
+    run two commands.  With shlex.quote + shell=False the value is treated
+    as a single safe argument to echo.
+    """
+    r = CommandExecutor().execute(
+        _make_task(command="echo {output_dir}", output_dir="/tmp; echo INJECTED")
+    )
+    assert r.state == TaskState.SUCCESS
+    lines = r.result["text"].strip().splitlines()
+    # Only one echo invocation — the injected command is not a second line
+    assert len(lines) == 1, (
+        f"Expected 1 line (safe interpolation), got {len(lines)}: {lines!r}"
+    )
+    # The full value (including metacharacters) is echoed verbatim
+    assert "/tmp; echo INJECTED" in lines[0]
