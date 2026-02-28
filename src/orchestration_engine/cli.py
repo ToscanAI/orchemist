@@ -1055,23 +1055,9 @@ def run_template(
             output_dir.mkdir(parents=True, exist_ok=True)
             phase_text = _extract_output_text(phase_result)
             if phase_text:
-                out_path = output_dir / f"{safe_pid}.md"
-                # v2.7: Don't overwrite if agent already wrote a larger file
-                if out_path.exists():
-                    existing_size = out_path.stat().st_size
-                    new_content = f"# Phase: {phase_id}\n\n{phase_text}\n"
-                    if existing_size > len(new_content):
-                        logger.info(
-                            f"Phase '{phase_id}': keeping agent-written file "
-                            f"({existing_size} bytes) over captured output "
-                            f"({len(new_content)} bytes)"
-                        )
-                    else:
-                        out_path.write_text(new_content)
-                else:
-                    out_path.write_text(
-                        f"# Phase: {phase_id}\n\n{phase_text}\n"
-                    )
+                (output_dir / f"{safe_pid}.md").write_text(
+                    f"# Phase: {phase_id}\n\n{phase_text}\n"
+                )
         except Exception as exc:
             logger.warning(f"Failed to write phase output to disk: {exc}")
 
@@ -1193,18 +1179,10 @@ def run_template(
         )
 
         # Markdown per phase (Feature #71)
-        # v2.7: Don't overwrite if agent already wrote a larger file
         phase_text = _extract_output_text(phase_out)
-        md_path = output_dir / f"{safe_id}.md"
-        new_content = f"# Phase: {phase_id}\n\n{phase_text}\n"
-        if md_path.exists() and md_path.stat().st_size > len(new_content):
-            logger.info(
-                f"Final write: keeping agent-written '{safe_id}.md' "
-                f"({md_path.stat().st_size} bytes) over captured output "
-                f"({len(new_content)} bytes)"
-            )
-        else:
-            md_path.write_text(new_content)
+        (output_dir / f"{safe_id}.md").write_text(
+            f"# Phase: {phase_id}\n\n{phase_text}\n"
+        )
 
     # _final_output.json
     (output_dir / "_final_output.json").write_text(
