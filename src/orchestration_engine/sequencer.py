@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from .command_executor import CommandExecutor
 from .output_parser import extract_and_write, parse_output
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
@@ -954,6 +955,42 @@ class PhaseSequencer:
                 f"Phase '{phase.id}': task {task_id} not found in queue"
             )
 
+        # ── Command-phase fast path (#190) ───────────────────────────────────
+        # When the phase has an explicit ``command`` or its task_type is
+        # "command", bypass the normal LLM executor and use CommandExecutor.
+        is_command_phase = (
+            getattr(phase, "command", None) is not None
+            or task_spec.type == TaskType.COMMAND
+        )
+        if is_command_phase:
+            # Enrich task payload with command-specific fields
+            if getattr(phase, "command", None):
+                task_spec.payload["command"] = phase.command
+            if self.output_dir:
+                task_spec.payload.setdefault("output_dir", str(self.output_dir))
+            task_spec.payload.setdefault("phase_id", phase.id)
+            allowed = getattr(phase, "allowed_commands", None)
+            if allowed:
+                task_spec.payload["allowed_commands"] = list(allowed)
+
+            cmd_executor = CommandExecutor()
+            try:
+                cmd_result: TaskResult = cmd_executor.execute(task_spec)
+            except ValueError as exc:
+                # No command found in payload — treat as permanent failure
+                raise RuntimeError(
+                    f"Phase '{phase.id}': CommandExecutor error — {exc}"
+                ) from exc
+
+            self.runner.queue.complete_task(task_id, cmd_result)
+            cmd_result.metadata["attempt_number"] = 1
+            cmd_result.metadata["total_attempts"] = 1
+            cmd_result.metadata["retry_history"] = []
+            try:
+                return cmd_result.model_dump()
+            except AttributeError:
+                return cmd_result.dict()  # Pydantic v1 fallback
+
         # Find the first executor that can handle this task type
         executor = None
         for ex in self.runner.executors:
@@ -1395,6 +1432,10 @@ class _PreviousOutputProxy:
 
     def __repr__(self) -> str:
         return f"_PreviousOutputProxy(output_dir={self._output_dir!r}, phases={list(self._phase_outputs.keys())})"
+
+
+# Module-level alias for direct use and testing
+_parse_supervisor_response = PhaseSequencer._parse_supervisor_response
 
 
 class _PreviousOutputInlineProxy:
