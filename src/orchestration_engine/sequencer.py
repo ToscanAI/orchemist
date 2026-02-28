@@ -627,17 +627,31 @@ class PhaseSequencer:
         """Build the prompt string for a phase.
 
         Uses Python's ``str.format()`` to interpolate:
-        - ``{input}``           — the initial pipeline input dict
-        - ``{input[key]}``      — a specific key from the initial input
-        - ``{previous_output}`` — all accumulated phase outputs so far
-        - ``{previous_output[phase_id]}`` — output of a specific previous phase
-        - ``{config}``          — the pipeline config dict
-        - ``{skill_context[name]}`` — content of a loaded skill file (from skill_refs)
-        - ``{failure_context}`` — markdown-formatted context from the previous failed
-          attempt (empty string on the first attempt).
+        - ``{input}``                     — the initial pipeline input dict
+        - ``{input[key]}``                — a specific key from the initial input
+        - ``{previous_output}``           — when ``output_dir`` is set: a compact
+          summary of prior phase outputs (phase name + word count + file path),
+          NOT the full inline content; when ``output_dir`` is ``None``, behaves
+          exactly as before (raw dict repr of all phase outputs).
+        - ``{previous_output[phase_id]}`` — when ``output_dir`` is set: prepends
+          ``"Full output at: {output_dir}/{safe_pid}.md\\n\\n"`` before the
+          inline content; without ``output_dir``: raw extracted text only.
+        - ``{previous_output_inline}``    — always the full raw dict repr of all
+          prior phase outputs, regardless of ``output_dir``; use in templates
+          that explicitly need every prior output inline.
+        - ``{config}``                    — the pipeline config dict
+        - ``{skill_context[name]}``       — content of a loaded skill file
+          (from skill_refs)
+        - ``{failure_context}``           — markdown-formatted context from the
+          previous failed attempt (empty string on the first attempt).
+        - ``{output_dir}``                — string representation of the output
+          directory, or ``"<NO_OUTPUT_DIR>"`` if unset.
+        - ``{phase_summary}``             — brief summary of prior phases
+          (phase name + word count + file path) regardless of ``output_dir``.
 
         Missing keys produce a ``<MISSING:key>`` placeholder (via SafeDict)
-        rather than raising ``KeyError``.
+        rather than raising ``KeyError``.  Missing ``{previous_output[id]}``
+        keys produce ``<MISSING:previous_output[id]>``.
 
         .. note::
             When called from a parallel worker, **the caller must hold
@@ -658,8 +672,17 @@ class PhaseSequencer:
 
         # Wrap dicts in a safe mapping that returns a placeholder for missing keys
         safe_input = _SafeDict(initial_input)
-        safe_outputs = _SafeDict(self.phase_outputs)
         safe_config = _SafeDict(self.config)
+
+        # ── fix/243: smart previous_output proxy ──────────────────────────────
+        # When output_dir is set, {previous_output} emits compact file-path
+        # summaries instead of dumping all content inline.
+        # {previous_output_inline} always gives the full raw content regardless.
+        _output_dir_for_proxy = str(self.output_dir) if self.output_dir else None
+        previous_output_proxy = _PreviousOutputProxy(
+            self.phase_outputs, _output_dir_for_proxy, self._phase_map
+        )
+        previous_output_inline_proxy = _PreviousOutputInlineProxy(self.phase_outputs)
 
         # Load skill_refs and build skill_context dict
         skill_context: Dict[str, str] = {}
@@ -753,7 +776,8 @@ class PhaseSequencer:
         try:
             prompt = phase.prompt_template.format(
                 input=safe_input,
-                previous_output=safe_outputs,
+                previous_output=previous_output_proxy,
+                previous_output_inline=previous_output_inline_proxy,
                 config=safe_config,
                 skill_context=safe_skills,
                 files=safe_files,
@@ -1301,3 +1325,100 @@ class _PhaseOutput:
 
     def __repr__(self) -> str:
         return f"_PhaseOutput({self._text[:80]!r}...)"
+
+
+class _PreviousOutputProxy:
+    """Smart proxy for the ``{previous_output}`` template variable (fix/243).
+
+    Behaviour depends on whether *output_dir* is set:
+
+    * **output_dir set** — ``{previous_output}`` expands to a compact,
+      file-path-based summary (phase name + word count + ``→ path/phase.md``).
+      Full phase content is NOT inlined, saving 30 K+ tokens per run.
+      ``{previous_output[phase_id]}`` prepends a ``"Full output at: …"`` note
+      before the inline text so models know where to find the full version.
+
+    * **output_dir not set** — ``{previous_output}`` expands to
+      ``str(phase_outputs)`` (the old behaviour, full backward compatibility).
+      ``{previous_output[phase_id]}`` returns the extracted text with no note.
+
+    Missing phase IDs return ``<MISSING:previous_output[phase_id]>`` so
+    template authoring errors produce visible, non-crashing placeholders.
+    """
+
+    def __init__(self, phase_outputs: dict, output_dir: Optional[str], phase_map: dict) -> None:
+        self._phase_outputs = phase_outputs
+        self._output_dir = output_dir
+        self._phase_map = phase_map
+
+    # ── str.format() calls __format__ for {previous_output} ──────────────────
+
+    def __format__(self, format_spec: str) -> str:
+        if self._output_dir:
+            return format(self._build_summary(), format_spec)
+        return format(str(self._phase_outputs), format_spec)
+
+    def __str__(self) -> str:
+        if self._output_dir:
+            return self._build_summary()
+        return str(self._phase_outputs)
+
+    # ── str.format() calls __getitem__ for {previous_output[phase_id]} ───────
+
+    def __getitem__(self, key: str) -> str:
+        if key not in self._phase_outputs:
+            return f"<MISSING:previous_output[{key}]>"
+        inline = _extract_phase_text(self._phase_outputs[key])
+        if self._output_dir:
+            safe_pid = key.replace("-", "_")
+            return f"Full output at: {self._output_dir}/{safe_pid}.md\n\n{inline}"
+        return inline
+
+    # ── internal helpers ──────────────────────────────────────────────────────
+
+    def _build_summary(self) -> str:
+        """Return compact summary lines, one per prior phase."""
+        if not self._phase_outputs:
+            return "No prior phases."
+        lines: List[str] = []
+        for pid, pout in self._phase_outputs.items():
+            text = _extract_phase_text(pout)
+            word_count = len(text.split()) if text else 0
+            phase_def = self._phase_map.get(pid)
+            phase_name = phase_def.name if phase_def else pid
+            safe_pid = pid.replace("-", "_")
+            lines.append(
+                f"- {phase_name} ({pid}): completed, ~{word_count} words"
+                f" → {self._output_dir}/{safe_pid}.md"
+            )
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return f"_PreviousOutputProxy(output_dir={self._output_dir!r}, phases={list(self._phase_outputs.keys())})"
+
+
+class _PreviousOutputInlineProxy:
+    """Proxy for ``{previous_output_inline}`` — always returns full inline content.
+
+    Preserves the pre-fix/243 ``{previous_output}`` behaviour for templates
+    that explicitly require every prior phase output dumped inline.  The full
+    raw ``phase_outputs`` dict repr is returned as a string, regardless of
+    whether *output_dir* is configured.
+    """
+
+    def __init__(self, phase_outputs: dict) -> None:
+        self._phase_outputs = phase_outputs
+
+    def __format__(self, format_spec: str) -> str:
+        return format(str(self._phase_outputs), format_spec)
+
+    def __str__(self) -> str:
+        return str(self._phase_outputs)
+
+    def __getitem__(self, key: str) -> str:
+        if key not in self._phase_outputs:
+            return f"<MISSING:previous_output_inline[{key}]>"
+        return _extract_phase_text(self._phase_outputs[key])
+
+    def __repr__(self) -> str:
+        return f"_PreviousOutputInlineProxy(phases={list(self._phase_outputs.keys())})"
