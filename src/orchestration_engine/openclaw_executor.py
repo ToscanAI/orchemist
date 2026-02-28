@@ -162,7 +162,7 @@ class OpenClawExecutor(TaskExecutor):
             or self._read_token_from_config()
             or ""
         )
-        self.timeout_seconds = timeout_seconds
+        self.timeout_seconds = timeout_seconds if timeout_seconds else DEFAULT_TIMEOUT_SECONDS
         self.dry_run = dry_run
 
     @staticmethod
