@@ -84,6 +84,13 @@ THINKING_MAP: Dict[str, Optional[str]] = {
 
 # Default timeout for waiting on a spawned session to complete.
 # 20 minutes — used when no per-phase or per-executor timeout is provided (#240).
+#
+# MIGRATION NOTE (issue #240): This was raised from 600 s (10 min) to 1200 s
+# (20 min) to accommodate longer sub-agent research sessions.  Any orchestrator
+# config or CI pipeline that relied on the previous 10-minute ceiling should be
+# reviewed.  Pass an explicit ``timeout_seconds`` to the constructor or a per-
+# task ``timeout_seconds`` to override this default for a specific executor or
+# task.
 DEFAULT_TIMEOUT_SECONDS = 1200
 
 # How long to sleep between each poll of the session status endpoint.
@@ -443,17 +450,25 @@ class OpenClawExecutor(TaskExecutor):
 
         # Resolve effective timeout (#240).
         # Use explicit None-check (not falsy "or") so that a caller-provided
-        # zero/small value is still respected (even though 0 is nonsensical).
+        # value is never silently ignored.
+        # Fallback chain: explicit timeout → self.timeout_seconds → DEFAULT_TIMEOUT_SECONDS.
         # Infinite timeouts are re-mapped to DEFAULT_TIMEOUT_SECONDS to avoid a
         # deadline that can never be exceeded.
+        # Zero or negative timeouts are rejected early with a clear ValueError to avoid
+        # a ZeroDivisionError in the 80% warning path (review issue #1).
         if timeout is None:
-            effective_timeout: int = DEFAULT_TIMEOUT_SECONDS
+            effective_timeout: int = self.timeout_seconds or DEFAULT_TIMEOUT_SECONDS
         elif math.isinf(float(timeout)):
             logger.warning(
                 "Infinite timeout requested; falling back to DEFAULT_TIMEOUT_SECONDS=%ds",
                 DEFAULT_TIMEOUT_SECONDS,
             )
             effective_timeout = DEFAULT_TIMEOUT_SECONDS
+        elif timeout <= 0:
+            raise ValueError(
+                f"timeout must be a positive integer (got {timeout!r}). "
+                "Use timeout=None to apply the executor default."
+            )
         else:
             effective_timeout = timeout
 
@@ -494,6 +509,11 @@ class OpenClawExecutor(TaskExecutor):
 
         # 80% warning state — fired at most once per session (#240 AC-4).
         warning_fired: bool = False
+
+        # SESSIONS_HISTORY_LIMIT ceiling warning — fired at most once per session (#239).
+        # Mirrors the warning_fired pattern to avoid log spam when a long session
+        # stabilises at exactly SESSIONS_HISTORY_LIMIT messages across many polls.
+        limit_warning_fired: bool = False
 
         # Session cleanup detection state (#241).
         # Tracks whether any poll has ever returned a non-empty message list.
@@ -552,7 +572,10 @@ class OpenClawExecutor(TaskExecutor):
             # be missing if the session produced more than SESSIONS_HISTORY_LIMIT
             # entries.  Offset-based pagination is NOT supported by the current
             # gateway (sessions_history has no "offset" parameter).  See #239.
-            if len(messages) == SESSIONS_HISTORY_LIMIT:
+            # Guard with limit_warning_fired so the warning appears at most once
+            # per session, even if the session stalls at exactly the limit for
+            # many poll iterations.
+            if len(messages) == SESSIONS_HISTORY_LIMIT and not limit_warning_fired:
                 logger.warning(
                     "sessions_history returned %d messages for session %s — "
                     "response is at the limit ceiling, some earlier content may "
@@ -561,6 +584,7 @@ class OpenClawExecutor(TaskExecutor):
                     SESSIONS_HISTORY_LIMIT,
                     session_key,
                 )
+                limit_warning_fired = True
 
             # ── Session cleanup detection (#241) ──────────────────────────
             # A session that previously had messages but now returns an empty

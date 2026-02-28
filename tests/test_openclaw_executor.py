@@ -1326,6 +1326,112 @@ class TestPollTimeout:
         # Must have polled at least twice before timing out
         assert poll_count["n"] >= 2, "Expected multiple polls before TimeoutError"
 
+    # ── Edge: timeout=0 → ValueError (not ZeroDivisionError) ─────────────
+
+    def test_zero_timeout_raises_value_error(self, executor):
+        """timeout=0 must raise ValueError immediately, not ZeroDivisionError (#240 review)."""
+        # The code documents that 0 is nonsensical — it should be rejected early
+        # with a clear error rather than crashing with ZeroDivisionError inside
+        # the 80% warning arithmetic (100.0 * elapsed / 0).
+        with pytest.raises(ValueError, match="positive integer"):
+            executor._run_session(
+                "hello", "anthropic/claude-sonnet-4-6", None, timeout=0
+            )
+
+    def test_negative_timeout_raises_value_error(self, executor):
+        """timeout < 0 must also raise ValueError."""
+        with pytest.raises(ValueError, match="positive integer"):
+            executor._run_session(
+                "hello", "anthropic/claude-sonnet-4-6", None, timeout=-1
+            )
+
+    # ── Edge: float('inf') → falls back to DEFAULT_TIMEOUT_SECONDS ───────
+
+    def test_inf_timeout_falls_back_to_default(self, executor):
+        """float('inf') timeout must fall back to DEFAULT_TIMEOUT_SECONDS (#240 review)."""
+        from orchestration_engine.openclaw_executor import DEFAULT_TIMEOUT_SECONDS
+
+        session_key = "sess-inf-to"
+        captured_spawn_args: dict = {}
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                captured_spawn_args.update(body.get("args", {}))
+                return self._spawn_resp(session_key)
+            if body.get("tool") == "sessions_list":
+                return {"ok": True, "result": {"content": [{"type": "text", "text": "[]"}]}}
+            return self._done_resp(session_key)
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            executor._run_session(
+                "hello", "anthropic/claude-sonnet-4-6", None, timeout=float("inf")
+            )
+
+        assert captured_spawn_args.get("runTimeoutSeconds") == DEFAULT_TIMEOUT_SECONDS, (
+            f"Expected runTimeoutSeconds={DEFAULT_TIMEOUT_SECONDS} for inf timeout, "
+            f"got {captured_spawn_args.get('runTimeoutSeconds')}"
+        )
+
+    def test_inf_timeout_logs_warning(self, executor):
+        """Passing float('inf') must log a warning about the fallback (#240 review)."""
+        session_key = "sess-inf-warn"
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return self._spawn_resp(session_key)
+            if body.get("tool") == "sessions_list":
+                return {"ok": True, "result": {"content": [{"type": "text", "text": "[]"}]}}
+            return self._done_resp(session_key)
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             patch("orchestration_engine.openclaw_executor.logger") as mock_logger:
+            executor._run_session(
+                "hello", "anthropic/claude-sonnet-4-6", None, timeout=float("inf")
+            )
+
+        # Should have logged a warning about infinite timeout
+        warning_calls = [
+            c for c in mock_logger.warning.call_args_list
+            if "infinite" in str(c).lower() or "inf" in str(c).lower()
+        ]
+        assert warning_calls, (
+            "Expected a warning log for infinite timeout, but none was found. "
+            f"All warning calls: {mock_logger.warning.call_args_list}"
+        )
+
+    # ── Edge: None timeout respects self.timeout_seconds ─────────────────
+
+    def test_none_timeout_respects_executor_timeout_seconds(self, executor):
+        """When timeout=None, self.timeout_seconds must be used (not skipped) (#240 review Issue 2)."""
+        from orchestration_engine.openclaw_executor import DEFAULT_TIMEOUT_SECONDS
+
+        # Set a custom per-executor timeout that differs from the default
+        custom_timeout = 300
+        assert custom_timeout != DEFAULT_TIMEOUT_SECONDS, "Test setup: values must differ"
+        executor.timeout_seconds = custom_timeout
+
+        session_key = "sess-exec-timeout"
+        captured_spawn_args: dict = {}
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                captured_spawn_args.update(body.get("args", {}))
+                return self._spawn_resp(session_key)
+            if body.get("tool") == "sessions_list":
+                return {"ok": True, "result": {"content": [{"type": "text", "text": "[]"}]}}
+            return self._done_resp(session_key)
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            executor._run_session("hello", "anthropic/claude-sonnet-4-6", None, timeout=None)
+
+        assert captured_spawn_args.get("runTimeoutSeconds") == custom_timeout, (
+            f"Expected runTimeoutSeconds={custom_timeout} (self.timeout_seconds), "
+            f"got {captured_spawn_args.get('runTimeoutSeconds')}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Issue #241 — Session Cleanup Detection
