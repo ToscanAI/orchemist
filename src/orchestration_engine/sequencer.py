@@ -609,6 +609,199 @@ class PhaseSequencer:
         result.setdefault("metadata", {})["files_written"] = paths
 
     # ------------------------------------------------------------------
+    # Supervisor hook (Issue #194)
+    # ------------------------------------------------------------------
+
+    def _run_supervisor_for_phase(
+        self,
+        phase: PhaseDefinition,
+        result: dict,
+        initial_input: dict,
+    ):
+        """Run the supervisor evaluation loop for a completed phase.
+
+        Called after a phase with ``supervisor: True`` completes successfully.
+        Builds a supervisor TaskSpec, executes it, parses APPROVE/REVISE/ABORT,
+        and handles each outcome:
+
+        * **APPROVE** — returns ``(result, None)`` to continue the pipeline.
+        * **REVISE**  — re-runs the phase with supervisor feedback injected,
+          then loops.  Bounded by ``phase.supervisor_max_retries``.
+        * **ABORT**   — returns ``(result, abort_dict)`` to fail the pipeline.
+        * **Max retries exhausted** — same as ABORT.
+
+        Returns:
+            ``(final_result, abort_dict)`` where ``abort_dict`` is ``None`` on
+            APPROVE, or a pipeline-abort dict on ABORT / exhaustion.
+        """
+        max_retries: int = phase.supervisor_max_retries
+        revise_count: int = 0
+        current_result: dict = result
+
+        while True:
+            phase_output = _extract_phase_text(current_result)
+            rubric = phase.supervisor_rubric or "(no rubric provided)"
+
+            # Build supervisor prompt
+            if phase.supervisor_prompt:
+                supervisor_prompt_text = phase.supervisor_prompt.format(
+                    rubric=rubric,
+                    phase_output=phase_output,
+                )
+            else:
+                supervisor_prompt_text = _DEFAULT_SUPERVISOR_PROMPT.format(
+                    rubric=rubric,
+                    phase_output=phase_output,
+                )
+
+            supervisor_model = phase.supervisor_model or "opus"
+            preferred_model = self._resolve_model_tier(supervisor_model)
+
+            supervisor_task = TaskSpec(
+                type=TaskType.CONTENT,
+                payload={
+                    "prompt": supervisor_prompt_text,
+                    "phase_id": f"{phase.id}__supervisor",
+                    "pipeline_id": self.template.id,
+                },
+                priority=Priority.HIGH,
+                preferred_model=preferred_model,
+                timeout_seconds=phase.timeout_minutes * 60,
+            )
+
+            sup_task_id = self.runner.queue.submit_task(supervisor_task)
+            logger.info(
+                f"Pipeline {self.template.id}: running supervisor for phase "
+                f"'{phase.id}' (revise_count={revise_count}/{max_retries})"
+            )
+
+            # Minimal PhaseDefinition for _execute_and_wait bookkeeping
+            supervisor_phase = PhaseDefinition(
+                id=f"{phase.id}__supervisor",
+                name=f"{phase.name} Supervisor",
+                prompt_template=supervisor_prompt_text,
+                model_tier=supervisor_model,
+                retries=0,
+            )
+
+            supervisor_result = self._execute_and_wait(sup_task_id, supervisor_phase)
+            supervisor_text = _extract_phase_text(supervisor_result)
+
+            verdict, reason = PhaseSequencer._parse_supervisor_response(supervisor_text)
+            logger.info(
+                f"Pipeline {self.template.id}: supervisor verdict for phase "
+                f"'{phase.id}': {verdict} — {reason[:200]}"
+            )
+
+            if verdict == "APPROVE":
+                return current_result, None
+
+            elif verdict == "ABORT":
+                logger.error(
+                    f"Pipeline {self.template.id}: supervisor ABORT on phase "
+                    f"'{phase.id}': {reason}"
+                )
+                abort_result = {
+                    "phase_outputs": self.phase_outputs,
+                    "final_output": current_result,
+                    "failed_phase": phase.id,
+                    "aborted": True,
+                    "supervisor_abort": True,
+                    "supervisor_reason": reason,
+                }
+                return current_result, abort_result
+
+            else:  # REVISE (or UNKNOWN → treat as REVISE)
+                if revise_count >= max_retries:
+                    logger.error(
+                        f"Pipeline {self.template.id}: supervisor max_retries "
+                        f"({max_retries}) exhausted for phase '{phase.id}' — aborting."
+                    )
+                    abort_result = {
+                        "phase_outputs": self.phase_outputs,
+                        "final_output": current_result,
+                        "failed_phase": phase.id,
+                        "aborted": True,
+                        "supervisor_abort": True,
+                        "supervisor_reason": (
+                            f"max_retries ({max_retries}) exhausted: {reason}"
+                        ),
+                    }
+                    return current_result, abort_result
+
+                revise_count += 1
+                logger.info(
+                    f"Pipeline {self.template.id}: supervisor REVISE on phase "
+                    f"'{phase.id}' (attempt {revise_count}/{max_retries}): {reason}"
+                )
+
+                feedback_ctx = (
+                    f"## Supervisor Feedback\n\n"
+                    f"The supervisor reviewed your previous output and requested revisions:\n\n"
+                    f"{reason}\n\n"
+                    f"Please revise your output accordingly."
+                )
+
+                with self._phase_outputs_lock:
+                    revised_prompt = self._build_phase_input(
+                        phase, initial_input, failure_context=feedback_ctx
+                    )
+
+                revised_task = TaskSpec(
+                    type=self._resolve_task_type(phase.task_type),
+                    payload={
+                        "prompt": revised_prompt,
+                        "phase_id": phase.id,
+                        "pipeline_id": self.template.id,
+                    },
+                    priority=Priority.HIGH,
+                    preferred_model=self._resolve_model_tier(phase.model_tier),
+                    timeout_seconds=phase.timeout_minutes * 60,
+                )
+
+                revised_task_id = self.runner.queue.submit_task(revised_task)
+                current_result = self._execute_and_wait(
+                    revised_task_id, phase, initial_input=initial_input
+                )
+
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase.id] = current_result
+
+                # If the revised phase itself failed, abort
+                revised_state = current_result.get("state", "unknown")
+                if revised_state in ("failed", "permanently_failed"):
+                    return current_result, {
+                        "phase_outputs": self.phase_outputs,
+                        "final_output": current_result,
+                        "failed_phase": phase.id,
+                        "aborted": True,
+                    }
+                # Loop back to re-evaluate the new output
+
+    @staticmethod
+    def _parse_supervisor_response(text: str):
+        """Parse supervisor text response for APPROVE / REVISE / ABORT.
+
+        Scans each line and checks its first word (case-insensitive).
+        Returns ``("APPROVE" | "REVISE" | "ABORT", reason_str)``.
+        Defaults to APPROVE with a warning if no match is found.
+        """
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            upper = stripped.upper()
+            for verdict in ("APPROVE", "REVISE", "ABORT"):
+                if upper.startswith(verdict):
+                    remainder = stripped[len(verdict):].lstrip(":").strip()
+                    return verdict, remainder
+        logger.warning(
+            f"Supervisor response had no APPROVE/REVISE/ABORT verdict; "
+            f"defaulting to APPROVE. Response preview: {text[:200]!r}"
+        )
+        return "APPROVE", "no verdict found — defaulting to APPROVE"
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 

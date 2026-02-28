@@ -31,6 +31,7 @@ DEFAULT_ALLOWED_COMMANDS: List[str] = [
     "cat",
     "find",
     "grep",
+    "sleep",
 ]
 
 # Default timeout in seconds for command execution
