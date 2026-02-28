@@ -80,6 +80,7 @@ phases:
   - id: implement
     name: "Implementation"
     description: "Write the code changes based on the spec"
+    depends_on: [spec]
     model_tier: sonnet
     prompt_template: |
       You are a developer implementing changes based on a spec.
@@ -113,6 +114,7 @@ phases:
   - id: review
     name: "Opus Code Review"
     description: "Senior code review by Opus — quality gate"
+    depends_on: [implement]
     model_tier: opus
     supervisor: true
     supervisor_model: opus
@@ -155,6 +157,7 @@ phases:
   - id: fix
     name: "Apply Review Fixes"
     description: "Address code review feedback"
+    depends_on: [review]
     model_tier: sonnet
     prompt_template: |
       You are a developer addressing code review feedback.
@@ -189,6 +192,7 @@ phases:
   - id: test
     name: "Test Verification"
     description: "Run full test suite to verify no regressions"
+    depends_on: [fix]
     task_type: command
     command: "cd {config[repo_path]} && git checkout {config[branch_name]} && {config[test_command]}"
     allowed_commands: ["cd", "git", "python3", "python", "pytest"]
