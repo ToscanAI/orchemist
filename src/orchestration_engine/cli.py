@@ -5,12 +5,15 @@ Uses Click for command structure and rich formatting for output.
 """
 
 import json
+import logging
 import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 import yaml
 
@@ -94,18 +97,63 @@ def _extract_output_text(phase_out: Dict[str, Any]) -> str:
       - ``result.content`` — alternative content key
       - ``result.message`` — DryRunExecutor mock message
     Falls back to a JSON representation of the ``result`` sub-dict.
+
+    When a value is a list (e.g. Anthropic content-block arrays), text blocks
+    of type ``{"type": "text", "text": "..."}`` are joined with double newlines.
+    Plain string items in the list are also included.
     """
     import json as _json
+    import builtins as _builtins  # needed because 'list' is shadowed by the Click command
 
     inner = phase_out.get('result', {})
     if not isinstance(inner, dict):
         return str(inner)
     for key in ('output', 'text', 'content', 'message'):
         if key in inner:
-            return str(inner[key])
+            val = inner[key]
+            if isinstance(val, _builtins.list):
+                # Extract text from Anthropic-style content block arrays.
+                # Blocks with type "tool_use" or "thinking" are intentionally
+                # skipped — they carry tool parameters / internal reasoning,
+                # not human-readable output.
+                texts = []
+                for block in val:
+                    if isinstance(block, _builtins.dict):
+                        if block.get('type') == 'text':
+                            texts.append(block.get('text', ''))
+                    elif isinstance(block, str):
+                        texts.append(block)
+                return '\n\n'.join(t for t in texts if t)
+            return str(val)
     if inner:
         return _json.dumps(inner, indent=2, default=str)
     return ""
+
+
+def _safe_write_phase_output(out_path: Path, new_content: str, phase_id: str) -> None:
+    """Write *new_content* to *out_path* unless an agent-written file is larger.
+
+    The size guard compares file bytes against the UTF-8 encoded length of
+    *new_content* so that multi-byte characters (em-dashes, emoji, accented
+    letters) are counted consistently.  The strictly-greater-than comparison
+    means equal-sized files are always (over)written with the fresh capture.
+
+    Args:
+        out_path:    Destination path.  Parent directory must already exist.
+        new_content: Text to write (UTF-8 encoded on disk).
+        phase_id:    Phase identifier used in log messages only.
+    """
+    if out_path.exists() and out_path.stat().st_size > len(new_content.encode('utf-8')):
+        # Agent already wrote a larger file — keep the agent's version.
+        logger.info(
+            "Phase '%s': keeping agent-written file (%d bytes) over captured "
+            "output (%d bytes)",
+            phase_id,
+            out_path.stat().st_size,
+            len(new_content.encode('utf-8')),
+        )
+    else:
+        out_path.write_text(new_content)
 
 
 @click.group()
@@ -1055,9 +1103,9 @@ def run_template(
             output_dir.mkdir(parents=True, exist_ok=True)
             phase_text = _extract_output_text(phase_result)
             if phase_text:
-                (output_dir / f"{safe_pid}.md").write_text(
-                    f"# Phase: {phase_id}\n\n{phase_text}\n"
-                )
+                out_path = output_dir / f"{safe_pid}.md"
+                new_content = f"# Phase: {phase_id}\n\n{phase_text}\n"
+                _safe_write_phase_output(out_path, new_content, phase_id)
         except Exception as exc:
             logger.warning(f"Failed to write phase output to disk: {exc}")
 
@@ -1179,10 +1227,11 @@ def run_template(
         )
 
         # Markdown per phase (Feature #71)
+        # Issue #210: if the sub-agent already wrote a larger file, keep it.
         phase_text = _extract_output_text(phase_out)
-        (output_dir / f"{safe_id}.md").write_text(
-            f"# Phase: {phase_id}\n\n{phase_text}\n"
-        )
+        out_path = output_dir / f"{safe_id}.md"
+        new_content = f"# Phase: {phase_id}\n\n{phase_text}\n"
+        _safe_write_phase_output(out_path, new_content, phase_id)
 
     # _final_output.json
     (output_dir / "_final_output.json").write_text(
