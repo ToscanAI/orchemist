@@ -103,6 +103,10 @@ class PhaseSequencer:
         self._callback_lock: threading.Lock = threading.Lock()
         """Serialises on_phase_start / on_phase_complete callback invocations."""
 
+        # Shared CommandExecutor instance — instantiated once to allow
+        # configuration injection and avoid per-call overhead (Issue #190)
+        self._command_executor: CommandExecutor = CommandExecutor()
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -265,6 +269,19 @@ class PhaseSequencer:
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
 
+            # Supervisor hook (#194)
+            if getattr(phase, 'supervisor', False) and result.get('state') == 'success':
+                result, abort_info = self._run_supervisor_for_phase(phase, result, initial_input)
+                if abort_info:
+                    logger.error(
+                        f"Pipeline {self.template.id}: pipeline aborted by supervisor "
+                        f"on phase '{phase.id}'"
+                    )
+                    return abort_info
+                # Update phase_outputs with potentially revised result
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+
             # Notify caller (e.g. CLI progress display)
             self._invoke_on_phase_complete(phase_id, result)
 
@@ -391,6 +408,30 @@ class PhaseSequencer:
             # Write result under lock — prevents lost updates on shared dict
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
+
+            # Supervisor hook (#194) — parallel path
+            if getattr(phase, 'supervisor', False) and result.get('state') == 'success':
+                result, abort_info = self._run_supervisor_for_phase(phase, result, initial_input)
+                if abort_info:
+                    logger.error(
+                        f"Pipeline {self.template.id}: pipeline aborted by supervisor "
+                        f"on phase '{phase.id}' (parallel)"
+                    )
+                    # Return a failed-state result so outer loop triggers pipeline abort
+                    failed_result = {
+                        "state": TaskState.FAILED.value,
+                        "result": {"text": ""},
+                        "supervisor_abort": True,
+                        "supervisor_reason": abort_info.get("supervisor_reason", ""),
+                        "metadata": {"attempt_number": 1, "total_attempts": 1},
+                        "confidence": 0.0,
+                    }
+                    with self._phase_outputs_lock:
+                        self.phase_outputs[phase_id] = failed_result
+                    return failed_result
+                # Update phase_outputs with potentially revised result
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
 
             # Notify caller
             self._invoke_on_phase_complete(phase_id, result)
@@ -1166,9 +1207,8 @@ class PhaseSequencer:
             if allowed:
                 task_spec.payload["allowed_commands"] = list(allowed)
 
-            cmd_executor = CommandExecutor()
             try:
-                cmd_result: TaskResult = cmd_executor.execute(task_spec)
+                cmd_result: TaskResult = self._command_executor.execute(task_spec)
             except ValueError as exc:
                 # No command found in payload — treat as permanent failure
                 raise RuntimeError(

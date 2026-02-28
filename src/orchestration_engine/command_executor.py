@@ -6,6 +6,17 @@ Provides a security-aware executor that runs shell commands in a controlled
 environment.  Commands are validated against a configurable allowlist before
 execution.  Variable interpolation allows templates to inject runtime values
 like ``{output_dir}`` and ``{phase_id}``.
+
+Security model
+--------------
+* ``subprocess.run`` is called with ``shell=False`` so shell metacharacters
+  (``; && || | > $()`` etc.) are never interpreted by a shell — the command is
+  split into tokens via ``shlex.split`` and passed directly to ``execvp``.
+* Payload values are quoted with ``shlex.quote`` before substitution so
+  spaces and metacharacters in variable values cannot alter the token
+  structure when the interpolated string is later split by ``shlex.split``.
+* Output is capped at :data:`MAX_OUTPUT_BYTES` to prevent memory exhaustion
+  from runaway commands.
 """
 
 from __future__ import annotations
@@ -19,6 +30,10 @@ from typing import Any, Dict, List, Optional
 from .schemas import TaskResult, TaskSpec, TaskState, TaskType
 
 logger = logging.getLogger(__name__)
+
+# Maximum bytes captured from stdout + stderr combined (prevents OOM on
+# commands that produce very large output).
+MAX_OUTPUT_BYTES: int = 1_048_576  # 1 MB
 
 # Default command prefixes that are considered safe to run
 DEFAULT_ALLOWED_COMMANDS: List[str] = [
@@ -60,11 +75,15 @@ class CommandExecutor:
     --------
     1. Extract the command string from ``task.payload["command"]`` or from a
        ``COMMAND:`` prefix in ``task.payload["prompt"]``.
-    2. Perform variable interpolation with values from ``task.payload``.
+    2. Perform variable interpolation with values from ``task.payload``,
+       quoting string values with :func:`shlex.quote` to prevent injection.
     3. Validate the command against the security allowlist.
-    4. Run via ``subprocess.run(shell=True, …)`` with a configurable timeout.
+    4. Run via ``subprocess.run(shell=False, …)`` after splitting the
+       interpolated string with ``shlex.split``; shell metacharacters are
+       never interpreted.
     5. Return a :class:`~.schemas.TaskResult` with ``stdout`` + ``stderr``
-       combined as the ``text`` field, and the exit code as ``exit_code``.
+       combined as the ``text`` field (truncated to :data:`MAX_OUTPUT_BYTES`),
+       and the exit code as ``exit_code``.
 
     Args:
         default_allowed_commands: List of command prefixes that are permitted.
@@ -109,6 +128,7 @@ class CommandExecutor:
             A :class:`~.schemas.TaskResult` where:
 
             * ``result["text"]``      — combined stdout + stderr output
+              (truncated to :data:`MAX_OUTPUT_BYTES`)
             * ``result["exit_code"]`` — process exit code (or -1 on timeout)
             * ``state``               — ``SUCCESS`` when exit_code == 0,
               ``FAILED`` otherwise (including security/timeout errors)
@@ -146,14 +166,28 @@ class CommandExecutor:
                 started_at=started_at,
             )
 
-        # ── 5. Execute ────────────────────────────────────────────────
+        # ── 5. Split into token list (shell=False) ────────────────────
+        # shlex.split honours quoting introduced by _interpolate so values
+        # with spaces/metacharacters remain single tokens.
+        try:
+            args = shlex.split(command)
+        except ValueError as exc:
+            return self._make_result(
+                task=task,
+                text=f"[SECURITY] Could not parse command: {exc}",
+                exit_code=-1,
+                state=TaskState.FAILED,
+                started_at=started_at,
+            )
+
+        # ── 6. Execute ────────────────────────────────────────────────
         cwd: Optional[str] = payload.get("cwd")
-        logger.info(f"CommandExecutor: running command: {command!r} (cwd={cwd!r})")
+        logger.info(f"CommandExecutor: running command: {args!r} (cwd={cwd!r})")
 
         try:
             proc = subprocess.run(
-                command,
-                shell=True,
+                args,
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=self.default_timeout,
@@ -162,7 +196,7 @@ class CommandExecutor:
         except subprocess.TimeoutExpired:
             logger.warning(
                 f"CommandExecutor: TIMEOUT — command timed out after "
-                f"{self.default_timeout}s: {command!r}"
+                f"{self.default_timeout}s: {args!r}"
             )
             return self._make_result(
                 task=task,
@@ -173,7 +207,7 @@ class CommandExecutor:
             )
         except Exception as exc:
             logger.error(
-                f"CommandExecutor: unexpected error running {command!r}: {exc}"
+                f"CommandExecutor: unexpected error running {args!r}: {exc}"
             )
             return self._make_result(
                 task=task,
@@ -183,10 +217,14 @@ class CommandExecutor:
                 started_at=started_at,
             )
 
-        # ── 6. Build result ───────────────────────────────────────────
-        output = proc.stdout or ""
-        if proc.stderr:
-            output = output + proc.stderr if output else proc.stderr
+        # ── 7. Build result ───────────────────────────────────────────
+        # Truncate each stream before combining to avoid memory exhaustion
+        # from commands that produce very large output.
+        stdout = (proc.stdout or "")[:MAX_OUTPUT_BYTES]
+        stderr = (proc.stderr or "")[:MAX_OUTPUT_BYTES]
+        output = stdout + stderr if stdout else stderr
+        if len(output) >= MAX_OUTPUT_BYTES:
+            output = output[:MAX_OUTPUT_BYTES] + "\n[OUTPUT TRUNCATED]"
 
         state = TaskState.SUCCESS if proc.returncode == 0 else TaskState.FAILED
         logger.info(
@@ -233,15 +271,25 @@ class CommandExecutor:
     def _interpolate(command: str, payload: Dict[str, Any]) -> str:
         """Substitute ``{variable}`` placeholders with values from *payload*.
 
+        String values are wrapped with :func:`shlex.quote` before
+        substitution so that metacharacters in payload values (e.g. spaces,
+        semicolons, dollar signs) cannot break token boundaries when the
+        interpolated command is later split by ``shlex.split``.
+
         Uses :class:`_SafeDict` so that unknown placeholders are left intact
-        (e.g. ``{HOME}`` or shell variables used later by the shell) rather
-        than raising ``KeyError``.
+        (e.g. ``{phase_id}`` when not present in the payload) rather than
+        raising ``KeyError``.
 
         Recognised placeholders (but any payload key is available):
+
         * ``{output_dir}``
         * ``{phase_id}``
         """
-        safe = _SafeDict(payload)
+        quoted: Dict[str, Any] = {
+            k: shlex.quote(str(v)) if isinstance(v, str) else v
+            for k, v in payload.items()
+        }
+        safe = _SafeDict(quoted)
         return command.format_map(safe)
 
     @staticmethod
