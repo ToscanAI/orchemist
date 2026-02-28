@@ -469,7 +469,9 @@ class TestSupervisorRevise:
 
     def test_revise_feedback_injected_into_revised_prompt(self):
         """Feedback from REVISE appears in the revised phase's prompt."""
-        phase = _make_phase("p1", supervisor=True, supervisor_max_retries=1)
+        # Use a template that includes {failure_context} so feedback gets injected
+        phase = _make_phase("p1", supervisor=True, supervisor_max_retries=1,
+                            prompt="Do {input}\n{failure_context}")
         template = _make_template([phase])
 
         captured_prompts: List[str] = []

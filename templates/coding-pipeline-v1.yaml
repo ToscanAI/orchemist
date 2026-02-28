@@ -1,0 +1,194 @@
+id: coding-pipeline-v1
+name: "Coding Pipeline v1.0"
+description: "5-phase coding pipeline: spec interpretation → implementation → Opus code review → fix → test. Uses file-path handoff, command execution for tests, and supervisor hooks for quality gates."
+author: "Toscan"
+version: "1.0.0"
+category: "code"
+tags: [code, development, review, testing, pipeline]
+use_cases:
+  - "Feature implementation with automated code review"
+  - "Bug fixes with test verification"
+  - "Refactoring with regression testing"
+
+config_schema:
+  type: object
+  required: [issue_title, issue_body, repo_path, branch_name]
+  properties:
+    issue_title:
+      type: string
+      description: "GitHub issue title"
+    issue_body:
+      type: string
+      description: "Full issue description with requirements and acceptance criteria"
+    repo_path:
+      type: string
+      description: "Absolute path to the repository"
+    branch_name:
+      type: string
+      description: "Git branch name to create/use"
+    test_command:
+      type: string
+      default: "python3 -m pytest tests/ -x -q"
+      description: "Command to run tests"
+    files_context:
+      type: string
+      default: ""
+      description: "Key files and their purpose — helps the builder understand the codebase"
+    language:
+      type: string
+      default: "python"
+    style_guide:
+      type: string
+      default: "Follow existing code style. Add docstrings. Type hints where practical."
+
+phases:
+  # Phase 1: Spec Interpretation
+  - id: spec
+    name: "Spec Interpretation"
+    description: "Understand the issue and produce a clear implementation plan"
+    model_tier: sonnet
+    prompt_template: |
+      You are a senior developer interpreting a GitHub issue into an implementation spec.
+
+      ## Issue
+      **Title:** {config[issue_title]}
+      **Body:** {config[issue_body]}
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+      **Language:** {config[language]}
+
+      ## Codebase Context
+      {config[files_context]}
+
+      ## Task
+      Produce a clear implementation spec:
+
+      1. **Problem Statement** — What exactly needs to change and why
+      2. **Files to Modify** — List each file with what changes are needed
+      3. **Files to Create** — Any new files with their purpose
+      4. **Implementation Steps** — Ordered steps, specific enough to code from
+      5. **Test Plan** — What tests to add/modify, edge cases to cover
+      6. **Risk Assessment** — What could break, backward compatibility concerns
+
+      Be specific. Reference actual file paths and function names from the codebase context.
+
+      Write your spec to {output_dir}/spec.md
+
+  # Phase 2: Implementation
+  - id: implement
+    name: "Implementation"
+    description: "Write the code changes based on the spec"
+    model_tier: sonnet
+    prompt_template: |
+      You are a developer implementing changes based on a spec.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the spec at: {output_dir}/spec.md
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+      **Style:** {config[style_guide]}
+
+      ## Task
+      1. Read the spec carefully
+      2. Create the branch if it doesn't exist: `git checkout -b {config[branch_name]}` (or checkout if exists)
+      3. Implement ALL changes described in the spec
+      4. Write clean, documented code following the style guide
+      5. Commit with message referencing the issue: `feat/fix(#issue): description`
+      6. Run the test command to verify: `{config[test_command]}`
+
+      ## Output
+      Write a summary of changes to {output_dir}/implement.md including:
+      - Files changed with brief description of each change
+      - Any deviations from the spec and why
+      - Test results (pass/fail count)
+      - Commit hash
+
+  # Phase 3: Code Review (Opus + Supervisor)
+  - id: review
+    name: "Opus Code Review"
+    description: "Senior code review by Opus — quality gate"
+    model_tier: opus
+    supervisor: true
+    supervisor_model: opus
+    supervisor_rubric: |
+      Evaluate the code review quality:
+      - Did it identify real issues vs nitpicks?
+      - Are security concerns addressed?
+      - Is backward compatibility verified?
+      - Are the suggested fixes actionable?
+    prompt_template: |
+      You are a senior code reviewer (Opus-tier). Your job is to catch bugs, security issues, and design problems.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the implementation summary at: {output_dir}/implement.md
+      Read the spec at: {output_dir}/spec.md
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+
+      ## Task
+      1. Run `git diff main...{config[branch_name]}` to see all changes
+      2. Review EVERY changed file for:
+         - **Correctness** — Does it do what the spec says?
+         - **Security** — Injection, path traversal, unsafe operations?
+         - **Edge cases** — Missing error handling, boundary conditions?
+         - **Backward compatibility** — Does it break existing behavior?
+         - **Test coverage** — Are the changes adequately tested?
+      3. Run the tests: `{config[test_command]}`
+
+      ## Output
+      Write your review to {output_dir}/review.md with:
+      - **APPROVE** or **REQUEST_CHANGES** verdict
+      - List of issues found with severity (blocker/major/minor) and file:line
+      - For REQUEST_CHANGES: specific fixes needed
+
+  # Phase 4: Fix Review Feedback
+  - id: fix
+    name: "Apply Review Fixes"
+    description: "Address code review feedback"
+    model_tier: sonnet
+    prompt_template: |
+      You are a developer addressing code review feedback.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the code review at: {output_dir}/review.md
+      Read the original spec at: {output_dir}/spec.md
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+
+      ## Task
+      1. Read the code review carefully
+      2. If the review says APPROVE with no blockers — write "No fixes needed" to {output_dir}/fix.md and stop
+      3. If REQUEST_CHANGES — apply ALL fixes mentioned:
+         - Address every blocker and major issue
+         - Address minor issues where practical
+      4. Run tests: `{config[test_command]}`
+      5. Commit fixes: `fix: address code review feedback`
+
+      ## Output
+      Write to {output_dir}/fix.md:
+      - Each issue addressed and how
+      - Any issues intentionally deferred and why
+      - Updated test results
+      - Commit hash
+
+  # Phase 5: Test Verification (Command Phase)
+  - id: test
+    name: "Test Verification"
+    description: "Run full test suite to verify no regressions"
+    task_type: command
+    command: "cd {config[repo_path]} && git checkout {config[branch_name]} && {config[test_command]}"
+    allowed_commands: ["cd", "git", "python3", "python", "pytest"]
