@@ -88,6 +88,8 @@ class PhaseDefinition:
     write_files: bool = False       # parse output FILE blocks and write to working_dir
     working_dir: str = "."          # directory where extracted files are written
     base_dir: str = ""              # safety root; refuse writes outside this dir (empty = working_dir)
+    transitions: Dict[str, str] = field(default_factory=dict)  # outcome → phase_id
+    max_iterations: int = 0         # 0 = use pipeline default
 
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
@@ -118,6 +120,12 @@ class PhaseDefinition:
         # ValueError; 1.5 from YAML → range(1, 2.5) raises TypeError.
         self.retries = max(0, int(self.retries))
         self.retry_delay_seconds = max(0, int(self.retry_delay_seconds))
+        # Normalise transition fields
+        if self.transitions is None:
+            self.transitions = {}
+        if self.max_iterations is None:
+            self.max_iterations = 0
+        self.max_iterations = max(0, int(self.max_iterations))
 
 
 @dataclass
@@ -172,6 +180,13 @@ class PipelineTemplate:
     fail_fast: bool = True
     """Abort remaining phases in a wave when one fails (default: True)."""
 
+    # --- Phase transition defaults (Issue #231) ---
+    default_transitions: Dict[str, str] = field(default_factory=dict)
+    """Default outcome → phase_id transitions applied to all phases that don't override."""
+
+    max_iterations: int = 10
+    """Default maximum iterations for state-machine loop phases (must be > 0)."""
+
     def __post_init__(self) -> None:
         if self.phases is None:
             self.phases = []
@@ -199,6 +214,13 @@ class PipelineTemplate:
         self.parallel = bool(self.parallel)
         self.max_parallel = max(0, int(self.max_parallel))
         self.fail_fast = bool(self.fail_fast)
+        # Normalise transition fields (Issue #231)
+        if self.default_transitions is None:
+            self.default_transitions = {}
+        if self.max_iterations is None:
+            self.max_iterations = 10
+        # max_iterations on pipeline must be > 0; clamp to at least 1
+        self.max_iterations = max(1, int(self.max_iterations))
 
 
 class TemplateNotFoundError(FileNotFoundError):
@@ -477,6 +499,8 @@ class TemplateEngine:
                 "write_files",
                 "working_dir",
                 "base_dir",
+                "transitions",
+                "max_iterations",
             }
 
             # Warn on unknown fields (prevents silent data loss)
@@ -514,6 +538,20 @@ class TemplateEngine:
         else:
             fail_fast = bool(raw_fail_fast)
 
+        # --- Parse phase transition fields (Issue #231) ---
+        raw_default_transitions = data.get("default_transitions", None)
+        default_transitions: Dict[str, str] = (
+            dict(raw_default_transitions)
+            if isinstance(raw_default_transitions, dict)
+            else {}
+        )
+
+        raw_pipeline_max_iterations = data.get("max_iterations", None)
+        if raw_pipeline_max_iterations is None:
+            pipeline_max_iterations = 10
+        else:
+            pipeline_max_iterations = max(1, int(raw_pipeline_max_iterations))
+
         return PipelineTemplate(
             id=data["id"],
             name=data["name"],
@@ -532,6 +570,8 @@ class TemplateEngine:
             parallel=parallel,
             max_parallel=max_parallel,
             fail_fast=fail_fast,
+            default_transitions=default_transitions,
+            max_iterations=pipeline_max_iterations,
         )
 
     def get_execution_order(self, template: PipelineTemplate) -> List[List[str]]:

@@ -89,6 +89,11 @@ class PhaseSequencer:
         self.on_pipeline_start = on_pipeline_start
         self.on_pipeline_complete = on_pipeline_complete
 
+        # Fast phase lookup by ID (Issue #231) — avoids O(n) linear scan per phase
+        self._phase_map: Dict[str, PhaseDefinition] = {
+            p.id: p for p in template.phases
+        }
+
         # Thread-safety locks (Issue #102)
         self._phase_outputs_lock: threading.Lock = threading.Lock()
         """Protects ``phase_outputs`` during concurrent wave execution."""
@@ -217,7 +222,7 @@ class PhaseSequencer:
             fails (mirrors the original abort logic).
         """
         for phase_id in wave:
-            phase = self._get_phase(phase_id)
+            phase = self._phase_map.get(phase_id) or self._get_phase(phase_id)
 
             # Notify caller that phase is about to start
             self._invoke_on_phase_start(phase_id, phase, wave_index)
@@ -345,7 +350,7 @@ class PhaseSequencer:
                     "skipped": True,
                 }
 
-            phase = self._get_phase(phase_id)
+            phase = self._phase_map.get(phase_id) or self._get_phase(phase_id)
 
             # Notify caller that phase is about to start
             self._invoke_on_phase_start(phase_id, phase, wave_index)
