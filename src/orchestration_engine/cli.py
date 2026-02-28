@@ -5,12 +5,15 @@ Uses Click for command structure and rich formatting for output.
 """
 
 import json
+import logging
 import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 import yaml
 
@@ -1055,9 +1058,17 @@ def run_template(
             output_dir.mkdir(parents=True, exist_ok=True)
             phase_text = _extract_output_text(phase_result)
             if phase_text:
-                (output_dir / f"{safe_pid}.md").write_text(
-                    f"# Phase: {phase_id}\n\n{phase_text}\n"
-                )
+                out_path = output_dir / f"{safe_pid}.md"
+                new_content = f"# Phase: {phase_id}\n\n{phase_text}\n"
+                if out_path.exists() and out_path.stat().st_size > len(new_content):
+                    # Agent already wrote a larger file — keep the agent's version
+                    logger.info(
+                        f"Phase '{phase_id}': keeping agent-written file "
+                        f"({out_path.stat().st_size} bytes) over captured output "
+                        f"({len(new_content)} bytes)"
+                    )
+                else:
+                    out_path.write_text(new_content)
         except Exception as exc:
             logger.warning(f"Failed to write phase output to disk: {exc}")
 
@@ -1179,10 +1190,18 @@ def run_template(
         )
 
         # Markdown per phase (Feature #71)
+        # Issue #210: if the sub-agent already wrote a larger file, keep it.
         phase_text = _extract_output_text(phase_out)
-        (output_dir / f"{safe_id}.md").write_text(
-            f"# Phase: {phase_id}\n\n{phase_text}\n"
-        )
+        out_path = output_dir / f"{safe_id}.md"
+        new_content = f"# Phase: {phase_id}\n\n{phase_text}\n"
+        if out_path.exists() and out_path.stat().st_size > len(new_content):
+            logger.info(
+                f"Phase '{phase_id}': keeping agent-written file "
+                f"({out_path.stat().st_size} bytes) over captured output "
+                f"({len(new_content)} bytes)"
+            )
+        else:
+            out_path.write_text(new_content)
 
     # _final_output.json
     (output_dir / "_final_output.json").write_text(

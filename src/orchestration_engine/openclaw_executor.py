@@ -650,6 +650,18 @@ class OpenClawExecutor(TaskExecutor):
 
             output = "\n\n".join(text_parts)
 
+            # Diagnostic logging for capture-size analysis (issue #210).
+            # Logs per-part and total sizes so truncation can be detected
+            # by comparing captured chars against the token-based estimate.
+            logger.debug(
+                "Session %s: assembled output from %d assistant text block(s); "
+                "sizes: [%s]; total=%d chars",
+                session_key,
+                len(text_parts),
+                ", ".join(str(len(p)) for p in text_parts),
+                len(output),
+            )
+
             # Extract token usage — sessions_history doesn't include per-message
             # usage, so we query sessions_list for the session's totalTokens
             total_tokens = 0
@@ -672,9 +684,29 @@ class OpenClawExecutor(TaskExecutor):
             except Exception as exc:
                 logger.debug(f"Could not extract token count: {exc}")
 
+            # Estimate expected chars from tokens (rough heuristic: ~4 chars/token).
+            # A large gap between expected and captured chars is a signal that
+            # truncation occurred (e.g. only the final short summary was captured
+            # instead of the full multi-turn output).  See issue #210.
+            expected_chars = total_tokens * 4 if total_tokens else None
+            if expected_chars and len(output) < expected_chars * 0.5:
+                logger.warning(
+                    "Session %s: captured output (%d chars) is less than 50%% of "
+                    "token-estimated size (~%d chars from %d tokens × 4). "
+                    "Possible truncation — check sessions_history limit and whether "
+                    "the agent wrote output to files instead of returning text.",
+                    session_key,
+                    len(output),
+                    expected_chars,
+                    total_tokens,
+                )
             logger.info(
-                f"Session {session_key} completed: {len(output)} chars, "
-                f"{total_tokens} tokens"
+                "Session %s completed: %d chars captured, %d tokens consumed"
+                "%s",
+                session_key,
+                len(output),
+                total_tokens,
+                f" (~{expected_chars} chars expected)" if expected_chars else "",
             )
 
             if is_error:
