@@ -913,6 +913,12 @@ class TemplateEngine:
                         f"Path traversal is not permitted."
                     )
 
+        # Issue #295: coding templates must declare a scenario for quality gating
+        if template.category.strip().lower() == "code" and not template.scenario:
+            errors.append(
+                "Coding pipelines require a scenario for quality gating"
+            )
+
         return errors
 
     # ------------------------------------------------------------------

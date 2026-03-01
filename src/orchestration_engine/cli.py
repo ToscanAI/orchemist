@@ -1056,6 +1056,9 @@ def run_template(
         sys.exit(1)
 
     errors = engine.validate_template(template)
+    # Issue #295: --skip-scoring opts out of the mandatory-scenario check
+    if skip_scoring:
+        errors = [e for e in errors if "require a scenario" not in e]
     if errors:
         click.echo(f"✗ Template has {len(errors)} structural error(s):", err=True)
         for err in errors:
@@ -1627,6 +1630,9 @@ def pipeline_launch(
         sys.exit(1)
 
     errors = engine.validate_template(template)
+    # Issue #295: --skip-scoring opts out of the mandatory-scenario check
+    if skip_scoring:
+        errors = [e for e in errors if "require a scenario" not in e]
     if errors:
         click.echo(f"✗ Template has {len(errors)} error(s):", err=True)
         for err in errors:
