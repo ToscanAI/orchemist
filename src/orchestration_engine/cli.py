@@ -6,7 +6,9 @@ Uses Click for command structure and rich formatting for output.
 
 import json
 import logging
+import os
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -20,6 +22,7 @@ import yaml
 import click
 from decimal import Decimal
 
+from .db import Database
 from .queue import TaskQueue
 from .schemas import (
     TaskSpec, TaskType, Priority, TaskState, TaskFilters,
@@ -254,12 +257,10 @@ def status(run_or_task_id: Optional[str]) -> None:
       orch status a3f8c2d1        # pipeline run detail
       orch status <task-uuid>     # task queue status
     """
-    from .db import Database as _Database
-
     # Try pipeline_runs first if an ID was given
     if run_or_task_id:
         try:
-            _db = _Database()
+            _db = Database()
             run = _db.get_pipeline_run(run_or_task_id)
         except Exception:
             run = None
@@ -302,7 +303,7 @@ def status(run_or_task_id: Optional[str]) -> None:
     else:
         # No ID given → list recent pipeline runs (last 10)
         try:
-            _db = _Database()
+            _db = Database()
             runs = _db.list_pipeline_runs(limit=10)
         except Exception:
             runs = []
@@ -378,8 +379,7 @@ def _print_run_detail(run: Dict[str, Any]) -> None:
                 status = 'crashed'
                 # Update DB
                 try:
-                    from .db import Database as _Database
-                    _Database().update_pipeline_run(run_id, status='crashed')
+                    Database().update_pipeline_run(run_id, status='crashed')
                 except Exception:
                     pass
         except Exception:
@@ -1576,13 +1576,9 @@ def pipeline_start(
       orch logs <run-id> --follow
       orch wait <run-id>
     """
-    import json as _json
-    import subprocess
     import uuid
-    import yaml as _yaml
 
     from .templates import TemplateEngine
-    from .db import Database as _Database
 
     # --- Resolve template ---
     template_file = _resolve_template_arg(template_name_or_file)
@@ -1590,7 +1586,7 @@ def pipeline_start(
     try:
         engine = TemplateEngine()
         template = engine.load_template(template_file)
-    except (FileNotFoundError, KeyError, ValueError, _yaml.YAMLError) as exc:
+    except (FileNotFoundError, KeyError, ValueError, yaml.YAMLError) as exc:
         click.echo(f"✗ Template error: {exc}", err=True)
         sys.exit(1)
 
@@ -1608,35 +1604,34 @@ def pipeline_start(
     initial_input: Dict[str, Any] = {}
     if input_file:
         try:
-            initial_input = _json.loads(input_file.read_text())
-        except (_json.JSONDecodeError, OSError) as exc:
+            initial_input = json.loads(input_file.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
             click.echo(f"✗ Could not read input file: {exc}", err=True)
             sys.exit(1)
     elif input_json:
         try:
-            initial_input = _json.loads(input_json)
-        except _json.JSONDecodeError as exc:
+            initial_input = json.loads(input_json)
+        except json.JSONDecodeError as exc:
             click.echo(f"✗ Invalid JSON in --input: {exc}", err=True)
             sys.exit(1)
 
     # --- Build run_id and output_dir ---
     run_id = str(uuid.uuid4())[:8]
     if output_dir is None:
-        import re as _re
         output_dir = Path(
-            f"./output/{_re.sub(r'[^\\w\\-]', '_', template.id)}"
+            f"./output/{re.sub(r'[^\\w\\-]', '_', template.id)}"
             f"-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{run_id}"
         )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Persist run record to DB ---
     effective_db_path = db_path or _get_persistent_db_path()
-    db = _Database(Path(effective_db_path))
+    db = Database(Path(effective_db_path))
     db.insert_pipeline_run({
         'run_id': run_id,
         'template_path': str(template_file.resolve()),
         'template_id': template.id,
-        'input_json': _json.dumps(initial_input),
+        'input_json': json.dumps(initial_input),
         'mode': mode,
         'output_dir': str(output_dir.resolve()),
         'gateway_url': gateway_url,
@@ -1686,10 +1681,8 @@ def pipeline_logs(run_id: str, follow: bool, db_path: Optional[str]) -> None:
       orch logs a3f8c2d1
       orch logs a3f8c2d1 --follow
     """
-    from .db import Database as _Database
-
     effective_db_path = db_path or _get_persistent_db_path()
-    db = _Database(Path(effective_db_path))
+    db = Database(Path(effective_db_path))
     run = db.get_pipeline_run(run_id)
     if run is None:
         click.echo(f"✗ Run '{run_id}' not found.", err=True)
@@ -1702,9 +1695,8 @@ def pipeline_logs(run_id: str, follow: bool, db_path: Optional[str]) -> None:
         sys.exit(1)
 
     if follow:
-        import subprocess as _sp
         try:
-            _sp.run(['tail', '-f', str(log_path)])
+            subprocess.run(['tail', '-f', str(log_path)])
         except KeyboardInterrupt:
             pass
     else:
@@ -1732,10 +1724,8 @@ def pipeline_wait(run_id: str, timeout: int, interval: int, db_path: Optional[st
       orch wait a3f8c2d1
       orch wait a3f8c2d1 --timeout 120
     """
-    from .db import Database as _Database
-
     effective_db_path = db_path or _get_persistent_db_path()
-    db = _Database(Path(effective_db_path))
+    db = Database(Path(effective_db_path))
 
     terminal_states = {'success', 'failed', 'cancelled', 'crashed'}
     deadline = time.time() + timeout

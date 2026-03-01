@@ -892,7 +892,7 @@ class Database:
             row = cursor.fetchone()
         if row is None:
             return None
-        return dict(row)
+        return self._row_to_dict(row)
 
     def list_pipeline_runs(
         self,
@@ -911,7 +911,7 @@ class Database:
             conn = self.get_connection()
             cursor = conn.execute(query, params)
             rows = cursor.fetchall()
-        return [dict(row) for row in rows]
+        return [self._row_to_dict(row) for row in rows]
 
     def close(self) -> None:
         """Close database connections."""
