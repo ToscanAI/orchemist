@@ -1,0 +1,98 @@
+# coding-pipeline-v1-smoke.yaml — Smoke test for coding-pipeline-v1.yaml
+#
+# Purpose:
+#   Validates that the coding-pipeline-v1 template produces structurally
+#   correct output across all 5 phases: spec → implement → review → fix → test.
+#
+# Scoring:
+#   Non-gate weights: keyword(40) + llm_judge(60) = 100
+#   pass_threshold: 0.70
+#   Expected dry-run score: (1.0×40 + 0.8×60) / 100 = 0.88 → PASS
+
+id: coding-pipeline-v1-smoke
+version: "1.0.0"
+name: "Coding Pipeline v1 Smoke Test"
+description: >
+  Smoke test for the coding-pipeline-v1 template. Validates the 5-phase
+  coding loop: spec interpretation → implementation → Opus code review →
+  fix → test. Checks for structural output, review verdicts, and test results.
+tags:
+  - smoke
+  - coding-pipeline
+  - v1
+
+pipeline: templates/coding-pipeline-v1.yaml
+
+input:
+  issue_number: 999
+  issue_title: "Test: Add email validation utility"
+  issue_description: "Add a Python utility function that validates email addresses using regex."
+  repo_path: "/tmp/test-repo"
+  branch_name: "test/email-validation"
+  acceptance_criteria: "Function validates emails correctly. Unit tests pass."
+  context: "Simple utility function. No external dependencies."
+
+acceptance:
+  # Gate: pipeline must produce non-trivial output
+  - id: output_not_empty
+    type: assertion
+    check: "len(str(output)) > 10"
+    weight: 0
+    description: >
+      Hard gate: pipeline must produce non-trivial output.
+
+  # Keyword check for structural content
+  - id: structural_keywords
+    type: keyword
+    keywords:
+      # Live mode keywords
+      - "spec"
+      - "implement"
+      - "review"
+      - "APPROVE"
+      - "test"
+      - "fix"
+      # Dry-run mode keywords
+      - "mock"
+      - "execution"
+      - "content"
+    match_mode: "any"
+    threshold: 0.5
+    weight: 40
+    description: >
+      Structural check: output contains recognisable content from a coding
+      pipeline run. Live: spec analysis, implementation, review verdict
+      (APPROVE/REVISE), fix pass, test results. Dry-run: mock executor output.
+
+  # LLM judge for quality
+  - id: output_quality
+    type: llm_judge
+    judge_model: claude-haiku-4-5-20241022
+    rubric: |
+      You are evaluating the output of a 5-phase coding pipeline:
+      1. Spec interpretation — analyzes the issue and produces a technical spec
+      2. Implementation — writes code based on the spec
+      3. Code review — Opus reviews with APPROVE/REVISE/ABORT verdict
+      4. Fix — addresses review feedback
+      5. Test — runs tests and reports results
+
+      Scoring criteria (equal weight):
+      1. Spec completeness — output references requirements, files to change, approach
+      2. Code presence — actual code (functions, imports, classes), not just prose
+      3. Review verdict — APPROVE, REVISE, or ABORT with reasoning
+      4. Test execution — test results, pass/fail counts, or test code
+
+      Score 0.0 (none met) to 1.0 (all four met).
+
+      Respond ONLY:
+      Score: <0.0-1.0>
+      Reasoning: <one sentence>
+    threshold: 0.60
+    weight: 60
+    description: >
+      LLM judge: checks for spec analysis, code output, review verdict, test results.
+
+scoring:
+  method: weighted_average
+  pass_threshold: 0.70
+  gate_mode: all_or_nothing
