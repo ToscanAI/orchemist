@@ -206,6 +206,13 @@ class PipelineTemplate:
     max_iterations: int = 10
     """Default maximum iterations for state-machine loop phases (must be > 0)."""
 
+    # --- Post-pipeline auto-scoring (Issue #172) ---
+    scenario: Optional[str] = None
+    """Path to a scenario YAML file for post-pipeline auto-scoring.
+    Relative paths are resolved against the template file's parent directory.
+    When set, the CLI will automatically run scoring after pipeline completion
+    unless --skip-scoring is passed."""
+
     def __post_init__(self) -> None:
         if self.phases is None:
             self.phases = []
@@ -240,6 +247,9 @@ class PipelineTemplate:
             self.max_iterations = 10
         # max_iterations on pipeline must be > 0; clamp to at least 1
         self.max_iterations = max(1, int(self.max_iterations))
+        # Normalise scenario field: empty string → None
+        if not self.scenario:
+            self.scenario = None
 
 
 class TemplateNotFoundError(FileNotFoundError):
@@ -600,6 +610,7 @@ class TemplateEngine:
             fail_fast=fail_fast,
             default_transitions=default_transitions,
             max_iterations=pipeline_max_iterations,
+            scenario=data.get("scenario") or None,  # Issue #172: post-pipeline auto-scoring
         )
 
     def get_execution_order(self, template: PipelineTemplate) -> List[List[str]]:
