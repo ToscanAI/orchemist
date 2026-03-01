@@ -1491,18 +1491,48 @@ def run_template(
     # --- Auto-scoring (Issue #172) ------------------------------------
     if not skip_scoring and template.scenario:
         from .scoring import run_scoring as _run_scoring_auto
+        from .git_integration import GitContext as _GitContext
         # Forward the pipeline executor so that LLM judge criteria are routed
         # through the same authentication path as the pipeline itself (e.g. the
         # OpenClaw subscription token in openclaw mode).  Issue #272.
         _scoring_executor = runner.executors[0] if runner.executors else None
-        _run_scoring_auto(
-            template,
-            output_dir=output_dir,
-            console=console,
-            template_file=template_file,
-            exit_on_failure=True,
-            executor=_scoring_executor,
-        )
+        _scoring_passed: Optional[bool] = None
+        _scoring_score_val: Optional[float] = None
+        try:
+            # Use exit_on_failure=False so we can persist results to the gate
+            # file *before* exiting.  We replicate the exit logic below after
+            # updating the gate.
+            _scoring_passed, _scoring_score_val = _run_scoring_auto(
+                template,
+                output_dir=output_dir,
+                console=console,
+                template_file=template_file,
+                exit_on_failure=False,
+                executor=_scoring_executor,
+            )
+        except SystemExit as _se:
+            # Guard: if scoring unexpectedly exits, treat as error
+            _scoring_passed = False
+            _scoring_score_val = None
+
+        # Persist scoring results to the gate file (Issue #289)
+        if _gate_result is not None and _gate_result.status == "awaiting_approval":
+            if _scoring_passed is None:
+                _gate_scoring_status = "error"
+            elif _scoring_passed:
+                _gate_scoring_status = "passed"
+            else:
+                _gate_scoring_status = "failed"
+            try:
+                _GitContext.update_gate_scoring(
+                    run_id, _gate_scoring_status, _scoring_score_val
+                )
+            except Exception as _ge:
+                logger.warning(f"Could not update gate scoring: {_ge}")
+
+        # Now enforce exit on scoring failure (replaces exit_on_failure=True)
+        if _scoring_passed is False:
+            sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -1847,7 +1877,11 @@ def gate_list(show_all: bool) -> None:
 @gate_group.command("approve")
 @click.argument("run_id")
 @click.option("--message", "-m", default=None, help="Optional approval message.")
-def gate_approve(run_id: str, message: Optional[str]) -> None:
+@click.option(
+    "--force", "-f", is_flag=True, default=False,
+    help="Override score gate enforcement and approve even when scoring failed. Use with caution.",
+)
+def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:
     """Approve a merge gate (run ID from ``orch gate list``)."""
     from .git_integration import GitContext, GitError
 
@@ -1865,6 +1899,33 @@ def gate_approve(run_id: str, message: Optional[str]) -> None:
         if current in ("approved", "rejected"):
             sys.exit(0)
         sys.exit(1)
+
+    # --- Score gate enforcement (Issue #289) --------------------------
+    _gate_scoring = gate.get("scoring_status")
+    _gate_score = gate.get("scoring_score")
+    if _gate_scoring == "failed" and not force:
+        _score_pct = f"{_gate_score * 100:.1f}" if _gate_score is not None else "n/a"
+        click.echo(f"✗ Score gate FAILED — approval blocked.", err=True)
+        click.echo(f"  Score: {_score_pct} / 100  (threshold: see scenario config)", err=True)
+        click.echo(
+            f"  Pipeline scoring failed. Fix the issues and re-run, "
+            f"or use --force to override.",
+            err=True,
+        )
+        sys.exit(1)
+    elif _gate_scoring == "failed" and force:
+        click.echo(
+            f"⚠ Score gate FAILED — approving anyway because --force was specified."
+        )
+    elif _gate_scoring == "error":
+        click.echo(
+            f"⚠ Scoring encountered an error for this run — proceeding without score gate enforcement."
+        )
+    elif _gate_scoring is None:
+        click.echo(
+            f"⚠ No scoring data for this run — proceeding without score gate."
+        )
+    # scoring_status == "passed" → allow silently (happy path)
 
     try:
         updated = GitContext.update_gate_status(
@@ -1952,6 +2013,23 @@ def gate_info(run_id: str) -> None:
     click.echo(f"├─ Branch:   {gate.get('branch', '?')}")
     click.echo(f"├─ Base:     {gate.get('base_branch', '?')}")
     click.echo(f"├─ Changes:  {gate.get('diff_stats', 'n/a')}")
+
+    # Scoring info (Issue #289)
+    _scoring_status = gate.get("scoring_status")
+    _scoring_score = gate.get("scoring_score")
+    if _scoring_status is not None:
+        _score_emoji = {"passed": "✅", "failed": "❌", "error": "⚠️"}.get(
+            _scoring_status, "❓"
+        )
+        _score_pct = (
+            f"  ({_scoring_score * 100:.1f}/100)"
+            if _scoring_score is not None
+            else ""
+        )
+        click.echo(f"├─ Scoring:  {_score_emoji} {_scoring_status}{_score_pct}")
+    else:
+        click.echo(f"├─ Scoring:  ⏳ pending (not yet scored)")
+
     click.echo(f"├─ Created:  {(gate.get('created_at') or '?')[:19]}")
     if gate.get("updated_at"):
         click.echo(f"├─ Updated:  {gate['updated_at'][:19]}")

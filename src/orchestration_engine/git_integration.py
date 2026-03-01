@@ -458,6 +458,10 @@ class GitContext:
             "approve_command": f"orch gate approve {self.run_id}",
             "reject_command": f"orch gate reject {self.run_id}",
             "create_pr": self.config.create_pr,
+            # Scoring fields — populated later by update_gate_scoring() once
+            # auto-scoring completes.  None means scoring has not yet run.
+            "scoring_status": None,
+            "scoring_score": None,
         }
 
         gate_json = json.dumps(gate_data, indent=2)
@@ -560,6 +564,129 @@ class GitContext:
                 except OSError:
                     pass
 
+        return data
+
+    @classmethod
+    def update_gate_scoring(
+        cls,
+        run_id: str,
+        scoring_status: str,
+        scoring_score: Optional[float],
+    ) -> Optional[Dict[str, Any]]:
+        """Persist scoring results into the gate file after auto-scoring completes.
+
+        Updates both the central registry (``~/.orch/gates/<run_id>.json``) and
+        the output-directory copy (``<output_dir>/_gate.json``) so that
+        ``orch gate info`` and ``orch gate approve`` can enforce the score gate.
+
+        Args:
+            run_id:         The pipeline run identifier.
+            scoring_status: One of ``"passed"``, ``"failed"``, or ``"error"``.
+            scoring_score:  The weighted score (0.0–1.0) or ``None`` on error.
+
+        Returns:
+            Updated gate data dict, or ``None`` if the gate was not found.
+        """
+        gate_file = cls.GATES_DIR / f"{run_id}.json"
+        if not gate_file.exists():
+            logger.warning(
+                f"Git: update_gate_scoring — no gate file for run_id '{run_id}'"
+            )
+            return None
+        try:
+            data = json.loads(gate_file.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise GitError(f"Could not read gate file: {exc}") from exc
+
+        data["scoring_status"] = scoring_status
+        data["scoring_score"] = scoring_score
+        data["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
+
+        gate_json = json.dumps(data, indent=2)
+        try:
+            gate_file.write_text(gate_json)
+        except OSError as exc:
+            raise GitError(f"Could not write gate file: {exc}") from exc
+
+        # Also update output_dir copy if present
+        output_dir = data.get("output_dir")
+        if output_dir:
+            out_gate = Path(output_dir) / "_gate.json"
+            if out_gate.exists():
+                try:
+                    out_gate.write_text(gate_json)
+                except OSError:
+                    pass
+
+        logger.info(
+            f"Git: gate '{run_id}' scoring updated — "
+            f"status={scoring_status}, score={scoring_score}"
+        )
+        return data
+
+    @classmethod
+    def update_gate_status_scoring(
+        cls,
+        run_id: str,
+        status: str,
+        scoring_status: str,
+        scoring_score: Optional[float],
+        message: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Combined update: set run status and scoring results in one atomic write.
+
+        Intended for use by the daemon async path where both the pipeline
+        status and scoring outcome need to be persisted together after an
+        async run completes.
+
+        Args:
+            run_id:         The pipeline run identifier.
+            status:         New gate status (e.g. ``"approved"``, ``"rejected"``).
+            scoring_status: One of ``"passed"``, ``"failed"``, or ``"error"``.
+            scoring_score:  The weighted score (0.0–1.0) or ``None`` on error.
+            message:        Optional human-readable note.
+
+        Returns:
+            Updated gate data dict, or ``None`` if the gate was not found.
+        """
+        gate_file = cls.GATES_DIR / f"{run_id}.json"
+        if not gate_file.exists():
+            logger.warning(
+                f"Git: update_gate_status_scoring — no gate file for run_id '{run_id}'"
+            )
+            return None
+        try:
+            data = json.loads(gate_file.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise GitError(f"Could not read gate file: {exc}") from exc
+
+        data["status"] = status
+        data["scoring_status"] = scoring_status
+        data["scoring_score"] = scoring_score
+        data["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
+        if message:
+            data["message"] = message
+
+        gate_json = json.dumps(data, indent=2)
+        try:
+            gate_file.write_text(gate_json)
+        except OSError as exc:
+            raise GitError(f"Could not write gate file: {exc}") from exc
+
+        # Also update output_dir copy if present
+        output_dir = data.get("output_dir")
+        if output_dir:
+            out_gate = Path(output_dir) / "_gate.json"
+            if out_gate.exists():
+                try:
+                    out_gate.write_text(gate_json)
+                except OSError:
+                    pass
+
+        logger.info(
+            f"Git: gate '{run_id}' status+scoring updated — "
+            f"status={status}, scoring_status={scoring_status}, score={scoring_score}"
+        )
         return data
 
     # ------------------------------------------------------------------

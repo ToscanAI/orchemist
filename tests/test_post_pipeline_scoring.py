@@ -355,6 +355,8 @@ class TestRunScoringUnit:
 
         # run_scoring now returns (passed, weighted_score) tuple (Issue #288)
         assert result[0] is True
+        assert isinstance(result[1], float)
+        assert result[1] == 0.9  # weighted_score from _make_score_result(passed=True)
 
     def test_returns_false_when_scenario_fails(self, tmp_path, completed_output_dir):
         """run_scoring returns False when the scenario does not pass."""
@@ -391,6 +393,8 @@ class TestRunScoringUnit:
 
         # run_scoring now returns (passed, weighted_score) tuple (Issue #288)
         assert result[0] is False
+        assert isinstance(result[1], float)
+        assert result[1] == 0.4  # weighted_score from _make_score_result(passed=False)
 
 
 # ---------------------------------------------------------------------------

@@ -78,7 +78,7 @@ def run_scoring(
     template_file: Optional[Path] = None,
     exit_on_failure: bool = True,
     executor: Optional[Any] = None,
-) -> tuple:
+) -> tuple[bool, float]:
     """Run post-pipeline auto-scoring for a completed pipeline run.
 
     Resolves the scenario file from ``template.scenario``, loads the
