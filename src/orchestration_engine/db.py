@@ -181,6 +181,8 @@ class Database:
                 error_message TEXT,
                 gateway_url TEXT,
                 skip_scoring INTEGER DEFAULT 0,
+                scoring_status TEXT DEFAULT NULL,
+                scoring_score REAL DEFAULT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -391,8 +393,7 @@ class Database:
         
         # Define migrations
         migrations = [
-            # Add migrations here as needed
-            # ("001_add_progress_tracking", self._migration_001_add_progress_tracking),
+            ("001_add_scoring_status", self._migration_001_add_scoring_status),
         ]
         
         # Apply pending migrations
@@ -401,6 +402,26 @@ class Database:
                 migration_func(conn)
                 conn.execute("INSERT INTO migrations (name) VALUES (?)", (name,))
     
+    def _migration_001_add_scoring_status(self, conn: sqlite3.Connection) -> None:
+        """Add scoring_status and scoring_score columns to pipeline_runs (Issue #287).
+
+        Idempotent: silently ignores OperationalError if the columns already
+        exist (e.g. fresh databases created with the updated DDL).
+        """
+        try:
+            conn.execute(
+                "ALTER TABLE pipeline_runs ADD COLUMN scoring_status TEXT DEFAULT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+        try:
+            conn.execute(
+                "ALTER TABLE pipeline_runs ADD COLUMN scoring_score REAL DEFAULT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     # Task Operations
     
     def insert_task(self, task_data: Dict[str, Any]) -> str:
@@ -863,7 +884,7 @@ class Database:
         allowed = {
             'status', 'current_phase', 'completed_phases', 'phase_outputs',
             'pid', 'started_at', 'completed_at', 'error_message', 'gateway_url',
-            'skip_scoring',
+            'skip_scoring', 'scoring_status', 'scoring_score',
         }
         updates = []
         values = []

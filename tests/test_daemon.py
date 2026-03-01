@@ -981,3 +981,256 @@ phases:
         run = db2.get_pipeline_run(run_id)
         assert run is not None
         assert run["status"] == "success", f"Expected success, got {run['status']}"
+
+
+# ---------------------------------------------------------------------------
+# 13. Daemon scoring status tracking (Issue #287)
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonScoringStatusTracking:
+    """Verify that run_daemon() writes scoring_status to the DB after auto-scoring.
+
+    All tests use mocked _run_scoring to avoid real LLM calls.
+    The template includes a scenario: field so the daemon enters the scoring block.
+    """
+
+    def _write_template_with_scenario(self, tmp_path: Path, scenario_filename: str) -> Path:
+        """Write a minimal dry-run template that references a scenario file."""
+        scenario_path = tmp_path / scenario_filename
+        scenario_path.write_text(
+            "id: dummy-scenario\n"
+            "acceptance:\n"
+            "  - id: c1\n"
+            "    type: assertion\n"
+            "    check: 'True'\n"
+            "    weight: 1\n"
+            "scoring:\n"
+            "  pass_threshold: 0.5\n"
+        )
+
+        template_yaml = tmp_path / "scored-pipeline.yaml"
+        template_yaml.write_text(
+            f"id: scored-pipe\n"
+            f"name: Scored Pipe\n"
+            f"version: '1.0.0'\n"
+            f"description: Test\n"
+            f"scenario: {scenario_filename}\n"
+            f"phases:\n"
+            f"  - id: step\n"
+            f"    name: Step\n"
+            f"    task_type: content\n"
+            f"    model_tier: haiku\n"
+            f"    thinking_level: 'off'\n"
+            f"    prompt_template: |\n"
+            f"      Write about: {{input[topic]}}\n"
+        )
+        return template_yaml
+
+    def _setup_db_and_run(self, tmp_path: Path, template_yaml: Path, run_id: str):
+        """Create DB + pipeline_run record. Return (db, db_path, out_dir)."""
+        from orchestration_engine.db import Database
+
+        out_dir = tmp_path / run_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        db_path = tmp_path / f"{run_id}.db"
+        db = Database(db_path)
+        db.insert_pipeline_run({
+            "run_id": run_id,
+            "template_path": str(template_yaml),
+            "template_id": "scored-pipe",
+            "input_json": json.dumps({"topic": "AI"}),
+            "mode": "dry-run",
+            "output_dir": str(out_dir),
+        })
+        return db, db_path, out_dir
+
+    def test_scoring_passed_sets_scoring_status_passed(self, tmp_path):
+        """When _run_scoring() returns True, scoring_status='passed' is written to DB."""
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.db import Database
+
+        template_yaml = self._write_template_with_scenario(tmp_path, "s.yaml")
+        db, db_path, _ = self._setup_db_and_run(tmp_path, template_yaml, "score-pass")
+
+        # _run_scoring is imported inside the function body, so we patch the
+        # source module's symbol (orchestration_engine.scoring.run_scoring).
+        with patch("orchestration_engine.scoring.run_scoring", return_value=True):
+            run_daemon("score-pass", str(db_path))
+
+        run = Database(db_path).get_pipeline_run("score-pass")
+        assert run is not None
+        assert run["status"] == "success"
+        assert run["scoring_status"] == "passed", (
+            f"Expected 'passed', got {run['scoring_status']!r}"
+        )
+
+    def test_scoring_failed_sets_scoring_status_failed(self, tmp_path):
+        """When _run_scoring() returns False, scoring_status='failed' is written to DB."""
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.db import Database
+
+        template_yaml = self._write_template_with_scenario(tmp_path, "s.yaml")
+        db, db_path, _ = self._setup_db_and_run(tmp_path, template_yaml, "score-fail")
+
+        with patch("orchestration_engine.scoring.run_scoring", return_value=False):
+            run_daemon("score-fail", str(db_path))
+
+        run = Database(db_path).get_pipeline_run("score-fail")
+        assert run is not None
+        assert run["status"] == "success"
+        assert run["scoring_status"] == "failed", (
+            f"Expected 'failed', got {run['scoring_status']!r}"
+        )
+
+    def test_scoring_exception_sets_scoring_status_error(self, tmp_path):
+        """When _run_scoring() raises, scoring_status='error' is written to DB."""
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.db import Database
+
+        template_yaml = self._write_template_with_scenario(tmp_path, "s.yaml")
+        db, db_path, _ = self._setup_db_and_run(tmp_path, template_yaml, "score-err")
+
+        with patch(
+            "orchestration_engine.scoring.run_scoring",
+            side_effect=RuntimeError("judge crashed"),
+        ):
+            run_daemon("score-err", str(db_path))
+
+        run = Database(db_path).get_pipeline_run("score-err")
+        assert run is not None
+        assert run["status"] == "success"  # pipeline itself succeeded
+        assert run["scoring_status"] == "error", (
+            f"Expected 'error', got {run['scoring_status']!r}"
+        )
+
+    def test_no_scenario_leaves_scoring_status_null(self, tmp_path):
+        """Templates without scenario: should leave scoring_status as None in DB."""
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.db import Database
+
+        template_yaml = tmp_path / "no-scenario.yaml"
+        template_yaml.write_text(
+            "id: no-scenario-pipe\n"
+            "name: No Scenario Pipe\n"
+            "version: '1.0.0'\n"
+            "description: Test\n"
+            "phases:\n"
+            "  - id: step\n"
+            "    name: Step\n"
+            "    task_type: content\n"
+            "    model_tier: haiku\n"
+            "    thinking_level: 'off'\n"
+            "    prompt_template: |\n"
+            "      Write about: {input[topic]}\n"
+        )
+
+        out_dir = tmp_path / "no-sc-run"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        db_path = tmp_path / "no-sc.db"
+        db = Database(db_path)
+        run_id = "no-sc-run"
+        db.insert_pipeline_run({
+            "run_id": run_id,
+            "template_path": str(template_yaml),
+            "template_id": "no-scenario-pipe",
+            "input_json": json.dumps({"topic": "AI"}),
+            "mode": "dry-run",
+            "output_dir": str(out_dir),
+        })
+
+        run_daemon(run_id, str(db_path))
+
+        run = Database(db_path).get_pipeline_run(run_id)
+        assert run is not None
+        assert run["status"] == "success"
+        assert run["scoring_status"] is None, (
+            f"Expected None (no scenario), got {run['scoring_status']!r}"
+        )
+
+    def test_skip_scoring_leaves_scoring_status_null(self, tmp_path):
+        """When skip_scoring=1, the scoring block is skipped and scoring_status stays None."""
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.db import Database
+
+        template_yaml = self._write_template_with_scenario(tmp_path, "s.yaml")
+
+        out_dir = tmp_path / "skip-sc-run"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        db_path = tmp_path / "skip-sc.db"
+        db = Database(db_path)
+        run_id = "skip-sc-run"
+        db.insert_pipeline_run({
+            "run_id": run_id,
+            "template_path": str(template_yaml),
+            "template_id": "scored-pipe",
+            "input_json": json.dumps({"topic": "AI"}),
+            "mode": "dry-run",
+            "output_dir": str(out_dir),
+            "skip_scoring": 1,
+        })
+
+        run_daemon(run_id, str(db_path))
+
+        run = Database(db_path).get_pipeline_run(run_id)
+        assert run is not None
+        assert run["status"] == "success"
+        assert run["scoring_status"] is None, (
+            f"Expected None (skip_scoring=1), got {run['scoring_status']!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 14. DB — scoring_status / scoring_score fields (Issue #287)
+# ---------------------------------------------------------------------------
+
+
+class TestScoringStatusDBFields:
+    """Verify update_pipeline_run() accepts scoring_status and scoring_score."""
+
+    def test_update_scoring_status_passed(self, in_memory_db, sample_run):
+        in_memory_db.insert_pipeline_run(sample_run)
+        result = in_memory_db.update_pipeline_run(
+            sample_run["run_id"], scoring_status="passed"
+        )
+        assert result is True
+        run = in_memory_db.get_pipeline_run(sample_run["run_id"])
+        assert run["scoring_status"] == "passed"
+
+    def test_update_scoring_status_failed(self, in_memory_db, sample_run):
+        in_memory_db.insert_pipeline_run(sample_run)
+        in_memory_db.update_pipeline_run(
+            sample_run["run_id"], scoring_status="failed"
+        )
+        run = in_memory_db.get_pipeline_run(sample_run["run_id"])
+        assert run["scoring_status"] == "failed"
+
+    def test_update_scoring_status_error(self, in_memory_db, sample_run):
+        in_memory_db.insert_pipeline_run(sample_run)
+        in_memory_db.update_pipeline_run(
+            sample_run["run_id"], scoring_status="error"
+        )
+        run = in_memory_db.get_pipeline_run(sample_run["run_id"])
+        assert run["scoring_status"] == "error"
+
+    def test_update_scoring_score(self, in_memory_db, sample_run):
+        in_memory_db.insert_pipeline_run(sample_run)
+        in_memory_db.update_pipeline_run(
+            sample_run["run_id"], scoring_status="passed", scoring_score=0.875
+        )
+        run = in_memory_db.get_pipeline_run(sample_run["run_id"])
+        assert run["scoring_status"] == "passed"
+        assert abs(run["scoring_score"] - 0.875) < 1e-6
+
+    def test_new_run_has_null_scoring_status(self, in_memory_db, sample_run):
+        """Fresh pipeline_run records should have scoring_status=None."""
+        in_memory_db.insert_pipeline_run(sample_run)
+        run = in_memory_db.get_pipeline_run(sample_run["run_id"])
+        assert run["scoring_status"] is None
+
+    def test_new_run_has_null_scoring_score(self, in_memory_db, sample_run):
+        """Fresh pipeline_run records should have scoring_score=None."""
+        in_memory_db.insert_pipeline_run(sample_run)
+        run = in_memory_db.get_pipeline_run(sample_run["run_id"])
+        assert run["scoring_score"] is None

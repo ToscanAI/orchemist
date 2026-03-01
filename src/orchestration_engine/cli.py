@@ -356,9 +356,12 @@ def _print_run_summary_line(run: Dict[str, Any]) -> None:
     }.get(status, '❓')
 
     current_phase = run.get('current_phase') or '-'
+    # Append scoring suffix when scoring_status is set (Issue #287)
+    _scoring_status = run.get('scoring_status')
+    _scoring_suffix = f"  [score={_scoring_status}]" if _scoring_status else ""
     click.echo(
         f"{run_id}  {status_icon} {status:<10}  {template_id:<22}  "
-        f"phase={current_phase:<20}  {created}  [{mode}]"
+        f"phase={current_phase:<20}  {created}  [{mode}]{_scoring_suffix}"
     )
 
 
@@ -427,6 +430,13 @@ def _print_run_detail(run: Dict[str, Any]) -> None:
     click.echo(f"├─ Output:     {run.get('output_dir', '?')}")
     if run.get('error_message'):
         click.echo(f"├─ Error:      {run['error_message']}")
+    # Scoring outcome (Issue #287)
+    _scoring_status = run.get('scoring_status')
+    _scoring_score = run.get('scoring_score')
+    if _scoring_status is not None:
+        _score_icon = {'passed': '✅', 'failed': '❌', 'error': '⚠️'}.get(_scoring_status, '❓')
+        _score_suffix = f"  (score={_scoring_score:.3f})" if _scoring_score is not None else ""
+        click.echo(f"├─ Scoring:    {_score_icon} {_scoring_status}{_score_suffix}")
     click.echo(f"├─ Created:    {(run.get('created_at') or '')[:19]}")
     click.echo(f"└─ Logs:       orch logs {run_id}")
 

@@ -588,3 +588,83 @@ class TestAutoScoringInRunTemplate:
 
         assert result.exit_code == 0, result.output
         mock_cls.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# update_pipeline_run — scoring_status / scoring_score fields (Issue #287)
+# ---------------------------------------------------------------------------
+
+
+class TestUpdatePipelineRunScoringFields:
+    """Verify that update_pipeline_run() accepts and persists scoring_status
+    and scoring_score, which are used by the daemon to record scoring outcome.
+    """
+
+    @pytest.fixture
+    def db(self, tmp_path):
+        from orchestration_engine.db import Database
+        return Database(tmp_path / "scoring-fields.db")
+
+    @pytest.fixture
+    def run_id(self, db):
+        rid = "scoring-fields-run"
+        db.insert_pipeline_run({
+            "run_id": rid,
+            "template_path": "/fake/t.yaml",
+            "template_id": "test",
+            "input_json": "{}",
+            "mode": "dry-run",
+            "output_dir": "/tmp/out",
+        })
+        return rid
+
+    def test_scoring_status_accepted_by_update(self, db, run_id):
+        """update_pipeline_run() should accept 'scoring_status' without error."""
+        result = db.update_pipeline_run(run_id, scoring_status="passed")
+        assert result is True
+
+    def test_scoring_score_accepted_by_update(self, db, run_id):
+        """update_pipeline_run() should accept 'scoring_score' without error."""
+        result = db.update_pipeline_run(run_id, scoring_score=0.9)
+        assert result is True
+
+    def test_scoring_status_persisted(self, db, run_id):
+        """scoring_status='passed' should be readable back from the DB."""
+        db.update_pipeline_run(run_id, scoring_status="passed")
+        run = db.get_pipeline_run(run_id)
+        assert run["scoring_status"] == "passed"
+
+    def test_scoring_status_failed_persisted(self, db, run_id):
+        """scoring_status='failed' should be readable back from the DB."""
+        db.update_pipeline_run(run_id, scoring_status="failed")
+        run = db.get_pipeline_run(run_id)
+        assert run["scoring_status"] == "failed"
+
+    def test_scoring_status_error_persisted(self, db, run_id):
+        """scoring_status='error' should be readable back from the DB."""
+        db.update_pipeline_run(run_id, scoring_status="error")
+        run = db.get_pipeline_run(run_id)
+        assert run["scoring_status"] == "error"
+
+    def test_scoring_score_persisted(self, db, run_id):
+        """scoring_score should round-trip through the DB accurately."""
+        db.update_pipeline_run(run_id, scoring_status="passed", scoring_score=0.75)
+        run = db.get_pipeline_run(run_id)
+        assert abs(run["scoring_score"] - 0.75) < 1e-6
+
+    def test_default_scoring_status_is_null(self, db, run_id):
+        """A freshly inserted run should have scoring_status=None."""
+        run = db.get_pipeline_run(run_id)
+        assert run["scoring_status"] is None
+
+    def test_default_scoring_score_is_null(self, db, run_id):
+        """A freshly inserted run should have scoring_score=None."""
+        run = db.get_pipeline_run(run_id)
+        assert run["scoring_score"] is None
+
+    def test_unknown_field_is_silently_ignored(self, db, run_id):
+        """Unknown kwargs to update_pipeline_run() should be silently ignored."""
+        # Should not raise — 'bogus_field' is not in the allowed set
+        result = db.update_pipeline_run(run_id, bogus_field="ignored")
+        # Returns False because no valid field was updated
+        assert result is False
