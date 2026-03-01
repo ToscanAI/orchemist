@@ -345,6 +345,25 @@ def create_app():  # noqa: C901
         # Mount any other top-level static directories from the export
         app.mount("/static", StaticFiles(directory=str(_FRONTEND_OUT)), name="frontend-static")
 
+    # ------------------------------------------------------------------ #
+    # SPA fallback — serve index.html for all unmatched non-API routes    #
+    # ------------------------------------------------------------------ #
+    # This MUST be registered after all API routes and static mounts.
+    # It enables client-side routing: /runs/abc, /templates/my-template
+    # all serve the same index.html and let Next.js handle routing.
+    @app.get("/{full_path:path}", response_class=HTMLResponse)
+    async def spa_fallback(full_path: str) -> HTMLResponse:
+        """Serve index.html for any non-API, non-static path (SPA routing)."""
+        # Don't catch API or static asset requests
+        if full_path.startswith("api/") or full_path.startswith("_next/") or full_path.startswith("static/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        next_index = _FRONTEND_OUT / "index.html"
+        if next_index.exists():
+            html = next_index.read_text(encoding="utf-8")
+        else:
+            html = _HTML_PATH.read_text(encoding="utf-8")
+        return HTMLResponse(content=html)
+
     return app
 
 
