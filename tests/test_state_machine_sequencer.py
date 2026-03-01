@@ -1,4 +1,4 @@
-"""Tests for StateMachineSequencer — Issue #234.
+"""Tests for StateMachineSequencer — Issue #234 + Issue #235.
 
 Covers:
 - AC-1:  Single phase with no transitions executes once and returns result
@@ -20,6 +20,16 @@ Covers:
          — CLI auto-detection logic test (indirect via has_transitions check)
 - AC-17: Three-phase chain: A→[success]→B→[success]→C (no C transition), all run
 - AC-18: skipped outcome routes via 'skipped' transition key
+
+Loop / iteration support (Issue #235):
+- AC-19: Phase with max_iterations > 0 can be revisited up to that many times
+- AC-20: Exceeding max_iterations aborts with abort_reason=MAX_ITERATIONS_EXCEEDED
+- AC-21: iteration_history accumulates prior results on each loop re-entry
+- AC-22: iteration_counts reflects total executions per phase
+- AC-23: Callbacks fire once per iteration (not once per unique phase)
+- AC-24: result["metadata"]["iteration"] is annotated on each phase result
+- AC-25: execute() result includes iteration_history and iteration_counts keys
+- AC-26: Non-loop phase (max_iterations==0) still triggers legacy cycle guard
 """
 
 from __future__ import annotations
@@ -46,14 +56,24 @@ def _make_phase(
     prompt: str = "Do something",
     transitions: Optional[Dict[str, str]] = None,
     depends_on: Optional[List[str]] = None,
+    max_iterations: int = 0,
 ) -> PhaseDefinition:
-    """Build a minimal PhaseDefinition with optional transition config."""
+    """Build a minimal PhaseDefinition with optional transition config.
+
+    Args:
+        phase_id:       Unique phase identifier.
+        prompt:         Prompt template string.
+        transitions:    Outcome → phase_id mapping.
+        depends_on:     List of phase IDs this phase depends on.
+        max_iterations: Maximum loop iterations (0 = legacy cycle guard, >0 = loop phase).
+    """
     return PhaseDefinition(
         id=phase_id,
         name=phase_id,
         prompt_template=prompt,
         transitions=transitions or {},
         depends_on=depends_on or [],
+        max_iterations=max_iterations,
     )
 
 
@@ -866,3 +886,552 @@ class TestCliAutoDetection:
             template.default_transitions
         )
         assert has_transitions is False
+
+
+# ---------------------------------------------------------------------------
+# AC-19 — TestLoopExecution: phase with max_iterations > 0 can loop
+# ---------------------------------------------------------------------------
+
+
+class TestLoopExecution:
+    """Phases with max_iterations > 0 may be revisited up to that many times."""
+
+    def test_self_loop_with_max_iterations_runs_n_times(self) -> None:
+        """A phase that loops back to itself runs exactly max_iterations times."""
+        # 'work' loops to itself on success, 'done' is reached on failure
+        phase_work = _make_phase(
+            "work",
+            max_iterations=3,
+            transitions={"success": "work", "failed": "done"},
+        )
+        phase_done = _make_phase("done")
+        template = _make_template([phase_work, phase_done])
+
+        execution_count = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "work":
+                execution_count[0] += 1
+                # Succeed on first 2 runs (loop back), fail on the 3rd (go to done)
+                if execution_count[0] < 3:
+                    return _success_result(task_spec)
+                return _failure_result(task_spec)
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        assert execution_count[0] == 3
+        assert "work" in result["phase_outputs"]
+        assert "done" in result["phase_outputs"]
+        assert not result.get("aborted")
+
+    def test_two_phase_loop_a_to_b_to_a(self) -> None:
+        """A→B→A loop: both phases run multiple times before chain terminates."""
+        # 'a' loops to 'b' on success; 'b' loops back to 'a' on success.
+        # After 2 visits to 'a', 'a' returns failure → no 'failed' transition → terminal.
+        phase_a = _make_phase(
+            "a",
+            max_iterations=2,
+            transitions={"success": "b"},
+        )
+        phase_b = _make_phase(
+            "b",
+            max_iterations=2,
+            transitions={"success": "a"},
+        )
+        template = _make_template([phase_a, phase_b])
+
+        a_count = [0]
+        b_count = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "a":
+                a_count[0] += 1
+                if a_count[0] < 2:
+                    return _success_result(task_spec)
+                # 2nd visit: fail — no 'failed' transition → terminal
+                return _failure_result(task_spec)
+            b_count[0] += 1
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        assert a_count[0] == 2
+        assert b_count[0] == 1
+        assert result["iteration_counts"]["a"] == 2
+        assert result["iteration_counts"]["b"] == 1
+
+
+# ---------------------------------------------------------------------------
+# AC-20 — TestIterationLimits: max_iterations enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestIterationLimits:
+    """Exceeding max_iterations returns MAX_ITERATIONS_EXCEEDED abort dict."""
+
+    def test_exceeding_max_iterations_returns_abort(self) -> None:
+        """When a loop phase would execute more times than max_iterations, abort."""
+        phase_loop = _make_phase(
+            "loop",
+            max_iterations=2,
+            transitions={"success": "loop"},  # always loops back
+        )
+        template = _make_template([phase_loop])
+
+        seq = _make_sequencer(template, _success_result)
+        result = seq.execute({})
+
+        assert result.get("aborted") is True
+        assert result.get("abort_reason") == "MAX_ITERATIONS_EXCEEDED"
+        assert result.get("exceeded_phase") == "loop"
+
+    def test_abort_includes_iteration_counts_and_history(self) -> None:
+        """The MAX_ITERATIONS_EXCEEDED abort result exposes tracking data."""
+        phase_loop = _make_phase(
+            "loop",
+            max_iterations=2,
+            transitions={"success": "loop"},
+        )
+        template = _make_template([phase_loop])
+
+        seq = _make_sequencer(template, _success_result)
+        result = seq.execute({})
+
+        assert "iteration_counts" in result
+        assert "iteration_history" in result
+        # 'loop' executed max_iterations times before the third attempt aborted
+        assert result["iteration_counts"]["loop"] == 3  # incremented before abort check
+
+    def test_max_iterations_1_allows_exactly_one_visit(self) -> None:
+        """max_iterations=1 on a loop-transitioning phase runs it once then aborts."""
+        phase_loop = _make_phase(
+            "loop",
+            max_iterations=1,
+            transitions={"success": "loop"},
+        )
+        template = _make_template([phase_loop])
+
+        seq = _make_sequencer(template, _success_result)
+        result = seq.execute({})
+
+        assert result.get("aborted") is True
+        assert result.get("abort_reason") == "MAX_ITERATIONS_EXCEEDED"
+        # Exactly 1 successful execution happened
+        assert result["iteration_counts"]["loop"] == 2  # 1 executed + 1 attempted abort
+
+    def test_max_iterations_respected_per_phase_independently(self) -> None:
+        """Different phases may have different max_iterations limits."""
+        phase_a = _make_phase(
+            "a",
+            max_iterations=3,
+            transitions={"success": "b"},
+        )
+        phase_b = _make_phase(
+            "b",
+            max_iterations=1,
+            transitions={"success": "a"},
+        )
+        template = _make_template([phase_a, phase_b])
+
+        a_count = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "a":
+                a_count[0] += 1
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        # b has max_iterations=1; second visit to b triggers abort
+        assert result.get("aborted") is True
+        assert result.get("exceeded_phase") == "b"
+
+    def test_pipeline_completes_normally_within_max_iterations(self) -> None:
+        """A loop that exits before the limit completes without abort."""
+        phase_loop = _make_phase(
+            "loop",
+            max_iterations=5,
+            transitions={"success": "loop", "failed": "done"},
+        )
+        phase_done = _make_phase("done")
+        template = _make_template([phase_loop, phase_done])
+
+        call_count = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "loop":
+                call_count[0] += 1
+                if call_count[0] < 3:
+                    return _success_result(task_spec)
+                return _failure_result(task_spec)  # exits the loop
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        assert not result.get("aborted")
+        assert result.get("abort_reason") is None
+        assert result["iteration_counts"]["loop"] == 3
+
+
+# ---------------------------------------------------------------------------
+# AC-21/AC-22 — TestIterationHistory: history accumulation and counts
+# ---------------------------------------------------------------------------
+
+
+class TestIterationHistory:
+    """iteration_history accumulates prior results; iteration_counts tracks executions."""
+
+    def test_single_phase_no_loop_has_empty_history(self) -> None:
+        """A phase that runs only once has an empty iteration_history."""
+        phase = _make_phase("only")
+        template = _make_template([phase])
+        seq = _make_sequencer(template, _success_result)
+        result = seq.execute({})
+
+        assert "iteration_history" in result
+        # 'only' ran once → no prior results to store
+        assert result["iteration_history"].get("only", []) == []
+
+    def test_loop_phase_history_accumulates_prior_results(self) -> None:
+        """Each re-execution of a loop phase appends the old result to history."""
+        phase_loop = _make_phase(
+            "loop",
+            max_iterations=5,
+            transitions={"success": "loop", "failed": "done"},
+        )
+        phase_done = _make_phase("done")
+        template = _make_template([phase_loop, phase_done])
+
+        run_index = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "loop":
+                run_index[0] += 1
+                if run_index[0] < 3:
+                    return _success_result(task_spec)
+                return _failure_result(task_spec)
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        # loop ran 3 times → 2 prior results in history
+        assert len(result["iteration_history"]["loop"]) == 2
+        # History entries are the results of iterations 1 and 2
+        assert result["iteration_history"]["loop"][0]["metadata"]["iteration"] == 1
+        assert result["iteration_history"]["loop"][1]["metadata"]["iteration"] == 2
+
+    def test_iteration_counts_matches_actual_executions(self) -> None:
+        """iteration_counts reflects the true number of times each phase ran."""
+        phase_a = _make_phase("a", transitions={"success": "b"})
+        phase_b = _make_phase(
+            "b",
+            max_iterations=3,
+            transitions={"success": "b", "failed": "c"},
+        )
+        phase_c = _make_phase("c")
+        template = _make_template([phase_a, phase_b, phase_c])
+
+        b_count = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "b":
+                b_count[0] += 1
+                if b_count[0] < 3:
+                    return _success_result(task_spec)
+                return _failure_result(task_spec)
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        assert result["iteration_counts"]["a"] == 1
+        assert result["iteration_counts"]["b"] == 3
+        assert result["iteration_counts"]["c"] == 1
+
+    def test_phase_outputs_holds_latest_result(self) -> None:
+        """phase_outputs always contains the LATEST result for a loop phase."""
+        phase_loop = _make_phase(
+            "loop",
+            max_iterations=3,
+            transitions={"success": "loop", "failed": "done"},
+        )
+        phase_done = _make_phase("done")
+        template = _make_template([phase_loop, phase_done])
+
+        run_index = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "loop":
+                run_index[0] += 1
+                if run_index[0] < 3:
+                    return _success_result(task_spec)
+                return _failure_result(task_spec)
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        # The latest result (3rd run) should be in phase_outputs
+        latest = result["phase_outputs"]["loop"]
+        assert latest["metadata"]["iteration"] == 3
+        # History holds the first 2 runs
+        assert len(result["iteration_history"]["loop"]) == 2
+
+    def test_iteration_metadata_annotation_present(self) -> None:
+        """Each result has metadata['iteration'] set to the run number."""
+        phase_loop = _make_phase(
+            "loop",
+            max_iterations=3,
+            transitions={"success": "loop", "failed": "done"},
+        )
+        phase_done = _make_phase("done")
+        template = _make_template([phase_loop, phase_done])
+
+        run_index = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "loop":
+                run_index[0] += 1
+                if run_index[0] < 3:
+                    return _success_result(task_spec)
+                return _failure_result(task_spec)
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        # Check history entries
+        for i, hist_entry in enumerate(result["iteration_history"]["loop"], start=1):
+            assert hist_entry["metadata"]["iteration"] == i
+
+        # Check final (latest) result
+        assert result["phase_outputs"]["loop"]["metadata"]["iteration"] == 3
+
+
+# ---------------------------------------------------------------------------
+# AC-23 — TestIterationCallbacks: callbacks fire once per execution iteration
+# ---------------------------------------------------------------------------
+
+
+class TestIterationCallbacks:
+    """on_phase_start and on_phase_complete fire once per execution, not per unique phase."""
+
+    def test_callbacks_fire_for_each_loop_iteration(self) -> None:
+        """A loop phase that runs 3 times triggers 3 start and 3 complete callbacks."""
+        phase_loop = _make_phase(
+            "loop",
+            max_iterations=5,
+            transitions={"success": "loop", "failed": "done"},
+        )
+        phase_done = _make_phase("done")
+        template = _make_template([phase_loop, phase_done])
+
+        start_calls: List[str] = []
+        complete_calls: List[str] = []
+        run_index = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "loop":
+                run_index[0] += 1
+                if run_index[0] < 3:
+                    return _success_result(task_spec)
+                return _failure_result(task_spec)
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(
+            template,
+            execute_fn,
+            on_phase_start=lambda pid, phase, idx: start_calls.append(pid),
+            on_phase_complete=lambda pid, result: complete_calls.append(pid),
+        )
+        seq.execute({})
+
+        # loop ran 3 times, done ran once
+        assert start_calls.count("loop") == 3
+        assert complete_calls.count("loop") == 3
+        assert start_calls.count("done") == 1
+        assert complete_calls.count("done") == 1
+
+    def test_step_index_increments_across_iterations(self) -> None:
+        """The step_index (wave_index arg) passed to on_phase_start is always increasing."""
+        phase_loop = _make_phase(
+            "loop",
+            max_iterations=3,
+            transitions={"success": "loop", "failed": "done"},
+        )
+        phase_done = _make_phase("done")
+        template = _make_template([phase_loop, phase_done])
+
+        step_indices: List[int] = []
+        run_index = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "loop":
+                run_index[0] += 1
+                if run_index[0] < 3:
+                    return _success_result(task_spec)
+                return _failure_result(task_spec)
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(
+            template,
+            execute_fn,
+            on_phase_start=lambda pid, phase, idx: step_indices.append(idx),
+        )
+        seq.execute({})
+
+        # Each iteration increments the step index: 0, 1, 2 for loop; 3 for done
+        assert step_indices == [0, 1, 2, 3]
+
+    def test_instance_iteration_counts_accessible_after_execute(self) -> None:
+        """After execute(), self.iteration_counts and self.iteration_history are set."""
+        phase_loop = _make_phase(
+            "loop",
+            max_iterations=3,
+            transitions={"success": "loop", "failed": "done"},
+        )
+        phase_done = _make_phase("done")
+        template = _make_template([phase_loop, phase_done])
+
+        run_index = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "loop":
+                run_index[0] += 1
+                if run_index[0] < 3:
+                    return _success_result(task_spec)
+                return _failure_result(task_spec)
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        seq.execute({})
+
+        # Instance vars are available for observability after execute()
+        assert seq.iteration_counts["loop"] == 3
+        assert seq.iteration_counts["done"] == 1
+        assert len(seq.iteration_history["loop"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# AC-25 — Result dict always includes iteration_history and iteration_counts
+# ---------------------------------------------------------------------------
+
+
+class TestResultIterationFields:
+    """execute() result always includes iteration_history and iteration_counts."""
+
+    def test_simple_chain_result_includes_iteration_fields(self) -> None:
+        """Even a simple linear chain (no loops) includes the iteration fields."""
+        phase_a = _make_phase("a", transitions={"success": "b"})
+        phase_b = _make_phase("b")
+        template = _make_template([phase_a, phase_b])
+
+        seq = _make_sequencer(template, _success_result)
+        result = seq.execute({})
+
+        assert "iteration_history" in result
+        assert "iteration_counts" in result
+        assert result["iteration_counts"]["a"] == 1
+        assert result["iteration_counts"]["b"] == 1
+        assert result["iteration_history"].get("a", []) == []
+        assert result["iteration_history"].get("b", []) == []
+
+    def test_single_phase_result_includes_iteration_fields(self) -> None:
+        """A single terminal phase still provides the iteration fields."""
+        phase = _make_phase("only")
+        template = _make_template([phase])
+
+        seq = _make_sequencer(template, _success_result)
+        result = seq.execute({})
+
+        assert "iteration_history" in result
+        assert "iteration_counts" in result
+        assert result["iteration_counts"]["only"] == 1
+
+    def test_cycle_guard_result_includes_iteration_fields(self) -> None:
+        """When the legacy cycle guard fires, the result still includes iteration fields."""
+        phase_a = _make_phase("a", transitions={"success": "b"})
+        phase_b = _make_phase("b", transitions={"success": "a"})  # cycle
+        template = _make_template([phase_a, phase_b])
+
+        seq = _make_sequencer(template, _success_result)
+        result = seq.execute({})
+
+        assert "iteration_history" in result
+        assert "iteration_counts" in result
+
+
+# ---------------------------------------------------------------------------
+# AC-26 — Non-loop phase (max_iterations==0) still uses legacy cycle guard
+# ---------------------------------------------------------------------------
+
+
+class TestNonLoopCycleGuard:
+    """max_iterations==0 phases still trigger the legacy cycle guard on revisit."""
+
+    def test_non_loop_phase_not_revisited(self, caplog) -> None:
+        """A phase with max_iterations==0 that would be revisited triggers the guard."""
+        phase_a = _make_phase("a", transitions={"success": "b"})
+        phase_b = _make_phase("b", transitions={"success": "a"})  # cycle, no max_iterations
+        template = _make_template([phase_a, phase_b])
+
+        executed: List[str] = []
+
+        def execute_fn(task_spec, **kwargs):
+            executed.append(task_spec.payload["phase_id"])
+            return _success_result(task_spec)
+
+        with caplog.at_level(logging.WARNING, logger="orchestration_engine.sequencer"):
+            seq = _make_sequencer(template, execute_fn)
+            result = seq.execute({})
+
+        assert executed.count("a") == 1
+        assert executed.count("b") == 1
+        assert any("cycle" in r.message.lower() for r in caplog.records)
+        # Not an abort — just a clean stop
+        assert not result.get("aborted")
+
+    def test_loop_phase_not_constrained_by_cycle_guard(self) -> None:
+        """A phase with max_iterations>0 bypasses the legacy cycle guard."""
+        phase_loop = _make_phase(
+            "loop",
+            max_iterations=3,
+            transitions={"success": "loop", "failed": "done"},
+        )
+        phase_done = _make_phase("done")
+        template = _make_template([phase_loop, phase_done])
+
+        run_index = [0]
+
+        def execute_fn(task_spec, **kwargs):
+            pid = task_spec.payload["phase_id"]
+            if pid == "loop":
+                run_index[0] += 1
+                if run_index[0] < 3:
+                    return _success_result(task_spec)
+                return _failure_result(task_spec)
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        # Loop ran 3 times without triggering the cycle guard
+        assert run_index[0] == 3
+        assert not result.get("aborted")

@@ -1692,28 +1692,47 @@ class _PreviousOutputInlineProxy:
 
 
 class StateMachineSequencer(PhaseSequencer):
-    """Executes a pipeline using state-machine transitions.
+    """Executes a pipeline using state-machine transitions with loop support.
 
     Unlike :class:`PhaseSequencer` (which follows a static topological order),
     ``StateMachineSequencer`` routes execution dynamically: after each phase
     completes its outcome is mapped to the next phase via the phase's
     ``transitions`` dict (merged with the template's ``default_transitions``).
     Execution terminates when a phase has no matching transition entry
-    (terminal state) or all phases have been visited.
+    (terminal state), when a phase exceeds its iteration limit, or when an
+    accidental cycle is detected.
 
-    Linear chains only
-    ------------------
-    This implementation handles **linear transition chains** — a straight
-    sequence of phases where each outcome leads unambiguously to the next
-    phase.  Loop / cycle support (``max_iterations`` enforcement, revisiting
-    phases) is tracked in a separate issue (#234-4b) and is explicitly out
-    of scope here.  A visited-phase guard raises a warning and halts execution
-    if an accidental cycle is detected at runtime.
+    Loop / iteration support (Issue #235)
+    --------------------------------------
+    Phases may be revisited up to ``phase.max_iterations`` times (set
+    ``max_iterations > 0`` on the phase definition to opt into loop
+    behaviour).  This enables patterns like:
+
+    * **Review loops**: ``write_draft → review → revise → review``
+    * **Retry chains**: ``run_tests → fix_code → run_tests``
+    * **Quality gates**: any phase that repeats until an outcome changes
+
+    When a phase has ``max_iterations > 0``, the execution count is tracked
+    and compared against ``effective_max = phase.max_iterations``.  If the
+    phase would exceed its limit, execution is aborted with
+    ``abort_reason = "MAX_ITERATIONS_EXCEEDED"``.
+
+    When a phase has ``max_iterations == 0`` (the default — "not a loop
+    phase"), the legacy one-visit cycle guard applies: revisiting such a
+    phase logs a WARNING and stops execution cleanly.
+
+    Iteration history
+    -----------------
+    Each time a phase is re-executed, its **previous** result is appended to
+    ``self.iteration_history[phase_id]`` before the new result overwrites
+    ``phase_outputs[phase_id]``.  This provides a full per-phase execution
+    history for observability and debugging.  The final ``execute()`` result
+    dict exposes both ``iteration_history`` and ``iteration_counts``.
 
     Entry point
     -----------
     Execution begins with the **first phase** listed in ``template.phases``
-    (index 0).  This is the conventional entry point for a linear chain.
+    (index 0).  This is the conventional entry point for a transition chain.
     Transitions are followed until the chain terminates.
 
     Transition resolution
@@ -1729,7 +1748,19 @@ class StateMachineSequencer(PhaseSequencer):
 
     All parent hooks (``on_phase_start``, ``on_phase_complete``,
     ``on_pipeline_start``, ``on_pipeline_complete``) behave identically to
-    :class:`PhaseSequencer`.
+    :class:`PhaseSequencer`.  Callbacks fire **once per execution** of a
+    phase (not once per unique phase), so a phase that loops three times will
+    trigger ``on_phase_start`` and ``on_phase_complete`` three times.
+
+    Observability
+    -------------
+    The result dict returned by :meth:`execute` includes:
+
+    * ``phase_outputs``:    mapping of phase_id → latest result dict
+    * ``final_output``:     result dict of the last executed phase
+    * ``iteration_history``: mapping of phase_id → list of prior results
+      (empty list for phases that ran only once)
+    * ``iteration_counts``:  mapping of phase_id → total execution count
 
     Examples:
         A template with two phases and a single success transition::
@@ -1742,7 +1773,51 @@ class StateMachineSequencer(PhaseSequencer):
 
         ``fetch`` runs first; on success, ``process`` runs next;
         ``process`` has no transitions so execution stops there.
+
+        A review loop where ``review`` may revisit ``revise`` up to 3 times::
+
+            phases:
+              - id: write_draft
+                transitions:
+                  success: review
+              - id: review
+                max_iterations: 3
+                transitions:
+                  success: publish
+                  failed: revise
+              - id: revise
+                transitions:
+                  success: review   # loops back
+              - id: publish
     """
+
+    # ------------------------------------------------------------------
+    # Initialisation
+    # ------------------------------------------------------------------
+
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialise the sequencer, adding per-execution iteration tracking.
+
+        All arguments are forwarded to :class:`PhaseSequencer.__init__`.
+        Two extra instance attributes are added:
+
+        ``iteration_history``
+            ``Dict[str, List[dict]]`` — for each phase that executed more than
+            once, holds the list of *prior* result dicts (oldest first).  The
+            *current* result is always in ``phase_outputs``; history stores
+            everything before the most recent run.  Reset at the start of each
+            :meth:`execute` call.
+
+        ``iteration_counts``
+            ``Dict[str, int]`` — total execution count per phase (including the
+            current run).  Reset at the start of each :meth:`execute` call.
+        """
+        super().__init__(*args, **kwargs)
+        self.iteration_history: Dict[str, List[dict]] = defaultdict(list)
+        """Per-phase list of prior results (oldest first).  Current result is in
+        ``phase_outputs``.  Reset on each :meth:`execute` call."""
+        self.iteration_counts: Dict[str, int] = defaultdict(int)
+        """Total execution count per phase.  Reset on each :meth:`execute` call."""
 
     # ------------------------------------------------------------------
     # Public API
@@ -1752,8 +1827,13 @@ class StateMachineSequencer(PhaseSequencer):
         """Execute the pipeline following state-machine transitions.
 
         Starts at the first phase in ``template.phases``, resolves each
-        transition after completion, and halts at a terminal phase (no
-        matching transition) or when a cycle is detected.
+        transition after completion, and halts when:
+
+        * A phase has no matching transition for its outcome (terminal state).
+        * A loop phase (``max_iterations > 0``) exceeds its iteration limit —
+          returns an abort dict with ``abort_reason = "MAX_ITERATIONS_EXCEEDED"``.
+        * A non-loop phase (``max_iterations == 0``) would be revisited — logs
+          a WARNING and stops (legacy cycle guard).
 
         Args:
             initial_input: Pipeline input dict (e.g. article brief).
@@ -1761,8 +1841,12 @@ class StateMachineSequencer(PhaseSequencer):
         Returns:
             Dict with keys:
 
-            - ``phase_outputs``: mapping of phase_id → result dict
-            - ``final_output``:  result dict of the last phase executed
+            - ``phase_outputs``:     mapping of phase_id → latest result dict
+            - ``final_output``:      result dict of the last executed phase
+            - ``iteration_history``: mapping of phase_id → list of prior results
+              (present only when execution completes normally or via cycle guard;
+              also included in MAX_ITERATIONS_EXCEEDED abort dicts)
+            - ``iteration_counts``:  mapping of phase_id → total execution count
         """
         if not self.template.phases:
             logger.warning(
@@ -1770,6 +1854,10 @@ class StateMachineSequencer(PhaseSequencer):
                 f"phases — returning empty result."
             )
             return {"phase_outputs": {}, "final_output": {}}
+
+        # ── Reset per-execution tracking (supports re-use of the sequencer) ───
+        self.iteration_history = defaultdict(list)
+        self.iteration_counts = defaultdict(int)
 
         # ── Pipeline-start hook (e.g. git branch creation) ────────────────────
         if self.on_pipeline_start is not None:
@@ -1784,24 +1872,14 @@ class StateMachineSequencer(PhaseSequencer):
         # Entry point: first phase in template order
         current_phase_id: Optional[str] = self.template.phases[0].id
 
-        # visited set guards against accidental cycles (loops are out of scope)
-        visited: List[str] = []
+        # executed_sequence tracks phases in execution order (may contain repeats
+        # for loop phases).  Used for final_output determination and logging.
+        executed_sequence: List[str] = []
 
         final_result: dict = {}
 
         try:
             while current_phase_id is not None:
-                # ── Cycle guard ───────────────────────────────────────────────
-                if current_phase_id in visited:
-                    logger.warning(
-                        f"Pipeline {self.template.id}: cycle detected — phase "
-                        f"'{current_phase_id}' has already been visited "
-                        f"(chain: {' → '.join(visited)}). "
-                        f"Loop support is not yet implemented. Stopping."
-                    )
-                    break
-                visited.append(current_phase_id)
-
                 # ── Phase lookup ──────────────────────────────────────────────
                 phase = self._phase_map.get(current_phase_id)
                 if phase is None:
@@ -1810,8 +1888,62 @@ class StateMachineSequencer(PhaseSequencer):
                         f"not defined in template '{self.template.id}'"
                     )
 
+                # ── Iteration counting and limit enforcement ──────────────────
+                self.iteration_counts[current_phase_id] += 1
+                current_iter: int = self.iteration_counts[current_phase_id]
+
+                if phase.max_iterations > 0:
+                    # Explicit loop phase: enforce the phase-level max_iterations cap.
+                    # When the count would exceed the limit, abort the pipeline.
+                    if current_iter > phase.max_iterations:
+                        logger.error(
+                            f"Pipeline {self.template.id}: MAX_ITERATIONS_EXCEEDED "
+                            f"for phase '{current_phase_id}' "
+                            f"(limit={phase.max_iterations}, attempted={current_iter}). "
+                            f"Aborting pipeline."
+                        )
+                        last_phase = executed_sequence[-1] if executed_sequence else None
+                        abort_result = {
+                            "phase_outputs": self.phase_outputs,
+                            "final_output": (
+                                self.phase_outputs.get(last_phase, {})
+                                if last_phase else {}
+                            ),
+                            "iteration_history": dict(self.iteration_history),
+                            "iteration_counts": dict(self.iteration_counts),
+                            "aborted": True,
+                            "abort_reason": "MAX_ITERATIONS_EXCEEDED",
+                            "exceeded_phase": current_phase_id,
+                        }
+                        self._safe_call_hook(
+                            self.on_pipeline_complete,
+                            self.pipeline_context,
+                            None,
+                            pipeline_id=self.template.id,
+                        )
+                        return abort_result
+                else:
+                    # Non-loop phase (max_iterations == 0): apply legacy cycle guard.
+                    # A second visit to such a phase is always an accidental cycle.
+                    if current_iter > 1:
+                        logger.warning(
+                            f"Pipeline {self.template.id}: cycle detected — phase "
+                            f"'{current_phase_id}' would be visited {current_iter} times "
+                            f"(chain: {' → '.join(executed_sequence)}). "
+                            f"Set max_iterations > 0 on the phase to enable intentional "
+                            f"loops. Stopping."
+                        )
+                        # Undo the increment so iteration_counts reflects actual executions
+                        self.iteration_counts[current_phase_id] -= 1
+                        break
+
+                executed_sequence.append(current_phase_id)
+
                 # ── on_phase_start callback ───────────────────────────────────
-                self._invoke_on_phase_start(current_phase_id, phase, len(visited) - 1)
+                # step_index = position in executed_sequence (0-based, repeats for loops)
+                self._invoke_on_phase_start(
+                    current_phase_id, phase, len(executed_sequence) - 1
+                )
 
                 # ── Build prompt and submit task ──────────────────────────────
                 phase_input = self._build_phase_input(phase, initial_input)
@@ -1832,7 +1964,8 @@ class StateMachineSequencer(PhaseSequencer):
                 task_id = self.runner.queue.submit_task(task)
                 logger.info(
                     f"Pipeline {self.template.id}: submitted phase "
-                    f"'{current_phase_id}' (task_id={task_id})"
+                    f"'{current_phase_id}' "
+                    f"(task_id={task_id}, iteration={current_iter})"
                 )
 
                 # ── Execute and wait (with retry logic from parent) ───────────
@@ -1845,6 +1978,16 @@ class StateMachineSequencer(PhaseSequencer):
                     self._handle_file_write(phase, result)
 
                 with self._phase_outputs_lock:
+                    # Save the previous result to iteration_history before overwriting.
+                    # This preserves the full per-phase execution history for
+                    # observability (the current result is always in phase_outputs).
+                    if current_phase_id in self.phase_outputs:
+                        self.iteration_history[current_phase_id].append(
+                            self.phase_outputs[current_phase_id]
+                        )
+                    # Annotate the result with the iteration number so consumers
+                    # can identify which run produced each output.
+                    result.setdefault("metadata", {})["iteration"] = current_iter
                     self.phase_outputs[current_phase_id] = result
 
                 # ── Supervisor hook (#194) ────────────────────────────────────
@@ -1873,7 +2016,7 @@ class StateMachineSequencer(PhaseSequencer):
                 phase_state = result.get("state", "unknown")
                 logger.info(
                     f"Pipeline {self.template.id}: phase '{current_phase_id}' "
-                    f"completed (state={phase_state})"
+                    f"completed (state={phase_state}, iteration={current_iter})"
                 )
 
                 # ── Transition resolution ─────────────────────────────────────
@@ -1896,13 +2039,15 @@ class StateMachineSequencer(PhaseSequencer):
                     current_phase_id = next_phase_id
 
             # ── Build final result ────────────────────────────────────────────
-            last_phase_id = visited[-1] if visited else None
+            last_phase_id = executed_sequence[-1] if executed_sequence else None
             final_output = (
                 self.phase_outputs.get(last_phase_id, {}) if last_phase_id else {}
             )
             final_result = {
                 "phase_outputs": self.phase_outputs,
                 "final_output": final_output,
+                "iteration_history": dict(self.iteration_history),
+                "iteration_counts": dict(self.iteration_counts),
             }
 
         except Exception:
