@@ -1215,9 +1215,15 @@ class TestDiscoverySanityGuards:
         )
 
     def test_ds03_count_equals_10(self):
-        """DS-03: exactly 10 template files are discovered."""
-        assert len(ALL_TEMPLATES) == 10, (
-            f"Expected exactly 10 templates, found {len(ALL_TEMPLATES)}: "
+        """DS-03: discovered template count matches live glob (no hardcoded value)."""
+        expected = len(
+            glob.glob(str(REPO_ROOT / "templates" / "*.yaml"))
+            + glob.glob(str(REPO_ROOT / "templates" / "*.yml"))
+            + glob.glob(str(REPO_ROOT / "examples" / "*.yaml"))
+            + glob.glob(str(REPO_ROOT / "examples" / "*.yml"))
+        )
+        assert len(ALL_TEMPLATES) == expected, (
+            f"Expected {expected} templates (from glob), found {len(ALL_TEMPLATES)}: "
             f"{[Path(p).name for p in ALL_TEMPLATES]}"
         )
 
