@@ -4097,7 +4097,10 @@ def frontend_dev(port: int) -> None:
       # Terminal 2 — frontend dev server
       orch frontend dev
     """
-    frontend_dir = Path(__file__).parent.parent.parent / "frontend"
+    # Resolve frontend directory.  ORCH_FRONTEND_SRC lets callers override the
+    # default source-checkout path (e.g. when installed via pip).
+    _frontend_env = os.environ.get("ORCH_FRONTEND_SRC", "")
+    frontend_dir = Path(_frontend_env) if _frontend_env else Path(__file__).parent.parent.parent / "frontend"
     if not frontend_dir.exists():
         click.echo("✗ frontend/ directory not found. Has the repository been cloned fully?", err=True)
         sys.exit(1)
@@ -4122,18 +4125,24 @@ def frontend_dev(port: int) -> None:
 
 @frontend_group.command("build")
 def frontend_build() -> None:
-    """Build the Next.js frontend and export it as static HTML.
+    """Build the Next.js frontend as a static export.
 
-    Runs ``npm run build`` followed by ``npm run export`` in the ``frontend/``
-    directory.  The output is written to ``frontend/out/`` and will be
-    automatically served by ``orch serve``.
+    Runs ``npm run build`` in the ``frontend/`` directory.  With
+    ``output: "export"`` set in ``next.config.js``, the static HTML/JS/CSS
+    output is written to ``frontend/out/`` automatically — no separate export
+    step is needed (``next export`` was removed in Next.js 13.4+).
+
+    The built output is automatically served by ``orch serve``.
 
     Example:
 
       orch frontend build
       orch serve          # now serves the Next.js frontend
     """
-    frontend_dir = Path(__file__).parent.parent.parent / "frontend"
+    # Resolve frontend directory.  ORCH_FRONTEND_SRC lets callers override the
+    # default source-checkout path (e.g. when installed via pip).
+    _frontend_env = os.environ.get("ORCH_FRONTEND_SRC", "")
+    frontend_dir = Path(_frontend_env) if _frontend_env else Path(__file__).parent.parent.parent / "frontend"
     if not frontend_dir.exists():
         click.echo("✗ frontend/ directory not found. Has the repository been cloned fully?", err=True)
         sys.exit(1)
@@ -4147,15 +4156,6 @@ def frontend_build() -> None:
         if build_result.returncode != 0:
             click.echo("✗ Build failed.", err=True)
             sys.exit(build_result.returncode)
-
-        click.echo("→ Exporting static files…")
-        export_result = subprocess.run(
-            ["npm", "run", "export"],
-            cwd=str(frontend_dir),
-        )
-        if export_result.returncode != 0:
-            click.echo("✗ Export failed.", err=True)
-            sys.exit(export_result.returncode)
 
         click.echo("✓ Frontend built successfully → frontend/out/")
         click.echo("  Run `orch serve` to serve the frontend.")

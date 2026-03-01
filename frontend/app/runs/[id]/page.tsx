@@ -26,7 +26,12 @@ import { RunStatusBadge } from "@/components/pipeline/RunStatusBadge";
 import { PhaseEventRow } from "@/components/pipeline/PhaseEventRow";
 import { Button } from "@/components/ui/Button";
 
+// NOTE: In Next.js 15, `params` becomes a Promise and must be unwrapped with
+// `React.use(params)` in client components (or `await params` in async server
+// components).  When upgrading to Next.js 15, change this to:
+//   const { id: runId } = React.use(params);
 interface Props {
+  // Next.js 14: params is still synchronous.  Next.js 15 wraps it in a Promise.
   params: { id: string };
 }
 

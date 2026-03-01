@@ -21,9 +21,17 @@ logger = logging.getLogger(__name__)
 # starting a real server.
 _HTML_PATH = Path(__file__).parent / "templates" / "index.html"
 
-# Next.js static export directory (produced by `npm run build && npm run export`).
+# Next.js static export directory (produced by `npm run build`).
 # When present, the frontend SPA is served from here instead of index.html.
-_FRONTEND_OUT = Path(__file__).parent.parent.parent.parent / "frontend" / "out"
+#
+# NOTE: The default path traversal (4 levels from __file__) only works when
+# running from a source checkout.  When installed via `pip install`, set the
+# ORCH_FRONTEND_DIR environment variable to the absolute path of `frontend/out/`.
+import os as _os_module
+_FRONTEND_OUT = Path(
+    _os_module.environ.get("ORCH_FRONTEND_DIR", "")
+    or (Path(__file__).parent.parent.parent.parent / "frontend" / "out")
+)
 
 
 def _resolve_template_by_name_or_id(engine, name: str):
@@ -65,8 +73,6 @@ def create_app():  # noqa: C901
     Returns:
         FastAPI application instance.
     """
-    import os as _os
-
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import HTMLResponse, JSONResponse
@@ -84,13 +90,11 @@ def create_app():  # noqa: C901
     )
 
     # CORS — allow all origins for local development.
-    # Fix 3: Drop allow_credentials (not needed for a local dev tool without cookies).
-    # When DEBUG=true, also explicitly add the Next.js dev server origin.
-    _debug_mode = _os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
-    _cors_origins = ["*"] if not _debug_mode else ["*", "http://localhost:3000"]
+    # ["*"] already matches all origins including localhost:3000 during Next.js
+    # dev; no additional DEBUG-conditional logic is needed.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=_cors_origins,
+        allow_origins=["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )

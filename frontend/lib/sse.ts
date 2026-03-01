@@ -112,10 +112,17 @@ export function useRunEvents(runId: string | null | undefined): UseRunEventsStat
       }
     };
 
-    source.onerror = () => {
-      source.close();
-      sourceRef.current = null;
-      setConnected(false);
+    source.onerror = (ev: Event) => {
+      // EventSource has built-in exponential-backoff reconnect logic.
+      // Only close the connection on terminal errors (CLOSED readyState),
+      // which means the browser has given up retrying.  For transient network
+      // blips (CONNECTING / OPEN readyState at error time), leave the source
+      // open so the browser can reconnect automatically.
+      if (source.readyState === EventSource.CLOSED) {
+        source.close();
+        sourceRef.current = null;
+        setConnected(false);
+      }
     };
 
     return () => {
