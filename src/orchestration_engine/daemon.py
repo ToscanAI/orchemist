@@ -277,12 +277,17 @@ def run_daemon(run_id: str, db_path: str) -> None:
             # through the same auth path (e.g. OpenClaw subscription token).
             # Issue #272.
             _scoring_executor = runner.executors[0] if runner.executors else None
-            _run_scoring(template, output_dir=output_dir, console=console,
-                         template_file=template_path, exit_on_failure=False,
-                         executor=_scoring_executor)
-            logger.info("Auto-scoring complete")
+            scoring_passed = _run_scoring(
+                template, output_dir=output_dir, console=console,
+                template_file=template_path, exit_on_failure=False,
+                executor=_scoring_executor,
+            )
+            _scoring_status = 'passed' if scoring_passed else 'failed'
+            logger.info("Auto-scoring complete: %s", _scoring_status)
+            db.update_pipeline_run(run_id, scoring_status=_scoring_status)
         except Exception as exc:
-            logger.warning("Auto-scoring failed: %s", exc)
+            logger.warning("Auto-scoring raised an exception: %s", exc)
+            db.update_pipeline_run(run_id, scoring_status='error')
 
     db.update_pipeline_run(
         run_id,
