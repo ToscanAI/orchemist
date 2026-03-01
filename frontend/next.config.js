@@ -11,12 +11,19 @@
  * frontend and handles SPA fallback routing.
  */
 const nextConfig = {
+  // Static export: produces frontend/out/ for FastAPI to serve.
+  // All pages are "use client" with client-side data fetching, so static
+  // export works perfectly — each dynamic route generates a shell HTML that
+  // hydrates client-side.
+  output: "export",
+
   // Images: disable optimisation API (served by FastAPI, not Next.js server)
   images: {
     unoptimized: true,
   },
 
   // Rewrites proxy /api/* to FastAPI during development only.
+  // NOTE: rewrites are ignored when output="export", but kept for `next dev`.
   ...(process.env.NODE_ENV === 'development' ? {
     async rewrites() {
       return [

@@ -12,12 +12,20 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getTemplate, startRun, ApiError } from "@/lib/api";
 import type { TemplateDetail, RunMode } from "@/lib/types";
 import { PhaseList } from "@/components/pipeline/PhaseList";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+
+// Required for static export with dynamic routes: tells Next.js there are no
+// build-time params to pre-render.  At runtime the client-side router handles
+// all /templates/[id] paths via the generated shell HTML.
+export function generateStaticParams() {
+  return [];
+}
 
 interface Props {
   params: { id: string };
@@ -122,9 +130,9 @@ export default function TemplateDetailPage({ params }: Props) {
   return (
     <div className="space-y-8">
       {/* Back link */}
-      <a href="/" className="text-sm text-text-secondary hover:text-text-primary no-underline">
+      <Link href="/" className="text-sm text-text-secondary hover:text-text-primary no-underline">
         ← Back to templates
-      </a>
+      </Link>
 
       {/* Template header */}
       <div>

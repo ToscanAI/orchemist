@@ -13,6 +13,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { resumeRun, getRunOutputs, ApiError } from "@/lib/api";
 import { useRunEvents } from "@/lib/sse";
 import type {
@@ -30,6 +31,13 @@ import { Button } from "@/components/ui/Button";
 // `React.use(params)` in client components (or `await params` in async server
 // components).  When upgrading to Next.js 15, change this to:
 //   const { id: runId } = React.use(params);
+// Required for static export with dynamic routes: tells Next.js there are no
+// build-time params to pre-render.  At runtime the client-side router handles
+// all /runs/[id] paths via the generated shell HTML.
+export function generateStaticParams() {
+  return [];
+}
+
 interface Props {
   // Next.js 14: params is still synchronous.  Next.js 15 wraps it in a Promise.
   params: { id: string };
@@ -72,6 +80,7 @@ export default function RunDetailPage({ params }: Props) {
       const message =
         err instanceof ApiError ? err.body : String(err);
       setResumeError(message);
+    } finally {
       setResuming(false);
     }
   }
@@ -79,9 +88,9 @@ export default function RunDetailPage({ params }: Props) {
   return (
     <div className="space-y-8">
       {/* Back link */}
-      <a href="/" className="text-sm text-text-secondary hover:text-text-primary no-underline">
+      <Link href="/" className="text-sm text-text-secondary hover:text-text-primary no-underline">
         ← Back to templates
-      </a>
+      </Link>
 
       {/* Run header */}
       <div className="flex flex-wrap items-center gap-3">

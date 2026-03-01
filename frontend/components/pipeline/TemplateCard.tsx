@@ -4,6 +4,7 @@
  * Navigates to /templates/[id] when clicked.
  */
 
+import Link from "next/link";
 import type { TemplateSummary } from "@/lib/types";
 import { Badge } from "@/components/ui/Badge";
 
@@ -16,7 +17,7 @@ interface Props {
  */
 export function TemplateCard({ template }: Props) {
   return (
-    <a
+    <Link
       href={`/templates/${encodeURIComponent(template.id)}`}
       className={[
         "card block cursor-pointer no-underline",
@@ -64,6 +65,6 @@ export function TemplateCard({ template }: Props) {
           </>
         )}
       </div>
-    </a>
+    </Link>
   );
 }

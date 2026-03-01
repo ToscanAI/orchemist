@@ -4080,6 +4080,23 @@ def frontend_group() -> None:
     """
 
 
+def _resolve_frontend_dir() -> Path:
+    """Resolve the frontend source directory.
+
+    Checks ``ORCH_FRONTEND_SRC`` env var first, then falls back to the
+    default source-checkout relative path.
+
+    Raises:
+        SystemExit: If the directory does not exist.
+    """
+    env_path = os.environ.get("ORCH_FRONTEND_SRC", "")
+    frontend_dir = Path(env_path) if env_path else Path(__file__).parent.parent.parent / "frontend"
+    if not frontend_dir.exists():
+        click.echo("✗ frontend/ directory not found. Has the repository been cloned fully?", err=True)
+        sys.exit(1)
+    return frontend_dir
+
+
 @frontend_group.command("dev")
 @click.option("--port", default=3000, show_default=True, help="Port for the Next.js dev server.")
 def frontend_dev(port: int) -> None:
@@ -4097,13 +4114,7 @@ def frontend_dev(port: int) -> None:
       # Terminal 2 — frontend dev server
       orch frontend dev
     """
-    # Resolve frontend directory.  ORCH_FRONTEND_SRC lets callers override the
-    # default source-checkout path (e.g. when installed via pip).
-    _frontend_env = os.environ.get("ORCH_FRONTEND_SRC", "")
-    frontend_dir = Path(_frontend_env) if _frontend_env else Path(__file__).parent.parent.parent / "frontend"
-    if not frontend_dir.exists():
-        click.echo("✗ frontend/ directory not found. Has the repository been cloned fully?", err=True)
-        sys.exit(1)
+    frontend_dir = _resolve_frontend_dir()
 
     env = os.environ.copy()
     env["PORT"] = str(port)
@@ -4139,13 +4150,7 @@ def frontend_build() -> None:
       orch frontend build
       orch serve          # now serves the Next.js frontend
     """
-    # Resolve frontend directory.  ORCH_FRONTEND_SRC lets callers override the
-    # default source-checkout path (e.g. when installed via pip).
-    _frontend_env = os.environ.get("ORCH_FRONTEND_SRC", "")
-    frontend_dir = Path(_frontend_env) if _frontend_env else Path(__file__).parent.parent.parent / "frontend"
-    if not frontend_dir.exists():
-        click.echo("✗ frontend/ directory not found. Has the repository been cloned fully?", err=True)
-        sys.exit(1)
+    frontend_dir = _resolve_frontend_dir()
 
     click.echo("→ Building Next.js frontend…")
     try:
