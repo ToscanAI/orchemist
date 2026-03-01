@@ -934,6 +934,149 @@ class Database:
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def list_pipeline_runs_filtered(
+        self,
+        status: Optional[str] = None,
+        template_id: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List pipeline runs with filtering and pagination support.
+
+        Extends ``list_pipeline_runs`` with ``offset`` and ``template_id``
+        parameters for use by the REST API (Issue #257).
+
+        Args:
+            status: Optional status filter (e.g. ``'running'``, ``'success'``).
+            template_id: Optional template_id filter.
+            limit: Maximum number of rows to return.
+            offset: Number of rows to skip (for pagination).
+
+        Returns:
+            List of pipeline run dicts ordered by ``created_at DESC``.
+        """
+        query = "SELECT * FROM pipeline_runs WHERE 1=1"
+        params: list = []
+
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+
+        if template_id:
+            query += " AND template_id = ?"
+            params.append(template_id)
+
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(query, params)
+            rows = cursor.fetchall()
+
+        return [self._row_to_dict(row) for row in rows]
+
+    def count_pipeline_runs(
+        self,
+        status: Optional[str] = None,
+        template_id: Optional[str] = None,
+    ) -> int:
+        """Return the total count of pipeline runs matching the given filters.
+
+        Used by the REST API to return pagination metadata (Issue #257).
+
+        Args:
+            status: Optional status filter.
+            template_id: Optional template_id filter.
+
+        Returns:
+            Integer row count.
+        """
+        query = "SELECT COUNT(*) FROM pipeline_runs WHERE 1=1"
+        params: list = []
+
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+
+        if template_id:
+            query += " AND template_id = ?"
+            params.append(template_id)
+
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(query, params)
+            row = cursor.fetchone()
+
+        return row[0] if row else 0
+
+    def cancel_pipeline_run(self, run_id: str) -> bool:
+        """Cancel a pipeline run by sending SIGTERM to its daemon process.
+
+        Sends ``SIGTERM`` to the daemon PID (if any) and unconditionally
+        updates the run status to ``'cancelled'`` in the DB.
+
+        Only runs in non-terminal states (``pending``, ``running``) are
+        affected.  Runs already in a terminal state are left unchanged and
+        this method returns ``False``.
+
+        Args:
+            run_id: The run identifier to cancel.
+
+        Returns:
+            ``True`` if the run was cancelled, ``False`` if the run was
+            already in a terminal state or not found.
+        """
+        import os as _os
+        import signal as _signal
+
+        terminal_states = {"success", "failed", "cancelled", "crashed", "scoring_failed"}
+
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT status, pid FROM pipeline_runs WHERE run_id = ?",
+                (run_id,),
+            )
+            row = cursor.fetchone()
+
+        if row is None:
+            return False
+
+        current_status = row["status"] if hasattr(row, "__getitem__") else row[0]
+        pid = row["pid"] if hasattr(row, "__getitem__") else row[1]
+
+        if current_status in terminal_states:
+            return False
+
+        # NOTE: TOCTOU — the status check above and the SIGTERM below are outside
+        # a single DB transaction.  A concurrent caller could cancel the same run
+        # between the SELECT and the UPDATE.  The UPDATE's WHERE guard
+        # (status NOT IN terminal_states) prevents double-updates to the DB, so
+        # there is no data corruption.  The only risk is that SIGTERM is sent to
+        # a recycled PID if the OS reuses the process ID in the window between
+        # the SELECT and the kill(); this window is tiny and the kill is
+        # best-effort, so the risk is acceptable for now.
+        if pid:
+            try:
+                _os.kill(int(pid), _signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                # Process already gone or we lack permission — still mark cancelled
+                pass
+
+        # Update the DB row
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE pipeline_runs
+                SET status = 'cancelled', completed_at = ?
+                WHERE run_id = ?
+                  AND status NOT IN ('success', 'failed', 'cancelled', 'crashed', 'scoring_failed')
+                """,
+                (datetime.now().isoformat(), run_id),
+            )
+            return cursor.rowcount > 0
+
     def close(self) -> None:
         """Close database connections."""
         if hasattr(self._local, 'connection'):

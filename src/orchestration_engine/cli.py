@@ -4065,6 +4065,68 @@ def serve(port: int, host: str, no_open: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# orch api-server — REST API server (Issue #257)
+# ---------------------------------------------------------------------------
+
+@main.command("api-server")
+@click.option('--port', default=8375, show_default=True, help='Port to serve on.')
+@click.option('--host', default='127.0.0.1', show_default=True, help='Host to bind to.')
+@click.option('--reload', is_flag=True, default=False, help='Enable auto-reload (dev only).')
+@click.option(
+    '--db-path',
+    default=None,
+    help='Override path to the persistent pipeline-runs DB.',
+)
+def api_server(port: int, host: str, reload: bool, db_path: Optional[str]) -> None:
+    """Launch the REST API server for programmatic pipeline control.
+
+    Starts a FastAPI REST API at /api/v1/ backed by the same daemon-based
+    async execution infrastructure used by ``orch launch``.  Intended for
+    CI/CD pipelines, OpenClaw, and other programmatic consumers.
+
+    Requires the optional [web] extra:
+
+      pip install orchestration-engine[web]
+
+    Endpoints:
+
+    \b
+      GET  /api/v1/health                — health check
+      GET  /api/v1/templates             — list all templates
+      GET  /api/v1/templates/{name}      — template detail
+      POST /api/v1/runs                  — launch a pipeline run
+      GET  /api/v1/runs                  — list runs (with filtering/pagination)
+      GET  /api/v1/runs/{run_id}         — run status
+      GET  /api/v1/runs/{run_id}/logs    — daemon log output
+      DELETE /api/v1/runs/{run_id}       — cancel a run
+
+    Examples:
+
+      orch api-server                    # http://127.0.0.1:8375/api/v1/
+      orch api-server --port 9000
+      orch api-server --reload           # dev mode with auto-reload
+    """
+    try:
+        import uvicorn
+        from .web.api import create_api_app
+    except ImportError:
+        click.echo("REST API server requires extra dependencies. Install with:", err=True)
+        click.echo("  pip install orchestration-engine[web]", err=True)
+        sys.exit(1)
+
+    effective_db_path = db_path or _get_persistent_db_path()
+    app = create_api_app(db_path=effective_db_path)
+
+    click.echo(f"✓ Orchestration Engine REST API server")
+    click.echo(f"  Listening on http://{host}:{port}")
+    click.echo(f"  Docs:      http://{host}:{port}/api/v1/docs")
+    click.echo(f"  DB:        {effective_db_path}")
+    click.echo(f"  Press Ctrl+C to stop.")
+
+    uvicorn.run(app, host=host, port=port, reload=reload)
+
+
+# ---------------------------------------------------------------------------
 # orch rubric — skill rubric generation  (AC-1)
 # ---------------------------------------------------------------------------
 
