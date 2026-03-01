@@ -29,6 +29,7 @@ import yaml
 from .output_parser import extract_and_write, parse_output
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
+from .transitions import PhaseOutcome, determine_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -1688,3 +1689,288 @@ class _PreviousOutputInlineProxy:
 
     def __repr__(self) -> str:
         return f"_PreviousOutputInlineProxy(phases={list(self._phase_outputs.keys())})"
+
+
+class StateMachineSequencer(PhaseSequencer):
+    """Executes a pipeline using state-machine transitions.
+
+    Unlike :class:`PhaseSequencer` (which follows a static topological order),
+    ``StateMachineSequencer`` routes execution dynamically: after each phase
+    completes its outcome is mapped to the next phase via the phase's
+    ``transitions`` dict (merged with the template's ``default_transitions``).
+    Execution terminates when a phase has no matching transition entry
+    (terminal state) or all phases have been visited.
+
+    Linear chains only
+    ------------------
+    This implementation handles **linear transition chains** — a straight
+    sequence of phases where each outcome leads unambiguously to the next
+    phase.  Loop / cycle support (``max_iterations`` enforcement, revisiting
+    phases) is tracked in a separate issue (#234-4b) and is explicitly out
+    of scope here.  A visited-phase guard raises a warning and halts execution
+    if an accidental cycle is detected at runtime.
+
+    Entry point
+    -----------
+    Execution begins with the **first phase** listed in ``template.phases``
+    (index 0).  This is the conventional entry point for a linear chain.
+    Transitions are followed until the chain terminates.
+
+    Transition resolution
+    ---------------------
+    For each completed phase the *effective* transitions are computed as::
+
+        effective = {**template.default_transitions, **phase.transitions}
+
+    The outcome value (``"success"``, ``"failed"``, ``"timeout"``,
+    ``"skipped"``) is looked up in *effective*.  If a matching key is found
+    the value is the ID of the next phase.  If no key matches the phase is
+    considered terminal and execution stops.
+
+    All parent hooks (``on_phase_start``, ``on_phase_complete``,
+    ``on_pipeline_start``, ``on_pipeline_complete``) behave identically to
+    :class:`PhaseSequencer`.
+
+    Examples:
+        A template with two phases and a single success transition::
+
+            phases:
+              - id: fetch
+                transitions:
+                  success: process
+              - id: process
+
+        ``fetch`` runs first; on success, ``process`` runs next;
+        ``process`` has no transitions so execution stops there.
+    """
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def execute(self, initial_input: dict) -> dict:
+        """Execute the pipeline following state-machine transitions.
+
+        Starts at the first phase in ``template.phases``, resolves each
+        transition after completion, and halts at a terminal phase (no
+        matching transition) or when a cycle is detected.
+
+        Args:
+            initial_input: Pipeline input dict (e.g. article brief).
+
+        Returns:
+            Dict with keys:
+
+            - ``phase_outputs``: mapping of phase_id → result dict
+            - ``final_output``:  result dict of the last phase executed
+        """
+        if not self.template.phases:
+            logger.warning(
+                f"StateMachineSequencer: template '{self.template.id}' has no "
+                f"phases — returning empty result."
+            )
+            return {"phase_outputs": {}, "final_output": {}}
+
+        # ── Pipeline-start hook (e.g. git branch creation) ────────────────────
+        if self.on_pipeline_start is not None:
+            try:
+                self.on_pipeline_start(self.pipeline_context)
+            except Exception as exc:
+                logger.error(
+                    f"Pipeline {self.template.id}: on_pipeline_start hook failed: {exc}"
+                )
+                raise
+
+        # Entry point: first phase in template order
+        current_phase_id: Optional[str] = self.template.phases[0].id
+
+        # visited set guards against accidental cycles (loops are out of scope)
+        visited: List[str] = []
+
+        final_result: dict = {}
+
+        try:
+            while current_phase_id is not None:
+                # ── Cycle guard ───────────────────────────────────────────────
+                if current_phase_id in visited:
+                    logger.warning(
+                        f"Pipeline {self.template.id}: cycle detected — phase "
+                        f"'{current_phase_id}' has already been visited "
+                        f"(chain: {' → '.join(visited)}). "
+                        f"Loop support is not yet implemented. Stopping."
+                    )
+                    break
+                visited.append(current_phase_id)
+
+                # ── Phase lookup ──────────────────────────────────────────────
+                phase = self._phase_map.get(current_phase_id)
+                if phase is None:
+                    raise KeyError(
+                        f"Phase '{current_phase_id}' referenced by transition is "
+                        f"not defined in template '{self.template.id}'"
+                    )
+
+                # ── on_phase_start callback ───────────────────────────────────
+                self._invoke_on_phase_start(current_phase_id, phase, len(visited) - 1)
+
+                # ── Build prompt and submit task ──────────────────────────────
+                phase_input = self._build_phase_input(phase, initial_input)
+                preferred_model = self._resolve_model_tier(phase.model_tier)
+
+                task = TaskSpec(
+                    type=self._resolve_task_type(phase.task_type),
+                    payload={
+                        "prompt": phase_input,
+                        "phase_id": phase.id,
+                        "pipeline_id": self.template.id,
+                    },
+                    priority=Priority.HIGH,
+                    preferred_model=preferred_model,
+                    timeout_seconds=phase.timeout_minutes * 60,
+                )
+
+                task_id = self.runner.queue.submit_task(task)
+                logger.info(
+                    f"Pipeline {self.template.id}: submitted phase "
+                    f"'{current_phase_id}' (task_id={task_id})"
+                )
+
+                # ── Execute and wait (with retry logic from parent) ───────────
+                result = self._execute_and_wait(
+                    task_id, phase, initial_input=initial_input
+                )
+
+                # ── Write FILE blocks if requested (#189) ─────────────────────
+                if phase.write_files:
+                    self._handle_file_write(phase, result)
+
+                with self._phase_outputs_lock:
+                    self.phase_outputs[current_phase_id] = result
+
+                # ── Supervisor hook (#194) ────────────────────────────────────
+                if getattr(phase, "supervisor", False) and result.get("state") == "success":
+                    result, abort_info = self._run_supervisor_for_phase(
+                        phase, result, initial_input
+                    )
+                    if abort_info:
+                        logger.error(
+                            f"Pipeline {self.template.id}: aborted by supervisor "
+                            f"on phase '{phase.id}'"
+                        )
+                        self._safe_call_hook(
+                            self.on_pipeline_complete,
+                            self.pipeline_context,
+                            None,
+                            pipeline_id=self.template.id,
+                        )
+                        return abort_info
+                    with self._phase_outputs_lock:
+                        self.phase_outputs[current_phase_id] = result
+
+                # ── on_phase_complete callback ────────────────────────────────
+                self._invoke_on_phase_complete(current_phase_id, result)
+
+                phase_state = result.get("state", "unknown")
+                logger.info(
+                    f"Pipeline {self.template.id}: phase '{current_phase_id}' "
+                    f"completed (state={phase_state})"
+                )
+
+                # ── Transition resolution ─────────────────────────────────────
+                outcome: PhaseOutcome = determine_outcome(result)
+                next_phase_id = self._resolve_next_phase(phase, outcome)
+
+                if next_phase_id is None:
+                    # Terminal state — no outgoing transition for this outcome
+                    logger.info(
+                        f"Pipeline {self.template.id}: phase '{current_phase_id}' "
+                        f"is terminal (no '{outcome.value}' transition). "
+                        f"Execution complete."
+                    )
+                    current_phase_id = None  # exit the loop cleanly
+                else:
+                    logger.info(
+                        f"Pipeline {self.template.id}: "
+                        f"'{current_phase_id}' →[{outcome.value}]→ '{next_phase_id}'"
+                    )
+                    current_phase_id = next_phase_id
+
+            # ── Build final result ────────────────────────────────────────────
+            last_phase_id = visited[-1] if visited else None
+            final_output = (
+                self.phase_outputs.get(last_phase_id, {}) if last_phase_id else {}
+            )
+            final_result = {
+                "phase_outputs": self.phase_outputs,
+                "final_output": final_output,
+            }
+
+        except Exception:
+            self._safe_call_hook(
+                self.on_pipeline_complete,
+                self.pipeline_context,
+                None,
+                pipeline_id=self.template.id,
+            )
+            raise
+
+        # ── Pipeline-complete hook (success path) ─────────────────────────────
+        self._safe_call_hook(
+            self.on_pipeline_complete,
+            self.pipeline_context,
+            final_result,
+            pipeline_id=self.template.id,
+        )
+
+        return final_result
+
+    # ------------------------------------------------------------------
+    # Transition helper
+    # ------------------------------------------------------------------
+
+    def _resolve_next_phase(
+        self, phase: PhaseDefinition, outcome: PhaseOutcome
+    ) -> Optional[str]:
+        """Return the next phase ID for *outcome*, or ``None`` if terminal.
+
+        Effective transitions are computed by merging ``template.default_transitions``
+        with the phase-level ``phase.transitions`` dict (phase overrides default on
+        a per-key basis)::
+
+            effective = {**template.default_transitions, **phase.transitions}
+
+        Args:
+            phase:   The phase that just completed.
+            outcome: The :class:`~.transitions.PhaseOutcome` for the result.
+
+        Returns:
+            Phase ID string if a transition is defined for *outcome*,
+            ``None`` if this is a terminal state.
+        """
+        effective: dict = {
+            **self.template.default_transitions,
+            **phase.transitions,
+        }
+        return effective.get(outcome.value)
+
+    # ------------------------------------------------------------------
+    # Hook helper
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_call_hook(hook, *args, pipeline_id: str = "") -> None:
+        """Call *hook* with *args*, logging but swallowing all exceptions.
+
+        Kept as a ``@staticmethod`` on this class so it stays scoped to
+        :class:`StateMachineSequencer` rather than polluting the module namespace.
+        This mirrors the pattern used throughout :class:`PhaseSequencer` so that
+        a misbehaving ``on_pipeline_complete`` callback never crashes the pipeline.
+        """
+        if hook is None:
+            return
+        try:
+            hook(*args)
+        except Exception as hook_exc:
+            logger.warning(
+                f"Pipeline {pipeline_id}: on_pipeline_complete hook failed: {hook_exc}"
+            )

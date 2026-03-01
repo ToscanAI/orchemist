@@ -22,6 +22,7 @@ from .schemas import (
 )
 from .queue import TaskQueue
 from .db import Database
+from .sequencer import StateMachineSequencer
 
 __all__ = [
     "__version__",
@@ -41,4 +42,5 @@ __all__ = [
     # Core classes
     "TaskQueue",
     "Database",
+    "StateMachineSequencer",
 ]

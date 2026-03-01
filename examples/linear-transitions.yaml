@@ -1,0 +1,76 @@
+# linear-transitions.yaml — Minimal example demonstrating linear state-machine transitions
+# Issue #234: StateMachineSequencer — linear phase routing based on outcome
+#
+# This template shows how to route pipeline execution conditionally:
+#   fetch  →[success]→  process  (terminal)
+#   fetch  →[failed]→   error_handler  (terminal)
+#
+# When 'fetch' succeeds, 'process' runs next.
+# When 'fetch' fails,   'error_handler' runs instead.
+# Both 'process' and 'error_handler' are terminal (no outgoing transitions).
+#
+# Usage:
+#   orch run examples/linear-transitions.yaml
+#   orch validate examples/linear-transitions.yaml
+
+id: linear-transitions
+name: "Linear Transitions Demo"
+version: "1.0.0"
+description: |
+  Demonstrates state-machine linear transitions (Issue #234).
+  Fetch succeeds → process; fetch fails → error_handler.
+  Uses StateMachineSequencer automatically when transitions are present.
+author: "Orchestration Engine Team"
+category: "example"
+tags:
+  - example
+  - state-machine
+  - transitions
+  - linear
+use_cases:
+  - "Demonstrate conditional phase routing based on outcome"
+  - "Show StateMachineSequencer auto-detection from transitions config"
+example_input:
+  topic: "state machine pipelines"
+
+phases:
+  - id: fetch
+    name: "Fetch Phase"
+    description: "Attempt to fetch content. Routes to 'process' on success or 'error_handler' on failure."
+    task_type: content
+    model_tier: haiku
+    thinking_level: off
+    timeout_minutes: 5
+    transitions:
+      success: process
+      failed: error_handler
+    prompt_template: |
+      Write a two-sentence summary about: {input[topic]}
+
+      Output ONLY the summary — no extra commentary.
+
+  - id: process
+    name: "Process Phase"
+    description: "Process the fetched content. Terminal phase on the success path."
+    task_type: content
+    model_tier: haiku
+    thinking_level: off
+    timeout_minutes: 5
+    prompt_template: |
+      The following content was fetched:
+
+      {previous_output[fetch]}
+
+      In one sentence, explain what action was taken with this content.
+
+  - id: error_handler
+    name: "Error Handler"
+    description: "Handle a fetch failure gracefully. Terminal phase on the failure path."
+    task_type: content
+    model_tier: haiku
+    thinking_level: off
+    timeout_minutes: 5
+    prompt_template: |
+      The fetch phase failed. Write a single friendly error message
+      informing the user that the content about '{input[topic]}' could
+      not be retrieved and suggesting they try again later.

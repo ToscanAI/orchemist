@@ -1017,7 +1017,7 @@ def run_template(
 
     from .templates import TemplateEngine
     from .pipeline_runner import PipelineRunner
-    from .sequencer import PhaseSequencer
+    from .sequencer import PhaseSequencer, StateMachineSequencer
     from .heartbeat import ProgressHeartbeat
 
     import sys as _sys
@@ -1280,7 +1280,11 @@ def run_template(
         _on_phase_complete_git(phase_id, phase_result)
 
     with runner:
-        sequencer = PhaseSequencer(
+        _has_transitions = any(p.transitions for p in template.phases) or bool(
+            template.default_transitions
+        )
+        _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer
+        sequencer = _SequencerClass(
             template, runner, config=initial_input,
             on_phase_complete=_on_phase_complete,
             on_phase_start=_on_phase_start_cb,
@@ -2913,7 +2917,7 @@ def templates_test(verbose: bool, fail_fast: bool) -> None:
 
     from .templates import TemplateEngine
     from .pipeline_runner import PipelineRunner
-    from .sequencer import PhaseSequencer
+    from .sequencer import PhaseSequencer, StateMachineSequencer
 
     OK_MARK = click.style("✓", fg="green")
     FAIL_MARK = click.style("✗", fg="red")
@@ -2992,7 +2996,11 @@ def templates_test(verbose: bool, fail_fast: bool) -> None:
                     failure_rate=0.0,
                 )
                 with dry_runner:
-                    sequencer = PhaseSequencer(
+                    _has_transitions = any(p.transitions for p in template.phases) or bool(
+                        template.default_transitions
+                    )
+                    _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer
+                    sequencer = _SequencerClass(
                         template, dry_runner, config=input_data
                     )
                     result = sequencer.execute(input_data)
@@ -4099,7 +4107,7 @@ def scenario_run(
 
     from .templates import TemplateEngine
     from .pipeline_runner import PipelineRunner
-    from .sequencer import PhaseSequencer
+    from .sequencer import PhaseSequencer, StateMachineSequencer
 
     # Import ScenarioRunner from the scenario_runner package.
     # Try both importable forms (installed package and source layout).
@@ -4252,7 +4260,11 @@ def scenario_run(
         console.print()
 
         with pipe_runner:
-            sequencer = PhaseSequencer(template, pipe_runner, config=initial_input)
+            _has_transitions = any(p.transitions for p in template.phases) or bool(
+                template.default_transitions
+            )
+            _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer
+            sequencer = _SequencerClass(template, pipe_runner, config=initial_input)
             try:
                 exec_result = sequencer.execute(initial_input)
             except Exception as exc:
