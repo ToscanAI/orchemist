@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 # starting a real server.
 _HTML_PATH = Path(__file__).parent / "templates" / "index.html"
 
+# Next.js static export directory (produced by `npm run build && npm run export`).
+# When present, the frontend SPA is served from here instead of index.html.
+_FRONTEND_OUT = Path(__file__).parent.parent.parent.parent / "frontend" / "out"
+
 
 def _resolve_template_by_name_or_id(engine, name: str):
     """Resolve a template by stem name OR by YAML ``id`` field.
@@ -61,9 +65,12 @@ def create_app():  # noqa: C901
     Returns:
         FastAPI application instance.
     """
+    import os as _os
+
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import HTMLResponse, JSONResponse
+    from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
     from sse_starlette.sse import EventSourceResponse
 
@@ -78,9 +85,12 @@ def create_app():  # noqa: C901
 
     # CORS — allow all origins for local development.
     # Fix 3: Drop allow_credentials (not needed for a local dev tool without cookies).
+    # When DEBUG=true, also explicitly add the Next.js dev server origin.
+    _debug_mode = _os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
+    _cors_origins = ["*"] if not _debug_mode else ["*", "http://localhost:3000"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_cors_origins,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -105,8 +115,18 @@ def create_app():  # noqa: C901
 
     @app.get("/", response_class=HTMLResponse)
     async def serve_spa() -> HTMLResponse:
-        """Serve the single-page HTML application."""
-        html = _HTML_PATH.read_text(encoding="utf-8")
+        """Serve the single-page HTML application.
+
+        When the Next.js static export exists (``frontend/out/``), serves
+        ``frontend/out/index.html``.  Falls back to the legacy vanilla-JS
+        ``templates/index.html`` when the export has not been built yet,
+        preserving full backward compatibility.
+        """
+        next_index = _FRONTEND_OUT / "index.html"
+        if next_index.exists():
+            html = next_index.read_text(encoding="utf-8")
+        else:
+            html = _HTML_PATH.read_text(encoding="utf-8")
         return HTMLResponse(content=html)
 
     @app.get("/api/health")
@@ -306,6 +326,20 @@ def create_app():  # noqa: C901
         run["paused_at_phase"] = None
         run["resume_event"].set()
         return JSONResponse({"ok": True, "run_id": run_id, "phase_id": req.phase_id})
+
+    # ------------------------------------------------------------------ #
+    # Static file serving for Next.js frontend (production build)         #
+    # ------------------------------------------------------------------ #
+    # Mount the Next.js static export under "/_next" and "/static" so that
+    # built assets (JS, CSS, images) are served correctly.  The root "/"
+    # handler above already serves the correct index.html.
+    if _FRONTEND_OUT.exists():
+        # Mount Next.js _next/ directory (chunked JS/CSS bundles)
+        _next_static = _FRONTEND_OUT / "_next"
+        if _next_static.exists():
+            app.mount("/_next", StaticFiles(directory=str(_next_static)), name="next-static")
+        # Mount any other top-level static directories from the export
+        app.mount("/static", StaticFiles(directory=str(_FRONTEND_OUT)), name="frontend-static")
 
     return app
 

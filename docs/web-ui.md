@@ -179,3 +179,82 @@ Completed runs are kept in memory for **1 hour** before being purged.
 | Port already in use | Use `orch serve --port <other-port>` |
 | Templates not appearing | Ensure templates are in `~/.orchestration-engine/templates/` or the current directory |
 | SSE stream disconnects immediately | Check browser console; the run may have errored before producing any events |
+
+---
+
+## Next.js Frontend (Issue #276)
+
+The repository includes a **Next.js 14** frontend scaffold in the `frontend/` directory. This is the future replacement for the legacy vanilla-JS `index.html` and provides a proper component library, TypeScript type safety, Tailwind CSS dark theme, and file-based routing.
+
+### Prerequisites
+
+- **Node.js ≥ 18** and **npm ≥ 9**
+- Python dependencies: `pip install orchestration-engine[web]`
+
+### Development Mode
+
+Run the Next.js dev server alongside the FastAPI backend:
+
+```bash
+# Terminal 1 — FastAPI backend (API + legacy UI fallback)
+orch serve
+
+# Terminal 2 — Next.js dev server with HMR
+orch frontend dev
+# Opens http://localhost:3000 with the new UI
+```
+
+The Next.js dev server proxies `/api/*` requests to the FastAPI backend running on port 8374.
+
+### Production Build
+
+Build and export the frontend as a static site:
+
+```bash
+orch frontend build
+```
+
+This runs `npm run build && npm run export` in the `frontend/` directory and writes output to `frontend/out/`. Once built, `orch serve` automatically serves the Next.js frontend instead of the legacy HTML file.
+
+### Installing JS Dependencies
+
+```bash
+cd frontend
+npm install
+```
+
+### Frontend Structure
+
+```
+frontend/
+├── app/                   # Next.js App Router pages
+│   ├── layout.tsx         # Root layout with dark theme + providers
+│   ├── page.tsx           # Dashboard (template list)
+│   ├── globals.css        # Tailwind base styles
+│   ├── runs/
+│   │   └── [id]/
+│   │       └── page.tsx   # Run detail with live SSE progress
+│   └── templates/
+│       └── [id]/
+│           └── page.tsx   # Template detail + launch form
+├── components/            # Reusable UI components
+│   ├── ui/                # Primitive components (Button, Badge, Card…)
+│   └── pipeline/          # Domain components (PhaseList, RunCard…)
+├── lib/
+│   ├── api.ts             # Typed API client (fetch wrappers)
+│   ├── sse.ts             # SSE hook with automatic reconnect
+│   └── types.ts           # TypeScript types mirroring API shapes
+├── next.config.js         # Static export + API proxy configuration
+├── tailwind.config.ts     # Dark theme colour tokens
+├── tsconfig.json          # TypeScript configuration
+└── package.json           # npm scripts and dependencies
+```
+
+### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `npm: command not found` | Install Node.js from https://nodejs.org/ |
+| `Cannot find module 'next'` | Run `cd frontend && npm install` |
+| API calls fail in dev mode | Ensure `orch serve` is running on port 8374 |
+| Static export not found | Run `orch frontend build` first |

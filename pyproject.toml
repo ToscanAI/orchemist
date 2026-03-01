@@ -44,6 +44,9 @@ web = [
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.20.0",
     "sse-starlette>=1.0.0",
+    # Note: the Next.js frontend (Issue #276) requires Node.js and npm.
+    # Install JS dependencies with: cd frontend && npm install
+    # Build the frontend with:      orch frontend build
 ]
 
 [project.scripts]

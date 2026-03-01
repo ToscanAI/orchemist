@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base layer overrides ────────────────────────────────────────────────── */
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    @apply bg-surface-canvas text-text-primary font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  body {
+    @apply min-h-screen;
+  }
+
+  /* Scrollbar styling (Webkit) */
+  ::-webkit-scrollbar {
+    @apply w-2 h-2;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-surface-canvas;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-border-emphasis;
+  }
+
+  /* Focus ring */
+  *:focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-surface-canvas;
+  }
+
+  /* Code / monospace */
+  code,
+  kbd,
+  pre,
+  samp {
+    @apply font-mono text-sm;
+  }
+
+  /* Links */
+  a {
+    @apply text-accent-hover underline-offset-2 hover:underline transition-colors;
+  }
+}
+
+/* ── Component layer ─────────────────────────────────────────────────────── */
+
+@layer components {
+  /* Card */
+  .card {
+    @apply bg-surface-card rounded-md border border-border p-4;
+  }
+
+  .card-elevated {
+    @apply bg-surface-elevated rounded-md border border-border p-4;
+  }
+
+  /* Badge variants */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium;
+  }
+
+  .badge-success {
+    @apply bg-status-success/10 text-status-success;
+  }
+
+  .badge-warning {
+    @apply bg-status-warning/10 text-status-warning;
+  }
+
+  .badge-error {
+    @apply bg-status-error/10 text-status-error;
+  }
+
+  .badge-info {
+    @apply bg-status-info/10 text-status-info;
+  }
+
+  .badge-running {
+    @apply bg-status-running/10 text-status-running;
+  }
+
+  .badge-muted {
+    @apply bg-surface-overlay text-text-secondary;
+  }
+
+  /* Spinner */
+  .spinner {
+    @apply animate-spin-slow rounded-full border-2 border-border border-t-accent;
+  }
+
+  /* Prose output area */
+  .prose-dark {
+    @apply text-text-primary leading-relaxed;
+  }
+
+  .prose-dark h1,
+  .prose-dark h2,
+  .prose-dark h3 {
+    @apply font-semibold text-text-primary mb-2 mt-4;
+  }
+
+  .prose-dark p {
+    @apply mb-3 text-text-secondary;
+  }
+
+  .prose-dark code {
+    @apply bg-surface-elevated rounded px-1 py-0.5 text-xs text-text-primary;
+  }
+
+  .prose-dark pre {
+    @apply bg-surface-elevated rounded-md p-3 overflow-x-auto text-xs text-text-primary;
+  }
+
+  .prose-dark ul,
+  .prose-dark ol {
+    @apply pl-5 mb-3 text-text-secondary;
+  }
+
+  .prose-dark li {
+    @apply mb-1;
+  }
+}

@@ -4065,6 +4065,106 @@ def serve(port: int, host: str, no_open: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# orch frontend — Next.js frontend management (Issue #276)
+# ---------------------------------------------------------------------------
+
+@main.group("frontend")
+def frontend_group() -> None:
+    """Manage the Next.js frontend (development and production build).
+
+    Requires Node.js and npm to be installed.  Run from the repository root.
+
+    The frontend source lives in the ``frontend/`` directory.  The production
+    static export is written to ``frontend/out/`` and is automatically served
+    by ``orch serve`` when present.
+    """
+
+
+@frontend_group.command("dev")
+@click.option("--port", default=3000, show_default=True, help="Port for the Next.js dev server.")
+def frontend_dev(port: int) -> None:
+    """Start the Next.js development server.
+
+    Runs ``npm run dev`` in the ``frontend/`` directory with hot-module
+    replacement enabled.  The FastAPI backend (``orch serve``) should be
+    running in a separate terminal so the dev server can proxy API requests.
+
+    Example:
+
+      # Terminal 1 — backend
+      orch serve
+
+      # Terminal 2 — frontend dev server
+      orch frontend dev
+    """
+    frontend_dir = Path(__file__).parent.parent.parent / "frontend"
+    if not frontend_dir.exists():
+        click.echo("✗ frontend/ directory not found. Has the repository been cloned fully?", err=True)
+        sys.exit(1)
+
+    env = os.environ.copy()
+    env["PORT"] = str(port)
+
+    click.echo(f"✓ Starting Next.js dev server on http://localhost:{port}")
+    click.echo("  Press Ctrl+C to stop.")
+
+    try:
+        result = subprocess.run(
+            ["npm", "run", "dev"],
+            cwd=str(frontend_dir),
+            env=env,
+        )
+        sys.exit(result.returncode)
+    except FileNotFoundError:
+        click.echo("✗ npm not found. Please install Node.js from https://nodejs.org/", err=True)
+        sys.exit(1)
+
+
+@frontend_group.command("build")
+def frontend_build() -> None:
+    """Build the Next.js frontend and export it as static HTML.
+
+    Runs ``npm run build`` followed by ``npm run export`` in the ``frontend/``
+    directory.  The output is written to ``frontend/out/`` and will be
+    automatically served by ``orch serve``.
+
+    Example:
+
+      orch frontend build
+      orch serve          # now serves the Next.js frontend
+    """
+    frontend_dir = Path(__file__).parent.parent.parent / "frontend"
+    if not frontend_dir.exists():
+        click.echo("✗ frontend/ directory not found. Has the repository been cloned fully?", err=True)
+        sys.exit(1)
+
+    click.echo("→ Building Next.js frontend…")
+    try:
+        build_result = subprocess.run(
+            ["npm", "run", "build"],
+            cwd=str(frontend_dir),
+        )
+        if build_result.returncode != 0:
+            click.echo("✗ Build failed.", err=True)
+            sys.exit(build_result.returncode)
+
+        click.echo("→ Exporting static files…")
+        export_result = subprocess.run(
+            ["npm", "run", "export"],
+            cwd=str(frontend_dir),
+        )
+        if export_result.returncode != 0:
+            click.echo("✗ Export failed.", err=True)
+            sys.exit(export_result.returncode)
+
+        click.echo("✓ Frontend built successfully → frontend/out/")
+        click.echo("  Run `orch serve` to serve the frontend.")
+    except FileNotFoundError:
+        click.echo("✗ npm not found. Please install Node.js from https://nodejs.org/", err=True)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # orch api-server — REST API server (Issue #257)
 # ---------------------------------------------------------------------------
 
