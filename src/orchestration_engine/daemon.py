@@ -1,9 +1,12 @@
 """Background daemon process for async pipeline execution.
 
 This module is the entry point for the background process spawned by
-``orch start``.  It reads the run configuration from the ``pipeline_runs``
-table, drives the existing PhaseSequencer through all phases, and writes
-progress back to the database so ``orch status`` can report it.
+``orch launch``.  It reads the run configuration from the ``pipeline_runs``
+table, auto-selects between :class:`~orchestration_engine.sequencer.PhaseSequencer`
+and :class:`~orchestration_engine.sequencer.StateMachineSequencer` based on
+whether the template defines ``transitions`` or ``default_transitions``, drives
+execution through all phases, and writes progress back to the database so
+``orch status`` can report it.
 
 Usage (internal — spawned by cli.py):
     python -m orchestration_engine.daemon <run_id> <db_path>
@@ -199,16 +202,24 @@ def run_daemon(run_id: str, db_path: str) -> None:
         )
 
     # --- Execute pipeline ---
-    from .sequencer import PhaseSequencer
+    from .sequencer import PhaseSequencer, StateMachineSequencer
 
-    logger.info("Starting PhaseSequencer.execute()")
+    # Auto-select sequencer: use StateMachineSequencer when the template
+    # declares transitions on any phase or at the template level.
+    # Mirrors the same detection logic used in cli.py (orch run / orch score).
+    _has_transitions = any(p.transitions for p in template.phases) or bool(
+        template.default_transitions
+    )
+    _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer
+
+    logger.info("Starting %s.execute()", _SequencerClass.__name__)
 
     aborted = False
     error_message: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
 
     with runner:
-        sequencer = PhaseSequencer(
+        sequencer = _SequencerClass(
             template, runner, config=initial_input,
             on_phase_complete=_on_phase_complete,
             output_dir=output_dir,

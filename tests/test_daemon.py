@@ -764,3 +764,220 @@ phases:
         assert log_file.exists(), "Log file should be created"
         log_content = log_file.read_text()
         assert len(log_content) > 0, "Log file should not be empty"
+
+
+# ---------------------------------------------------------------------------
+# 12. Sequencer selection — StateMachineSequencer vs PhaseSequencer (#236)
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonSequencerSelection:
+    """Verify that run_daemon() auto-selects the correct sequencer class.
+
+    The daemon must use StateMachineSequencer when the template declares
+    transitions on any phase or at template level (default_transitions), and
+    PhaseSequencer otherwise.  This mirrors the same detection logic in cli.py.
+    """
+
+    def _make_db_and_run(self, tmp_path, template_yaml: Path, run_id: str):
+        """Helper: create DB, insert run record, return (db, db_path)."""
+        from orchestration_engine.db import Database
+
+        out_dir = tmp_path / run_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        db_path = tmp_path / f"{run_id}.db"
+        db = Database(db_path)
+        db.insert_pipeline_run({
+            "run_id": run_id,
+            "template_path": str(template_yaml),
+            "template_id": "test-pipe",
+            "input_json": json.dumps({"topic": "test"}),
+            "mode": "dry-run",
+            "output_dir": str(out_dir),
+        })
+        return db, db_path
+
+    def test_no_transitions_selects_phase_sequencer(self, tmp_path):
+        """Template without transitions should use PhaseSequencer."""
+        template_yaml = tmp_path / "no-trans.yaml"
+        template_yaml.write_text("""\
+id: no-trans-pipe
+name: No Transitions Pipeline
+version: "1.0.0"
+description: Pipeline with no transitions
+phases:
+  - id: phase-a
+    name: Phase A
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Test: {input[topic]}
+""")
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.sequencer import PhaseSequencer
+
+        db, db_path = self._make_db_and_run(tmp_path, template_yaml, "sel-phase")
+
+        selected = []
+
+        original_init = PhaseSequencer.__init__
+
+        def patched_init(self_inner, *args, **kwargs):
+            selected.append(type(self_inner).__name__)
+            original_init(self_inner, *args, **kwargs)
+
+        with patch.object(PhaseSequencer, "__init__", patched_init):
+            run_daemon("sel-phase", str(db_path))
+
+        # PhaseSequencer (not StateMachineSequencer) should have been instantiated
+        assert selected, "No sequencer was instantiated"
+        assert selected[0] == "PhaseSequencer", (
+            f"Expected PhaseSequencer, got {selected[0]}"
+        )
+
+    def test_phase_transitions_selects_state_machine_sequencer(self, tmp_path):
+        """Template with per-phase transitions should use StateMachineSequencer."""
+        template_yaml = tmp_path / "phase-trans.yaml"
+        template_yaml.write_text("""\
+id: phase-trans-pipe
+name: Phase Transitions Pipeline
+version: "1.0.0"
+description: Pipeline with per-phase transitions
+phases:
+  - id: phase-a
+    name: Phase A
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Test: {input[topic]}
+    transitions:
+      success: phase-b
+  - id: phase-b
+    name: Phase B
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Follow-up: {input[topic]}
+""")
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.sequencer import StateMachineSequencer
+
+        db, db_path = self._make_db_and_run(tmp_path, template_yaml, "sel-sms-phase")
+
+        selected = []
+
+        original_init = StateMachineSequencer.__init__
+
+        def patched_init(self_inner, *args, **kwargs):
+            selected.append(type(self_inner).__name__)
+            original_init(self_inner, *args, **kwargs)
+
+        with patch.object(StateMachineSequencer, "__init__", patched_init):
+            run_daemon("sel-sms-phase", str(db_path))
+
+        assert selected, "No StateMachineSequencer was instantiated"
+        assert selected[0] == "StateMachineSequencer", (
+            f"Expected StateMachineSequencer, got {selected[0]}"
+        )
+
+    def test_default_transitions_selects_state_machine_sequencer(self, tmp_path):
+        """Template with default_transitions only should use StateMachineSequencer."""
+        template_yaml = tmp_path / "default-trans.yaml"
+        template_yaml.write_text("""\
+id: default-trans-pipe
+name: Default Transitions Pipeline
+version: "1.0.0"
+description: Pipeline with default_transitions only
+default_transitions:
+  success: phase-b
+phases:
+  - id: phase-a
+    name: Phase A
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Test: {input[topic]}
+  - id: phase-b
+    name: Phase B
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Follow-up: {input[topic]}
+""")
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.sequencer import StateMachineSequencer
+
+        db, db_path = self._make_db_and_run(tmp_path, template_yaml, "sel-sms-default")
+
+        selected = []
+
+        original_init = StateMachineSequencer.__init__
+
+        def patched_init(self_inner, *args, **kwargs):
+            selected.append(type(self_inner).__name__)
+            original_init(self_inner, *args, **kwargs)
+
+        with patch.object(StateMachineSequencer, "__init__", patched_init):
+            run_daemon("sel-sms-default", str(db_path))
+
+        assert selected, "No StateMachineSequencer was instantiated"
+        assert selected[0] == "StateMachineSequencer", (
+            f"Expected StateMachineSequencer, got {selected[0]}"
+        )
+
+    def test_sm_sequencer_result_keys_handled_without_error(self, tmp_path):
+        """run_daemon() must not crash on SM result with iteration_history/counts keys."""
+        template_yaml = tmp_path / "sm-result.yaml"
+        template_yaml.write_text("""\
+id: sm-result-pipe
+name: SM Result Pipeline
+version: "1.0.0"
+description: SM result handling test
+phases:
+  - id: step-one
+    name: Step One
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Test: {input[topic]}
+    transitions:
+      success: step-two
+  - id: step-two
+    name: Step Two
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Follow-up: {input[topic]}
+""")
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.db import Database
+
+        out_dir = tmp_path / "sm-result-run"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        db_path = tmp_path / "sm-result.db"
+        db = Database(db_path)
+        run_id = "sm-result-run"
+        db.insert_pipeline_run({
+            "run_id": run_id,
+            "template_path": str(template_yaml),
+            "template_id": "sm-result-pipe",
+            "input_json": json.dumps({"topic": "test"}),
+            "mode": "dry-run",
+            "output_dir": str(out_dir),
+        })
+
+        # Should complete without error — SM result dict with extra keys is fine
+        run_daemon(run_id, str(db_path))
+
+        db2 = Database(db_path)
+        run = db2.get_pipeline_run(run_id)
+        assert run is not None
+        assert run["status"] == "success", f"Expected success, got {run['status']}"
