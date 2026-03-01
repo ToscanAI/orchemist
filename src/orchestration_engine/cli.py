@@ -1651,10 +1651,7 @@ def pipeline_launch(
     )
     log_fh.close()
 
-    # Give it a moment to start, then update status/PID
-    time.sleep(0.3)
-    db.update_pipeline_run(run_id, pid=proc.pid, status='running',
-                           started_at=datetime.now().isoformat())
+    db.update_pipeline_run(run_id, pid=proc.pid)
 
     click.echo(f"✓ Pipeline launched in background")
     click.echo(f"  Run ID:  {run_id}")
