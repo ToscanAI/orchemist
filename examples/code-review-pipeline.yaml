@@ -16,6 +16,7 @@ description: >
   review report with actionable recommendations.
 author: "Toscan"
 category: "code"
+scenario: "scenarios/code-review-pipeline-scenario.yaml"  # Issue #295: required for code pipelines
 tags:
   - code-review
   - security

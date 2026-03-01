@@ -362,6 +362,57 @@ class TestTemplateValidation:
         errors = engine.validate_template(tpl)
         assert errors == []
 
+    # --- Issue #295: mandatory scenario for coding pipelines ---
+
+    def test_code_category_without_scenario_produces_error(self, engine):
+        """A category=code template with no scenario must produce a validation error."""
+        tpl = _simple_template("build")
+        tpl.category = "code"
+        tpl.scenario = None
+        errors = engine.validate_template(tpl)
+        assert any("require a scenario" in e for e in errors), (
+            f"Expected 'require a scenario' error for code template without scenario, got: {errors}"
+        )
+
+    def test_code_category_with_scenario_no_error(self, engine):
+        """A category=code template WITH a scenario must produce no scenario-related error."""
+        tpl = _simple_template("build")
+        tpl.category = "code"
+        tpl.scenario = "scenarios/quality.yaml"
+        errors = engine.validate_template(tpl)
+        assert not any("require a scenario" in e for e in errors), (
+            f"Unexpected 'require a scenario' error when scenario is set: {errors}"
+        )
+
+    def test_non_code_category_without_scenario_no_error(self, engine):
+        """A non-code category template (e.g. content) does NOT require a scenario."""
+        tpl = _simple_template("write")
+        tpl.category = "content"
+        tpl.scenario = None
+        errors = engine.validate_template(tpl)
+        assert not any("require a scenario" in e for e in errors), (
+            f"'require a scenario' error should only fire for code category: {errors}"
+        )
+
+    def test_empty_category_without_scenario_no_error(self, engine):
+        """A template with no category set does NOT require a scenario."""
+        tpl = _simple_template("work")
+        tpl.category = ""
+        tpl.scenario = None
+        errors = engine.validate_template(tpl)
+        assert not any("require a scenario" in e for e in errors)
+
+    def test_code_category_case_insensitive(self, engine):
+        """The mandatory-scenario check is case-insensitive (e.g. 'Code', 'CODE')."""
+        for cat in ("Code", "CODE", " code ", "cOdE"):
+            tpl = _simple_template("build")
+            tpl.category = cat
+            tpl.scenario = None
+            errors = engine.validate_template(tpl)
+            assert any("require a scenario" in e for e in errors), (
+                f"Expected error for category={cat!r}, got: {errors}"
+            )
+
 
 # ===========================================================================
 # 4. PhaseSequencer — Prompt Building
