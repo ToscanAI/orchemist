@@ -78,7 +78,7 @@ def run_scoring(
     template_file: Optional[Path] = None,
     exit_on_failure: bool = True,
     executor: Optional[Any] = None,
-) -> bool:
+) -> tuple:
     """Run post-pipeline auto-scoring for a completed pipeline run.
 
     Resolves the scenario file from ``template.scenario``, loads the
@@ -109,7 +109,10 @@ def run_scoring(
                   (e.g. the OpenClaw subscription token in openclaw mode).
 
     Returns:
+        A ``(passed: bool, weighted_score: float)`` tuple.  ``passed`` is
         ``True`` if the scenario passed, ``False`` otherwise.
+        ``weighted_score`` is the 0.0–1.0 weighted score from the grader;
+        ``0.0`` is returned on error paths.
         (Only meaningful when *exit_on_failure* is ``False``.)
 
     Raises:
@@ -183,7 +186,7 @@ def run_scoring(
         )
         if exit_on_failure:
             sys.exit(1)
-        return False
+        return False, 0.0
 
     scenario_name = scenario.get("name", scenario.get("id", scenario_path.stem))
     console.print()
@@ -208,7 +211,7 @@ def run_scoring(
         logger.exception("Auto-scoring grading error")
         if exit_on_failure:
             sys.exit(1)
-        return False
+        return False, 0.0
 
     # ── 7. Print score report ─────────────────────────────────────────
     _print_score_report(console, score_result, scenario)
@@ -217,7 +220,7 @@ def run_scoring(
     if not score_result.passed and exit_on_failure:
         sys.exit(1)
 
-    return score_result.passed
+    return score_result.passed, score_result.weighted_score
 
 
 def _print_score_report(console: Any, score_result: Any, scenario: dict) -> None:

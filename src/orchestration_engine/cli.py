@@ -353,6 +353,7 @@ def _print_run_summary_line(run: Dict[str, Any]) -> None:
         'failed': '❌',
         'cancelled': '🚫',
         'crashed': '💀',
+        'scoring_failed': '🔴',
     }.get(status, '❓')
 
     current_phase = run.get('current_phase') or '-'
@@ -417,6 +418,7 @@ def _print_run_detail(run: Dict[str, Any]) -> None:
         'failed': '❌',
         'cancelled': '🚫',
         'crashed': '💀',
+        'scoring_failed': '🔴',
     }.get(status, '❓')
 
     click.echo(f"Pipeline Run: {run_id}")
@@ -1729,7 +1731,7 @@ def pipeline_wait(run_id: str, timeout: int, interval: int, db_path: Optional[st
     effective_db_path = db_path or _get_persistent_db_path()
     db = Database(Path(effective_db_path))
 
-    terminal_states = {'success', 'failed', 'cancelled', 'crashed'}
+    terminal_states = {'success', 'failed', 'cancelled', 'crashed', 'scoring_failed'}
     deadline = time.time() + timeout
     last_phase = None
 

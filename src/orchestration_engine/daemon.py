@@ -267,7 +267,11 @@ def run_daemon(run_id: str, db_path: str) -> None:
         logger.warning("Failed to write summary: %s", exc)
 
     # Auto-scoring (optional)
+    # When scoring runs and fails, the pipeline run is marked 'scoring_failed'
+    # instead of 'success' so that `orch wait` can propagate the failure to
+    # callers (e.g. CI/CD pipelines).  Issue #288.
     skip_scoring = bool(run.get('skip_scoring', 0))
+    _final_status = 'success'
     if not skip_scoring and template.scenario:
         try:
             from rich.console import Console
@@ -277,21 +281,32 @@ def run_daemon(run_id: str, db_path: str) -> None:
             # through the same auth path (e.g. OpenClaw subscription token).
             # Issue #272.
             _scoring_executor = runner.executors[0] if runner.executors else None
-            scoring_passed = _run_scoring(
+            scoring_passed, scoring_score = _run_scoring(
                 template, output_dir=output_dir, console=console,
                 template_file=template_path, exit_on_failure=False,
                 executor=_scoring_executor,
             )
             _scoring_status = 'passed' if scoring_passed else 'failed'
-            logger.info("Auto-scoring complete: %s", _scoring_status)
-            db.update_pipeline_run(run_id, scoring_status=_scoring_status)
+            logger.info("Auto-scoring complete: %s  score=%.4f", _scoring_status, scoring_score)
+            db.update_pipeline_run(
+                run_id,
+                scoring_status=_scoring_status,
+                scoring_score=scoring_score,
+            )
+            # Gate final pipeline status on scoring outcome (Issue #288)
+            if not scoring_passed:
+                _final_status = 'scoring_failed'
+                logger.warning(
+                    "Scoring FAILED (score=%.4f) — marking run as 'scoring_failed'",
+                    scoring_score,
+                )
         except Exception as exc:
             logger.warning("Auto-scoring raised an exception: %s", exc)
             db.update_pipeline_run(run_id, scoring_status='error')
 
     db.update_pipeline_run(
         run_id,
-        status='success',
+        status=_final_status,
         completed_at=datetime.now().isoformat(),
         completed_phases=json.dumps(completed_phases),
         phase_outputs=json.dumps(phase_outputs, default=str),
