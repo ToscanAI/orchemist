@@ -2996,11 +2996,11 @@ def templates_test(verbose: bool, fail_fast: bool) -> None:
                     failure_rate=0.0,
                 )
                 with dry_runner:
-                    _has_tr = any(p.transitions for p in template.phases) or bool(
+                    _has_transitions = any(p.transitions for p in template.phases) or bool(
                         template.default_transitions
                     )
-                    _SeqCls = StateMachineSequencer if _has_tr else PhaseSequencer
-                    sequencer = _SeqCls(
+                    _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer
+                    sequencer = _SequencerClass(
                         template, dry_runner, config=input_data
                     )
                     result = sequencer.execute(input_data)
@@ -4260,11 +4260,11 @@ def scenario_run(
         console.print()
 
         with pipe_runner:
-            _has_tr_launch = any(p.transitions for p in template.phases) or bool(
+            _has_transitions = any(p.transitions for p in template.phases) or bool(
                 template.default_transitions
             )
-            _SeqCls_launch = StateMachineSequencer if _has_tr_launch else PhaseSequencer
-            sequencer = _SeqCls_launch(template, pipe_runner, config=initial_input)
+            _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer
+            sequencer = _SequencerClass(template, pipe_runner, config=initial_input)
             try:
                 exec_result = sequencer.execute(initial_input)
             except Exception as exc:

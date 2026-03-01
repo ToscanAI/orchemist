@@ -1857,7 +1857,7 @@ class StateMachineSequencer(PhaseSequencer):
                             f"Pipeline {self.template.id}: aborted by supervisor "
                             f"on phase '{phase.id}'"
                         )
-                        _safe_call_hook(
+                        self._safe_call_hook(
                             self.on_pipeline_complete,
                             self.pipeline_context,
                             None,
@@ -1906,7 +1906,7 @@ class StateMachineSequencer(PhaseSequencer):
             }
 
         except Exception:
-            _safe_call_hook(
+            self._safe_call_hook(
                 self.on_pipeline_complete,
                 self.pipeline_context,
                 None,
@@ -1915,7 +1915,7 @@ class StateMachineSequencer(PhaseSequencer):
             raise
 
         # ── Pipeline-complete hook (success path) ─────────────────────────────
-        _safe_call_hook(
+        self._safe_call_hook(
             self.on_pipeline_complete,
             self.pipeline_context,
             final_result,
@@ -1953,18 +1953,24 @@ class StateMachineSequencer(PhaseSequencer):
         }
         return effective.get(outcome.value)
 
+    # ------------------------------------------------------------------
+    # Hook helper
+    # ------------------------------------------------------------------
 
-def _safe_call_hook(hook, *args, pipeline_id: str = "") -> None:
-    """Call *hook* with *args*, logging but swallowing all exceptions.
+    @staticmethod
+    def _safe_call_hook(hook, *args, pipeline_id: str = "") -> None:
+        """Call *hook* with *args*, logging but swallowing all exceptions.
 
-    This mirrors the pattern used throughout :class:`PhaseSequencer` so that
-    a misbehaving ``on_pipeline_complete`` callback never crashes the pipeline.
-    """
-    if hook is None:
-        return
-    try:
-        hook(*args)
-    except Exception as hook_exc:
-        logger.warning(
-            f"Pipeline {pipeline_id}: on_pipeline_complete hook failed: {hook_exc}"
-        )
+        Kept as a ``@staticmethod`` on this class so it stays scoped to
+        :class:`StateMachineSequencer` rather than polluting the module namespace.
+        This mirrors the pattern used throughout :class:`PhaseSequencer` so that
+        a misbehaving ``on_pipeline_complete`` callback never crashes the pipeline.
+        """
+        if hook is None:
+            return
+        try:
+            hook(*args)
+        except Exception as hook_exc:
+            logger.warning(
+                f"Pipeline {pipeline_id}: on_pipeline_complete hook failed: {hook_exc}"
+            )
