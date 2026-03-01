@@ -829,7 +829,16 @@ class TemplateEngine:
         # Rule 6: At most one phase per parallel wave may have transitions.
         # Only checked when dep-resolution is clean (same guard as Rule cycle
         # detection above) to avoid misleading wave groupings.
-        if not dep_errors and execution_order:
+        #
+        # Pure state-machine templates (no phase has depends_on) are exempt
+        # from this rule: they are designed for StateMachineSequencer where
+        # all phases share wave 0 and routing is handled via transitions, not
+        # parallel wave execution.  Applying the parallel-wave constraint to
+        # such templates would produce false positives (Issue #301).
+        is_pure_state_machine = all(
+            not phase.depends_on for phase in template.phases
+        )
+        if not dep_errors and execution_order and not is_pure_state_machine:
             for wave_index, wave in enumerate(execution_order):
                 transition_phases_in_wave = [
                     pid for pid in wave if pid in phases_with_transitions
