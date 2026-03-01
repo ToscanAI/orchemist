@@ -15,10 +15,13 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +123,46 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         completed_at: Optional[str]
         created_at: Optional[str]
 
+    class TemplateCreateRequest(BaseModel):
+        """Body for POST /api/v1/templates — create a new template."""
+
+        content: str
+        """Raw YAML content of the template.  Must include id, name, and at
+        least one phase."""
+
+        source: Literal["user", "project"] = "user"
+        """Where to write the template.  ``'user'`` targets ``~/.orch/templates/``
+        (default); ``'project'`` targets ``./templates/`` in the server's CWD.
+        Bundled templates can never be written via the API."""
+
+        overwrite: bool = False
+        """Allow overwriting an existing template with the same ID.  Defaults to
+        ``False`` — the request will fail with 409 when the file already exists
+        and this is not set."""
+
+    class TemplateValidateRequest(BaseModel):
+        """Body for POST /api/v1/templates/validate — dry-run validate only."""
+
+        content: str
+        """Raw YAML content to validate without writing to disk."""
+
+        extended: bool = True
+        """Also run ``validate_template_extended()`` for deeper linting warnings.
+        Defaults to ``True``."""
+
+    class TemplateWriteResponse(BaseModel):
+        """Response body returned after a successful create or update."""
+
+        id: str
+        name: str
+        version: str
+        path: str
+        source: str
+        phases_count: int
+        created: bool
+        """``True`` when a new file was written; ``False`` when an existing file
+        was overwritten (update)."""
+
     # ------------------------------------------------------------------
     # Helper — build RunResponse dict from a DB row
     # ------------------------------------------------------------------
@@ -155,6 +198,97 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             "completed_at": run.get("completed_at"),
             "created_at": run.get("created_at"),
         }
+
+    # ------------------------------------------------------------------
+    # Helper — classify and resolve writable template paths
+    # ------------------------------------------------------------------
+
+    def _template_source(engine: "TemplateEngine", path: Path) -> str:  # type: ignore[name-defined]
+        """Return the source label for an absolute template *path*.
+
+        Compares *path* against each directory in ``engine.get_search_paths()``
+        and returns the label of the first matching directory.  Falls back to
+        ``"unknown"`` when the path does not belong to any search directory.
+
+        Args:
+            engine: A :class:`TemplateEngine` instance whose search paths are
+                    used for comparison.
+            path: Absolute path to the template file.
+
+        Returns:
+            One of ``"user"``, ``"project"``, ``"bundled"``, ``"custom"``, or
+            ``"unknown"``.
+        """
+        resolved = path.resolve()
+        for directory, label in engine.get_search_paths():
+            try:
+                resolved.relative_to(directory.resolve())
+                return label
+            except ValueError:
+                continue
+        return "unknown"
+
+    def _writable_template_path(
+        engine: "TemplateEngine",  # type: ignore[name-defined]
+        template_id: str,
+        source: str,
+    ) -> Path:
+        """Return the filesystem path where a template should be written.
+
+        Only ``"user"`` and ``"project"`` sources are accepted.  Attempting to
+        write to a ``"bundled"`` or ``"custom"`` source raises a 403.
+
+        Args:
+            engine: :class:`TemplateEngine` instance providing the directory
+                    locations.
+            template_id: The ``id`` field parsed from the template YAML.  Used
+                         as the file stem (e.g. ``my-template`` →
+                         ``my-template.yaml``).
+            source: One of ``"user"`` or ``"project"``.
+
+        Returns:
+            :class:`Path` to ``<directory>/<template_id>.yaml``.  The parent
+            directory is created if it does not exist.
+
+        Raises:
+            HTTPException(403): When *source* is ``"bundled"`` or ``"custom"``.
+            HTTPException(400): When *source* is not a recognised value.
+        """
+        if source == "user":
+            directory = engine._user_dir
+        elif source == "project":
+            directory = engine._project_dir
+        else:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Source '{source}' is read-only via the API.  "
+                    "Only 'user' and 'project' templates may be written."
+                ),
+            )
+
+        # Sanitize template_id to prevent path traversal attacks.
+        # IDs must start with an alphanumeric character and contain only
+        # alphanumeric characters, hyphens, dots, and underscores.
+        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', template_id):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid template id '{template_id}'.  "
+                    "IDs must contain only alphanumeric characters, hyphens, dots, and underscores."
+                ),
+            )
+
+        directory.mkdir(parents=True, exist_ok=True)
+        dest = directory / f"{template_id}.yaml"
+        # Double-check that the resolved destination is still inside the
+        # target directory (defence-in-depth against symlink attacks).
+        if dest.resolve().parent != directory.resolve():
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid template id (path traversal detected)",
+            )
+        return dest
 
     # ------------------------------------------------------------------
     # Helper — resolve template name or path
@@ -311,6 +445,315 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             }
         )
 
+    @app.post("/api/v1/templates/validate")
+    async def validate_template_api(req: TemplateValidateRequest) -> JSONResponse:
+        """Validate a template body without writing it to disk.
+
+        Parses the submitted YAML and runs the engine's validation logic,
+        returning a structured list of errors and (optionally) warnings.
+
+        Request body (JSON):
+            content (str): Raw YAML content to validate.
+            extended (bool): Also run extended linting.  Default ``True``.
+
+        Returns:
+            200 with ``{"valid": true/false, "errors": [...], "warnings": [...]}``
+            422 when the content cannot be parsed as YAML or is structurally
+                invalid (missing required top-level fields).
+        """
+        engine = TemplateEngine()
+
+        # 1. Parse YAML
+        try:
+            raw = yaml.safe_load(req.content)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "YAML parse error", "errors": [str(exc)], "warnings": []},
+            )
+
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Template must be a YAML mapping",
+                    "errors": ["Template content must be a YAML mapping (dict)"],
+                    "warnings": [],
+                },
+            )
+
+        # 2. Load via engine (uses a temporary file approach via load_template)
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
+            tmp.write(req.content)
+            tmp_path = Path(tmp.name)
+
+        try:
+            try:
+                template = engine.load_template(tmp_path)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": "Template load error",
+                        "errors": [str(exc)],
+                        "warnings": [],
+                    },
+                )
+
+            # 3. Basic validation
+            errors = engine.validate_template(template)
+
+            # 4. Extended validation (warnings)
+            warnings: List[str] = []
+            if req.extended:
+                try:
+                    warnings = engine.validate_template_extended(template)
+                except Exception as exc:
+                    warnings = [f"Extended validation error: {exc}"]
+
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        return JSONResponse(
+            {
+                "valid": len(errors) == 0,
+                "errors": errors,
+                "warnings": warnings,
+            }
+        )
+
+    @app.post("/api/v1/templates", status_code=201)
+    async def create_template(req: TemplateCreateRequest) -> JSONResponse:
+        """Create a new pipeline template by writing it to the templates directory.
+
+        Parses and validates the submitted YAML content, then writes it to the
+        appropriate templates directory (user or project) based on ``source``.
+        Bundled templates are never written via the API.
+
+        Request body (JSON):
+            content (str): Raw YAML content of the new template.
+            source (str): ``"user"`` (default) or ``"project"``.
+            overwrite (bool): Allow replacing an existing file.  Default ``False``.
+
+        Returns:
+            201 with a :class:`TemplateWriteResponse`-shaped JSON object.
+            409 when the template already exists and ``overwrite`` is ``False``.
+            422 when the content fails validation.
+        """
+        engine = TemplateEngine()
+
+        # 1. Parse YAML
+        try:
+            raw = yaml.safe_load(req.content)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "YAML parse error", "errors": [str(exc)]},
+            )
+
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Template must be a YAML mapping"},
+            )
+
+        # 2. Load and validate
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
+            tmp.write(req.content)
+            tmp_path = Path(tmp.name)
+
+        try:
+            try:
+                template = engine.load_template(tmp_path)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"message": "Template load error", "errors": [str(exc)]},
+                )
+
+            errors = engine.validate_template(template)
+            if errors:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"message": "Template validation failed", "errors": errors},
+                )
+
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        # 3. Determine destination path
+        dest = _writable_template_path(engine, template.id, req.source)
+
+        # 4. Conflict check
+        if dest.exists() and not req.overwrite:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Template '{template.id}' already exists at '{dest}'.  "
+                    "Set overwrite=true to replace it."
+                ),
+            )
+
+        created = not dest.exists()
+
+        # 5. Write
+        dest.write_text(req.content, encoding="utf-8")
+
+        return JSONResponse(
+            TemplateWriteResponse(
+                id=template.id,
+                name=template.name,
+                version=template.version,
+                path=str(dest.resolve()),
+                source=req.source,
+                phases_count=len(template.phases),
+                created=created,
+            ).model_dump(),
+            status_code=201,
+        )
+
+    @app.put("/api/v1/templates/{name}")
+    async def update_template(name: str, req: TemplateCreateRequest) -> JSONResponse:
+        """Update an existing user-owned pipeline template.
+
+        Resolves the template by *name*, validates the new content, and
+        overwrites the file in place.  Only ``"user"`` and ``"project"`` source
+        templates may be updated via the API; bundled templates return 403.
+
+        Path parameter:
+            name (str): Template name (file stem) or template ID.
+
+        Request body (JSON):
+            content (str): New YAML content.
+            source: Ignored for PUT (the destination is the existing file's path).
+            overwrite: Ignored for PUT (update always overwrites).
+
+        Returns:
+            200 with a :class:`TemplateWriteResponse`-shaped JSON object.
+            403 when the resolved template is bundled or custom (read-only).
+            404 when the template is not found.
+            422 when the new content fails validation.
+        """
+        engine = TemplateEngine()
+
+        # 1. Resolve the existing template to get its path
+        existing_path = _resolve_template(name)
+
+        # 2. Check source — only user templates are mutable via the API.
+        # Project and bundled templates are read-only (project templates are
+        # typically version-controlled; bundled templates are package assets).
+        source = _template_source(engine, existing_path)
+        if source != "user":
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Template '{name}' is a {source} template and cannot be "
+                    "modified via the API.  Only 'user' templates are writable."
+                ),
+            )
+
+        # 3. Parse YAML
+        try:
+            yaml.safe_load(req.content)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "YAML parse error", "errors": [str(exc)]},
+            )
+
+        # 4. Load and validate new content
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
+            tmp.write(req.content)
+            tmp_path = Path(tmp.name)
+
+        try:
+            try:
+                template = engine.load_template(tmp_path)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"message": "Template load error", "errors": [str(exc)]},
+                )
+
+            errors = engine.validate_template(template)
+            if errors:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"message": "Template validation failed", "errors": errors},
+                )
+
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        # 5. Overwrite existing file
+        existing_path.write_text(req.content, encoding="utf-8")
+
+        return JSONResponse(
+            TemplateWriteResponse(
+                id=template.id,
+                name=template.name,
+                version=template.version,
+                path=str(existing_path.resolve()),
+                source=source,
+                phases_count=len(template.phases),
+                created=False,
+            ).model_dump()
+        )
+
+    @app.delete("/api/v1/templates/{name}", status_code=200)
+    async def delete_template_api(name: str) -> JSONResponse:
+        """Delete a user-owned pipeline template.
+
+        Resolves the template by *name* or ID, checks that it belongs to the
+        ``"user"`` source (project, bundled, and custom templates are
+        protected), and removes the file from disk.
+
+        Path parameter:
+            name (str): Template name (file stem) or template ID.
+
+        Returns:
+            200 with ``{"deleted": true, "id": "...", "path": "..."}`` on success.
+            403 when the template is bundled or custom.
+            404 when the template is not found.
+        """
+        engine = TemplateEngine()
+
+        # 1. Resolve path
+        existing_path = _resolve_template(name)
+
+        # 2. Protect all non-user templates.
+        # Only user-owned templates may be deleted via the API.  Project and
+        # bundled templates are read-only (bundled = package assets; project =
+        # version-controlled repo files).
+        source = _template_source(engine, existing_path)
+        if source != "user":
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Template '{name}' is a {source} template and cannot be "
+                    "deleted via the API.  Only 'user' templates are writable."
+                ),
+            )
+
+        # 3. Attempt to get the id for the response (best-effort)
+        try:
+            template = engine.load_template(existing_path)
+            template_id = template.id
+        except Exception:
+            template_id = existing_path.stem
+
+        # 4. Delete
+        existing_path.unlink()
+
+        return JSONResponse(
+            {
+                "deleted": True,
+                "id": template_id,
+                "path": str(existing_path.resolve()),
+                "source": source,
+            }
+        )
+
     # ---- Pipeline Runs -----------------------------------------------
 
     @app.post("/api/v1/runs", status_code=201)
@@ -324,8 +767,6 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         Returns:
             201 with the new run record (same shape as GET /api/v1/runs/{run_id}).
         """
-        import yaml
-
         # 1. Resolve and validate template
         template_file = _resolve_template(req.template)
 
