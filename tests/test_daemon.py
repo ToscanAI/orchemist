@@ -341,7 +341,7 @@ class TestStartCommand:
     def test_start_command_creates_db_record(
         self, cli_runner, tmp_path, minimal_template_yaml, tmp_db
     ):
-        """'orch start' inserts a pipeline_runs record and exits 0."""
+        """'orch launch' inserts a pipeline_runs record and exits 0."""
         from orchestration_engine.cli import main
 
         out_dir = tmp_path / "start-out"
@@ -353,7 +353,7 @@ class TestStartCommand:
             mock_subp.Popen.return_value = mock_proc
 
             result = cli_runner.invoke(main, [
-                "start",
+                "launch",
                 str(minimal_template_yaml),
                 "--mode", "dry-run",
                 "--input", '{"topic": "AI"}',
@@ -366,7 +366,7 @@ class TestStartCommand:
     def test_start_command_prints_run_id(
         self, cli_runner, tmp_path, minimal_template_yaml, tmp_db
     ):
-        """'orch start' prints the run ID to stdout."""
+        """'orch launch' prints the run ID to stdout."""
         from orchestration_engine.cli import main
 
         out_dir = tmp_path / "print-out"
@@ -378,7 +378,7 @@ class TestStartCommand:
             mock_subp.Popen.return_value = mock_proc
 
             result = cli_runner.invoke(main, [
-                "start",
+                "launch",
                 str(minimal_template_yaml),
                 "--mode", "dry-run",
                 "--output-dir", str(out_dir),
@@ -391,11 +391,11 @@ class TestStartCommand:
     def test_start_command_invalid_template_exits_error(
         self, cli_runner, tmp_path, tmp_db
     ):
-        """'orch start' with nonexistent template exits with error."""
+        """'orch launch' with nonexistent template exits with error."""
         from orchestration_engine.cli import main
 
         result = cli_runner.invoke(main, [
-            "start",
+            "launch",
             str(tmp_path / "no-such.yaml"),
             "--mode", "dry-run",
             "--db-path", str(tmp_db.db_path),
@@ -406,7 +406,7 @@ class TestStartCommand:
     def test_start_command_spawns_popen(
         self, cli_runner, tmp_path, minimal_template_yaml, tmp_db
     ):
-        """'orch start' calls subprocess.Popen with start_new_session=True."""
+        """'orch launch' calls subprocess.Popen with start_new_session=True."""
         from orchestration_engine.cli import main
 
         out_dir = tmp_path / "popen-out"
@@ -418,7 +418,7 @@ class TestStartCommand:
             mock_subp.Popen.return_value = mock_proc
 
             result = cli_runner.invoke(main, [
-                "start",
+                "launch",
                 str(minimal_template_yaml),
                 "--mode", "dry-run",
                 "--output-dir", str(out_dir),

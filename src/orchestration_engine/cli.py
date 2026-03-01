@@ -309,8 +309,8 @@ def status(run_or_task_id: Optional[str]) -> None:
             runs = []
 
         if not runs:
-            click.echo("No pipeline runs found.  Use 'orch start <template>' to begin.")
-            click.echo("\nTip: 'orch status' lists recent async runs from 'orch start'.")
+            click.echo("No pipeline runs found.  Use 'orch launch <template>' to begin.")
+            click.echo("\nTip: 'orch status' lists recent async runs from 'orch launch'.")
             # Fall back to queue stats as secondary info
             try:
                 task_queue = get_queue()
@@ -1511,7 +1511,7 @@ def _execute_pipeline(
     return sequencer.execute(initial_input)
 
 
-@main.command("start")
+@main.command("launch")
 @click.argument('template_name_or_file')
 @click.option(
     '--mode',
@@ -1554,7 +1554,7 @@ def _execute_pipeline(
     default=None,
     help='Override path to the persistent pipeline-runs DB.',
 )
-def pipeline_start(
+def pipeline_launch(
     template_name_or_file: str,
     mode: str,
     input_json: Optional[str],
@@ -1564,14 +1564,14 @@ def pipeline_start(
     skip_scoring: bool,
     db_path: Optional[str],
 ) -> None:
-    """Start a pipeline in the background and return immediately.
+    """Launch a pipeline in the background and return immediately.
 
     Spawns a daemon process that runs the pipeline, then exits.  Use
     'orch status <run-id>' to check progress.
 
     \b
     Examples:
-      orch start content-pipeline --mode openclaw --input '{"brief": "AI"}'
+      orch launch content-pipeline --mode openclaw --input '{"brief": "AI"}'
       orch status <run-id>
       orch logs <run-id> --follow
       orch wait <run-id>
@@ -1655,7 +1655,7 @@ def pipeline_start(
     db.update_pipeline_run(run_id, pid=proc.pid, status='running',
                            started_at=datetime.now().isoformat())
 
-    click.echo(f"✓ Pipeline started in background")
+    click.echo(f"✓ Pipeline launched in background")
     click.echo(f"  Run ID:  {run_id}")
     click.echo(f"  PID:     {proc.pid}")
     click.echo(f"  Output:  {output_dir}/")
@@ -1783,7 +1783,7 @@ def pipeline_resume(run_id: str) -> None:
       orch resume a3f8c2d1
     """
     click.echo("✗ 'orch resume' is not yet implemented (v2 feature).", err=True)
-    click.echo("  To re-run from scratch:  orch start <template> [options]")
+    click.echo("  To re-run from scratch:  orch launch <template> [options]")
     sys.exit(1)
 
 
@@ -3244,7 +3244,7 @@ def _prompt_for_field(
     return value if value != "" else (None if not is_required else "")
 
 
-@main.command("wizard")
+@main.command("start")
 @click.argument("template_name_or_path")
 @click.option(
     "--mode",
@@ -3272,7 +3272,7 @@ def _prompt_for_field(
     help="Directory to write phase outputs.",
 )
 @click.pass_context
-def start_wizard(
+def pipeline_start(
     ctx: click.Context,
     template_name_or_path: str,
     mode: str,
