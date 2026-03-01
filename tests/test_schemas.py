@@ -50,6 +50,7 @@ class TestEnums:
         expected_types = {
             "content", "code", "research", "translation", "review",
             "triage", "analysis", "compliance", "financial", "sales", "support",
+            "command",
         }
         actual_types = {t.value for t in TaskType}
         assert actual_types == expected_types

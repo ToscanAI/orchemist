@@ -54,7 +54,18 @@ class Database:
             self._db_uri = None
             self.db_path = Path(db_path)
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        # SQLite shared-cache in-memory databases use *table-level* locking
+        # rather than the WAL-based database-level locking used by file DBs.
+        # Table-level locks are not subject to busy_timeout, so concurrent
+        # write transactions from multiple threads (parallel pipeline phases)
+        # immediately raise "database table is locked" instead of retrying.
+        # We serialise all write transactions with a threading.Lock when
+        # operating in shared-cache mode so callers never see that error.
+        self._write_lock: Optional[threading.Lock] = (
+            threading.Lock() if self._db_uri is not None else None
+        )
+
         # Initialize database schema
         self._initialize_database()
     
@@ -85,15 +96,46 @@ class Database:
         return self._local.connection
     
     @contextmanager
+    def _locked(self):
+        """Acquire the write lock (if any) for shared-cache in-memory DBs.
+
+        Use this to serialise read operations that would otherwise raise
+        ``OperationalError: database table is locked`` when another thread
+        holds a write lock on the same shared-cache database.
+        For file-based DBs this is a no-op (WAL handles it).
+        """
+        if self._write_lock is not None:
+            with self._write_lock:
+                yield
+        else:
+            yield
+
+    @contextmanager
     def transaction(self):
-        """Context manager for database transactions."""
+        """Context manager for database transactions.
+
+        For shared-cache in-memory databases (used in tests / dry-run) the
+        lock serialises writes across threads so that table-level locking
+        does not raise ``OperationalError: database table is locked``.
+        File-based databases with WAL mode handle concurrency natively and
+        do not need the extra lock.
+        """
         conn = self.get_connection()
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        if self._write_lock is not None:
+            with self._write_lock:
+                try:
+                    yield conn
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+        else:
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
     
     def _configure_connection(self, conn: sqlite3.Connection) -> None:
         """Configure SQLite connection with optimal settings."""
@@ -365,9 +407,10 @@ class Database:
     
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         """Get a task by ID."""
-        conn = self.get_connection()
-        cursor = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
-        row = cursor.fetchone()
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+            row = cursor.fetchone()
         
         if row is None:
             return None
