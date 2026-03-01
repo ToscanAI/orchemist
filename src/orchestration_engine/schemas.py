@@ -621,3 +621,8 @@ class RunnerStatus(BaseModel):
 # Configuration Import (from config.py)
 # Note: EngineConfig is defined in config.py to avoid circular imports
 # Import it when needed: from .config import EngineConfig
+
+# Re-export PhaseOutcome and determine_outcome from transitions so callers can
+# do ``from orchestration_engine.schemas import PhaseOutcome`` without needing
+# to know which module owns the definition.
+from .transitions import PhaseOutcome, determine_outcome  # noqa: F401  re-export
