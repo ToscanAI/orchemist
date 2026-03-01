@@ -1649,6 +1649,7 @@ def pipeline_launch(
         stdout=log_fh,
         stderr=log_fh,
     )
+    log_fh.close()
 
     # Give it a moment to start, then update status/PID
     time.sleep(0.3)
