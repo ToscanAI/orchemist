@@ -682,7 +682,7 @@ class TemplateEngine:
         effective_transitions: Dict[str, Dict[str, str]],
         all_phase_ids: Set[str],
     ) -> List[List[str]]:
-        """Detect cycles in the transition graph using iterative DFS.
+        """Detect cycles in the transition graph using recursive DFS.
 
         Args:
             effective_transitions: Mapping of phase_id → effective transitions
@@ -791,12 +791,6 @@ class TemplateEngine:
         phases_with_transitions: Set[str] = {
             pid for pid, eff in effective_transitions.items() if eff
         }
-
-        # Rule 5: "Transition-involved" = has transitions OR is the target
-        # of any transition.  Stored for potential downstream use.
-        # (The set is computed here to make it accessible to future rules
-        # without re-scanning the transition graph.)
-        _transition_involved: Set[str] = phases_with_transitions | all_transition_targets  # noqa: F841
 
         # Rule 1: All transition targets must be known phase IDs
         for phase in template.phases:
