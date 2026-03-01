@@ -1065,12 +1065,40 @@ def run_template(
             )
             sys.exit(1)
         from .scoring import run_scoring as _run_scoring
+        # Build an executor for the LLM judge grader so that scoring uses the
+        # same authentication path as the mode specified by the caller.
+        # In openclaw mode this routes judge calls through the gateway token
+        # instead of a raw ANTHROPIC_API_KEY.  Issue #272.
+        import os as _os_so
+        _so_executor = None
+        if mode == "openclaw":
+            try:
+                from .openclaw_executor import OpenClawExecutor
+                _so_url = gateway_url or _os_so.environ.get("OPENCLAW_GATEWAY_URL")
+                _so_token = gateway_token or _os_so.environ.get("OPENCLAW_GATEWAY_TOKEN")
+                _so_executor = OpenClawExecutor(
+                    gateway_url=_so_url,
+                    gateway_token=_so_token,
+                )
+            except Exception as _so_exc:
+                click.echo(
+                    f"⚠ Could not create OpenClawExecutor for grader: {_so_exc}\n"
+                    "  LLM judge criteria will fall back to ANTHROPIC_API_KEY.",
+                    err=True,
+                )
+        elif mode == "standalone" and api_key:
+            try:
+                from .executors.anthropic_executor import AnthropicExecutor
+                _so_executor = AnthropicExecutor(api_key=api_key)
+            except Exception:
+                pass  # fall back to ANTHROPIC_API_KEY env var
         _run_scoring(
             template,
             output_dir=output_dir,
             console=console,
             template_file=template_file,
             exit_on_failure=True,
+            executor=_so_executor,
         )
         sys.exit(0)
 
@@ -1451,12 +1479,17 @@ def run_template(
     # --- Auto-scoring (Issue #172) ------------------------------------
     if not skip_scoring and template.scenario:
         from .scoring import run_scoring as _run_scoring_auto
+        # Forward the pipeline executor so that LLM judge criteria are routed
+        # through the same authentication path as the pipeline itself (e.g. the
+        # OpenClaw subscription token in openclaw mode).  Issue #272.
+        _scoring_executor = runner.executors[0] if runner.executors else None
         _run_scoring_auto(
             template,
             output_dir=output_dir,
             console=console,
             template_file=template_file,
             exit_on_failure=True,
+            executor=_scoring_executor,
         )
 
 

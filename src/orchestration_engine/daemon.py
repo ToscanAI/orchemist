@@ -262,8 +262,13 @@ def run_daemon(run_id: str, db_path: str) -> None:
             from rich.console import Console
             from .scoring import run_scoring as _run_scoring
             console = Console(highlight=False, force_terminal=False, no_color=True)
+            # Forward the pipeline executor so LLM judge criteria route
+            # through the same auth path (e.g. OpenClaw subscription token).
+            # Issue #272.
+            _scoring_executor = runner.executors[0] if runner.executors else None
             _run_scoring(template, output_dir=output_dir, console=console,
-                         template_file=template_path, exit_on_failure=False)
+                         template_file=template_path, exit_on_failure=False,
+                         executor=_scoring_executor)
             logger.info("Auto-scoring complete")
         except Exception as exc:
             logger.warning("Auto-scoring failed: %s", exc)

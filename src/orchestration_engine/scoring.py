@@ -77,6 +77,7 @@ def run_scoring(
     console: Optional[Any] = None,
     template_file: Optional[Path] = None,
     exit_on_failure: bool = True,
+    executor: Optional[Any] = None,
 ) -> bool:
     """Run post-pipeline auto-scoring for a completed pipeline run.
 
@@ -100,6 +101,12 @@ def run_scoring(
         exit_on_failure: When ``True`` (the default), calls ``sys.exit(1)``
                          if the scenario does not pass.  Set to ``False``
                          in tests to avoid process termination.
+        executor: Optional executor object (e.g. ``OpenClawExecutor`` or
+                  ``AnthropicExecutor``).  When provided, LLM judge criteria
+                  are routed through ``executor.execute()`` instead of direct
+                  urllib calls.  Pass the same executor used for the pipeline
+                  run so that judge scoring shares the same authentication path
+                  (e.g. the OpenClaw subscription token in openclaw mode).
 
     Returns:
         ``True`` if the scenario passed, ``False`` otherwise.
@@ -166,7 +173,7 @@ def run_scoring(
     # ── 4. Load scenario ──────────────────────────────────────────────
     import yaml
 
-    scenario_runner = ScenarioRunner(scenarios_dir=scenario_path.parent)
+    scenario_runner = ScenarioRunner(scenarios_dir=scenario_path.parent, executor=executor)
     try:
         scenario = scenario_runner.load_scenario(scenario_path)
     except (ValueError, yaml.YAMLError) as exc:
