@@ -1468,49 +1468,6 @@ def _get_persistent_db_path() -> str:
     return str(default_dir / "engine.db")
 
 
-def _execute_pipeline(
-    template: Any,
-    runner: Any,
-    initial_input: Dict[str, Any],
-    output_dir: Path,
-    *,
-    on_phase_complete=None,
-    on_phase_start=None,
-    on_pipeline_start=None,
-    on_pipeline_complete=None,
-) -> Dict[str, Any]:
-    """Core pipeline execution helper — runs PhaseSequencer.execute().
-
-    Extracted from run_template() so the daemon can share the same
-    code path.  Does NOT write outputs to disk or print summaries;
-    callers are responsible for those steps.
-
-    Args:
-        template:           Loaded PipelineTemplate object.
-        runner:             PipelineRunner context manager (already entered).
-        initial_input:      Dict of pipeline input data.
-        output_dir:         Path to write phase outputs.
-        on_phase_complete:  Optional callback(phase_id, result).
-        on_phase_start:     Optional callback(phase_id, phase, wave_index).
-        on_pipeline_start:  Optional callback(pipeline_context).
-        on_pipeline_complete: Optional callback(pipeline_context, result).
-
-    Returns:
-        The result dict from sequencer.execute().
-    """
-    from .sequencer import PhaseSequencer
-
-    sequencer = PhaseSequencer(
-        template, runner, config=initial_input,
-        on_phase_complete=on_phase_complete,
-        on_phase_start=on_phase_start,
-        on_pipeline_start=on_pipeline_start,
-        on_pipeline_complete=on_pipeline_complete,
-        output_dir=output_dir,
-    )
-    return sequencer.execute(initial_input)
-
-
 @main.command("launch")
 @click.argument('template_name_or_file')
 @click.option(
