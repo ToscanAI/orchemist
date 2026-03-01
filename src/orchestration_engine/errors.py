@@ -34,6 +34,10 @@ class OrchestratorError(Exception):
     """Base exception for all orchestration engine errors."""
 
 
+class ValidationError(OrchestratorError):
+    """Raised when a pipeline template fails structural validation."""
+
+
 class GatewayHTTPError(OrchestratorError):
     """Raised when the OpenClaw gateway returns an HTTP error response.
 

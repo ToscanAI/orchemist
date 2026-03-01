@@ -7,7 +7,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
@@ -649,6 +649,85 @@ class TemplateEngine:
 
         return waves
 
+    # ------------------------------------------------------------------
+    # Transition graph helpers (Issue #232)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_effective_transitions(
+        template: "PipelineTemplate",
+    ) -> Dict[str, Dict[str, str]]:
+        """Compute effective transitions per phase using per-key merge semantics.
+
+        Effective = {**template.default_transitions, **phase.transitions}
+
+        Phase-level keys override pipeline-level defaults; absent keys fall
+        back to the pipeline default.  This implements Rule 2 (per-key merge,
+        not all-or-nothing replacement).
+
+        Args:
+            template: Loaded :class:`PipelineTemplate`.
+
+        Returns:
+            Mapping of phase_id → effective transitions dict.
+        """
+        result: Dict[str, Dict[str, str]] = {}
+        for phase in template.phases:
+            effective = {**template.default_transitions, **phase.transitions}
+            result[phase.id] = effective
+        return result
+
+    @staticmethod
+    def _detect_transition_cycles(
+        effective_transitions: Dict[str, Dict[str, str]],
+        all_phase_ids: Set[str],
+    ) -> List[List[str]]:
+        """Detect cycles in the transition graph using iterative DFS.
+
+        Args:
+            effective_transitions: Mapping of phase_id → effective transitions
+                                   (from :meth:`_compute_effective_transitions`).
+            all_phase_ids: Full set of known phase IDs.
+
+        Returns:
+            A list of cycles, each expressed as an ordered list of phase IDs
+            forming the cycle (the last element loops back to the first).
+            Returns an empty list when the transition graph is acyclic.
+        """
+        # Build adjacency: phase_id → sorted set of reachable phase_ids
+        graph: Dict[str, List[str]] = {pid: [] for pid in all_phase_ids}
+        for pid, eff in effective_transitions.items():
+            for target in eff.values():
+                if target in all_phase_ids and target not in graph[pid]:
+                    graph[pid].append(target)
+        for pid in graph:
+            graph[pid].sort()
+
+        visited: Set[str] = set()
+        rec_stack: Set[str] = set()
+        cycles: List[List[str]] = []
+
+        def dfs(node: str, path: List[str]) -> None:
+            visited.add(node)
+            rec_stack.add(node)
+            path.append(node)
+            for neighbor in graph.get(node, []):
+                if neighbor not in visited:
+                    dfs(neighbor, path)
+                elif neighbor in rec_stack:
+                    # Found cycle — extract cycle portion
+                    cycle_start = path.index(neighbor)
+                    cycle = path[cycle_start:] + [neighbor]
+                    cycles.append(cycle)
+            path.pop()
+            rec_stack.discard(node)
+
+        for phase_id in sorted(all_phase_ids):
+            if phase_id not in visited:
+                dfs(phase_id, [])
+
+        return cycles
+
     def validate_template(self, template: PipelineTemplate) -> List[str]:
         """Validate a pipeline template for structural errors.
 
@@ -685,18 +764,77 @@ class TemplateEngine:
         # Check for cycles only when there are no missing-dep errors
         # (missing deps can make the cycle detector give false positives)
         dep_errors = [e for e in errors if "depends on unknown" in e]
+
+        # Compute execution order once for reuse (cycle check + Rule 6)
+        execution_order: List[List[str]] = []
         if not dep_errors:
-            ordered_ids = {
-                pid
-                for wave in self.get_execution_order(template)
-                for pid in wave
-            }
+            execution_order = self.get_execution_order(template)
+            ordered_ids = {pid for wave in execution_order for pid in wave}
             missing_from_order = all_ids - ordered_ids
             if missing_from_order:
                 errors.append(
                     f"Cycle detected involving phase(s): "
                     f"{sorted(missing_from_order)}"
                 )
+
+        # --- Transition graph validation (Issue #232) -----------------
+
+        # Rule 2: Build effective transitions via per-key merge semantics
+        effective_transitions = self._compute_effective_transitions(template)
+
+        # All phase IDs that appear as transition targets anywhere
+        all_transition_targets: Set[str] = set()
+        for phase_effective in effective_transitions.values():
+            all_transition_targets.update(phase_effective.values())
+
+        # Phases that have non-empty effective transitions
+        phases_with_transitions: Set[str] = {
+            pid for pid, eff in effective_transitions.items() if eff
+        }
+
+        # Rule 5: "Transition-involved" = has transitions OR is the target
+        # of any transition.  Stored for potential downstream use.
+        # (The set is computed here to make it accessible to future rules
+        # without re-scanning the transition graph.)
+        _transition_involved: Set[str] = phases_with_transitions | all_transition_targets  # noqa: F841
+
+        # Rule 1: All transition targets must be known phase IDs
+        for phase in template.phases:
+            eff = effective_transitions[phase.id]
+            for outcome, target_id in eff.items():
+                if target_id not in all_ids:
+                    errors.append(
+                        f"Phase '{phase.id}': transition target '{target_id}' "
+                        f"for outcome '{outcome}' does not exist "
+                        f"(known phases: {sorted(all_ids)})"
+                    )
+
+        # Rule 4: max_iterations must be > 0 at pipeline level when any
+        # transitions are declared.
+        # Note: PipelineTemplate.__post_init__ already clamps max_iterations
+        # to at least 1, so this check is a defensive guard for any future
+        # change that removes that clamping.
+        if phases_with_transitions and template.max_iterations < 1:
+            errors.append(
+                f"Pipeline '{template.id}' has transition phases but "
+                f"max_iterations={template.max_iterations} — "
+                f"must be > 0 when transitions are declared."
+            )
+
+        # Rule 6: At most one phase per parallel wave may have transitions.
+        # Only checked when dep-resolution is clean (same guard as Rule cycle
+        # detection above) to avoid misleading wave groupings.
+        if not dep_errors and execution_order:
+            for wave_index, wave in enumerate(execution_order):
+                transition_phases_in_wave = [
+                    pid for pid in wave if pid in phases_with_transitions
+                ]
+                if len(transition_phases_in_wave) > 1:
+                    errors.append(
+                        f"Wave {wave_index} contains multiple transition phases "
+                        f"{sorted(transition_phases_in_wave)} — at most one phase "
+                        f"per parallel wave may have transitions."
+                    )
 
         # Validate git config if present
         if template.git_config is not None and template.git_config.enabled:
@@ -897,5 +1035,38 @@ class TemplateEngine:
             warnings.append("Recommended documentation field 'use_cases' is missing or empty")
         if not raw_data.get("example_input"):
             warnings.append("Recommended documentation field 'example_input' is missing or empty")
+
+        # --- Transition graph advisory checks (Issue #232) ------------
+
+        effective_transitions_ext = self._compute_effective_transitions(template)
+
+        # Rule 3: Detect cycles in the transition graph (warn, not error —
+        # cycles are valid when max_iterations > 0, but should be flagged as
+        # advisory so authors can confirm they are intentional).
+        transition_cycles = self._detect_transition_cycles(
+            effective_transitions_ext, phase_ids
+        )
+        for cycle in transition_cycles:
+            warnings.append(
+                f"Transition cycle detected: {' → '.join(cycle)} "
+                f"(valid with max_iterations, but verify this is intentional)"
+            )
+
+        # Rule 7: Warn when depends_on is non-empty on a phase that is a
+        # transition target — dependency ordering and transition routing may
+        # conflict, since a transition can jump back to a phase whose
+        # depends_on prerequisites have already been satisfied.
+        all_transition_targets_ext: Set[str] = set()
+        for eff in effective_transitions_ext.values():
+            all_transition_targets_ext.update(eff.values())
+
+        for phase in template.phases:
+            if phase.id in all_transition_targets_ext and phase.depends_on:
+                warnings.append(
+                    f"Phase '{phase.id}' is a transition target but also has "
+                    f"depends_on={phase.depends_on} — transition routing and "
+                    f"dependency ordering may conflict. Consider removing "
+                    f"depends_on from transition target phases."
+                )
 
         return errors, warnings
