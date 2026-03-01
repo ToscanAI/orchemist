@@ -536,6 +536,23 @@ class TestWaitCommand:
 
         assert result.exit_code == 2
 
+    def test_wait_scoring_failed_exits_two(self, cli_runner, tmp_db, tmp_path):
+        """'orch wait' exits 2 when status=scoring_failed (Issue #288)."""
+        from orchestration_engine.cli import main
+
+        self._insert_run(tmp_db, "wait-score-fail", "scoring_failed", tmp_path)
+
+        result = cli_runner.invoke(main, [
+            "wait", "wait-score-fail",
+            "--timeout", "30",
+            "--db-path", str(tmp_db.db_path),
+        ])
+
+        assert result.exit_code == 2, (
+            f"Expected exit code 2 for scoring_failed, got {result.exit_code}. "
+            f"Output: {result.output}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 9. Resume command — stub
@@ -1056,7 +1073,8 @@ class TestDaemonScoringStatusTracking:
 
         # _run_scoring is imported inside the function body, so we patch the
         # source module's symbol (orchestration_engine.scoring.run_scoring).
-        with patch("orchestration_engine.scoring.run_scoring", return_value=True):
+        # run_scoring now returns (passed, weighted_score) tuple (Issue #288).
+        with patch("orchestration_engine.scoring.run_scoring", return_value=(True, 0.9)):
             run_daemon("score-pass", str(db_path))
 
         run = Database(db_path).get_pipeline_run("score-pass")
@@ -1067,19 +1085,24 @@ class TestDaemonScoringStatusTracking:
         )
 
     def test_scoring_failed_sets_scoring_status_failed(self, tmp_path):
-        """When _run_scoring() returns False, scoring_status='failed' is written to DB."""
+        """When _run_scoring() returns (False, score), scoring_status='failed' and
+        run status='scoring_failed' are written to DB (Issue #288)."""
         from orchestration_engine.daemon import run_daemon
         from orchestration_engine.db import Database
 
         template_yaml = self._write_template_with_scenario(tmp_path, "s.yaml")
         db, db_path, _ = self._setup_db_and_run(tmp_path, template_yaml, "score-fail")
 
-        with patch("orchestration_engine.scoring.run_scoring", return_value=False):
+        # run_scoring now returns (passed, weighted_score) tuple (Issue #288).
+        with patch("orchestration_engine.scoring.run_scoring", return_value=(False, 0.4)):
             run_daemon("score-fail", str(db_path))
 
         run = Database(db_path).get_pipeline_run("score-fail")
         assert run is not None
-        assert run["status"] == "success"
+        # Pipeline phases succeeded but scoring failed → status='scoring_failed'
+        assert run["status"] == "scoring_failed", (
+            f"Expected 'scoring_failed', got {run['status']!r}"
+        )
         assert run["scoring_status"] == "failed", (
             f"Expected 'failed', got {run['scoring_status']!r}"
         )

@@ -353,7 +353,8 @@ class TestRunScoringUnit:
                 exit_on_failure=False,
             )
 
-        assert result is True
+        # run_scoring now returns (passed, weighted_score) tuple (Issue #288)
+        assert result[0] is True
 
     def test_returns_false_when_scenario_fails(self, tmp_path, completed_output_dir):
         """run_scoring returns False when the scenario does not pass."""
@@ -388,7 +389,8 @@ class TestRunScoringUnit:
                 exit_on_failure=False,  # Don't sys.exit in tests
             )
 
-        assert result is False
+        # run_scoring now returns (passed, weighted_score) tuple (Issue #288)
+        assert result[0] is False
 
 
 # ---------------------------------------------------------------------------
