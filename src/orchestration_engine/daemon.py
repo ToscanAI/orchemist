@@ -166,6 +166,13 @@ def run_daemon(run_id: str, db_path: str) -> None:
     completed_phases: list = []
     phase_outputs: Dict[str, Any] = {}
 
+    def _on_phase_start(phase_id: str, phase: Any, wave_index: int) -> None:
+        """Emit a phase_started event to the DB for SSE streaming (Issue #258)."""
+        if _shutdown_requested:
+            return
+        logger.info("Phase start: %s  wave=%d", phase_id, wave_index)
+        _write_phase_event(db, run_id, phase_id, "phase_started")
+
     def _on_phase_complete(phase_id: str, phase_result: dict) -> None:
         """Update DB after each phase completes."""
         if _shutdown_requested:
@@ -201,6 +208,17 @@ def run_daemon(run_id: str, db_path: str) -> None:
             phase_outputs=json.dumps(phase_outputs, default=str),
         )
 
+        # Emit phase_completed event for SSE streaming (Issue #258)
+        tokens = phase_result.get('tokens_consumed')
+        cost = phase_result.get('cost_usd')
+        _write_phase_event(
+            db, run_id, phase_id, "phase_completed",
+            phase_result=phase_result,
+            tokens_consumed=int(tokens) if tokens is not None else None,
+            cost_usd=float(cost) if cost is not None else None,
+            state=state_val,
+        )
+
     # --- Execute pipeline ---
     from .sequencer import PhaseSequencer, StateMachineSequencer
 
@@ -222,6 +240,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
         sequencer = _SequencerClass(
             template, runner, config=initial_input,
             on_phase_complete=_on_phase_complete,
+            on_phase_start=_on_phase_start,
             output_dir=output_dir,
         )
 
@@ -336,6 +355,59 @@ def run_daemon(run_id: str, db_path: str) -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _write_phase_event(
+    db: Any,
+    run_id: str,
+    phase_id: str,
+    event_type: str,
+    phase_result: Optional[Dict[str, Any]] = None,
+    tokens_consumed: Optional[int] = None,
+    cost_usd: Optional[float] = None,
+    state: Optional[str] = None,
+) -> None:
+    """Write a phase lifecycle event to the DB for SSE live-progress streaming.
+
+    Writes a row to ``pipeline_run_events`` so the SSE endpoint can emit
+    fine-grained ``phase_started`` / ``phase_completed`` events to connected
+    clients.  Failures are logged and swallowed so that a DB write error
+    never aborts the pipeline.
+
+    Args:
+        db: The :class:`~orchestration_engine.db.Database` instance.
+        run_id: The pipeline run identifier.
+        phase_id: The phase identifier.
+        event_type: One of ``'phase_started'`` or ``'phase_completed'``.
+        phase_result: Raw phase result dict (used for metadata).  May be
+            ``None`` for ``phase_started`` events.
+        tokens_consumed: Override for token count (pre-extracted by caller).
+        cost_usd: Override for cost in USD (pre-extracted by caller).
+        state: Serialised state string (pre-extracted by caller).
+    """
+    try:
+        metadata: Dict[str, Any] = {}
+        if phase_result:
+            # Capture a lightweight summary rather than the full result blob
+            result_inner = phase_result.get('result', {})
+            if isinstance(result_inner, dict):
+                metadata['word_count'] = len(
+                    str(result_inner.get('output') or '').split()
+                )
+        db.insert_pipeline_run_event(
+            run_id=run_id,
+            event_type=event_type,
+            phase_id=phase_id,
+            tokens_consumed=tokens_consumed,
+            cost_usd=cost_usd,
+            state=state,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not write phase event (run=%s phase=%s type=%s): %s",
+            run_id, phase_id, event_type, exc,
+        )
 
 
 def _fail(db: Any, run_id: str, pid_path: Path, message: str) -> None:

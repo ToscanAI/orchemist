@@ -154,6 +154,7 @@ class Database:
         with self.transaction() as conn:
             # Create tables
             self._create_tables(conn)
+            self._create_tables_pipeline_run_events(conn)
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -312,6 +313,27 @@ class Database:
             )
         """)
     
+    def _create_tables_pipeline_run_events(self, conn: sqlite3.Connection) -> None:
+        """Create pipeline_run_events table for SSE live-progress streaming (Issue #258)."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_run_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                phase_id TEXT,
+                tokens_consumed INTEGER,
+                cost_usd REAL,
+                state TEXT,
+                metadata_json TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pipeline_run_events_run_id
+            ON pipeline_run_events(run_id, id)
+        """)
+
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """Create performance indexes."""
 
@@ -394,6 +416,7 @@ class Database:
         # Define migrations
         migrations = [
             ("001_add_scoring_status", self._migration_001_add_scoring_status),
+            ("002_add_pipeline_run_events", self._migration_002_add_pipeline_run_events),
         ]
         
         # Apply pending migrations
@@ -421,6 +444,31 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass  # column already exists
+
+    def _migration_002_add_pipeline_run_events(self, conn: sqlite3.Connection) -> None:
+        """Add pipeline_run_events table for SSE live-progress streaming (Issue #258).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+        Safe to run on both fresh and existing databases.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_run_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                phase_id TEXT,
+                tokens_consumed INTEGER,
+                cost_usd REAL,
+                state TEXT,
+                metadata_json TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pipeline_run_events_run_id
+            ON pipeline_run_events(run_id, id)
+        """)
 
     # Task Operations
     
@@ -1076,6 +1124,92 @@ class Database:
                 (datetime.now().isoformat(), run_id),
             )
             return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Pipeline Run Events (Issue #258 — SSE live-progress streaming)
+    # ------------------------------------------------------------------
+
+    def insert_pipeline_run_event(
+        self,
+        run_id: str,
+        event_type: str,
+        phase_id: Optional[str] = None,
+        tokens_consumed: Optional[int] = None,
+        cost_usd: Optional[float] = None,
+        state: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Insert a pipeline run event and return its auto-incremented id.
+
+        Args:
+            run_id: The pipeline run identifier.
+            event_type: One of ``'phase_started'``, ``'phase_completed'``,
+                or ``'status_changed'``.
+            phase_id: Phase identifier (``None`` for run-level events).
+            tokens_consumed: Token count from the phase result, if available.
+            cost_usd: Cost in USD from the phase result, if available.
+            state: Serialised ``TaskState`` value (e.g. ``'success'``,
+                ``'failed'``), if available.
+            metadata: Arbitrary JSON-serialisable dict stored as
+                ``metadata_json``.  Defaults to ``{}``.
+
+        Returns:
+            The ``id`` of the newly inserted event row.
+        """
+        metadata_json = json.dumps(metadata or {})
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO pipeline_run_events
+                    (run_id, event_type, phase_id, tokens_consumed,
+                     cost_usd, state, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (run_id, event_type, phase_id, tokens_consumed,
+                 cost_usd, state, metadata_json),
+            )
+            return cursor.lastrowid  # type: ignore[return-value]
+
+    def list_pipeline_run_events(
+        self,
+        run_id: str,
+        after_id: int = 0,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return pipeline run events newer than *after_id* for a given run.
+
+        Used by the SSE endpoint to page through events in a tail loop:
+        the caller passes the ``id`` of the last received event so that
+        only fresh rows are returned on each poll iteration.
+
+        Args:
+            run_id: Filter by pipeline run identifier.
+            after_id: Return only rows with ``id > after_id``.  Pass ``0``
+                (default) to retrieve all events from the beginning.
+            limit: Maximum number of rows to return per call.
+
+        Returns:
+            List of event dicts ordered by ``id ASC``.  Each dict includes
+            ``id``, ``run_id``, ``event_type``, ``phase_id``,
+            ``tokens_consumed``, ``cost_usd``, ``state``,
+            ``metadata_json`` (raw string), and ``created_at``.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                """
+                SELECT id, run_id, event_type, phase_id,
+                       tokens_consumed, cost_usd, state,
+                       metadata_json, created_at
+                FROM pipeline_run_events
+                WHERE run_id = ? AND id > ?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (run_id, after_id, limit),
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
 
     def close(self) -> None:
         """Close database connections."""

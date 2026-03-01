@@ -40,10 +40,13 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
     Returns:
         Configured ``FastAPI`` instance.
     """
-    from fastapi import FastAPI, HTTPException
+    import asyncio
+
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
     from pydantic import BaseModel
+    from sse_starlette.sse import EventSourceResponse
 
     from orchestration_engine import __version__
     from orchestration_engine.db import Database
@@ -480,6 +483,108 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
 
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
         return JSONResponse({"run_id": run_id, "log": log_text})
+
+    @app.get("/api/v1/runs/{run_id}/stream")
+    async def stream_run(run_id: str, request: Request) -> EventSourceResponse:
+        """Stream live phase-transition events for a pipeline run via SSE.
+
+        Connects to the ``pipeline_run_events`` table and emits fine-grained
+        events as the daemon writes them.  The stream ends automatically once
+        the run reaches a terminal state (``success``, ``failed``,
+        ``cancelled``, ``crashed``, ``scoring_failed``) **and** all buffered
+        events have been delivered.
+
+        **Event types** (``event`` field):
+
+        * ``phase_started`` — daemon has begun executing the phase.
+        * ``phase_completed`` — phase finished; ``data`` includes
+          ``tokens_consumed``, ``cost_usd``, and ``state``.
+        * ``status_changed`` — run-level status transition (emitted once on
+          terminal state: ``success``, ``failed``, ``cancelled``, ``crashed``,
+          ``scoring_failed``).
+        * ``error`` — run not found or unexpected failure.
+
+        **Data** is a JSON object with at minimum ``run_id`` and ``phase_id``
+        (``null`` for run-level events).
+
+        **Polling interval:** 1 second.  Clients that disconnect trigger a
+        clean server-side shutdown of the generator.
+
+        Raises 404 when the run ID is not found (returned as an SSE
+        ``error`` event rather than an HTTP error so the EventSource protocol
+        stays clean).
+        """
+        _TERMINAL_STATES = {"success", "failed", "cancelled", "crashed", "scoring_failed"}
+        _POLL_INTERVAL = 1.0  # seconds between DB polls
+
+        db = Database(Path(effective_db_path))
+
+        # Validate run exists before opening the stream.
+        run = db.get_pipeline_run(run_id)
+        if run is None:
+            async def _not_found():
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": f"Run '{run_id}' not found"}),
+                }
+            return EventSourceResponse(_not_found())
+
+        async def _event_generator():
+            last_event_id = 0
+            emitted_terminal = False
+
+            while True:
+                # Respect client disconnect
+                if await request.is_disconnected():
+                    break
+
+                # Fetch new events since the last one delivered
+                events = db.list_pipeline_run_events(
+                    run_id, after_id=last_event_id
+                )
+                for evt in events:
+                    last_event_id = evt["id"]
+                    payload = {
+                        "run_id": run_id,
+                        "phase_id": evt.get("phase_id"),
+                        "tokens_consumed": evt.get("tokens_consumed"),
+                        "cost_usd": evt.get("cost_usd"),
+                        "state": evt.get("state"),
+                        "created_at": (
+                            evt["created_at"].isoformat()
+                            if hasattr(evt.get("created_at"), "isoformat")
+                            else evt.get("created_at")
+                        ),
+                    }
+                    yield {
+                        "event": evt["event_type"],
+                        "data": json.dumps(payload),
+                        "id": str(evt["id"]),
+                    }
+
+                # Check current run status for terminal state
+                current_run = db.get_pipeline_run(run_id)
+                if current_run and current_run.get("status") in _TERMINAL_STATES:
+                    if not emitted_terminal:
+                        emitted_terminal = True
+                        terminal_payload = {
+                            "run_id": run_id,
+                            "phase_id": None,
+                            "status": current_run["status"],
+                            "completed_at": current_run.get("completed_at"),
+                            "error_message": current_run.get("error_message"),
+                        }
+                        yield {
+                            "event": "status_changed",
+                            "data": json.dumps(terminal_payload),
+                        }
+                    # Drain any remaining events before closing
+                    if not events:
+                        break
+
+                await asyncio.sleep(_POLL_INTERVAL)
+
+        return EventSourceResponse(_event_generator())
 
     @app.delete("/api/v1/runs/{run_id}", status_code=200)
     async def cancel_run(run_id: str) -> JSONResponse:
