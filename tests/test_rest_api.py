@@ -139,7 +139,7 @@ class TestLaunchRun:
     """Tests for POST /api/v1/runs."""
 
     def test_returns_201(self, client, tmp_path):
-        with patch("subprocess.Popen", side_effect=_fake_popen):
+        with patch("orchestration_engine.web.api.subprocess.Popen", side_effect=_fake_popen):
             res = client.post(
                 "/api/v1/runs",
                 json={
@@ -152,7 +152,7 @@ class TestLaunchRun:
         assert res.status_code == 201, res.text
 
     def test_response_has_run_id(self, client, tmp_path):
-        with patch("subprocess.Popen", side_effect=_fake_popen):
+        with patch("orchestration_engine.web.api.subprocess.Popen", side_effect=_fake_popen):
             data = client.post(
                 "/api/v1/runs",
                 json={
@@ -165,7 +165,7 @@ class TestLaunchRun:
         assert len(data["run_id"]) == 8
 
     def test_response_has_expected_status(self, client, tmp_path):
-        with patch("subprocess.Popen", side_effect=_fake_popen):
+        with patch("orchestration_engine.web.api.subprocess.Popen", side_effect=_fake_popen):
             data = client.post(
                 "/api/v1/runs",
                 json={
@@ -178,7 +178,7 @@ class TestLaunchRun:
         assert data["status"] in ("pending", "running")
 
     def test_response_pid_set(self, client, tmp_path):
-        with patch("subprocess.Popen", side_effect=_fake_popen):
+        with patch("orchestration_engine.web.api.subprocess.Popen", side_effect=_fake_popen):
             data = client.post(
                 "/api/v1/runs",
                 json={
@@ -204,7 +204,7 @@ class TestLaunchRun:
         assert res.status_code == 422
 
     def test_template_id_in_response(self, client, tmp_path):
-        with patch("subprocess.Popen", side_effect=_fake_popen):
+        with patch("orchestration_engine.web.api.subprocess.Popen", side_effect=_fake_popen):
             data = client.post(
                 "/api/v1/runs",
                 json={
@@ -222,7 +222,7 @@ class TestLaunchRun:
 
 class TestGetRun:
     def _launch(self, client, tmp_path) -> Dict[str, Any]:
-        with patch("subprocess.Popen", side_effect=_fake_popen):
+        with patch("orchestration_engine.web.api.subprocess.Popen", side_effect=_fake_popen):
             return client.post(
                 "/api/v1/runs",
                 json={
@@ -262,7 +262,7 @@ class TestGetRun:
 
 class TestListRuns:
     def _launch(self, client, tmp_path, suffix="") -> Dict[str, Any]:
-        with patch("subprocess.Popen", side_effect=_fake_popen):
+        with patch("orchestration_engine.web.api.subprocess.Popen", side_effect=_fake_popen):
             return client.post(
                 "/api/v1/runs",
                 json={
@@ -339,7 +339,7 @@ class TestRunLogs:
         # Pre-create a log file so the endpoint can serve it
         (out_dir / ".orch-daemon.log").write_text("test log entry\n")
 
-        with patch("subprocess.Popen", side_effect=_fake_popen):
+        with patch("orchestration_engine.web.api.subprocess.Popen", side_effect=_fake_popen):
             return client.post(
                 "/api/v1/runs",
                 json={
@@ -395,7 +395,7 @@ class TestRunLogs:
 
 class TestCancelRun:
     def _launch(self, client, tmp_path, suffix="") -> Dict[str, Any]:
-        with patch("subprocess.Popen", side_effect=_fake_popen):
+        with patch("orchestration_engine.web.api.subprocess.Popen", side_effect=_fake_popen):
             return client.post(
                 "/api/v1/runs",
                 json={

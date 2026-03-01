@@ -371,21 +371,22 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
 
         # 4. Spawn daemon subprocess (same as cli.py pipeline_launch)
         log_file_path = output_dir / ".orch-daemon.log"
-        log_fh = open(str(log_file_path), "a")
-
-        proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "orchestration_engine.daemon",
-                run_id,
-                effective_db_path,
-            ],
-            start_new_session=True,
-            stdout=log_fh,
-            stderr=log_fh,
-        )
-        log_fh.close()
+        # Use a with block so log_fh is closed even if Popen raises, preventing
+        # a file-descriptor leak.  The child process (start_new_session=True)
+        # inherits the fd and keeps it open independently.
+        with open(str(log_file_path), "a") as log_fh:
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "orchestration_engine.daemon",
+                    run_id,
+                    effective_db_path,
+                ],
+                start_new_session=True,
+                stdout=log_fh,
+                stderr=log_fh,
+            )
 
         db.update_pipeline_run(run_id, pid=proc.pid)
 
@@ -411,7 +412,11 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         Returns:
             JSON object with ``items`` array and ``total`` count.
         """
-        limit = min(limit, 100)
+        # Clamp limit/offset to avoid surprising SQLite behaviour with
+        # negative values (negative LIMIT means "no limit"; negative OFFSET
+        # is treated as 0 by SQLite but is semantically wrong).
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
         db = Database(Path(effective_db_path))
         runs = db.list_pipeline_runs_filtered(
             status=status,

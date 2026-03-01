@@ -1049,7 +1049,14 @@ class Database:
         if current_status in terminal_states:
             return False
 
-        # Best-effort SIGTERM to the daemon process
+        # NOTE: TOCTOU — the status check above and the SIGTERM below are outside
+        # a single DB transaction.  A concurrent caller could cancel the same run
+        # between the SELECT and the UPDATE.  The UPDATE's WHERE guard
+        # (status NOT IN terminal_states) prevents double-updates to the DB, so
+        # there is no data corruption.  The only risk is that SIGTERM is sent to
+        # a recycled PID if the OS reuses the process ID in the window between
+        # the SELECT and the kill(); this window is tiny and the kill is
+        # best-effort, so the risk is acceptable for now.
         if pid:
             try:
                 _os.kill(int(pid), _signal.SIGTERM)
