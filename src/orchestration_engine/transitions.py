@@ -56,6 +56,8 @@ def determine_outcome(result: Dict[str, Any]) -> PhaseOutcome:
 
     # Normalise: strip whitespace and lower-case in case values were stored
     # as raw strings with inconsistent casing.
+    # Non-string state values (e.g. int, None from bad serialisation) skip
+    # normalisation and fall through to the default FAILED return below.
     if isinstance(state, str):
         state = state.strip().lower()
 

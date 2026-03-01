@@ -184,6 +184,13 @@ class TestDetermineOutcomeEdgeCases:
         }
         assert determine_outcome(result) == PhaseOutcome.SUCCESS
 
+    def test_non_string_state_yields_failed(self):
+        """Non-string state values (e.g. int, bool) skip normalisation and fall
+        through to the default FAILED — documents intentional defensive behaviour."""
+        assert determine_outcome({"state": 1}) == PhaseOutcome.FAILED
+        assert determine_outcome({"state": True}) == PhaseOutcome.FAILED
+        assert determine_outcome({"state": 0}) == PhaseOutcome.FAILED
+
     def test_returns_phase_outcome_type(self):
         """Return type is always PhaseOutcome, not a plain string."""
         outcome = determine_outcome({"state": "success"})
