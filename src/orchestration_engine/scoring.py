@@ -197,7 +197,9 @@ def run_scoring(
 
     # ── 6. Grade ──────────────────────────────────────────────────────
     try:
-        score_result = scenario_runner.run_scenario(scenario, pipeline_output)
+        score_result = scenario_runner.run_scenario(
+            scenario, pipeline_output, output_dir=output_dir
+        )
     except Exception as exc:
         console.print(
             f"[red]✗ Auto-scoring failed:[/red] grading error: {exc}",
