@@ -118,32 +118,84 @@ class LLMJudgeGrader:
         output_dir: Path,
         output_field: Optional[str],
     ) -> Optional[str]:
-        """Read the most relevant ``.md`` output file from *output_dir*.
+        """Read the most relevant ``.md`` output file(s) from *output_dir*.
 
-        Resolution order:
-        1. ``{output_dir}/{safe_field}.md``   — when *output_field* is given.
-        2. ``{output_dir}/_final_output.md``  — always tried as fallback.
+        When *output_field* is given (targeted lookup):
+            1. ``{output_dir}/{safe_field}.md``   — exact per-phase file match.
+            2. ``{output_dir}/_final_output.md``  — fallback.
+            Returns the first non-empty file found, or ``None``.
+            ``safe_field`` converts hyphens to underscores, matching the file
+            naming convention used by ``cli._safe_write_phase_output()``.
 
-        Returns the file content string, or ``None`` if no readable file is
-        found.  ``safe_field`` converts hyphens to underscores, matching the
-        file naming convention used by ``cli._safe_write_phase_output()``.
+        When *output_field* is None (all-phases read):
+            1. Glob all ``*.md`` files in *output_dir* that do NOT start with
+               ``_`` (i.e., phase output files, not meta files like
+               ``_final_output.md`` or ``_summary.md``).
+            2. Sort by mtime ascending (pipeline execution order), then name
+               as a deterministic tiebreaker.
+            3. Concatenate non-empty file contents with ``"\\n\\n---\\n\\n"``.
+            4. Fallback: if no phase files found, try ``_final_output.md``.
+            Returns concatenated content, or ``None`` if nothing readable.
+
+        This ensures the judge sees ALL phase outputs for multi-phase
+        pipelines (e.g. spec → implement → review → fix → test_generation),
+        rather than only the final phase's output.
         """
         output_dir = Path(output_dir)
 
-        candidates: list[Path] = []
         if output_field:
+            # Targeted single-file lookup — behaviour unchanged from #286.
             safe_field = output_field.replace("-", "_")
-            candidates.append(output_dir / f"{safe_field}.md")
-        candidates.append(output_dir / "_final_output.md")
+            candidates: list[Path] = [
+                output_dir / f"{safe_field}.md",
+                output_dir / "_final_output.md",
+            ]
+            for candidate in candidates:
+                try:
+                    if candidate.exists():
+                        content = candidate.read_text(encoding="utf-8").strip()
+                        if content:
+                            return content
+                except OSError:
+                    continue
+            return None
 
-        for candidate in candidates:
+        # No output_field — read ALL phase .md files and concatenate.
+        # Phase files: any *.md in output_dir whose name does NOT start with
+        # '_'.  Meta files (_final_output.md, _summary.md, etc.) are excluded.
+        try:
+            phase_files = sorted(
+                (
+                    p for p in output_dir.glob("*.md")
+                    if not p.name.startswith("_")
+                ),
+                key=lambda p: (p.stat().st_mtime, p.name),
+            )
+        except OSError:
+            phase_files = []
+
+        parts: list[str] = []
+        for phase_file in phase_files:
             try:
-                if candidate.exists():
-                    content = candidate.read_text(encoding="utf-8").strip()
-                    if content:
-                        return content
+                content = phase_file.read_text(encoding="utf-8").strip()
+                if content:
+                    parts.append(content)
             except OSError:
                 continue
+
+        if parts:
+            return "\n\n---\n\n".join(parts)
+
+        # Fallback: no phase files found — try _final_output.md.
+        final_md = output_dir / "_final_output.md"
+        try:
+            if final_md.exists():
+                content = final_md.read_text(encoding="utf-8").strip()
+                if content:
+                    return content
+        except OSError:
+            pass
+
         return None
 
     def grade(
@@ -182,10 +234,14 @@ class LLMJudgeGrader:
 
         output_dir:
             Optional path to the pipeline run output directory.  When
-            provided, the grader reads a clean ``.md`` file from disk instead
-            of serialising the raw output dict.  Resolution order:
-            ``{output_dir}/{safe_field}.md`` → ``{output_dir}/_final_output.md``
-            → dict-based extraction (fallback).
+            provided, the grader reads clean ``.md`` file(s) from disk
+            instead of serialising the raw output dict.  When *output_field*
+            is set, resolution is: ``{output_dir}/{safe_field}.md`` →
+            ``{output_dir}/_final_output.md``.  When *output_field* is
+            ``None``, ALL non-underscore-prefixed ``.md`` files in
+            *output_dir* are concatenated (sorted by mtime), falling back to
+            ``_final_output.md`` if none exist.  Falls through to
+            dict-based extraction when no suitable file is found.
 
         Returns:
             GradeResult with score 0.0–1.0 and full judge reasoning as

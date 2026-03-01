@@ -1,4 +1,4 @@
-"""Tests for Issue #286 — Judge file-reference handoff.
+"""Tests for Issue #286/#294 — Judge file-reference handoff.
 
 Pass .md file paths (not raw dict content) to the LLM judge when output_dir
 is available.  Tests cover:
@@ -15,6 +15,16 @@ is available.  Tests cover:
   JFR-10: _read_output_file() returns None on OSError (permission denied)
   JFR-11: File content stripped of leading/trailing whitespace
   JFR-12: Empty .md file → fallback, not empty string to judge
+
+Issue #294 — Read ALL phase .md files (TestReadAllPhaseFiles):
+  RAP-1:  Multiple phase files concatenated in mtime order
+  RAP-2:  Separator "---" appears between phase file contents
+  RAP-3:  Empty phase files skipped (not included in concatenation)
+  RAP-4:  Underscore-prefixed files excluded from phase glob
+  RAP-5:  Single phase file returns its content without separator
+  RAP-6:  Falls back to _final_output.md when no phase files exist
+  RAP-7:  output_field=None + phase files preferred over _final_output.md
+  RAP-8:  Alphabetic tiebreaker used when mtime is identical
 """
 
 from __future__ import annotations
@@ -616,3 +626,192 @@ class TestRunScoringOutputDirPropagation:
         call_kwargs = mock_instance.run_scenario.call_args[1]
         assert call_kwargs.get("output_dir") is not None
         assert call_kwargs.get("output_dir") == out_dir
+
+
+# ---------------------------------------------------------------------------
+# Issue #294 — TestReadAllPhaseFiles
+# ---------------------------------------------------------------------------
+
+
+class TestReadAllPhaseFiles:
+    """_read_output_file() concatenates ALL phase .md files when output_field=None.
+
+    Phase files are any *.md in output_dir whose name does NOT start with '_'.
+    Meta files (_final_output.md, _summary.md, etc.) are excluded from the
+    glob and only used as a fallback when no phase files exist.
+    """
+
+    def test_rap1_multiple_phase_files_concatenated_in_mtime_order(
+        self, tmp_path: Path
+    ):
+        """RAP-1: Multiple phase files are concatenated sorted by mtime ascending."""
+        import time
+
+        spec_md = tmp_path / "spec.md"
+        spec_md.write_text("# Spec\nSpec content here.", encoding="utf-8")
+        time.sleep(0.02)  # ensure distinct mtimes
+        implement_md = tmp_path / "implement.md"
+        implement_md.write_text("# Implement\nCode here.", encoding="utf-8")
+        time.sleep(0.02)
+        review_md = tmp_path / "review.md"
+        review_md.write_text("# Review\nLGTM.", encoding="utf-8")
+
+        grader = LLMJudgeGrader()
+        result = grader._read_output_file(tmp_path, None)
+
+        assert result is not None
+        # All three phase files should appear
+        assert "Spec content here." in result
+        assert "Code here." in result
+        assert "LGTM." in result
+        # mtime order: spec → implement → review
+        spec_idx = result.index("Spec content here.")
+        implement_idx = result.index("Code here.")
+        review_idx = result.index("LGTM.")
+        assert spec_idx < implement_idx < review_idx
+
+    def test_rap2_separator_appears_between_phase_contents(self, tmp_path: Path):
+        """RAP-2: "---" separator appears between concatenated phase files."""
+        import time
+
+        (tmp_path / "alpha.md").write_text("alpha content", encoding="utf-8")
+        time.sleep(0.02)
+        (tmp_path / "beta.md").write_text("beta content", encoding="utf-8")
+
+        grader = LLMJudgeGrader()
+        result = grader._read_output_file(tmp_path, None)
+
+        assert result is not None
+        assert "\n\n---\n\n" in result
+        assert result == "alpha content\n\n---\n\nbeta content"
+
+    def test_rap3_empty_phase_files_skipped(self, tmp_path: Path):
+        """RAP-3: Empty (whitespace-only) phase files are skipped in concatenation."""
+        import time
+
+        (tmp_path / "first.md").write_text("first content", encoding="utf-8")
+        time.sleep(0.02)
+        (tmp_path / "empty.md").write_text("   \n  ", encoding="utf-8")  # empty
+        time.sleep(0.02)
+        (tmp_path / "third.md").write_text("third content", encoding="utf-8")
+
+        grader = LLMJudgeGrader()
+        result = grader._read_output_file(tmp_path, None)
+
+        assert result is not None
+        assert "first content" in result
+        assert "third content" in result
+        # The empty file should not add an extra separator
+        assert result == "first content\n\n---\n\nthird content"
+
+    def test_rap4_underscore_prefixed_files_excluded_from_glob(self, tmp_path: Path):
+        """RAP-4: Files starting with '_' are NOT included in phase glob."""
+        (tmp_path / "_final_output.md").write_text("final meta", encoding="utf-8")
+        (tmp_path / "_summary.md").write_text("summary meta", encoding="utf-8")
+        (tmp_path / "spec.md").write_text("spec phase", encoding="utf-8")
+
+        grader = LLMJudgeGrader()
+        result = grader._read_output_file(tmp_path, None)
+
+        assert result is not None
+        assert "spec phase" in result
+        # Meta files must NOT appear in the concatenated output
+        assert "final meta" not in result
+        assert "summary meta" not in result
+
+    def test_rap5_single_phase_file_returns_content_without_separator(
+        self, tmp_path: Path
+    ):
+        """RAP-5: A single phase file returns its content with no separator."""
+        (tmp_path / "implement.md").write_text("only phase content", encoding="utf-8")
+
+        grader = LLMJudgeGrader()
+        result = grader._read_output_file(tmp_path, None)
+
+        assert result == "only phase content"
+        assert "---" not in result
+
+    def test_rap6_falls_back_to_final_output_when_no_phase_files(
+        self, tmp_path: Path
+    ):
+        """RAP-6: Falls back to _final_output.md when no phase files exist."""
+        (tmp_path / "_final_output.md").write_text("final fallback", encoding="utf-8")
+        # No non-underscore .md files
+
+        grader = LLMJudgeGrader()
+        result = grader._read_output_file(tmp_path, None)
+
+        assert result == "final fallback"
+
+    def test_rap7_phase_files_preferred_over_final_output_when_both_exist(
+        self, tmp_path: Path
+    ):
+        """RAP-7: Phase files are used even when _final_output.md also exists."""
+        (tmp_path / "_final_output.md").write_text("final content", encoding="utf-8")
+        (tmp_path / "spec.md").write_text("spec phase content", encoding="utf-8")
+
+        grader = LLMJudgeGrader()
+        result = grader._read_output_file(tmp_path, None)
+
+        assert result is not None
+        assert "spec phase content" in result
+        # _final_output.md must NOT be included when phase files exist
+        assert "final content" not in result
+
+    def test_rap8_alphabetic_tiebreaker_for_identical_mtime(self, tmp_path: Path):
+        """RAP-8: When mtime is identical, files are sorted alphabetically by name."""
+        import time
+
+        # Write both files at (approximately) the same time
+        a_md = tmp_path / "aardvark.md"
+        z_md = tmp_path / "zebra.md"
+        a_md.write_text("aardvark content", encoding="utf-8")
+        z_md.write_text("zebra content", encoding="utf-8")
+
+        # Force identical mtime
+        ts = a_md.stat().st_mtime
+        import os
+        os.utime(z_md, (ts, ts))
+        os.utime(a_md, (ts, ts))
+
+        grader = LLMJudgeGrader()
+        result = grader._read_output_file(tmp_path, None)
+
+        assert result is not None
+        # Alphabetic order: aardvark before zebra
+        aardvark_idx = result.index("aardvark content")
+        zebra_idx = result.index("zebra content")
+        assert aardvark_idx < zebra_idx
+
+    def test_rap_grade_sends_all_phase_files_to_judge(self, tmp_path: Path):
+        """grade() with output_dir and output_field=None sends all phase content."""
+        import time
+
+        (tmp_path / "spec.md").write_text("# Spec\nRequirements.", encoding="utf-8")
+        time.sleep(0.02)
+        (tmp_path / "implement.md").write_text("# Code\ndef foo(): pass", encoding="utf-8")
+        time.sleep(0.02)
+        (tmp_path / "review.md").write_text("# Review\nLGTM, ship it.", encoding="utf-8")
+        # Meta file — should NOT be sent
+        (tmp_path / "_final_output.md").write_text("meta only", encoding="utf-8")
+
+        executor = _make_executor("Score: 0.95\nAll phases present.")
+        grader = LLMJudgeGrader(executor=executor)
+
+        result = grader.grade(
+            output={"article": "should not appear"},
+            rubric="Check all phases present.",
+            judge_model="claude-haiku-4-5-20241022",
+            output_dir=tmp_path,
+            # output_field intentionally omitted → reads all phase files
+        )
+
+        assert result.score == pytest.approx(0.95)
+        sent_text = _captured_text_from_executor(executor)
+        # All three phase files must appear
+        assert "Requirements." in sent_text
+        assert "def foo(): pass" in sent_text
+        assert "LGTM, ship it." in sent_text
+        # Dict fallback and meta file must NOT appear
+        assert "should not appear" not in sent_text
+        assert "meta only" not in sent_text
