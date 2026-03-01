@@ -29,7 +29,7 @@ import yaml
 from .output_parser import extract_and_write, parse_output
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
-from .transitions import PhaseOutcome, determine_outcome
+from .transitions import PhaseOutcome, determine_outcome, extract_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -2021,7 +2021,7 @@ class StateMachineSequencer(PhaseSequencer):
 
                 # ── Transition resolution ─────────────────────────────────────
                 outcome: PhaseOutcome = determine_outcome(result)
-                next_phase_id = self._resolve_next_phase(phase, outcome)
+                next_phase_id = self._resolve_next_phase(phase, outcome, result)
 
                 if next_phase_id is None:
                     # Terminal state — no outgoing transition for this outcome
@@ -2074,7 +2074,10 @@ class StateMachineSequencer(PhaseSequencer):
     # ------------------------------------------------------------------
 
     def _resolve_next_phase(
-        self, phase: PhaseDefinition, outcome: PhaseOutcome
+        self,
+        phase: PhaseDefinition,
+        outcome: PhaseOutcome,
+        result: Optional[dict] = None,
     ) -> Optional[str]:
         """Return the next phase ID for *outcome*, or ``None`` if terminal.
 
@@ -2084,18 +2087,50 @@ class StateMachineSequencer(PhaseSequencer):
 
             effective = {**template.default_transitions, **phase.transitions}
 
+        **Content-based routing (Issue #301):** If any of the verdict keywords
+        (``approve``, ``request_changes``, ``abort``) appear as keys in the
+        effective transitions dict, the method also calls
+        :func:`~.transitions.extract_verdict` on the phase output text.
+        If a verdict is found *and* matches a key in ``effective``, it is used
+        instead of ``outcome.value``.  This is opt-in — phases that do not list
+        verdict keywords in their transitions are unaffected.
+
         Args:
             phase:   The phase that just completed.
             outcome: The :class:`~.transitions.PhaseOutcome` for the result.
+            result:  The raw result dict from the executor (optional).  Used
+                     to extract LLM output text for verdict-based routing.
 
         Returns:
-            Phase ID string if a transition is defined for *outcome*,
-            ``None`` if this is a terminal state.
+            Phase ID string if a transition is defined for *outcome*
+            (or a content verdict), ``None`` if this is a terminal state.
         """
         effective: dict = {
             **self.template.default_transitions,
             **phase.transitions,
         }
+
+        # ── Content-based routing (opt-in via verdict keys in transitions) ───
+        # Only attempt verdict extraction when at least one verdict keyword
+        # appears as a transition key — this keeps the common path fast and
+        # avoids any text-parsing overhead for non-review phases.
+        _verdict_keys = {"approve", "request_changes", "abort"}
+        if result is not None and _verdict_keys.intersection(effective):
+            output_text: str = ""
+            raw_result = result.get("result", {})
+            if isinstance(raw_result, dict):
+                output_text = raw_result.get("text", "") or ""
+            if not output_text:
+                output_text = result.get("text", "") or ""
+
+            verdict = extract_verdict(output_text)
+            if verdict is not None and verdict in effective:
+                logger.debug(
+                    f"Pipeline {self.template.id}: phase '{phase.id}' "
+                    f"content-routed via verdict '{verdict}'"
+                )
+                return effective[verdict]
+
         return effective.get(outcome.value)
 
     # ------------------------------------------------------------------

@@ -1,8 +1,8 @@
 id: coding-pipeline-v1
 name: "Coding Pipeline v1.0"
-description: "5-phase coding pipeline: spec interpretation → implementation → Opus code review → fix → test. Uses file-path handoff, command execution for tests, and supervisor hooks for quality gates."
+description: "5-phase coding pipeline: spec interpretation → implementation → Opus code review → fix → review loop until APPROVE. Uses file-path handoff, command execution for tests, and supervisor hooks for quality gates."
 author: "Toscan"
-version: "1.0.0"
+version: "1.1.0"
 scenario: scenarios/coding-pipeline-v1-smoke.yaml
 category: "code"
 tags: [code, development, review, testing, pipeline]
@@ -48,6 +48,8 @@ phases:
     name: "Spec Interpretation"
     description: "Understand the issue and produce a clear implementation plan"
     model_tier: sonnet
+    transitions:
+      success: implement
     prompt_template: |
       You are a senior developer interpreting a GitHub issue into an implementation spec.
 
@@ -81,8 +83,9 @@ phases:
   - id: implement
     name: "Implementation"
     description: "Write the code changes based on the spec"
-    depends_on: [spec]
     model_tier: sonnet
+    transitions:
+      success: review
     prompt_template: |
       You are a developer implementing changes based on a spec.
 
@@ -114,9 +117,9 @@ phases:
   # Phase 3: Code Review (Opus + Supervisor)
   - id: review
     name: "Opus Code Review"
-    description: "Senior code review by Opus — quality gate"
-    depends_on: [implement]
+    description: "Senior code review by Opus — quality gate with APPROVE/REQUEST_CHANGES verdict"
     model_tier: opus
+    max_iterations: 3
     supervisor: true
     supervisor_model: opus
     supervisor_rubric: |
@@ -125,6 +128,11 @@ phases:
       - Are security concerns addressed?
       - Is backward compatibility verified?
       - Are the suggested fixes actionable?
+    transitions:
+      approve: test
+      request_changes: fix
+      abort: fix
+      success: test
     prompt_template: |
       You are a senior code reviewer (Opus-tier). Your job is to catch bugs, security issues, and design problems.
 
@@ -149,17 +157,24 @@ phases:
       3. Run the tests: `{config[test_command]}`
 
       ## Output
-      Write your review to {output_dir}/review.md with:
-      - **APPROVE** or **REQUEST_CHANGES** verdict
+      Write your review to {output_dir}/review.md.
+
+      **IMPORTANT:** Your response MUST start with one of these verdicts on the very first line:
+      - `APPROVE` — code is ready to merge (no blockers, at most minor issues)
+      - `REQUEST_CHANGES` — one or more blockers or major issues found
+
+      Then include:
       - List of issues found with severity (blocker/major/minor) and file:line
       - For REQUEST_CHANGES: specific fixes needed
 
   # Phase 4: Fix Review Feedback
   - id: fix
     name: "Apply Review Fixes"
-    description: "Address code review feedback"
-    depends_on: [review]
+    description: "Address code review feedback, then loop back to review"
     model_tier: sonnet
+    max_iterations: 3
+    transitions:
+      success: review
     prompt_template: |
       You are a developer addressing code review feedback.
 
@@ -193,7 +208,6 @@ phases:
   - id: test
     name: "Test Verification"
     description: "Run full test suite to verify no regressions"
-    depends_on: [fix]
     task_type: command
     command: "cd {config[repo_path]} && git checkout {config[branch_name]} && {config[test_command]}"
     allowed_commands: ["cd", "git", "python3", "python", "pytest"]
