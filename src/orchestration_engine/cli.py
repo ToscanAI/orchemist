@@ -829,6 +829,21 @@ def workers(detailed: bool) -> None:
     hidden=True,
     help='(dry-run mode only) Probability [0.0-1.0] of simulated phase failure.',
 )
+@click.option(
+    '--skip-scoring',
+    is_flag=True,
+    default=False,
+    help='Skip auto-scoring even if the template declares a scenario.',
+)
+@click.option(
+    '--score-only',
+    is_flag=True,
+    default=False,
+    help=(
+        'Run scoring on an existing output directory without re-running the pipeline. '
+        'Requires --output-dir pointing to a completed run.'
+    ),
+)
 def run_template(
     template_name_or_file: str,
     mode: str,
@@ -840,6 +855,8 @@ def run_template(
     gateway_token: Optional[str],
     dry_run_delay: float,
     dry_run_failure_rate: float,
+    skip_scoring: bool,
+    score_only: bool,
 ) -> None:
     """Execute a pipeline template end-to-end.
 
@@ -906,6 +923,30 @@ def run_template(
         for err in errors:
             click.echo(f"  • {err}", err=True)
         sys.exit(1)
+
+    # --- Score-only mode (Issue #172) ---------------------------------
+    if score_only:
+        if output_dir is None:
+            click.echo(
+                "✗ --score-only requires --output-dir pointing to a completed run.",
+                err=True,
+            )
+            sys.exit(1)
+        if not template.scenario:
+            click.echo(
+                "✗ Template has no 'scenario' field — nothing to score.",
+                err=True,
+            )
+            sys.exit(1)
+        from .scoring import run_scoring as _run_scoring
+        _run_scoring(
+            template,
+            output_dir=output_dir,
+            console=console,
+            template_file=template_file,
+            exit_on_failure=True,
+        )
+        sys.exit(0)
 
     # --- 1b. Default output directory (Feature #72) ------------------
     from uuid import uuid4
@@ -1276,6 +1317,17 @@ def run_template(
     (output_dir / "_summary.md").write_text("\n".join(summary_lines))
 
     console.print(f"\n[bold]Outputs written to:[/bold] {output_dir}/")
+
+    # --- Auto-scoring (Issue #172) ------------------------------------
+    if not skip_scoring and template.scenario:
+        from .scoring import run_scoring as _run_scoring_auto
+        _run_scoring_auto(
+            template,
+            output_dir=output_dir,
+            console=console,
+            template_file=template_file,
+            exit_on_failure=True,
+        )
 
 
 # ---------------------------------------------------------------------------
