@@ -240,82 +240,208 @@ def submit(
 
 
 @main.command()
-@click.argument('task_id', required=False)
-def status(task_id: Optional[str]) -> None:
-    """Show task status or overall queue statistics."""
-    try:
-        task_queue = get_queue()
-        
-        if task_id:
-            # Show specific task status
-            task_status = task_queue.get_task_status(task_id)
-            
-            if not task_status:
-                click.echo(f"Task {task_id} not found", err=True)
+@click.argument('run_or_task_id', required=False, metavar='[RUN-ID|TASK-ID]')
+def status(run_or_task_id: Optional[str]) -> None:
+    """Show pipeline run status, task status, or recent runs.
+
+    Without an argument: list the 10 most recent async pipeline runs.
+    With a RUN-ID: show detailed pipeline run status (phase progress, elapsed time).
+    With a TASK-ID: show task queue status (legacy mode).
+
+    \b
+    Examples:
+      orch status                 # list recent runs
+      orch status a3f8c2d1        # pipeline run detail
+      orch status <task-uuid>     # task queue status
+    """
+    from .db import Database as _Database
+
+    # Try pipeline_runs first if an ID was given
+    if run_or_task_id:
+        try:
+            _db = _Database()
+            run = _db.get_pipeline_run(run_or_task_id)
+        except Exception:
+            run = None
+
+        if run is not None:
+            # --- Pipeline run detail ---
+            _print_run_detail(run)
+            return
+
+        # Fall through to legacy task queue status
+        try:
+            task_queue = get_queue()
+            task_status_obj = task_queue.get_task_status(run_or_task_id)
+            if not task_status_obj:
+                click.echo(f"ID '{run_or_task_id}' not found in pipeline runs or task queue.", err=True)
                 sys.exit(1)
-            
-            click.echo(f"Task Status: {task_id}")
-            click.echo(f"├─ Type: {task_status.task_type.value}")
-            click.echo(f"├─ State: {task_status.state.value}")
-            click.echo(f"├─ Priority: {task_status.priority.name}")
-            click.echo(f"├─ Created: {format_datetime(task_status.created_at)}")
-            click.echo(f"├─ Started: {format_datetime(task_status.started_at)}")
-            click.echo(f"├─ Completed: {format_datetime(task_status.completed_at)}")
-            
-            if task_status.retry_count > 0:
-                click.echo(f"├─ Retries: {task_status.retry_count}/{task_status.max_retries}")
-            
-            if task_status.next_retry_at:
-                click.echo(f"├─ Next Retry: {format_datetime(task_status.next_retry_at)}")
-            
-            if task_status.orchestra_id:
-                click.echo(f"├─ Orchestra: {task_status.orchestra_id}")
-                if task_status.orchestra_phase:
-                    click.echo(f"├─ Phase: {task_status.orchestra_phase}")
-            
-            if task_status.progress_percentage is not None:
-                click.echo(f"└─ Progress: {task_status.progress_percentage:.1f}%")
+            click.echo(f"Task Status: {run_or_task_id}")
+            click.echo(f"├─ Type: {task_status_obj.task_type.value}")
+            click.echo(f"├─ State: {task_status_obj.state.value}")
+            click.echo(f"├─ Priority: {task_status_obj.priority.name}")
+            click.echo(f"├─ Created: {format_datetime(task_status_obj.created_at)}")
+            click.echo(f"├─ Started: {format_datetime(task_status_obj.started_at)}")
+            click.echo(f"├─ Completed: {format_datetime(task_status_obj.completed_at)}")
+            if task_status_obj.retry_count > 0:
+                click.echo(f"├─ Retries: {task_status_obj.retry_count}/{task_status_obj.max_retries}")
+            if task_status_obj.next_retry_at:
+                click.echo(f"├─ Next Retry: {format_datetime(task_status_obj.next_retry_at)}")
+            if task_status_obj.orchestra_id:
+                click.echo(f"├─ Orchestra: {task_status_obj.orchestra_id}")
+                if task_status_obj.orchestra_phase:
+                    click.echo(f"├─ Phase: {task_status_obj.orchestra_phase}")
+            if task_status_obj.progress_percentage is not None:
+                click.echo(f"└─ Progress: {task_status_obj.progress_percentage:.1f}%")
             else:
                 click.echo("└─ Progress: N/A")
-            
-        else:
-            # Show queue statistics
-            stats = task_queue.get_queue_stats()
-            
-            click.echo("Queue Statistics")
-            click.echo(f"├─ Timestamp: {format_datetime(stats.timestamp)}")
-            click.echo(f"├─ Total Tasks: {stats.total_tasks}")
-            click.echo(f"├─ Queued: {stats.queued}")
-            click.echo(f"├─ Running: {stats.running}")
-            click.echo(f"├─ Completed: {stats.completed}")
-            click.echo(f"├─ Failed: {stats.failed}")
-            click.echo(f"├─ Retrying: {stats.retrying}")
-            click.echo(f"├─ Cancelled: {stats.cancelled}")
-            click.echo(f"├─ Workers: {stats.active_workers}/{stats.max_workers} ({stats.worker_utilization:.1f}%)")
-            click.echo(f"├─ Dead Letter: {stats.dead_letter_count}")
-            click.echo(f"├─ Avg Execution: {format_duration(stats.avg_execution_time_seconds)}")
-            
-            if stats.queue_depth_warning:
-                click.echo(f"⚠️  Warning: High queue depth ({stats.queued} tasks)")
-            
-            if stats.stale_tasks_warning:
-                click.echo(f"⚠️  Warning: Stale tasks detected")
-            
-            # Priority breakdown
-            if stats.priority_breakdown:
-                click.echo("\nPriority Breakdown:")
-                for priority, count in stats.priority_breakdown.items():
-                    click.echo(f"  {priority}: {count}")
-            
-            # Type breakdown
-            if stats.type_breakdown:
-                click.echo("\nType Breakdown:")
-                for task_type, count in stats.type_breakdown.items():
-                    click.echo(f"  {task_type}: {count}")
-    
-    except Exception as e:
-        click.echo(f"Error getting status: {e}", err=True)
-        sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error getting status: {e}", err=True)
+            sys.exit(1)
+
+    else:
+        # No ID given → list recent pipeline runs (last 10)
+        try:
+            _db = _Database()
+            runs = _db.list_pipeline_runs(limit=10)
+        except Exception:
+            runs = []
+
+        if not runs:
+            click.echo("No pipeline runs found.  Use 'orch start <template>' to begin.")
+            click.echo("\nTip: 'orch status' lists recent async runs from 'orch start'.")
+            # Fall back to queue stats as secondary info
+            try:
+                task_queue = get_queue()
+                stats = task_queue.get_queue_stats()
+                click.echo(f"\nQueue: {stats.queued} queued  {stats.running} running  {stats.completed} done")
+            except Exception:
+                pass
+            return
+
+        click.echo("Recent Pipeline Runs (last 10)")
+        click.echo("─" * 72)
+        for run in runs:
+            _print_run_summary_line(run)
+
+
+def _print_run_summary_line(run: Dict[str, Any]) -> None:
+    """Print a single-line summary of a pipeline run."""
+    import os as _os
+    run_id = run['run_id']
+    status = run['status']
+    template_id = run.get('template_id', '?')[:20]
+    mode = run.get('mode', '?')
+    created = (run.get('created_at') or '')[:16]
+
+    # Check PID liveness if running
+    if status == 'running':
+        pid = run.get('pid')
+        if pid:
+            try:
+                from .daemon import is_process_alive
+                if not is_process_alive(pid):
+                    status = 'crashed'
+            except Exception:
+                pass
+
+    status_icon = {
+        'pending': '⏳',
+        'running': '🔄',
+        'success': '✅',
+        'failed': '❌',
+        'cancelled': '🚫',
+        'crashed': '💀',
+    }.get(status, '❓')
+
+    current_phase = run.get('current_phase') or '-'
+    click.echo(
+        f"{run_id}  {status_icon} {status:<10}  {template_id:<22}  "
+        f"phase={current_phase:<20}  {created}  [{mode}]"
+    )
+
+
+def _print_run_detail(run: Dict[str, Any]) -> None:
+    """Print detailed status for a single pipeline run, checking PID liveness."""
+    import json as _json
+    import os as _os
+
+    run_id = run['run_id']
+    status = run['status']
+    pid = run.get('pid')
+
+    # Check PID liveness
+    if status == 'running' and pid:
+        try:
+            from .daemon import is_process_alive
+            if not is_process_alive(pid):
+                status = 'crashed'
+                # Update DB
+                try:
+                    from .db import Database as _Database
+                    _Database().update_pipeline_run(run_id, status='crashed')
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # Elapsed time
+    started_at = run.get('started_at')
+    completed_at = run.get('completed_at')
+    elapsed_str = 'n/a'
+    if started_at:
+        try:
+            start_dt = datetime.fromisoformat(started_at)
+            if completed_at:
+                end_dt = datetime.fromisoformat(completed_at)
+            else:
+                end_dt = datetime.now()
+            elapsed_s = (end_dt - start_dt).total_seconds()
+            elapsed_str = _fmt_elapsed(elapsed_s)
+        except Exception:
+            pass
+
+    # Completed phases
+    try:
+        completed_phases = _json.loads(run.get('completed_phases') or '[]')
+    except Exception:
+        completed_phases = []
+
+    status_icon = {
+        'pending': '⏳',
+        'running': '🔄',
+        'success': '✅',
+        'failed': '❌',
+        'cancelled': '🚫',
+        'crashed': '💀',
+    }.get(status, '❓')
+
+    click.echo(f"Pipeline Run: {run_id}")
+    click.echo(f"├─ Status:     {status_icon} {status}")
+    click.echo(f"├─ Template:   {run.get('template_id', '?')}")
+    click.echo(f"├─ Mode:       {run.get('mode', '?')}")
+    click.echo(f"├─ Elapsed:    {elapsed_str}")
+    click.echo(f"├─ Current:    {run.get('current_phase') or '(none)'}")
+    click.echo(f"├─ Completed:  {len(completed_phases)} phase(s): {completed_phases}")
+    click.echo(f"├─ PID:        {pid or 'n/a'}")
+    click.echo(f"├─ Output:     {run.get('output_dir', '?')}")
+    if run.get('error_message'):
+        click.echo(f"├─ Error:      {run['error_message']}")
+    click.echo(f"├─ Created:    {(run.get('created_at') or '')[:19]}")
+    click.echo(f"└─ Logs:       orch logs {run_id}")
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    """Format elapsed seconds as Xm Ys or Xs."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    m = int(seconds // 60)
+    s = int(seconds % 60)
+    if m < 60:
+        return f"{m}m {s}s"
+    h = m // 60
+    m = m % 60
+    return f"{h}h {m}m {s}s"
 
 
 @main.command()
@@ -1328,6 +1454,347 @@ def run_template(
             template_file=template_file,
             exit_on_failure=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #267 — Async pipeline execution: start / status / logs / wait / resume
+# ---------------------------------------------------------------------------
+
+def _get_persistent_db_path() -> str:
+    """Return the path to the persistent on-disk DB used by async runs."""
+    from pathlib import Path as _Path
+    default_dir = _Path.home() / ".orchestration-engine"
+    default_dir.mkdir(exist_ok=True)
+    return str(default_dir / "engine.db")
+
+
+def _execute_pipeline(
+    template: Any,
+    runner: Any,
+    initial_input: Dict[str, Any],
+    output_dir: Path,
+    *,
+    on_phase_complete=None,
+    on_phase_start=None,
+    on_pipeline_start=None,
+    on_pipeline_complete=None,
+) -> Dict[str, Any]:
+    """Core pipeline execution helper — runs PhaseSequencer.execute().
+
+    Extracted from run_template() so the daemon can share the same
+    code path.  Does NOT write outputs to disk or print summaries;
+    callers are responsible for those steps.
+
+    Args:
+        template:           Loaded PipelineTemplate object.
+        runner:             PipelineRunner context manager (already entered).
+        initial_input:      Dict of pipeline input data.
+        output_dir:         Path to write phase outputs.
+        on_phase_complete:  Optional callback(phase_id, result).
+        on_phase_start:     Optional callback(phase_id, phase, wave_index).
+        on_pipeline_start:  Optional callback(pipeline_context).
+        on_pipeline_complete: Optional callback(pipeline_context, result).
+
+    Returns:
+        The result dict from sequencer.execute().
+    """
+    from .sequencer import PhaseSequencer
+
+    sequencer = PhaseSequencer(
+        template, runner, config=initial_input,
+        on_phase_complete=on_phase_complete,
+        on_phase_start=on_phase_start,
+        on_pipeline_start=on_pipeline_start,
+        on_pipeline_complete=on_pipeline_complete,
+        output_dir=output_dir,
+    )
+    return sequencer.execute(initial_input)
+
+
+@main.command("start")
+@click.argument('template_name_or_file')
+@click.option(
+    '--mode',
+    type=click.Choice(['standalone', 'openclaw', 'dry-run']),
+    default='standalone',
+    show_default=True,
+    help='Execution mode.',
+)
+@click.option(
+    '--input', 'input_json',
+    default=None,
+    help='Pipeline input as a JSON string.',
+)
+@click.option(
+    '--input-file',
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help='Path to a JSON file containing pipeline input.',
+)
+@click.option(
+    '--output-dir',
+    type=click.Path(path_type=Path),
+    default=None,
+    help='Directory to write phase outputs (created if missing).',
+)
+@click.option(
+    '--gateway-url',
+    default=None,
+    envvar='OPENCLAW_GATEWAY_URL',
+    help='OpenClaw gateway URL for openclaw mode.',
+)
+@click.option(
+    '--skip-scoring',
+    is_flag=True,
+    default=False,
+    help='Skip auto-scoring even if the template declares a scenario.',
+)
+@click.option(
+    '--db-path',
+    default=None,
+    help='Override path to the persistent pipeline-runs DB.',
+)
+def pipeline_start(
+    template_name_or_file: str,
+    mode: str,
+    input_json: Optional[str],
+    input_file: Optional[Path],
+    output_dir: Optional[Path],
+    gateway_url: Optional[str],
+    skip_scoring: bool,
+    db_path: Optional[str],
+) -> None:
+    """Start a pipeline in the background and return immediately.
+
+    Spawns a daemon process that runs the pipeline, then exits.  Use
+    'orch status <run-id>' to check progress.
+
+    \b
+    Examples:
+      orch start content-pipeline --mode openclaw --input '{"brief": "AI"}'
+      orch status <run-id>
+      orch logs <run-id> --follow
+      orch wait <run-id>
+    """
+    import json as _json
+    import subprocess
+    import uuid
+    import yaml as _yaml
+
+    from .templates import TemplateEngine
+    from .db import Database as _Database
+
+    # --- Resolve template ---
+    template_file = _resolve_template_arg(template_name_or_file)
+
+    try:
+        engine = TemplateEngine()
+        template = engine.load_template(template_file)
+    except (FileNotFoundError, KeyError, ValueError, _yaml.YAMLError) as exc:
+        click.echo(f"✗ Template error: {exc}", err=True)
+        sys.exit(1)
+
+    errors = engine.validate_template(template)
+    if errors:
+        click.echo(f"✗ Template has {len(errors)} error(s):", err=True)
+        for err in errors:
+            click.echo(f"  • {err}", err=True)
+        sys.exit(1)
+
+    # --- Resolve input ---
+    if input_file and input_json:
+        click.echo("⚠ Both --input and --input-file provided; using --input-file", err=True)
+
+    initial_input: Dict[str, Any] = {}
+    if input_file:
+        try:
+            initial_input = _json.loads(input_file.read_text())
+        except (_json.JSONDecodeError, OSError) as exc:
+            click.echo(f"✗ Could not read input file: {exc}", err=True)
+            sys.exit(1)
+    elif input_json:
+        try:
+            initial_input = _json.loads(input_json)
+        except _json.JSONDecodeError as exc:
+            click.echo(f"✗ Invalid JSON in --input: {exc}", err=True)
+            sys.exit(1)
+
+    # --- Build run_id and output_dir ---
+    run_id = str(uuid.uuid4())[:8]
+    if output_dir is None:
+        import re as _re
+        output_dir = Path(
+            f"./output/{_re.sub(r'[^\\w\\-]', '_', template.id)}"
+            f"-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{run_id}"
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Persist run record to DB ---
+    effective_db_path = db_path or _get_persistent_db_path()
+    db = _Database(Path(effective_db_path))
+    db.insert_pipeline_run({
+        'run_id': run_id,
+        'template_path': str(template_file.resolve()),
+        'template_id': template.id,
+        'input_json': _json.dumps(initial_input),
+        'mode': mode,
+        'output_dir': str(output_dir.resolve()),
+        'gateway_url': gateway_url,
+        'skip_scoring': int(skip_scoring),
+        'status': 'pending',
+    })
+
+    # --- Spawn daemon ---
+    log_file_path = output_dir / ".orch-daemon.log"
+    log_fh = open(str(log_file_path), 'a')
+
+    proc = subprocess.Popen(
+        [sys.executable, '-m', 'orchestration_engine.daemon', run_id, effective_db_path],
+        start_new_session=True,
+        stdout=log_fh,
+        stderr=log_fh,
+    )
+
+    # Give it a moment to start, then update status/PID
+    time.sleep(0.3)
+    db.update_pipeline_run(run_id, pid=proc.pid, status='running',
+                           started_at=datetime.now().isoformat())
+
+    click.echo(f"✓ Pipeline started in background")
+    click.echo(f"  Run ID:  {run_id}")
+    click.echo(f"  PID:     {proc.pid}")
+    click.echo(f"  Output:  {output_dir}/")
+    click.echo(f"")
+    click.echo(f"  Status:  orch status {run_id}")
+    click.echo(f"  Logs:    orch logs {run_id}")
+    click.echo(f"  Wait:    orch wait {run_id}")
+
+
+@main.command("logs")
+@click.argument('run_id')
+@click.option('--follow', '-f', is_flag=True, default=False, help='Tail the log file.')
+@click.option(
+    '--db-path',
+    default=None,
+    help='Override path to the persistent pipeline-runs DB.',
+)
+def pipeline_logs(run_id: str, follow: bool, db_path: Optional[str]) -> None:
+    """Show daemon logs for a pipeline run.
+
+    \b
+    Examples:
+      orch logs a3f8c2d1
+      orch logs a3f8c2d1 --follow
+    """
+    from .db import Database as _Database
+
+    effective_db_path = db_path or _get_persistent_db_path()
+    db = _Database(Path(effective_db_path))
+    run = db.get_pipeline_run(run_id)
+    if run is None:
+        click.echo(f"✗ Run '{run_id}' not found.", err=True)
+        sys.exit(1)
+
+    log_path = Path(run['output_dir']) / ".orch-daemon.log"
+    if not log_path.exists():
+        click.echo(f"✗ Log file not found: {log_path}", err=True)
+        click.echo("  The run may not have started yet or the output dir is missing.")
+        sys.exit(1)
+
+    if follow:
+        import subprocess as _sp
+        try:
+            _sp.run(['tail', '-f', str(log_path)])
+        except KeyboardInterrupt:
+            pass
+    else:
+        click.echo(log_path.read_text())
+
+
+@main.command("wait")
+@click.argument('run_id')
+@click.option('--timeout', type=int, default=1800, show_default=True,
+              help='Maximum seconds to wait before giving up.')
+@click.option('--interval', type=int, default=3, show_default=True,
+              help='Poll interval in seconds.')
+@click.option(
+    '--db-path',
+    default=None,
+    help='Override path to the persistent pipeline-runs DB.',
+)
+def pipeline_wait(run_id: str, timeout: int, interval: int, db_path: Optional[str]) -> None:
+    """Block until a pipeline run finishes.
+
+    Exits 0 on success, exits 2 on failure or timeout.
+
+    \b
+    Examples:
+      orch wait a3f8c2d1
+      orch wait a3f8c2d1 --timeout 120
+    """
+    from .db import Database as _Database
+
+    effective_db_path = db_path or _get_persistent_db_path()
+    db = _Database(Path(effective_db_path))
+
+    terminal_states = {'success', 'failed', 'cancelled', 'crashed'}
+    deadline = time.time() + timeout
+    last_phase = None
+
+    click.echo(f"Waiting for run '{run_id}' (timeout={timeout}s) …")
+
+    while time.time() < deadline:
+        run = db.get_pipeline_run(run_id)
+        if run is None:
+            click.echo(f"✗ Run '{run_id}' not found.", err=True)
+            sys.exit(2)
+
+        current_status = run['status']
+
+        # Check PID liveness if still running
+        if current_status == 'running':
+            pid = run.get('pid')
+            if pid:
+                try:
+                    from .daemon import is_process_alive
+                    if not is_process_alive(pid):
+                        current_status = 'crashed'
+                        db.update_pipeline_run(run_id, status='crashed')
+                except Exception:
+                    pass
+
+        current_phase = run.get('current_phase') or '(none)'
+        if current_phase != last_phase:
+            click.echo(f"  [{datetime.now().strftime('%H:%M:%S')}] status={current_status}  phase={current_phase}")
+            last_phase = current_phase
+
+        if current_status in terminal_states:
+            click.echo(f"\nRun '{run_id}' finished with status: {current_status}")
+            if current_status == 'success':
+                sys.exit(0)
+            else:
+                sys.exit(2)
+
+        time.sleep(interval)
+
+    click.echo(f"\n✗ Timeout after {timeout}s — run '{run_id}' still in progress.", err=True)
+    sys.exit(2)
+
+
+@main.command("resume")
+@click.argument('run_id')
+def pipeline_resume(run_id: str) -> None:
+    """Resume a failed or crashed pipeline run from the last completed phase.
+
+    This is a v2 feature — not yet implemented.
+
+    \b
+    Examples:
+      orch resume a3f8c2d1
+    """
+    click.echo("✗ 'orch resume' is not yet implemented (v2 feature).", err=True)
+    click.echo("  To re-run from scratch:  orch start <template> [options]")
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -2787,7 +3254,7 @@ def _prompt_for_field(
     return value if value != "" else (None if not is_required else "")
 
 
-@main.command("start")
+@main.command("wizard")
 @click.argument("template_name_or_path")
 @click.option(
     "--mode",
