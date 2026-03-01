@@ -600,7 +600,7 @@ class TestValidateTemplateGitCommitPhases:
             phase_ids = ["draft", "review"]
         t = PipelineTemplate(id="git-tpl", name="Git")
         t.phases = [
-            PhaseDefinition(id=pid, name=pid.upper(), depends_on=[])
+            PhaseDefinition(id=pid, name=pid.upper(), depends_on=[], prompt_template="Write something.")
             for pid in phase_ids
         ]
         t.git_config = GitConfig(
@@ -650,7 +650,7 @@ class TestValidateTemplateGitCommitPhases:
         """VC-04: git_config=None → no git validation runs, no errors."""
         engine = TemplateEngine()
         t = PipelineTemplate(id="no-git", name="No Git")
-        t.phases = [PhaseDefinition(id="phase_a", name="Phase A", depends_on=[])]
+        t.phases = [PhaseDefinition(id="phase_a", name="Phase A", depends_on=[], prompt_template="Write something.")]
         t.git_config = None
         errors = engine.validate_template(t)
         assert errors == []
