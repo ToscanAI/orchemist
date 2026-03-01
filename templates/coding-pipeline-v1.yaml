@@ -3,6 +3,7 @@ name: "Coding Pipeline v1.0"
 description: "5-phase coding pipeline: spec interpretation → implementation → Opus code review → fix → test. Uses file-path handoff, command execution for tests, and supervisor hooks for quality gates."
 author: "Toscan"
 version: "1.0.0"
+scenario: scenarios/coding-pipeline-v1-smoke.yaml
 category: "code"
 tags: [code, development, review, testing, pipeline]
 use_cases:

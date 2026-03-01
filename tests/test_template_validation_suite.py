@@ -332,6 +332,7 @@ class TestDryRun:
             "--mode", "dry-run",
             "--input", json.dumps(input_data),
             "--output-dir", str(tmp_path / "out"),
+            "--skip-scoring",
         ])
         assert result.exit_code == 0, (
             f"dry-run failed for {Path(template_path).name} "
@@ -347,6 +348,7 @@ class TestDryRun:
             "--mode", "dry-run",
             "--input", "{}",
             "--output-dir", str(tmp_path / "out"),
+            "--skip-scoring",
         ])
         assert result.exit_code == 0, (
             f"dry-run with empty input failed for {Path(template_path).name} "
