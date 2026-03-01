@@ -15,10 +15,13 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -264,8 +267,28 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                 ),
             )
 
+        # Sanitize template_id to prevent path traversal attacks.
+        # IDs must start with an alphanumeric character and contain only
+        # alphanumeric characters, hyphens, dots, and underscores.
+        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', template_id):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Invalid template id '{template_id}'.  "
+                    "IDs must contain only alphanumeric characters, hyphens, dots, and underscores."
+                ),
+            )
+
         directory.mkdir(parents=True, exist_ok=True)
-        return directory / f"{template_id}.yaml"
+        dest = directory / f"{template_id}.yaml"
+        # Double-check that the resolved destination is still inside the
+        # target directory (defence-in-depth against symlink attacks).
+        if dest.resolve().parent != directory.resolve():
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid template id (path traversal detected)",
+            )
+        return dest
 
     # ------------------------------------------------------------------
     # Helper — resolve template name or path
@@ -438,13 +461,11 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             422 when the content cannot be parsed as YAML or is structurally
                 invalid (missing required top-level fields).
         """
-        import yaml as _yaml  # optional dep — graceful if absent
-
         engine = TemplateEngine()
 
         # 1. Parse YAML
         try:
-            raw = _yaml.safe_load(req.content)
+            raw = yaml.safe_load(req.content)
         except Exception as exc:
             raise HTTPException(
                 status_code=422,
@@ -462,8 +483,6 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             )
 
         # 2. Load via engine (uses a temporary file approach via load_template)
-        import tempfile
-
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
             tmp.write(req.content)
             tmp_path = Path(tmp.name)
@@ -521,13 +540,11 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             409 when the template already exists and ``overwrite`` is ``False``.
             422 when the content fails validation.
         """
-        import yaml as _yaml
-
         engine = TemplateEngine()
 
         # 1. Parse YAML
         try:
-            raw = _yaml.safe_load(req.content)
+            raw = yaml.safe_load(req.content)
         except Exception as exc:
             raise HTTPException(
                 status_code=422,
@@ -541,8 +558,6 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             )
 
         # 2. Load and validate
-        import tempfile
-
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
             tmp.write(req.content)
             tmp_path = Path(tmp.name)
@@ -619,8 +634,6 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             404 when the template is not found.
             422 when the new content fails validation.
         """
-        import yaml as _yaml
-
         engine = TemplateEngine()
 
         # 1. Resolve the existing template to get its path
@@ -641,7 +654,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
 
         # 3. Parse YAML
         try:
-            _yaml.safe_load(req.content)
+            yaml.safe_load(req.content)
         except Exception as exc:
             raise HTTPException(
                 status_code=422,
@@ -649,8 +662,6 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             )
 
         # 4. Load and validate new content
-        import tempfile
-
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
             tmp.write(req.content)
             tmp_path = Path(tmp.name)
@@ -694,7 +705,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         """Delete a user-owned pipeline template.
 
         Resolves the template by *name* or ID, checks that it belongs to the
-        ``"user"`` or ``"project"`` source (bundled and custom templates are
+        ``"user"`` source (project, bundled, and custom templates are
         protected), and removes the file from disk.
 
         Path parameter:
@@ -756,8 +767,6 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         Returns:
             201 with the new run record (same shape as GET /api/v1/runs/{run_id}).
         """
-        import yaml
-
         # 1. Resolve and validate template
         template_file = _resolve_template(req.template)
 

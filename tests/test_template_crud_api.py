@@ -73,6 +73,38 @@ phases:
     task_type: generate
 """
 
+# Template with a path-traversal id — must be rejected with 422.
+PATH_TRAVERSAL_TEMPLATE = """\
+id: ../../evil
+name: "Evil Template"
+version: "1.0.0"
+description: "Malicious path traversal test."
+author: "Attacker"
+phases:
+  - id: phase-one
+    name: "Evil Phase"
+    description: "Should never be written."
+    model_tier: haiku
+    task_type: generate
+    prompt: "Pwned: {input}"
+"""
+
+# Template with an id that starts with a dot (also invalid).
+DOT_ID_TEMPLATE = """\
+id: .hidden-template
+name: "Hidden Template"
+version: "1.0.0"
+description: "ID starts with dot — must be rejected."
+author: "Tester"
+phases:
+  - id: phase-one
+    name: "Phase One"
+    description: "Simple test phase."
+    model_tier: haiku
+    task_type: generate
+    prompt: "Process: {input}"
+"""
+
 
 # ---------------------------------------------------------------------------
 # Shared fixture: isolated TestClient + user-templates directory
@@ -355,6 +387,49 @@ class TestCreateTemplate:
             json={"content": INVALID_TEMPLATE},
         )
         assert list(user_dir.glob("*.yaml")) == []
+
+    # ------------------------------------------------------------------
+    # Security: path traversal prevention
+    # ------------------------------------------------------------------
+
+    def test_create_path_traversal_id_rejected(self, crud_client):
+        """POST with id='../../evil' must return 422 (path traversal blocked)."""
+        client, _user_dir = crud_client
+        res = client.post(
+            "/api/v1/templates",
+            json={"content": PATH_TRAVERSAL_TEMPLATE, "source": "user"},
+        )
+        assert res.status_code == 422
+
+    def test_create_path_traversal_does_not_write_file(self, crud_client):
+        """A rejected path-traversal request must not write any file."""
+        client, user_dir = crud_client
+        client.post(
+            "/api/v1/templates",
+            json={"content": PATH_TRAVERSAL_TEMPLATE, "source": "user"},
+        )
+        # No .yaml file should exist anywhere under our tmp user dir
+        assert list(user_dir.rglob("*.yaml")) == []
+
+    def test_create_dot_id_rejected(self, crud_client):
+        """POST with id='.hidden-template' (starts with dot) must return 422."""
+        client, _user_dir = crud_client
+        res = client.post(
+            "/api/v1/templates",
+            json={"content": DOT_ID_TEMPLATE, "source": "user"},
+        )
+        assert res.status_code == 422
+
+    def test_create_path_traversal_error_message_contains_id(self, crud_client):
+        """422 response detail should mention the offending template id."""
+        client, _user_dir = crud_client
+        res = client.post(
+            "/api/v1/templates",
+            json={"content": PATH_TRAVERSAL_TEMPLATE, "source": "user"},
+        )
+        # Detail can be a string or dict — either way, the id must appear
+        body = res.text
+        assert "../../evil" in body or "Invalid template id" in body
 
 
 # ---------------------------------------------------------------------------
