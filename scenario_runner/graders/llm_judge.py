@@ -23,6 +23,7 @@ import os
 import re
 import urllib.request
 import urllib.error
+from pathlib import Path
 from typing import Any, Optional
 
 from ..models import GradeResult
@@ -112,12 +113,46 @@ class LLMJudgeGrader:
         self.dry_run_stub_score = max(0.0, min(1.0, dry_run_stub_score))
         self.executor = executor
 
+    def _read_output_file(
+        self,
+        output_dir: Path,
+        output_field: Optional[str],
+    ) -> Optional[str]:
+        """Read the most relevant ``.md`` output file from *output_dir*.
+
+        Resolution order:
+        1. ``{output_dir}/{safe_field}.md``   — when *output_field* is given.
+        2. ``{output_dir}/_final_output.md``  — always tried as fallback.
+
+        Returns the file content string, or ``None`` if no readable file is
+        found.  ``safe_field`` converts hyphens to underscores, matching the
+        file naming convention used by ``cli._safe_write_phase_output()``.
+        """
+        output_dir = Path(output_dir)
+
+        candidates: list[Path] = []
+        if output_field:
+            safe_field = output_field.replace("-", "_")
+            candidates.append(output_dir / f"{safe_field}.md")
+        candidates.append(output_dir / "_final_output.md")
+
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    content = candidate.read_text(encoding="utf-8").strip()
+                    if content:
+                        return content
+            except OSError:
+                continue
+        return None
+
     def grade(
         self,
         output: dict,
         rubric: str,
         judge_model: str,
         output_field: Optional[str] = None,
+        output_dir: Optional[Path] = None,
     ) -> GradeResult:
         """Grade *output* against *rubric* using *judge_model*.
 
@@ -128,7 +163,8 @@ class LLMJudgeGrader:
         Parameters
         ----------
         output:
-            The pipeline output dict.  Text extraction follows this priority:
+            The pipeline output dict.  Text extraction follows this priority
+            (when *output_dir* is not provided or yields no file):
 
             1. ``output[output_field]`` — if *output_field* is given.
             2. ``output["article"]`` — backward-compat with article pipelines.
@@ -140,7 +176,16 @@ class LLMJudgeGrader:
 
         output_field:
             Optional explicit key to extract from *output* before falling
-            back to the priority-order search above.
+            back to the priority-order search above.  When *output_dir* is
+            also provided, ``output_field`` is used to select the per-phase
+            ``.md`` file (hyphens converted to underscores).
+
+        output_dir:
+            Optional path to the pipeline run output directory.  When
+            provided, the grader reads a clean ``.md`` file from disk instead
+            of serialising the raw output dict.  Resolution order:
+            ``{output_dir}/{safe_field}.md`` → ``{output_dir}/_final_output.md``
+            → dict-based extraction (fallback).
 
         Returns:
             GradeResult with score 0.0–1.0 and full judge reasoning as
@@ -159,6 +204,29 @@ class LLMJudgeGrader:
                 ),
                 grader_type="llm_judge",
             )
+
+        # --- File-based extraction (when output_dir is provided) ---
+        #
+        # When the pipeline run directory is known, prefer reading the clean
+        # human-readable ``.md`` file over serialising the full output dict.
+        # This avoids sending large JSON blobs (20k–100k tokens) to the judge.
+        # Falls through to dict-based extraction below when no suitable file
+        # is found (backward compatible).
+        if output_dir is not None:
+            file_text = self._read_output_file(output_dir, output_field)
+            if file_text is not None:
+                # Route directly — skip dict-based extraction entirely.
+                if self.executor is not None:
+                    return self._grade_with_executor(file_text, rubric, judge_model)
+                if not self.api_key:
+                    return GradeResult(
+                        passed=False,
+                        score=0.0,
+                        details="No API key configured",
+                        grader_type="llm_judge",
+                    )
+                return self._grade_with_api_key(file_text, rubric, judge_model)
+            # No readable .md file found — fall through to dict-based extraction
 
         # --- Holdout: only extracted output text + rubric reach the model ---
         #

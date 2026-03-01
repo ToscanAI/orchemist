@@ -105,8 +105,22 @@ class ScenarioRunner:
         self,
         scenario: dict,
         pipeline_output: dict,
+        output_dir: Optional[Path] = None,
     ) -> ScenarioResult:
         """Grade *pipeline_output* against all acceptance criteria in *scenario*.
+
+        Parameters
+        ----------
+        scenario:
+            Loaded scenario dict (from :meth:`load_scenario`).
+        pipeline_output:
+            Pipeline output dict (used by assertion, keyword, and url_check
+            graders, and as fallback when no ``.md`` file is found).
+        output_dir:
+            Optional path to the completed pipeline run output directory.
+            When provided, LLM judge criteria read the clean ``.md`` output
+            file instead of serialising the full *pipeline_output* dict.
+            Defaults to ``None`` (backward-compatible: dict-based extraction).
 
         Steps:
         1. Run all assertion checks (gates and scored).
@@ -137,6 +151,7 @@ class ScenarioRunner:
                 criterion_type=crit_type,
                 criterion=criterion,
                 pipeline_output=pipeline_output,
+                output_dir=output_dir,
             )
 
             # For assertion graders the score is already binary (0 or 1),
@@ -245,9 +260,23 @@ class ScenarioRunner:
         criterion_type: str,
         criterion: dict,
         pipeline_output: dict,
+        output_dir: Optional[Path] = None,
     ) -> GradeResult:
-        """Dispatch to the appropriate grader and return a raw GradeResult."""
+        """Dispatch to the appropriate grader and return a raw GradeResult.
 
+        Parameters
+        ----------
+        criterion_type:
+            Type string from the scenario YAML (e.g. ``"llm_judge"``).
+        criterion:
+            The criterion dict from the scenario YAML.
+        pipeline_output:
+            Pipeline output dict passed through to graders.
+        output_dir:
+            Optional path to the run output directory forwarded to the LLM
+            judge grader so it can read clean ``.md`` files instead of the
+            full serialised dict.
+        """
         if criterion_type == "assertion":
             check_expr: str = criterion.get("check", "False")
             return self._assertion_grader.grade(check_expr, pipeline_output)
@@ -257,7 +286,14 @@ class ScenarioRunner:
             judge_model: str = criterion.get(
                 "judge_model", "claude-haiku-4-5-20241022"
             )
-            return self._llm_grader.grade(pipeline_output, rubric_text, judge_model)
+            output_field: Optional[str] = criterion.get("output_field")
+            return self._llm_grader.grade(
+                pipeline_output,
+                rubric_text,
+                judge_model,
+                output_field=output_field,
+                output_dir=output_dir,
+            )
 
         elif criterion_type == "keyword":
             keywords: list = criterion.get("keywords", [])
