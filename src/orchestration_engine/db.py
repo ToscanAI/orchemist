@@ -161,7 +161,30 @@ class Database:
     
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """Create all database tables."""
-        
+
+        # Async pipeline runs table (Issue #267)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_runs (
+                run_id TEXT PRIMARY KEY,
+                template_path TEXT NOT NULL,
+                template_id TEXT NOT NULL,
+                input_json TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                output_dir TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                current_phase TEXT,
+                completed_phases TEXT DEFAULT '[]',
+                phase_outputs TEXT DEFAULT '{}',
+                pid INTEGER,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                error_message TEXT,
+                gateway_url TEXT,
+                skip_scoring INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Main tasks table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
@@ -289,7 +312,13 @@ class Database:
     
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """Create performance indexes."""
-        
+
+        # pipeline_runs index (Issue #267)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status
+            ON pipeline_runs(status, created_at)
+        """)
+
         # Core query patterns for tasks
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tasks_status_priority 
@@ -802,6 +831,88 @@ class Database:
         
         return data
     
+    # ------------------------------------------------------------------
+    # Pipeline Run Operations (Issue #267 — async daemon)
+    # ------------------------------------------------------------------
+
+    def insert_pipeline_run(self, run_data: Dict[str, Any]) -> str:
+        """Insert a new async pipeline run record."""
+        with self.transaction() as conn:
+            conn.execute("""
+                INSERT INTO pipeline_runs (
+                    run_id, template_path, template_id, input_json, mode,
+                    output_dir, status, gateway_url, skip_scoring
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                run_data['run_id'],
+                run_data['template_path'],
+                run_data['template_id'],
+                run_data['input_json'],
+                run_data['mode'],
+                run_data['output_dir'],
+                run_data.get('status', 'pending'),
+                run_data.get('gateway_url'),
+                int(run_data.get('skip_scoring', 0)),
+            ))
+        return run_data['run_id']
+
+    def update_pipeline_run(self, run_id: str, **kwargs) -> bool:
+        """Update fields on a pipeline_runs row."""
+        if not kwargs:
+            return False
+        allowed = {
+            'status', 'current_phase', 'completed_phases', 'phase_outputs',
+            'pid', 'started_at', 'completed_at', 'error_message', 'gateway_url',
+            'skip_scoring',
+        }
+        updates = []
+        values = []
+        for key, value in kwargs.items():
+            if key not in allowed:
+                continue
+            updates.append(f"{key} = ?")
+            values.append(value)
+        if not updates:
+            return False
+        values.append(run_id)
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                f"UPDATE pipeline_runs SET {', '.join(updates)} WHERE run_id = ?",
+                values,
+            )
+            return cursor.rowcount > 0
+
+    def get_pipeline_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Return a pipeline_runs row as a dict, or None."""
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT * FROM pipeline_runs WHERE run_id = ?", (run_id,)
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        return self._row_to_dict(row)
+
+    def list_pipeline_runs(
+        self,
+        status: Optional[str] = None,
+        limit: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """List pipeline runs ordered by created_at DESC."""
+        query = "SELECT * FROM pipeline_runs"
+        params: list = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(query, params)
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
     def close(self) -> None:
         """Close database connections."""
         if hasattr(self._local, 'connection'):
