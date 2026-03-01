@@ -287,7 +287,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 executor=_scoring_executor,
             )
             _scoring_status = 'passed' if scoring_passed else 'failed'
-            logger.info("Auto-scoring complete: %s  score=%.4f", _scoring_status, scoring_score)
+            logger.info("Auto-scoring complete: %s  score=%s", _scoring_status, f"{scoring_score:.4f}" if scoring_score is not None else "n/a")
             db.update_pipeline_run(
                 run_id,
                 scoring_status=_scoring_status,
@@ -310,6 +310,10 @@ def run_daemon(run_id: str, db_path: str) -> None:
         except Exception as exc:
             logger.warning("Auto-scoring raised an exception: %s", exc)
             db.update_pipeline_run(run_id, scoring_status='error')
+            # Design decision: scoring infrastructure errors do NOT block the pipeline
+            # (scoring_status='error' vs 'failed'). A scoring exception means the
+            # judge/LLM infra failed, not that the pipeline output was low quality.
+            # _final_status remains 'success'. Gate approve will warn but allow.
             # Mark gate with error status on scoring exception (Issue #289)
             try:
                 from .git_integration import GitContext as _GitContext

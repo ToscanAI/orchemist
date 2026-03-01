@@ -348,6 +348,27 @@ class TestGateApproveScoreEnforcement:
         assert gate is not None
         assert gate["status"] == "approved"
 
+    def test_approve_warns_when_scoring_error(
+        self, tmp_path: Path, gates_dir: Path
+    ) -> None:
+        """gate approve shows a warning (but succeeds) when scoring_status is 'error'."""
+        _write_test_gate(
+            gates_dir,
+            run_id="err001",
+            status="awaiting_approval",
+            scoring_status="error",
+            scoring_score=None,
+        )
+
+        result = self._run("gate", "approve", "err001")
+
+        # Should succeed with warning (scoring error ≠ scoring failure)
+        assert result.exit_code == 0
+        assert "error" in result.output.lower() or "scoring" in result.output.lower()
+        gate = GitContext.load_gate("err001")
+        assert gate is not None
+        assert gate["status"] == "approved"
+
     def test_approve_force_short_flag_works(
         self, tmp_path: Path, gates_dir: Path
     ) -> None:

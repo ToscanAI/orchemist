@@ -1917,6 +1917,10 @@ def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:
         click.echo(
             f"⚠ Score gate FAILED — approving anyway because --force was specified."
         )
+    elif _gate_scoring == "error":
+        click.echo(
+            f"⚠ Scoring encountered an error for this run — proceeding without score gate enforcement."
+        )
     elif _gate_scoring is None:
         click.echo(
             f"⚠ No scoring data for this run — proceeding without score gate."
