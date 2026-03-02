@@ -1,10 +1,68 @@
+'use client';
+
 /**
- * Home page — placeholder dashboard shell.
+ * Dashboard home page — template grid.
  *
- * This is the entry point for the UI.
- * Full dashboard content is built in subsequent issues (#304–#309).
+ * Fetches all available pipeline templates from the backend and renders them
+ * as a responsive card grid. Handles loading, error, and empty states.
+ *
+ * `'use client'` is required here because this component uses `useState` and
+ * `useEffect`. The app uses `output: 'export'` (static export) in next.config.js,
+ * so all data fetching must be client-side.
+ */
+
+import { useState, useEffect } from 'react';
+import { listTemplates, ApiError } from '@/lib/api';
+import type { TemplateSummary } from '@/lib/types';
+import { TemplateCard } from '@/components/pipeline/TemplateCard';
+
+// ---------------------------------------------------------------------------
+// HomePage
+// ---------------------------------------------------------------------------
+
+/**
+ * Dashboard page component.
+ *
+ * On mount, fetches the list of pipeline templates and renders:
+ *  - A spinner while loading
+ *  - An error card on failure (with a hint to check `orch serve`)
+ *  - A guidance card when no templates are found
+ *  - A responsive 1–3 column grid of `TemplateCard` components
  */
 export default function HomePage() {
+  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Guard against state updates after unmount to avoid React warnings.
+    let cancelled = false;
+
+    listTemplates()
+      .then((data) => {
+        if (!cancelled) {
+          setTemplates(data);
+          setLoading(false);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          if (err instanceof ApiError) {
+            setError(err.message);
+          } else if (err instanceof Error) {
+            setError(err.message);
+          } else {
+            setError('An unexpected error occurred.');
+          }
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div className="flex flex-col gap-8">
       {/* Page header */}
@@ -16,74 +74,80 @@ export default function HomePage() {
           Dashboard
         </h1>
         <p className="mt-1 text-sm text-zinc-400">
-          Monitor and manage your AI pipeline runs.
+          Available pipeline templates.
         </p>
       </section>
 
-      {/* Status grid — placeholder cards */}
-      <section
-        aria-label="Pipeline status overview"
-        className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
-      >
-        <StatCard label="Active Runs" value="—" status="info" />
-        <StatCard label="Completed Today" value="—" status="success" />
-        <StatCard label="Failed" value="—" status="error" />
-        <StatCard label="Templates" value="—" status="neutral" />
+      {/* Template grid — loading / error / empty / data states */}
+      <section aria-label="Pipeline templates">
+        {loading && (
+          <div
+            className="flex flex-col items-center justify-center gap-4 py-16 text-zinc-400"
+            role="status"
+            aria-live="polite"
+          >
+            {/* Accessible spinner via animate-spin SVG */}
+            <svg
+              className="h-8 w-8 animate-spin text-sky-500"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+              />
+            </svg>
+            <span className="text-sm">Loading templates...</span>
+          </div>
+        )}
+
+        {!loading && error !== null && (
+          <div
+            className="card border-red-500/50 bg-red-900/10"
+            role="status"
+            aria-live="polite"
+          >
+            <p className="text-sm font-medium text-red-400">{error}</p>
+            <p className="mt-1 text-xs text-zinc-500">Is orch serve running?</p>
+          </div>
+        )}
+
+        {!loading && error === null && templates.length === 0 && (
+          <div
+            className="card flex flex-col items-center justify-center gap-2 py-12 text-center"
+            role="status"
+            aria-live="polite"
+          >
+            <p className="text-sm text-zinc-400">No templates found.</p>
+            <p className="text-xs text-zinc-500">
+              Place YAML template files in your{' '}
+              <code className="rounded bg-zinc-800 px-1 py-0.5 font-mono text-zinc-300">
+                templates/
+              </code>{' '}
+              directory and restart <code className="rounded bg-zinc-800 px-1 py-0.5 font-mono text-zinc-300">orch serve</code>.
+            </p>
+          </div>
+        )}
+
+        {!loading && error === null && templates.length > 0 && (
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {templates.map((template) => (
+              <TemplateCard key={template.id} template={template} />
+            ))}
+          </div>
+        )}
       </section>
-
-      {/* Recent runs placeholder */}
-      <section aria-labelledby="recent-runs-heading">
-        <h2
-          id="recent-runs-heading"
-          className="mb-4 text-lg font-medium text-zinc-100"
-        >
-          Recent Runs
-        </h2>
-        <div className="card flex items-center justify-center py-12 text-sm text-zinc-500">
-          Pipeline run list coming in #305
-        </div>
-      </section>
-    </div>
-  );
-}
-
-/* ── Stat card sub-component ─────────────────────────────────────────────── */
-
-type StatusVariant = 'info' | 'success' | 'error' | 'warning' | 'neutral';
-
-interface StatCardProps {
-  /** Display label */
-  label: string;
-  /** Current value (dash while loading) */
-  value: string | number;
-  /** Colour theme for the indicator dot */
-  status: StatusVariant;
-}
-
-/** Small summary card for the status grid. */
-function StatCard({ label, value, status }: StatCardProps) {
-  const dotColors: Record<StatusVariant, string> = {
-    info: 'bg-blue-500',
-    success: 'bg-green-500',
-    error: 'bg-red-500',
-    warning: 'bg-amber-500',
-    neutral: 'bg-zinc-500',
-  };
-
-  return (
-    <div className="card flex flex-col gap-2">
-      <div className="flex items-center gap-2">
-        <span
-          className={`h-2 w-2 rounded-full ${dotColors[status]}`}
-          aria-hidden="true"
-        />
-        <span className="text-xs font-medium uppercase tracking-wider text-zinc-400">
-          {label}
-        </span>
-      </div>
-      <p className="text-2xl font-semibold tabular-nums text-zinc-100">
-        {value}
-      </p>
     </div>
   );
 }
