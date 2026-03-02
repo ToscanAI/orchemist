@@ -472,11 +472,12 @@ class TestRule6_AtMostOneTransitionPhasePerWave:
         assert rule6_errors == []
 
     def test_two_transition_phases_in_same_wave_error(self):
-        """A and B parallel (no dependency), both have transitions → Rule 6 error."""
+        """A and B run in parallel (both depend on start), both have transitions → Rule 6 error."""
         phases = [
-            # Both are in wave 0 (no depends_on between them)
-            _make_phase("phase_a", transitions={"success": "phase_c"}),
-            _make_phase("phase_b", transitions={"success": "phase_c"}),
+            # start is in wave 0; phase_a and phase_b are in wave 1 (parallel)
+            _make_phase("start"),
+            _make_phase("phase_a", depends_on=["start"], transitions={"success": "phase_c"}),
+            _make_phase("phase_b", depends_on=["start"], transitions={"success": "phase_c"}),
             _make_phase("phase_c"),
         ]
         tmpl = _make_template(phases)
@@ -499,8 +500,10 @@ class TestRule6_AtMostOneTransitionPhasePerWave:
     def test_error_message_contains_wave_index(self):
         """Rule 6 error message includes wave index."""
         phases = [
-            _make_phase("phase_a", transitions={"success": "phase_c"}),
-            _make_phase("phase_b", transitions={"success": "phase_c"}),
+            # start is in wave 0; phase_a and phase_b are in wave 1 (parallel)
+            _make_phase("start"),
+            _make_phase("phase_a", depends_on=["start"], transitions={"success": "phase_c"}),
+            _make_phase("phase_b", depends_on=["start"], transitions={"success": "phase_c"}),
             _make_phase("phase_c"),
         ]
         tmpl = _make_template(phases)
@@ -508,8 +511,8 @@ class TestRule6_AtMostOneTransitionPhasePerWave:
         rule6_errors = [e for e in errors if "multiple transition phases" in e]
         assert len(rule6_errors) >= 1
         assert "Wave" in rule6_errors[0]
-        # Wave index 0 because phase_a and phase_b are in the first wave
-        assert "0" in rule6_errors[0]
+        # Wave index 1 because phase_a and phase_b are in the second wave (after start)
+        assert "1" in rule6_errors[0]
 
     def test_no_transitions_multiple_parallel_phases_passes(self):
         """Multiple parallel phases without transitions → no Rule 6 error."""
