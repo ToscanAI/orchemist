@@ -550,29 +550,19 @@ class TestDeleteTemplate:
         dest.write_text(MINIMAL_TEMPLATE, encoding="utf-8")
         return dest
 
-    def test_delete_user_template_returns_200(self, crud_client):
+    def test_delete_user_template_returns_204(self, crud_client):
+        """Successful delete must return 204 No Content (issue #324 spec)."""
         client, user_dir = crud_client
         self._write_user_template(user_dir)
         res = client.delete("/api/v1/templates/test-crud-template")
-        assert res.status_code == 200
+        assert res.status_code == 204
 
-    def test_delete_returns_deleted_true(self, crud_client):
+    def test_delete_returns_empty_body(self, crud_client):
+        """HTTP 204 responses must carry no body (per HTTP spec)."""
         client, user_dir = crud_client
         self._write_user_template(user_dir)
-        data = client.delete("/api/v1/templates/test-crud-template").json()
-        assert data["deleted"] is True
-
-    def test_delete_returns_template_id(self, crud_client):
-        client, user_dir = crud_client
-        self._write_user_template(user_dir)
-        data = client.delete("/api/v1/templates/test-crud-template").json()
-        assert data["id"] == "test-crud-template"
-
-    def test_delete_returns_path_in_response(self, crud_client):
-        client, user_dir = crud_client
-        self._write_user_template(user_dir)
-        data = client.delete("/api/v1/templates/test-crud-template").json()
-        assert "path" in data
+        res = client.delete("/api/v1/templates/test-crud-template")
+        assert res.content == b""
 
     def test_delete_removes_file_from_disk(self, crud_client):
         client, user_dir = crud_client
@@ -607,9 +597,3 @@ class TestDeleteTemplate:
         client.delete("/api/v1/templates/coding-pipeline-v1")
 
         assert bundled_path.exists(), "Template file must not be deleted"
-
-    def test_delete_returns_source_in_response(self, crud_client):
-        client, user_dir = crud_client
-        self._write_user_template(user_dir)
-        data = client.delete("/api/v1/templates/test-crud-template").json()
-        assert "source" in data
