@@ -135,9 +135,18 @@ class TestExtractVerdict:
         text = "APPROVE\nREQUEST_CHANGES: nitpick\nSome body text"
         assert extract_verdict(text) == "approve"
 
-    def test_keyword_buried_after_first_line_not_found(self):
-        """A keyword on a later line is ignored; only the first non-blank line counts."""
+    def test_keyword_after_first_line_found_by_full_scan(self):
+        """A keyword on a later line IS found by the full-scan fallback.
+
+        This supports streaming output (partial_output) where preamble
+        text appears before the verdict.
+        """
         text = "This is an introduction.\nAPPROVE"
+        assert extract_verdict(text) == "approve"
+
+    def test_keyword_mid_sentence_not_matched(self):
+        """A keyword that doesn't START a line is not matched."""
+        text = "The reviewer said APPROVE but we need more context."
         assert extract_verdict(text) is None
 
     def test_leading_blank_lines_skipped(self):
@@ -145,10 +154,10 @@ class TestExtractVerdict:
         text = "\n\n  \nAPPROVE\nexplanation"
         assert extract_verdict(text) == "approve"
 
-    def test_first_non_blank_no_keyword_returns_none(self):
-        """First non-blank line has no keyword → return None (not searching further)."""
+    def test_first_non_blank_no_keyword_scans_further(self):
+        """First non-blank line has no keyword → full scan finds it on later line."""
         text = "This is an intro.\nREQUEST_CHANGES: something"
-        assert extract_verdict(text) is None
+        assert extract_verdict(text) == "request_changes"
 
     # -- Edge cases -------------------------------------------------------
 

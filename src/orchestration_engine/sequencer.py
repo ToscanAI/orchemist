@@ -2120,6 +2120,9 @@ class StateMachineSequencer(PhaseSequencer):
             raw_result = result.get("result", {})
             if isinstance(raw_result, dict):
                 output_text = raw_result.get("text", "") or ""
+                # Fallback: OpenClaw executor stores output in partial_output
+                if not output_text:
+                    output_text = raw_result.get("partial_output", "") or ""
             if not output_text:
                 output_text = result.get("text", "") or ""
 

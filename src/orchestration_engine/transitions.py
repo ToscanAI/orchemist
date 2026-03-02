@@ -95,24 +95,26 @@ _VERDICT_KEYWORDS = ("APPROVE", "REQUEST_CHANGES", "ABORT")
 
 
 def extract_verdict(text: str) -> Optional[str]:
-    """Extract a verdict keyword from the first non-blank line of *text*.
+    """Extract a verdict keyword from *text*.
 
-    Scans lines top-to-bottom (case-insensitive).  Returns the lowercase
-    keyword if the **first non-blank line** starts with one of::
+    Uses a two-pass strategy:
 
-        APPROVE / REQUEST_CHANGES / ABORT
+    1. **First-line check:** If the first non-blank line starts with a verdict
+       keyword, return it immediately.  This is the fast path for well-formatted
+       review output where the verdict is on line 1.
 
-    Stops after the first non-blank line regardless of whether a keyword
-    was found — this avoids false positives from verdict words buried in
-    the body of a review.
+    2. **Full-scan fallback:** If the first line doesn't match, scan all lines
+       for a line that starts with a verdict keyword.  This handles streaming
+       output (``partial_output``) where preamble text appears before the
+       verdict.  Only matches lines where the keyword is at the start of the
+       line (not buried mid-sentence) to avoid false positives.
 
     Args:
         text: Phase output text (may be multi-line).
 
     Returns:
         Lowercase keyword string (e.g. ``"approve"``, ``"request_changes"``,
-        ``"abort"``), or ``None`` if no verdict keyword is found on the
-        first non-blank line.
+        ``"abort"``), or ``None`` if no verdict keyword is found.
 
     Examples:
         >>> extract_verdict("APPROVE\\nSome explanation here")
@@ -121,14 +123,18 @@ def extract_verdict(text: str) -> Optional[str]:
         >>> extract_verdict("  REQUEST_CHANGES: fix the auth bug")
         'request_changes'
 
-        >>> extract_verdict("Some intro text\\nAPPROVE")
-        None
+        >>> extract_verdict("Some preamble\\n\\nAPPROVE\\nDetails here")
+        'approve'
 
         >>> extract_verdict("")
     """
     if not text:
         return None
-    for line in text.splitlines():
+
+    lines = text.splitlines()
+
+    # Pass 1: check first non-blank line (fast path)
+    for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
@@ -136,6 +142,17 @@ def extract_verdict(text: str) -> Optional[str]:
         for keyword in _VERDICT_KEYWORDS:
             if upper.startswith(keyword):
                 return keyword.lower()
-        # First non-blank line processed — stop here even if no keyword found.
+        # First non-blank line didn't match — fall through to pass 2
         break
+
+    # Pass 2: scan all lines for a standalone verdict keyword at line start
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        upper = stripped.upper()
+        for keyword in _VERDICT_KEYWORDS:
+            if upper.startswith(keyword):
+                return keyword.lower()
+
     return None
