@@ -4065,6 +4065,79 @@ def serve(port: int, host: str, no_open: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# orch ui — Serve static Next.js frontend export (Issue #310)
+# ---------------------------------------------------------------------------
+
+@main.command("ui")
+@click.option('--port', default=8080, show_default=True, help='Port to serve the frontend on.')
+@click.option('--no-open', is_flag=True, help='Skip auto-opening the browser.')
+def ui(port: int, no_open: bool) -> None:
+    """Serve the static Next.js frontend export and open the browser.
+
+    Serves the pre-built frontend from frontend/out/ using Python's built-in
+    HTTP server.  Build the frontend first if the directory is missing:
+
+      cd frontend && npm run build
+
+    Examples:
+
+      orch ui                    # http://localhost:8080
+      orch ui --port 9090
+      orch ui --no-open          # start without opening browser
+    """
+    import http.server
+    import socketserver
+    import threading
+    import webbrowser
+
+    frontend_out = Path(__file__).parent.parent.parent / 'frontend' / 'out'
+
+    if not frontend_out.exists():
+        click.echo(
+            "✗ frontend/out/ not found. Run 'cd frontend && npm run build' first.",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Serve from the frontend/out directory
+    handler_class = http.server.SimpleHTTPRequestHandler
+
+    class _QuietHandler(handler_class):
+        """Suppress request logs for a cleaner terminal experience."""
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            pass  # silence per-request output
+
+    url = f"http://localhost:{port}"
+
+    # socketserver.TCPServer with allow_reuse_address so re-runs don't fail
+    socketserver.TCPServer.allow_reuse_address = True
+    httpd = socketserver.TCPServer(("", port), _QuietHandler)
+
+    # Change working directory so SimpleHTTPRequestHandler serves from out/
+    import os
+    original_dir = os.getcwd()
+    os.chdir(frontend_out)
+
+    if not no_open:
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+
+    click.echo(f"✓ Orchestration Engine frontend (static)")
+    click.echo(f"  Serving:  {frontend_out}")
+    click.echo(f"  URL:      {url}")
+    click.echo(f"  Press Ctrl+C to stop.")
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.shutdown()
+        os.chdir(original_dir)
+        click.echo("\n✓ Server stopped.")
+
+
+# ---------------------------------------------------------------------------
 # orch api-server — REST API server (Issue #257)
 # ---------------------------------------------------------------------------
 
