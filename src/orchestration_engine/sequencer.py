@@ -266,6 +266,7 @@ class PhaseSequencer:
                     "prompt": phase_input,
                     "phase_id": phase.id,
                     "pipeline_id": self.template.id,
+                    **self._build_command_extras(phase, initial_input),
                 },
                 priority=Priority.HIGH,
                 preferred_model=preferred_model,
@@ -406,6 +407,7 @@ class PhaseSequencer:
                     "prompt": phase_input,
                     "phase_id": phase.id,
                     "pipeline_id": self.template.id,
+                    **self._build_command_extras(phase, initial_input),
                 },
                 priority=Priority.HIGH,
                 preferred_model=preferred_model,
@@ -820,6 +822,7 @@ class PhaseSequencer:
                         "prompt": revised_prompt,
                         "phase_id": phase.id,
                         "pipeline_id": self.template.id,
+                        **self._build_command_extras(phase, initial_input),
                     },
                     priority=Priority.HIGH,
                     preferred_model=self._resolve_model_tier(phase.model_tier),
@@ -1470,6 +1473,81 @@ class PhaseSequencer:
             f"Please review the above failure and try a different approach."
         )
 
+    def _build_command_extras(
+        self, phase: "PhaseDefinition", initial_input: dict
+    ) -> Dict[str, Any]:
+        """Build extra payload fields for command task_type phases.
+
+        Interpolates ``phase.command`` with ``{config}`` and ``{input}``
+        context (same variables available in prompt templates), so pipeline
+        YAML can use ``{config[repo_path]}``, etc. in the command string.
+
+        Returns an empty dict when ``phase.task_type != "command"``, so
+        callers may unconditionally merge the result into the payload dict.
+
+        Args:
+            phase:         The phase definition.
+            initial_input: Pipeline input dict.
+
+        Returns:
+            Dict with keys ``command``, ``allowed_commands``, ``working_dir``,
+            and ``output_dir`` when task_type is "command"; otherwise ``{}``.
+        """
+        if phase.task_type != "command":
+            return {}
+
+        raw_command: str = phase.command or ""
+
+        # Interpolate {config[key]} and {input[key]} placeholders.
+        # Use _SafeDict so unknown placeholders are left intact rather than
+        # raising KeyError — matches the behaviour of _build_phase_input.
+        safe_input = _SafeDict(initial_input)
+        safe_config = _SafeDict(self.config)
+        output_dir_str = str(self.output_dir) if self.output_dir else ""
+
+        try:
+            interpolated_command = raw_command.format(
+                config=safe_config,
+                input=safe_input,
+                output_dir=output_dir_str,
+            )
+        except (KeyError, IndexError, AttributeError, ValueError) as exc:
+            logger.warning(
+                "Phase '%s': command interpolation failed (%s); using raw command.",
+                phase.id, exc,
+            )
+            interpolated_command = raw_command
+
+        # Interpolate working_dir similarly (may contain {config[repo_path]})
+        working_dir_raw: str = getattr(phase, "working_dir", None) or ""
+        # "." is the dataclass default — treat it as "not set" (use cwd)
+        if working_dir_raw == ".":
+            working_dir_raw = ""
+        try:
+            working_dir = (
+                working_dir_raw.format(
+                    config=safe_config,
+                    input=safe_input,
+                    output_dir=output_dir_str,
+                )
+                if working_dir_raw
+                else ""
+            )
+        except (KeyError, IndexError, AttributeError, ValueError):
+            working_dir = working_dir_raw
+
+        logger.debug(
+            "Phase '%s': command_extras resolved — command=%r, working_dir=%r",
+            phase.id, interpolated_command, working_dir or "<inherit>",
+        )
+
+        return {
+            "command": interpolated_command,
+            "allowed_commands": list(phase.allowed_commands),
+            "working_dir": working_dir or None,
+            "output_dir": output_dir_str,
+        }
+
     @staticmethod
     def _resolve_task_type(task_type_str: str) -> TaskType:
         """Map a string task type to a TaskType enum, defaulting to CONTENT."""
@@ -1955,6 +2033,7 @@ class StateMachineSequencer(PhaseSequencer):
                         "prompt": phase_input,
                         "phase_id": phase.id,
                         "pipeline_id": self.template.id,
+                        **self._build_command_extras(phase, initial_input),
                     },
                     priority=Priority.HIGH,
                     preferred_model=preferred_model,
