@@ -312,6 +312,23 @@ export function cancelRun(runId: string): Promise<CancelRunResponse> {
   );
 }
 
+/**
+ * Resume a paused pipeline run.
+ *
+ * `POST /api/v1/runs/{run_id}/resume`
+ *
+ * @param runId  Pipeline run ID.
+ * @returns      Updated `RunRecord` with new status.
+ * @throws       `ApiError` 404 when run is not found.
+ * @throws       `ApiError` 409 when run is not in a paused state.
+ */
+export function resumeRun(runId: string): Promise<RunRecord> {
+  return _fetch<RunRecord>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/resume`,
+    { method: 'POST' },
+  );
+}
+
 // ── SSE streaming ─────────────────────────────────────────────────────────────
 
 /**
