@@ -45,7 +45,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
     """
     import asyncio
 
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Request, Response
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse
     from pydantic import BaseModel
@@ -503,21 +503,26 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             # 3. Basic validation
             errors = engine.validate_template(template)
 
-            # 4. Extended validation (warnings)
+            # 4. Extended validation — returns (errors, warnings) tuple.
+            # raw (parsed above) is passed as raw_data per the method signature.
+            ext_errors: List[str] = []
             warnings: List[str] = []
             if req.extended:
                 try:
-                    warnings = engine.validate_template_extended(template)
+                    ext_errors, warnings = engine.validate_template_extended(template, raw)
                 except Exception as exc:
                     warnings = [f"Extended validation error: {exc}"]
+
+            # Merge structural + extended errors for the final verdict.
+            all_errors = errors + ext_errors
 
         finally:
             tmp_path.unlink(missing_ok=True)
 
         return JSONResponse(
             {
-                "valid": len(errors) == 0,
-                "errors": errors,
+                "valid": len(all_errors) == 0,
+                "errors": all_errors,
                 "warnings": warnings,
             }
         )
@@ -578,6 +583,24 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                     detail={"message": "Template validation failed", "errors": errors},
                 )
 
+            # 2b. Extended validation — returns (errors, warnings) tuple.
+            # ``raw`` is the parsed YAML dict captured at the top of this handler.
+            ext_errors: List[str] = []
+            warnings: List[str] = []
+            try:
+                ext_errors, warnings = engine.validate_template_extended(template, raw)
+            except Exception as exc:
+                ext_errors = [f"Extended validation error: {exc}"]
+
+            if ext_errors:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": "Template extended validation failed",
+                        "errors": ext_errors,
+                    },
+                )
+
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -599,18 +622,19 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         # 5. Write
         dest.write_text(req.content, encoding="utf-8")
 
-        return JSONResponse(
-            TemplateWriteResponse(
-                id=template.id,
-                name=template.name,
-                version=template.version,
-                path=str(dest.resolve()),
-                source=req.source,
-                phases_count=len(template.phases),
-                created=created,
-            ).model_dump(),
-            status_code=201,
-        )
+        # Surface extended-validation warnings in the response (additive,
+        # non-breaking — consumers that don't expect the field can ignore it).
+        response_data = TemplateWriteResponse(
+            id=template.id,
+            name=template.name,
+            version=template.version,
+            path=str(dest.resolve()),
+            source=req.source,
+            phases_count=len(template.phases),
+            created=created,
+        ).model_dump()
+        response_data["warnings"] = warnings
+        return JSONResponse(response_data, status_code=201)
 
     @app.put("/api/v1/templates/{name}")
     async def update_template(name: str, req: TemplateCreateRequest) -> JSONResponse:
@@ -652,9 +676,9 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                 ),
             )
 
-        # 3. Parse YAML
+        # 3. Parse YAML — capture raw_data for extended validation below.
         try:
-            yaml.safe_load(req.content)
+            raw = yaml.safe_load(req.content)
         except Exception as exc:
             raise HTTPException(
                 status_code=422,
@@ -682,26 +706,46 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                     detail={"message": "Template validation failed", "errors": errors},
                 )
 
+            # 4b. Extended validation — returns (errors, warnings) tuple.
+            # ``raw`` is the parsed YAML dict captured above (not discarded as before).
+            ext_errors: List[str] = []
+            warnings: List[str] = []
+            try:
+                ext_errors, warnings = engine.validate_template_extended(template, raw)
+            except Exception as exc:
+                ext_errors = [f"Extended validation error: {exc}"]
+
+            if ext_errors:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": "Template extended validation failed",
+                        "errors": ext_errors,
+                    },
+                )
+
         finally:
             tmp_path.unlink(missing_ok=True)
 
         # 5. Overwrite existing file
         existing_path.write_text(req.content, encoding="utf-8")
 
-        return JSONResponse(
-            TemplateWriteResponse(
-                id=template.id,
-                name=template.name,
-                version=template.version,
-                path=str(existing_path.resolve()),
-                source=source,
-                phases_count=len(template.phases),
-                created=False,
-            ).model_dump()
-        )
+        # Surface extended-validation warnings in the response (additive,
+        # non-breaking — consumers that don't expect the field can ignore it).
+        response_data = TemplateWriteResponse(
+            id=template.id,
+            name=template.name,
+            version=template.version,
+            path=str(existing_path.resolve()),
+            source=source,
+            phases_count=len(template.phases),
+            created=False,
+        ).model_dump()
+        response_data["warnings"] = warnings
+        return JSONResponse(response_data)
 
-    @app.delete("/api/v1/templates/{name}", status_code=200)
-    async def delete_template_api(name: str) -> JSONResponse:
+    @app.delete("/api/v1/templates/{name}", status_code=204)
+    async def delete_template_api(name: str) -> Response:
         """Delete a user-owned pipeline template.
 
         Resolves the template by *name* or ID, checks that it belongs to the
@@ -712,7 +756,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             name (str): Template name (file stem) or template ID.
 
         Returns:
-            200 with ``{"deleted": true, "id": "...", "path": "..."}`` on success.
+            204 No Content on success (empty body — HTTP 204 must have no body).
             403 when the template is bundled or custom.
             404 when the template is not found.
         """
@@ -735,24 +779,11 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                 ),
             )
 
-        # 3. Attempt to get the id for the response (best-effort)
-        try:
-            template = engine.load_template(existing_path)
-            template_id = template.id
-        except Exception:
-            template_id = existing_path.stem
-
-        # 4. Delete
+        # 3. Delete
         existing_path.unlink()
 
-        return JSONResponse(
-            {
-                "deleted": True,
-                "id": template_id,
-                "path": str(existing_path.resolve()),
-                "source": source,
-            }
-        )
+        # HTTP 204 No Content — must return an empty body.
+        return Response(status_code=204)
 
     # ---- Pipeline Runs -----------------------------------------------
 
