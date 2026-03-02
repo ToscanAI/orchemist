@@ -1,0 +1,103 @@
+/* Tailwind CSS directives */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* CSS custom properties — design system baseline */
+:root {
+  /* Surface */
+  --surface-0: #09090b;
+  --surface-1: #18181b;
+  --surface-2: #27272a;
+  --surface-3: #3f3f46;
+  --surface-4: #52525b;
+
+  /* Content */
+  --content-primary: #fafafa;
+  --content-secondary: #a1a1aa;
+  --content-tertiary: #71717a;
+
+  /* Brand */
+  --brand: #0ea5e9;
+  --brand-hover: #38bdf8;
+
+  /* Status */
+  --status-success: #22c55e;
+  --status-warning: #f59e0b;
+  --status-error: #ef4444;
+  --status-info: #3b82f6;
+
+  /* Borders */
+  --border-subtle: #27272a;
+  --border-default: #3f3f46;
+  --border-strong: #52525b;
+}
+
+/* Base reset — dark theme first */
+html,
+body {
+  @apply bg-surface-1 text-content-primary;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Focus ring — consistent across interactive elements */
+:focus-visible {
+  @apply outline-none ring-2 ring-brand-500 ring-offset-2 ring-offset-surface-1;
+}
+
+/* Utility layers */
+@layer utilities {
+  /* Text color shortcuts */
+  .text-primary { @apply text-content-primary; }
+  .text-secondary { @apply text-content-secondary; }
+  .text-tertiary { @apply text-content-tertiary; }
+
+  /* Surface shortcuts */
+  .bg-surface-0 { background-color: var(--surface-0); }
+  .bg-surface-1 { background-color: var(--surface-1); }
+  .bg-surface-2 { background-color: var(--surface-2); }
+  .bg-surface-3 { background-color: var(--surface-3); }
+
+  /* Border shortcuts */
+  .border-subtle { border-color: var(--border-subtle); }
+  .border-default { border-color: var(--border-default); }
+  .border-strong { border-color: var(--border-strong); }
+}
+
+@layer components {
+  /* Status badges */
+  .badge {
+    @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+  .badge-success {
+    @apply badge bg-green-900/30 text-green-400 ring-1 ring-green-500/30;
+  }
+  .badge-warning {
+    @apply badge bg-amber-900/30 text-amber-400 ring-1 ring-amber-500/30;
+  }
+  .badge-error {
+    @apply badge bg-red-900/30 text-red-400 ring-1 ring-red-500/30;
+  }
+  .badge-info {
+    @apply badge bg-blue-900/30 text-blue-400 ring-1 ring-blue-500/30;
+  }
+  .badge-neutral {
+    @apply badge bg-zinc-800 text-zinc-400 ring-1 ring-zinc-600/30;
+  }
+
+  /* Card surface */
+  .card {
+    @apply rounded-xl border border-zinc-800 bg-zinc-900 p-4;
+  }
+
+  /* Nav item */
+  .nav-item {
+    @apply rounded-md px-3 py-2 text-sm font-medium text-zinc-400 transition-colors
+           hover:bg-zinc-800 hover:text-zinc-100 focus-visible:ring-2 focus-visible:ring-sky-500;
+  }
+  .nav-item-active {
+    @apply nav-item bg-zinc-800 text-zinc-100;
+  }
+}
