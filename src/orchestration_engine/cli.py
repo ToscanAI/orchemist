@@ -4070,8 +4070,9 @@ def serve(port: int, host: str, no_open: bool) -> None:
 
 @main.command("ui")
 @click.option('--port', default=8080, show_default=True, help='Port to serve the frontend on.')
+@click.option('--host', default='127.0.0.1', show_default=True, help='Host to bind to.')
 @click.option('--no-open', is_flag=True, help='Skip auto-opening the browser.')
-def ui(port: int, no_open: bool) -> None:
+def ui(port: int, host: str, no_open: bool) -> None:
     """Serve the static Next.js frontend export and open the browser.
 
     Serves the pre-built frontend from frontend/out/ using Python's built-in
@@ -4084,6 +4085,7 @@ def ui(port: int, no_open: bool) -> None:
       orch ui                    # http://localhost:8080
       orch ui --port 9090
       orch ui --no-open          # start without opening browser
+      orch ui --host 0.0.0.0    # bind to all interfaces
     """
     import http.server
     import socketserver
@@ -4099,25 +4101,20 @@ def ui(port: int, no_open: bool) -> None:
         )
         sys.exit(1)
 
-    # Serve from the frontend/out directory
-    handler_class = http.server.SimpleHTTPRequestHandler
+    class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+        """Serve from frontend/out/ and suppress request logs."""
 
-    class _QuietHandler(handler_class):
-        """Suppress request logs for a cleaner terminal experience."""
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(frontend_out), **kwargs)
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             pass  # silence per-request output
 
-    url = f"http://localhost:{port}"
+    url = f"http://{host}:{port}"
 
     # socketserver.TCPServer with allow_reuse_address so re-runs don't fail
     socketserver.TCPServer.allow_reuse_address = True
-    httpd = socketserver.TCPServer(("", port), _QuietHandler)
-
-    # Change working directory so SimpleHTTPRequestHandler serves from out/
-    import os
-    original_dir = os.getcwd()
-    os.chdir(frontend_out)
+    httpd = socketserver.TCPServer((host, port), _QuietHandler)
 
     if not no_open:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
@@ -4133,7 +4130,6 @@ def ui(port: int, no_open: bool) -> None:
         pass
     finally:
         httpd.shutdown()
-        os.chdir(original_dir)
         click.echo("\n✓ Server stopped.")
 
 
