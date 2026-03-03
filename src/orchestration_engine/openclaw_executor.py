@@ -19,11 +19,13 @@ import logging
 import math
 import os
 import re
+import shlex
+import subprocess
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from .errors import GatewayHTTPError, RateLimitError, classify_http_error
@@ -220,6 +222,10 @@ class OpenClawExecutor(TaskExecutor):
         start_time = datetime.now()
         task_id = task.id if hasattr(task, "id") else str(uuid4())
 
+        # ── COMMAND TASK: run locally via subprocess, skip LLM agent ────────
+        if task.type == TaskType.COMMAND:
+            return self._execute_command_task(task, start_time, task_id)
+
         # ── 1. Resolve model / thinking ──────────────────────────────────────
         tier_key = model_tier or (
             task.preferred_model.value
@@ -374,6 +380,243 @@ class OpenClawExecutor(TaskExecutor):
             tokens_consumed=tokens_consumed,
             execution_time_seconds=elapsed,
             cost_usd=None,
+        )
+
+    # ------------------------------------------------------------------
+    # Command task handling
+    # ------------------------------------------------------------------
+
+    def _execute_command_task(
+        self,
+        task: TaskSpec,
+        start_time: datetime,
+        task_id: str,
+    ) -> TaskResult:
+        """Execute a TaskType.COMMAND task locally via subprocess.
+
+        Security model:
+        - Command is parsed with shlex.split (no shell interpolation)
+        - shell=False prevents shell injection
+        - Executable (argv[0]) is validated against allowed_commands whitelist
+          when a non-empty whitelist is provided
+        - Output is written to {output_dir}/{task_id}.md when output_dir is set
+
+        Args:
+            task:       TaskSpec with type == TaskType.COMMAND.
+            start_time: Datetime when the task started (already captured).
+            task_id:    Stable task identifier string.
+
+        Returns:
+            TaskResult with stdout+stderr captured in result['output'].
+        """
+        raw_command: str = task.payload.get("command", "")
+        allowed_commands: List[str] = task.payload.get("allowed_commands", [])
+        output_dir: str = task.payload.get("output_dir", "")
+        working_dir: Optional[str] = task.payload.get("working_dir") or None
+        timeout_sec: int = (
+            task.timeout_seconds
+            if hasattr(task, "timeout_seconds") and task.timeout_seconds
+            else 300
+        )
+
+        # ── Validation ────────────────────────────────────────────────
+        if not raw_command.strip():
+            return self._command_error(
+                task_id, task, start_time,
+                "command_missing",
+                "No 'command' specified in task payload",
+            )
+
+        try:
+            cmd_parts = shlex.split(raw_command)
+        except ValueError as exc:
+            return self._command_error(
+                task_id, task, start_time,
+                "command_parse_error",
+                f"shlex.split failed: {exc}",
+            )
+
+        if not cmd_parts:
+            return self._command_error(
+                task_id, task, start_time,
+                "command_empty",
+                "Command is empty after parsing",
+            )
+
+        executable = cmd_parts[0]
+
+        # Whitelist check — only enforce when a non-empty list is provided
+        if allowed_commands:
+            if executable not in allowed_commands:
+                return self._command_error(
+                    task_id, task, start_time,
+                    "command_not_allowed",
+                    f"Command '{executable}' is not in allowed_commands: {allowed_commands}",
+                )
+
+        logger.info(
+            "OpenClawExecutor: COMMAND task=%s, executable=%s, cwd=%s",
+            task_id, executable, working_dir or "<inherit>",
+        )
+
+        # ── Dry-run shortcut ──────────────────────────────────────────
+        if self.dry_run:
+            mock_output = (
+                f"[dry-run] Would execute: {raw_command}\n"
+                f"[dry-run] working_dir={working_dir}, allowed={allowed_commands}"
+            )
+            elapsed = (datetime.now() - start_time).total_seconds()
+            self._write_command_output(output_dir, task_id, raw_command, mock_output, 0)
+            return TaskResult(
+                task_id=task_id,
+                task_type=task.type,
+                state=TaskState.SUCCESS,
+                confidence=1.0,
+                result={"output": mock_output, "dry_run": True, "command": raw_command},
+                errors=[],
+                started_at=start_time,
+                completed_at=datetime.now(),
+                model_used="local-subprocess",
+                execution_time_seconds=elapsed,
+            )
+
+        # ── Execute ───────────────────────────────────────────────────
+        try:
+            proc = subprocess.run(
+                cmd_parts,
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+                cwd=working_dir,
+            )
+        except subprocess.TimeoutExpired:
+            return self._command_error(
+                task_id, task, start_time,
+                "timeout",
+                f"Command timed out after {timeout_sec}s",
+            )
+        except FileNotFoundError:
+            return self._command_error(
+                task_id, task, start_time,
+                "executable_not_found",
+                f"Executable not found: {executable}",
+            )
+        except Exception as exc:
+            return self._command_error(
+                task_id, task, start_time,
+                "execution_error",
+                str(exc),
+            )
+
+        combined_output = (proc.stdout or "") + (proc.stderr or "")
+        elapsed = (datetime.now() - start_time).total_seconds()
+
+        # ── Write output file ─────────────────────────────────────────
+        self._write_command_output(
+            output_dir, task_id, raw_command, combined_output, proc.returncode
+        )
+
+        # ── Return result ─────────────────────────────────────────────
+        if proc.returncode == 0:
+            return TaskResult(
+                task_id=task_id,
+                task_type=task.type,
+                state=TaskState.SUCCESS,
+                confidence=1.0,
+                result={
+                    "output": combined_output,
+                    "stdout": proc.stdout,
+                    "stderr": proc.stderr,
+                    "return_code": proc.returncode,
+                    "command": raw_command,
+                },
+                errors=[],
+                started_at=start_time,
+                completed_at=datetime.now(),
+                model_used="local-subprocess",
+                execution_time_seconds=elapsed,
+            )
+        else:
+            return TaskResult(
+                task_id=task_id,
+                task_type=task.type,
+                state=TaskState.FAILED,
+                confidence=0.0,
+                result={
+                    "output": combined_output,
+                    "stdout": proc.stdout,
+                    "stderr": proc.stderr,
+                    "return_code": proc.returncode,
+                    "command": raw_command,
+                },
+                errors=[
+                    TaskError(
+                        code="command_failed",
+                        message=(
+                            f"Command exited with code {proc.returncode}. "
+                            f"stderr: {proc.stderr[:500]}"
+                        ),
+                        severity="error",
+                    )
+                ],
+                started_at=start_time,
+                completed_at=datetime.now(),
+                model_used="local-subprocess",
+                execution_time_seconds=elapsed,
+            )
+
+    def _write_command_output(
+        self,
+        output_dir: str,
+        task_id: str,
+        raw_command: str,
+        combined_output: str,
+        return_code: int,
+    ) -> None:
+        """Write command output to {output_dir}/{safe_task_id}.md.
+
+        Skips silently (with a warning log) if output_dir is not set or the
+        write fails — the TaskResult already contains the output in memory.
+        """
+        if not output_dir:
+            return
+        try:
+            safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", task_id)
+            out_path = os.path.join(output_dir, f"{safe_id}.md")
+            os.makedirs(output_dir, exist_ok=True)
+            with open(out_path, "w") as f:
+                f.write(f"# Command Output — {task_id}\n\n")
+                f.write(f"**Command:** `{raw_command}`\n")
+                f.write(f"**Exit code:** {return_code}\n\n")
+                f.write("```\n")
+                f.write(combined_output)
+                f.write("\n```\n")
+            logger.info("Command output written to %s", out_path)
+        except OSError as exc:
+            logger.warning("Could not write command output to file: %s", exc)
+
+    def _command_error(
+        self,
+        task_id: str,
+        task: TaskSpec,
+        start_time: datetime,
+        code: str,
+        message: str,
+    ) -> TaskResult:
+        """Return a FAILED TaskResult for a command-phase error."""
+        logger.error("COMMAND task %s failed: [%s] %s", task_id, code, message)
+        return TaskResult(
+            task_id=task_id,
+            task_type=task.type,
+            state=TaskState.FAILED,
+            confidence=0.0,
+            result={},
+            errors=[TaskError(code=code, message=message, severity="error")],
+            started_at=start_time,
+            completed_at=datetime.now(),
+            model_used="local-subprocess",
+            execution_time_seconds=(datetime.now() - start_time).total_seconds(),
         )
 
     # ------------------------------------------------------------------

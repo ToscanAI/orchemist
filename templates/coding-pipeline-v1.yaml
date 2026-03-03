@@ -209,5 +209,6 @@ phases:
     name: "Test Verification"
     description: "Run full test suite to verify no regressions"
     task_type: command
-    command: "cd {config[repo_path]} && git checkout {config[branch_name]} && {config[test_command]}"
-    allowed_commands: ["cd", "git", "python3", "python", "pytest"]
+    command: "{config[test_command]}"
+    working_dir: "{config[repo_path]}"
+    allowed_commands: ["python3", "python", "pytest"]
