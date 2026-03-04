@@ -553,17 +553,21 @@ class TestTimeoutHandling:
         sample_task.timeout_seconds = 1
         mock = self._make_running_mock("sess-timeout")
 
-        # Issue #346: The retry loop attempts _run_session up to 3 times on TimeoutError.
+        # Issue #346+#347: The retry loop attempts _run_session up to 3 times on TimeoutError,
+        # then the fallback chain escalates to the next model tier and retries 3 more times.
         # Each attempt needs its own set of monotonic values:
         #   [loop_start, poll-1 within deadline, poll-2 exceeds deadline]
-        # Providing 9 values (3 per attempt) ensures all retries exhaust via TimeoutError
-        # and the final error code is still "timeout".
+        # Providing 18 values (3 per attempt × 6 attempts: 3 for sonnet + 3 for opus fallback)
+        # ensures all retries exhaust via TimeoutError and the final error code is "timeout".
         with patch.object(executor, "_http_post", side_effect=mock), \
              patch("orchestration_engine.openclaw_executor.time.sleep"), \
              patch("orchestration_engine.openclaw_executor.time.monotonic",
-                   side_effect=[0.0, 0.0, 2.0,   # attempt 0: times out
-                                 0.0, 0.0, 2.0,   # attempt 1: times out (retry)
-                                 0.0, 0.0, 2.0]):  # attempt 2: times out (retry)
+                   side_effect=[0.0, 0.0, 2.0,   # sonnet attempt 0: times out
+                                 0.0, 0.0, 2.0,   # sonnet attempt 1: times out (retry)
+                                 0.0, 0.0, 2.0,   # sonnet attempt 2: times out (retry)
+                                 0.0, 0.0, 2.0,   # opus attempt 0: times out (fallback tier)
+                                 0.0, 0.0, 2.0,   # opus attempt 1: times out (retry)
+                                 0.0, 0.0, 2.0]):  # opus attempt 2: times out (retry)
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
@@ -574,13 +578,17 @@ class TestTimeoutHandling:
         sample_task.timeout_seconds = 1
         mock = self._make_running_mock("my-session-xyz")
 
-        # Issue #346: Provide enough monotonic values for all 3 retry attempts.
+        # Issue #346+#347: Provide enough monotonic values for all retry attempts
+        # across both the primary model tier (sonnet) and the fallback tier (opus).
         with patch.object(executor, "_http_post", side_effect=mock), \
              patch("orchestration_engine.openclaw_executor.time.sleep"), \
              patch("orchestration_engine.openclaw_executor.time.monotonic",
-                   side_effect=[0.0, 0.0, 2.0,   # attempt 0
-                                 0.0, 0.0, 2.0,   # attempt 1
-                                 0.0, 0.0, 2.0]):  # attempt 2
+                   side_effect=[0.0, 0.0, 2.0,   # sonnet attempt 0
+                                 0.0, 0.0, 2.0,   # sonnet attempt 1
+                                 0.0, 0.0, 2.0,   # sonnet attempt 2
+                                 0.0, 0.0, 2.0,   # opus attempt 0 (fallback)
+                                 0.0, 0.0, 2.0,   # opus attempt 1
+                                 0.0, 0.0, 2.0]):  # opus attempt 2
             result = executor.execute(sample_task)
 
         assert "my-session-xyz" in result.errors[0].message

@@ -101,6 +101,11 @@ class PhaseDefinition:
     supervisor_rubric: Optional[str] = None     # quality criteria / rubric text
     supervisor_max_retries: int = 2             # max REVISE cycles before aborting
 
+    # Model fallback chain fields (Issue #347)
+    model_chain: List[str] = field(default_factory=list)
+    # Ordered list of model tiers to try on retry exhaustion, e.g. ["sonnet", "opus", "haiku"].
+    # Empty list means use the executor's built-in default chain (["sonnet", "opus"]).
+
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
         if self.depends_on is None:
@@ -145,6 +150,9 @@ class PhaseDefinition:
         if self.supervisor_max_retries is None:
             self.supervisor_max_retries = 2
         self.supervisor_max_retries = max(0, int(self.supervisor_max_retries))
+        # Normalise model fallback chain field (#347)
+        if self.model_chain is None:
+            self.model_chain = []
 
 
 @dataclass
@@ -539,6 +547,8 @@ class TemplateEngine:
                 "supervisor_model",
                 "supervisor_rubric",
                 "supervisor_max_retries",
+                # Model fallback chain fields (#347)
+                "model_chain",
             }
 
             # Warn on unknown fields (prevents silent data loss)
@@ -993,6 +1003,18 @@ class TemplateEngine:
                 warnings.append(
                     f"Phase '{phase.id}' has unknown model_tier='{tier}'{hint}"
                 )
+
+            # ---- model_chain check (#347) ----------------------------
+            for i, chain_tier in enumerate(phase.model_chain or []):
+                if chain_tier and chain_tier not in self.KNOWN_MODEL_TIERS:
+                    suggestion = difflib.get_close_matches(
+                        chain_tier, self.KNOWN_MODEL_TIERS, n=1, cutoff=0.4
+                    )
+                    hint = f"; did you mean '{suggestion[0]}'?" if suggestion else ""
+                    warnings.append(
+                        f"Phase '{phase.id}' has unknown model_chain[{i}]="
+                        f"'{chain_tier}'{hint}"
+                    )
 
             # ---- thinking_level check --------------------------------
             level = phase.thinking_level or ""

@@ -266,6 +266,7 @@ class PhaseSequencer:
                     "prompt": phase_input,
                     "phase_id": phase.id,
                     "pipeline_id": self.template.id,
+                    "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
                     **self._build_command_extras(phase, initial_input),
                 },
                 priority=Priority.HIGH,
@@ -407,6 +408,7 @@ class PhaseSequencer:
                     "prompt": phase_input,
                     "phase_id": phase.id,
                     "pipeline_id": self.template.id,
+                    "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
                     **self._build_command_extras(phase, initial_input),
                 },
                 priority=Priority.HIGH,
@@ -731,6 +733,7 @@ class PhaseSequencer:
                     "prompt": supervisor_prompt_text,
                     "phase_id": f"{phase.id}__supervisor",
                     "pipeline_id": self.template.id,
+                    "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
                 },
                 priority=Priority.HIGH,
                 preferred_model=preferred_model,
@@ -822,6 +825,7 @@ class PhaseSequencer:
                         "prompt": revised_prompt,
                         "phase_id": phase.id,
                         "pipeline_id": self.template.id,
+                        "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
                         **self._build_command_extras(phase, initial_input),
                     },
                     priority=Priority.HIGH,
@@ -2033,6 +2037,7 @@ class StateMachineSequencer(PhaseSequencer):
                         "prompt": phase_input,
                         "phase_id": phase.id,
                         "pipeline_id": self.template.id,
+                        "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
                         **self._build_command_extras(phase, initial_input),
                     },
                     priority=Priority.HIGH,
