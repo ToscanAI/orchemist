@@ -499,8 +499,18 @@ class TestAC3_DeadlineExceededRaisesTimeoutError:
 
     def test_timeout_error_propagated_as_failed_task_result(self, executor, sample_task):
         """TimeoutError from _run_session must be caught and become TaskState.FAILED
-        with error code 'timeout' (AC-3, execute() wrapper)."""
-        mono_values = iter([0.0, 0.0, 9999.0])
+        with error code 'timeout' (AC-3, execute() wrapper).
+
+        Issue #346: The retry loop retries TimeoutError up to max_attempts times.
+        Provide enough monotonic values for all retry attempts so the test is stable.
+        """
+        # 3 values per _run_session attempt that times out (loop_start, poll-within, poll-over-deadline).
+        # With max_attempts=3, we need 9 values total to produce TimeoutError on each attempt.
+        mono_values = iter([
+            0.0, 0.0, 9999.0,   # attempt 0 → TimeoutError
+            0.0, 0.0, 9999.0,   # attempt 1 → TimeoutError (retry)
+            0.0, 0.0, 9999.0,   # attempt 2 → TimeoutError (retry)
+        ])
 
         def mock_post(url, body):
             if body.get("tool") == "sessions_spawn":
@@ -874,12 +884,13 @@ class TestTimeoutEdgeCases:
         """When _run_session raises ValueError, execute() must catch it and
         return TaskState.FAILED with error code 'execution_error'."""
         # Force task.timeout_seconds to a value that will be passed as timeout
-        # We patch _run_session directly to raise ValueError
+        # We patch _run_session directly to raise ValueError.
+        # Mock time.sleep to avoid real backoff delays from the retry loop (#346).
         with patch.object(
             executor,
             "_run_session",
             side_effect=ValueError("timeout must be a positive integer (got 0)"),
-        ):
+        ), patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
@@ -1762,32 +1773,35 @@ class TestErrorPaths:
 
     def test_spawn_failure_returns_failed(self, executor, sample_task):
         """Gateway spawn failure → TaskState.FAILED."""
+        # Mock time.sleep to prevent real backoff delays during retries (#346).
         with patch.object(
             executor, "_http_post",
             side_effect=RuntimeError("Gateway HTTP error 500: Internal Server Error")
-        ):
+        ), patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
 
     def test_spawn_not_ok_returns_failed(self, executor, sample_task):
         """Gateway returns ok=False on spawn → TaskState.FAILED."""
+        # Mock time.sleep to prevent real backoff delays during retries (#346).
         with patch.object(executor, "_http_post", return_value={
             "ok": False, "error": {"message": "spawn refused"}
-        }):
+        }), patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
 
     def test_missing_session_key_returns_failed(self, executor, sample_task):
         """Spawn response without childSessionKey → TaskState.FAILED."""
+        # Mock time.sleep to prevent real backoff delays during retries (#346).
         with patch.object(executor, "_http_post", return_value={
             "ok": True,
             "result": {
                 "content": [{"type": "text", "text": '{"status":"accepted"}'}],
                 "details": {"status": "accepted"},
             },
-        }):
+        }), patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED

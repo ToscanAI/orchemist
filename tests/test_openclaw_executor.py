@@ -444,8 +444,10 @@ class TestSuccessfulExecution:
 
 class TestErrorHandling:
     def test_http_500_on_spawn_returns_failed(self, executor, sample_task):
+        # Mock time.sleep to prevent real backoff delays during retries (#346).
         with patch.object(executor, "_http_post",
-                          side_effect=RuntimeError("Gateway HTTP error 500: Internal Error")):
+                          side_effect=RuntimeError("Gateway HTTP error 500: Internal Error")), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
@@ -455,7 +457,9 @@ class TestErrorHandling:
     def test_spawn_not_ok_returns_failed(self, executor, sample_task):
         spawn_resp = {"ok": False, "error": {"type": "tool_error", "message": "spawn failed"}}
 
-        with patch.object(executor, "_http_post", return_value=spawn_resp):
+        # Mock time.sleep to prevent real backoff delays during retries (#346).
+        with patch.object(executor, "_http_post", return_value=spawn_resp), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
@@ -504,7 +508,9 @@ class TestErrorHandling:
             },
         }
 
-        with patch.object(executor, "_http_post", return_value=spawn_resp):
+        # Mock time.sleep to prevent real backoff delays during retries (#346).
+        with patch.object(executor, "_http_post", return_value=spawn_resp), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
@@ -547,10 +553,17 @@ class TestTimeoutHandling:
         sample_task.timeout_seconds = 1
         mock = self._make_running_mock("sess-timeout")
 
+        # Issue #346: The retry loop attempts _run_session up to 3 times on TimeoutError.
+        # Each attempt needs its own set of monotonic values:
+        #   [loop_start, poll-1 within deadline, poll-2 exceeds deadline]
+        # Providing 9 values (3 per attempt) ensures all retries exhaust via TimeoutError
+        # and the final error code is still "timeout".
         with patch.object(executor, "_http_post", side_effect=mock), \
              patch("orchestration_engine.openclaw_executor.time.sleep"), \
              patch("orchestration_engine.openclaw_executor.time.monotonic",
-                   side_effect=[0.0, 0.0, 2.0]):
+                   side_effect=[0.0, 0.0, 2.0,   # attempt 0: times out
+                                 0.0, 0.0, 2.0,   # attempt 1: times out (retry)
+                                 0.0, 0.0, 2.0]):  # attempt 2: times out (retry)
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
@@ -561,10 +574,13 @@ class TestTimeoutHandling:
         sample_task.timeout_seconds = 1
         mock = self._make_running_mock("my-session-xyz")
 
+        # Issue #346: Provide enough monotonic values for all 3 retry attempts.
         with patch.object(executor, "_http_post", side_effect=mock), \
              patch("orchestration_engine.openclaw_executor.time.sleep"), \
              patch("orchestration_engine.openclaw_executor.time.monotonic",
-                   side_effect=[0.0, 0.0, 2.0]):
+                   side_effect=[0.0, 0.0, 2.0,   # attempt 0
+                                 0.0, 0.0, 2.0,   # attempt 1
+                                 0.0, 0.0, 2.0]):  # attempt 2
             result = executor.execute(sample_task)
 
         assert "my-session-xyz" in result.errors[0].message
