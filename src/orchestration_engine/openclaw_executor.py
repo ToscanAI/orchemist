@@ -21,6 +21,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -28,7 +29,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from .errors import GatewayHTTPError, RateLimitError, classify_http_error
+from .errors import (
+    AuthenticationError,
+    GatewayHTTPError,
+    GatewayUnavailableError,
+    RateLimitError,
+    classify_http_error,
+)
+from .recovery import CircuitBreakerState, ErrorType, ExecutorRetryConfig, classify_exception_error_type
 from .runner import TaskExecutor
 from .schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 
@@ -110,6 +118,17 @@ POLL_INTERVAL_SECONDS = 3.0
 # attempted without gateway support.  Should the gateway add offset/cursor support
 # in a future release, replace the single-call fetch with a paginating helper.
 SESSIONS_HISTORY_LIMIT: int = 1000
+
+# ---------------------------------------------------------------------------
+# Module-level circuit-breaker registry (issue #346)
+# ---------------------------------------------------------------------------
+# Shared across all OpenClawExecutor instances in the same process, keyed by
+# the resolved model string (e.g. "anthropic/claude-sonnet-4-6").  A single
+# lock guards all read-modify-write operations on the dict and its values so
+# that concurrent workers do not corrupt the failure counters.
+_CIRCUIT_BREAKERS: Dict[str, CircuitBreakerState] = {}
+_CIRCUIT_BREAKERS_LOCK = threading.Lock()
+
 
 # Instruction appended to every sub-agent prompt so it returns its full output
 # as text instead of writing it to workspace files.  The orchestrator reads the
@@ -256,45 +275,31 @@ class OpenClawExecutor(TaskExecutor):
         if self.dry_run:
             return self._dry_run_result(task_id, task, model, start_time)
 
-        # ── 4. Real execution ────────────────────────────────────────────────
-        # Use per-task timeout if available, otherwise fall back to executor default
+        # ── 4. Real execution with exponential-backoff retry (issue #346) ───
+        # Use per-task timeout if available, otherwise fall back to executor default.
         effective_timeout = (
             task.timeout_seconds
             if hasattr(task, "timeout_seconds") and task.timeout_seconds
             else self.timeout_seconds
         )
-        try:
-            output_text, tokens_consumed = self._run_session(
-                prompt, model, thinking, timeout=effective_timeout
-            )
-        except TimeoutError as exc:
+
+        retry_cfg = ExecutorRetryConfig()
+
+        # ── 4a. Circuit-breaker pre-check ────────────────────────────────────
+        # Ensure an entry exists in the shared registry for this model key.
+        with _CIRCUIT_BREAKERS_LOCK:
+            if model not in _CIRCUIT_BREAKERS:
+                _CIRCUIT_BREAKERS[model] = CircuitBreakerState(name=model)
+            cb_state = _CIRCUIT_BREAKERS[model]
+
+        # circuit_breaker_reset_seconds → minutes (CircuitBreakerState uses minutes)
+        cb_reset_minutes = retry_cfg.circuit_breaker_reset_seconds // 60
+
+        if cb_state.is_open(retry_cfg.circuit_breaker_threshold, cb_reset_minutes):
             elapsed = (datetime.now() - start_time).total_seconds()
-            logger.error(f"OpenClaw session timed out for task {task_id}: {exc}")
-            return TaskResult(
-                task_id=task_id,
-                task_type=task.type,
-                state=TaskState.FAILED,
-                confidence=0.0,
-                result={},
-                errors=[
-                    TaskError(
-                        code="timeout",
-                        message=str(exc),
-                        severity="error",
-                    )
-                ],
-                started_at=start_time,
-                completed_at=datetime.now(),
-                model_used=model,
-                execution_time_seconds=elapsed,
-            )
-        except RateLimitError as exc:
-            elapsed = (datetime.now() - start_time).total_seconds()
-            retry_msg = (
-                f" retry after {exc.retry_after}s" if exc.retry_after is not None else ""
-            )
             logger.warning(
-                f"Rate limited (429) —{retry_msg} for task {task_id}"
+                "Circuit breaker open for model %s — skipping task %s without attempt",
+                model, task_id,
             )
             return TaskResult(
                 task_id=task_id,
@@ -304,8 +309,12 @@ class OpenClawExecutor(TaskExecutor):
                 result={},
                 errors=[
                     TaskError(
-                        code="rate_limited",
-                        message=str(exc),
+                        code="circuit_open",
+                        message=(
+                            f"Circuit breaker is open for model {model}: "
+                            f"too many consecutive failures. "
+                            f"Will retry automatically after {retry_cfg.circuit_breaker_reset_seconds}s."
+                        ),
                         severity="error",
                     )
                 ],
@@ -314,15 +323,114 @@ class OpenClawExecutor(TaskExecutor):
                 model_used=model,
                 execution_time_seconds=elapsed,
             )
-        except Exception as exc:
+
+        # ── 4b. Retry loop ───────────────────────────────────────────────────
+        output_text: Optional[str] = None
+        tokens_consumed: int = 0
+        last_exc: Optional[Exception] = None
+        last_error_code: str = "execution_error"
+        last_error_msg: str = "Unknown error"
+        partial_output: str = ""
+        partial_tokens: int = 0
+        succeeded: bool = False
+
+        for attempt in range(retry_cfg.max_attempts):
+            if attempt > 0:
+                # Exponential backoff: backoff_base * backoff_multiplier^(retry_index)
+                # where retry_index = attempt - 1 (0-based retry counter).
+                retry_index = attempt - 1
+                wait_seconds = min(
+                    retry_cfg.backoff_base * (retry_cfg.backoff_multiplier ** retry_index),
+                    retry_cfg.backoff_max,
+                )
+                logger.info(
+                    "Task %s: retry %d/%d after %.1fs backoff (error: %s)",
+                    task_id,
+                    attempt,
+                    retry_cfg.max_attempts - 1,
+                    wait_seconds,
+                    last_error_code,
+                )
+                time.sleep(wait_seconds)
+
+            try:
+                output_text, tokens_consumed = self._run_session(
+                    prompt, model, thinking, timeout=effective_timeout
+                )
+                # ── Success path ─────────────────────────────────────────────
+                with _CIRCUIT_BREAKERS_LOCK:
+                    _CIRCUIT_BREAKERS[model].record_success()
+                succeeded = True
+                break
+
+            except Exception as exc:
+                last_exc = exc
+                error_type = classify_exception_error_type(exc)
+
+                # Record failure in the shared circuit breaker.
+                with _CIRCUIT_BREAKERS_LOCK:
+                    _CIRCUIT_BREAKERS[model].record_failure(
+                        retry_cfg.circuit_breaker_threshold
+                    )
+
+                # Preserve partial output if the sub-agent produced any before failing.
+                partial_output = getattr(exc, "partial_output", "") or ""
+                partial_tokens = getattr(exc, "partial_tokens", 0) or 0
+
+                # Determine error code and emit a log at the appropriate level.
+                if isinstance(exc, TimeoutError):
+                    last_error_code = "timeout"
+                    last_error_msg = str(exc)
+                    logger.error(
+                        "OpenClaw session timed out for task %s (attempt %d): %s",
+                        task_id, attempt + 1, exc,
+                    )
+                elif isinstance(exc, RateLimitError):
+                    last_error_code = "rate_limited"
+                    last_error_msg = str(exc)
+                    retry_hint = (
+                        f" retry after {exc.retry_after}s"
+                        if exc.retry_after is not None else ""
+                    )
+                    logger.warning(
+                        "Rate limited (429) —%s for task %s (attempt %d)",
+                        retry_hint, task_id, attempt + 1,
+                    )
+                else:
+                    last_error_code = "execution_error"
+                    last_error_msg = str(exc)
+                    logger.error(
+                        "OpenClaw execution failed for task %s (attempt %d): %s",
+                        task_id, attempt + 1, exc,
+                    )
+
+                # Permanent errors should not be retried.
+                if error_type == ErrorType.PERMANENT:
+                    logger.info(
+                        "Task %s: not retrying after PERMANENT error (%s): %s",
+                        task_id, type(exc).__name__, exc,
+                    )
+                    break
+
+                # If the circuit breaker has just opened, stop retrying early.
+                with _CIRCUIT_BREAKERS_LOCK:
+                    cb_now_open = _CIRCUIT_BREAKERS[model].is_open(
+                        retry_cfg.circuit_breaker_threshold, cb_reset_minutes
+                    )
+                if cb_now_open:
+                    logger.warning(
+                        "Circuit breaker opened for model %s after task %s failure — "
+                        "aborting retry loop",
+                        model, task_id,
+                    )
+                    break
+
+                # Otherwise loop to the next attempt (backoff applied at top of loop).
+
+        # ── 4c. Handle overall failure ───────────────────────────────────────
+        if not succeeded:
             elapsed = (datetime.now() - start_time).total_seconds()
-            logger.error(f"OpenClaw execution failed for task {task_id}: {exc}")
-            # Capture partial output from sub-agent error sessions (#212)
-            partial = getattr(exc, "partial_output", "")
-            partial_tokens = getattr(exc, "partial_tokens", 0)
-            result_data = (
-                {"partial_output": partial} if partial else {}
-            )
+            result_data = {"partial_output": partial_output} if partial_output else {}
             return TaskResult(
                 task_id=task_id,
                 task_type=task.type,
@@ -331,8 +439,8 @@ class OpenClawExecutor(TaskExecutor):
                 result=result_data,
                 errors=[
                     TaskError(
-                        code="execution_error",
-                        message=str(exc),
+                        code=last_error_code,
+                        message=last_error_msg,
                         severity="error",
                     )
                 ],
@@ -343,6 +451,7 @@ class OpenClawExecutor(TaskExecutor):
                 tokens_consumed=partial_tokens,
             )
 
+        # ── 4d. Post-success checks ──────────────────────────────────────────
         elapsed = (datetime.now() - start_time).total_seconds()
 
         if not output_text or (isinstance(output_text, str) and not output_text.strip()):

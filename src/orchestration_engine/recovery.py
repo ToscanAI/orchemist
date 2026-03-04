@@ -14,10 +14,100 @@ from dataclasses import dataclass, field
 
 from .db import Database
 from .config import EngineConfig
+from .errors import (
+    AuthenticationError,
+    GatewayHTTPError,
+    GatewayUnavailableError,
+    RateLimitError,
+)
 from .schemas import TaskType, ModelTier, TaskState, select_model_tier
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ExecutorRetryConfig:
+    """Lightweight retry configuration for OpenClawExecutor — no DB or config dependency.
+
+    This dataclass is intentionally free of Database / EngineConfig dependencies so
+    that OpenClawExecutor can use it without the full engine machinery.
+    """
+
+    max_attempts: int = 3
+    """Total attempts (1 original + max_attempts-1 retries)."""
+
+    backoff_base: float = 2.0
+    """Base wait in seconds on first retry."""
+
+    backoff_multiplier: float = 4.0
+    """Exponent base for backoff: wait = backoff_base * backoff_multiplier^attempt_index."""
+
+    backoff_max: float = 60.0
+    """Cap on computed backoff (seconds)."""
+
+    circuit_breaker_threshold: int = 3
+    """Consecutive failures required to open the circuit breaker."""
+
+    circuit_breaker_reset_seconds: int = 300
+    """Seconds before an open circuit breaker transitions to half-open (5 minutes)."""
+
+
+def classify_exception_error_type(exc: Exception) -> "ErrorType":
+    """Map an exception instance to an :class:`ErrorType` for retry decisions.
+
+    Mapping rules (ordered, first match wins):
+
+    * :class:`~.errors.RateLimitError` (HTTP 429)             → ``RATE_LIMIT``
+    * :class:`~.errors.AuthenticationError` (401/403)         → ``PERMANENT``
+    * :class:`~.errors.GatewayUnavailableError` (502/503/504) → ``TRANSIENT``
+    * Other :class:`~.errors.GatewayHTTPError` with 4xx       → ``PERMANENT``
+    * Other :class:`~.errors.GatewayHTTPError` (5xx etc.)     → ``TRANSIENT``
+    * :class:`TimeoutError`                                    → ``TIMEOUT``
+    * :class:`RuntimeError` with ``'timeout'`` in message     → ``TIMEOUT``
+    * :class:`RuntimeError` with ``'garbage-collected'``       → ``PERMANENT``
+    * Any other :class:`Exception`                            → ``TRANSIENT``
+
+    Args:
+        exc: The exception to classify.
+
+    Returns:
+        The :class:`ErrorType` that best describes the error for retry purposes.
+    """
+    # RateLimitError is a GatewayHTTPError subclass — check it first.
+    if isinstance(exc, RateLimitError):
+        return ErrorType.RATE_LIMIT
+
+    # AuthenticationError is a GatewayHTTPError subclass — check before generic HTTPError.
+    if isinstance(exc, AuthenticationError):
+        return ErrorType.PERMANENT
+
+    # GatewayUnavailableError (502/503/504) is retryable.
+    if isinstance(exc, GatewayUnavailableError):
+        return ErrorType.TRANSIENT
+
+    # Any remaining 4xx GatewayHTTPError is a client/permanent error.
+    if isinstance(exc, GatewayHTTPError):
+        if 400 <= exc.status_code < 500:
+            return ErrorType.PERMANENT
+        # 5xx and other codes — treat as transient.
+        return ErrorType.TRANSIENT
+
+    # Python's built-in TimeoutError.
+    if isinstance(exc, TimeoutError):
+        return ErrorType.TIMEOUT
+
+    # RuntimeError variants raised by _run_session.
+    if isinstance(exc, RuntimeError):
+        msg = str(exc).lower()
+        if "garbage-collected" in msg or "garbage_collected" in msg:
+            # Session was evicted by the gateway — no point retrying the same key.
+            return ErrorType.PERMANENT
+        if "timeout" in msg:
+            return ErrorType.TIMEOUT
+
+    # Default: assume transient (network glitch, temporary API hiccup, etc.)
+    return ErrorType.TRANSIENT
 
 
 class ErrorType(str, Enum):

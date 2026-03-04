@@ -379,13 +379,17 @@ class TestExecuteHandlesRateLimitError:
 
     def test_execute_rate_limited_returns_failed_state(self, executor, task):
         http_err = self._make_rate_limit_http_error(retry_after=30)
-        with patch("urllib.request.urlopen", side_effect=http_err):
+        # Mock time.sleep to avoid real backoff delays during retries (#346).
+        with patch("urllib.request.urlopen", side_effect=http_err), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(task)
         assert result.state == TaskState.FAILED
 
     def test_execute_rate_limited_error_code_is_rate_limited(self, executor, task):
         http_err = self._make_rate_limit_http_error()
-        with patch("urllib.request.urlopen", side_effect=http_err):
+        # Mock time.sleep to avoid real backoff delays during retries (#346).
+        with patch("urllib.request.urlopen", side_effect=http_err), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(task)
         assert len(result.errors) == 1
         assert result.errors[0].code == "rate_limited"
@@ -393,10 +397,12 @@ class TestExecuteHandlesRateLimitError:
     def test_execute_rate_limited_logs_warning_with_retry_after(self, executor, task, caplog):
         import logging
         http_err = self._make_rate_limit_http_error(retry_after=60)
-        with patch("urllib.request.urlopen", side_effect=http_err):
+        # Mock time.sleep to avoid real backoff delays during retries (#346).
+        with patch("urllib.request.urlopen", side_effect=http_err), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             with caplog.at_level(logging.WARNING):
                 executor.execute(task)
-        # Should contain "429" and "retry after 60s"
+        # Should contain "429" and "retry after 60s" (logged once per attempt)
         combined = " ".join(caplog.messages)
         assert "429" in combined
         assert "60" in combined
@@ -404,15 +410,18 @@ class TestExecuteHandlesRateLimitError:
     def test_execute_rate_limited_logs_warning_without_retry_after(self, executor, task, caplog):
         import logging
         http_err = self._make_rate_limit_http_error(retry_after=None)
-        with patch("urllib.request.urlopen", side_effect=http_err):
+        # Mock time.sleep to avoid real backoff delays during retries (#346).
+        with patch("urllib.request.urlopen", side_effect=http_err), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             with caplog.at_level(logging.WARNING):
                 executor.execute(task)
         combined = " ".join(caplog.messages)
         assert "429" in combined
 
     def test_execute_auth_error_uses_generic_handler(self, executor, task):
-        """AuthenticationError should fall through to the generic Exception handler."""
+        """AuthenticationError (PERMANENT) must not be retried; returns execution_error."""
         http_err = _make_http_error(401, "unauthorized")
+        # No time.sleep mock needed — PERMANENT errors are not retried (#346).
         with patch("urllib.request.urlopen", side_effect=http_err):
             result = executor.execute(task)
         assert result.state == TaskState.FAILED
@@ -420,9 +429,11 @@ class TestExecuteHandlesRateLimitError:
         assert result.errors[0].code == "execution_error"
 
     def test_execute_503_uses_generic_handler(self, executor, task):
-        """GatewayUnavailableError should fall through to generic handler."""
+        """GatewayUnavailableError (TRANSIENT) retries then falls to generic handler."""
         http_err = _make_http_error(503, "service unavailable")
-        with patch("urllib.request.urlopen", side_effect=http_err):
+        # Mock time.sleep to avoid real backoff delays during retries (#346).
+        with patch("urllib.request.urlopen", side_effect=http_err), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
             result = executor.execute(task)
         assert result.state == TaskState.FAILED
         assert result.errors[0].code == "execution_error"
