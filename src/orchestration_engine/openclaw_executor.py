@@ -36,6 +36,7 @@ from .errors import (
     RateLimitError,
     classify_http_error,
 )
+from .model_fallback import ModelFallbackChain
 from .recovery import CircuitBreakerState, ErrorType, ExecutorRetryConfig, classify_exception_error_type
 from .runner import TaskExecutor
 from .schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
@@ -324,7 +325,29 @@ class OpenClawExecutor(TaskExecutor):
                 execution_time_seconds=elapsed,
             )
 
-        # ── 4b. Retry loop ───────────────────────────────────────────────────
+        # ── 4a'. Instantiate fallback chain (issue #347) ─────────────────────
+        # Build an ordered list of model tiers to try.  When the template
+        # specifies ``model_chain`` the explicit list is used; otherwise the
+        # ``ModelFallbackChain`` constructor falls back to DEFAULT_MODEL_CHAIN
+        # (["sonnet", "opus"]).  The chain's first entry drives the model used
+        # in the first iteration of the outer loop below.
+        _chain_tiers = task.payload.get("model_chain") or []
+        if not _chain_tiers:
+            # No explicit chain — seed from the current tier_key so that a
+            # haiku-configured phase still starts with haiku and only falls
+            # back to opus on exhaustion.
+            _implicit = [tier_key] if tier_key else ["sonnet"]
+            if _implicit[0] != "opus":
+                _implicit = _implicit + ["opus"]
+            _chain_tiers = _implicit
+        chain = ModelFallbackChain(_chain_tiers)
+        # Sync the model variable with the chain's starting tier.
+        model = MODEL_MAP.get(chain.current(), MODEL_MAP["sonnet"])
+
+        # ── 4b. Outer fallback loop — iterates over model chain ──────────────
+        # Outer loop: each iteration exhausts all retry attempts on the current
+        # model tier before escalating to the next tier in the chain.
+        # Inner retry loop (4b-inner) is unchanged from issue #346.
         output_text: Optional[str] = None
         tokens_consumed: int = 0
         last_exc: Optional[Exception] = None
@@ -333,99 +356,176 @@ class OpenClawExecutor(TaskExecutor):
         partial_output: str = ""
         partial_tokens: int = 0
         succeeded: bool = False
+        # Set to True when the inner loop breaks due to a PERMANENT error —
+        # permanent errors must NOT trigger model escalation.
+        permanent_failure: bool = False
 
-        for attempt in range(retry_cfg.max_attempts):
-            if attempt > 0:
-                # Exponential backoff: backoff_base * backoff_multiplier^(retry_index)
-                # where retry_index = attempt - 1 (0-based retry counter).
-                retry_index = attempt - 1
-                wait_seconds = min(
-                    retry_cfg.backoff_base * (retry_cfg.backoff_multiplier ** retry_index),
-                    retry_cfg.backoff_max,
-                )
-                logger.info(
-                    "Task %s: retry %d/%d after %.1fs backoff (error: %s)",
-                    task_id,
-                    attempt,
-                    retry_cfg.max_attempts - 1,
-                    wait_seconds,
-                    last_error_code,
-                )
-                time.sleep(wait_seconds)
+        while True:  # outer loop over model chain (issue #347)
+            # Ensure a circuit-breaker entry exists for the current model tier.
+            with _CIRCUIT_BREAKERS_LOCK:
+                if model not in _CIRCUIT_BREAKERS:
+                    _CIRCUIT_BREAKERS[model] = CircuitBreakerState(name=model)
 
-            try:
-                output_text, tokens_consumed = self._run_session(
-                    prompt, model, thinking, timeout=effective_timeout
-                )
-                # ── Success path ─────────────────────────────────────────────
-                with _CIRCUIT_BREAKERS_LOCK:
-                    _CIRCUIT_BREAKERS[model].record_success()
-                succeeded = True
+            # ── CB pre-check per outer-loop iteration ─────────────────────────
+            # When we advance to a new tier (e.g. after a `continue` from the
+            # CB-blocked escalation below), we need to verify the new tier's CB
+            # is not also open before running its inner retry loop.
+            with _CIRCUIT_BREAKERS_LOCK:
+                cb_cur = _CIRCUIT_BREAKERS[model]
+            if cb_cur.is_open(retry_cfg.circuit_breaker_threshold, cb_reset_minutes):
+                if chain.has_next():
+                    prev = chain.current()
+                    nxt = chain.advance()
+                    model = MODEL_MAP.get(nxt, MODEL_MAP["sonnet"])
+                    logger.warning(
+                        "Task %s: circuit breaker open for model '%s' (tier '%s') — "
+                        "skipping and escalating to tier '%s'",
+                        task_id, MODEL_MAP.get(prev, prev), prev, nxt,
+                    )
+                    continue
+                else:
+                    # All tiers circuit-broken — exit with failure.
+                    break
+
+            # ── 4b-inner. Per-model retry loop (unchanged from #346) ─────────
+            for attempt in range(retry_cfg.max_attempts):
+                if attempt > 0:
+                    # Exponential backoff: backoff_base * backoff_multiplier^(retry_index)
+                    # where retry_index = attempt - 1 (0-based retry counter).
+                    retry_index = attempt - 1
+                    wait_seconds = min(
+                        retry_cfg.backoff_base * (retry_cfg.backoff_multiplier ** retry_index),
+                        retry_cfg.backoff_max,
+                    )
+                    logger.info(
+                        "Task %s: retry %d/%d after %.1fs backoff (error: %s)",
+                        task_id,
+                        attempt,
+                        retry_cfg.max_attempts - 1,
+                        wait_seconds,
+                        last_error_code,
+                    )
+                    time.sleep(wait_seconds)
+
+                try:
+                    output_text, tokens_consumed = self._run_session(
+                        prompt, model, thinking, timeout=effective_timeout
+                    )
+                    # ── Success path ─────────────────────────────────────────
+                    with _CIRCUIT_BREAKERS_LOCK:
+                        _CIRCUIT_BREAKERS[model].record_success()
+                    succeeded = True
+                    break
+
+                except Exception as exc:
+                    last_exc = exc
+                    error_type = classify_exception_error_type(exc)
+
+                    # Record failure in the shared circuit breaker.
+                    with _CIRCUIT_BREAKERS_LOCK:
+                        _CIRCUIT_BREAKERS[model].record_failure(
+                            retry_cfg.circuit_breaker_threshold
+                        )
+
+                    # Preserve partial output if the sub-agent produced any before failing.
+                    partial_output = getattr(exc, "partial_output", "") or ""
+                    partial_tokens = getattr(exc, "partial_tokens", 0) or 0
+
+                    # Determine error code and emit a log at the appropriate level.
+                    if isinstance(exc, TimeoutError):
+                        last_error_code = "timeout"
+                        last_error_msg = str(exc)
+                        logger.error(
+                            "OpenClaw session timed out for task %s (attempt %d): %s",
+                            task_id, attempt + 1, exc,
+                        )
+                    elif isinstance(exc, RateLimitError):
+                        last_error_code = "rate_limited"
+                        last_error_msg = str(exc)
+                        retry_hint = (
+                            f" retry after {exc.retry_after}s"
+                            if exc.retry_after is not None else ""
+                        )
+                        logger.warning(
+                            "Rate limited (429) —%s for task %s (attempt %d)",
+                            retry_hint, task_id, attempt + 1,
+                        )
+                    else:
+                        last_error_code = "execution_error"
+                        last_error_msg = str(exc)
+                        logger.error(
+                            "OpenClaw execution failed for task %s (attempt %d): %s",
+                            task_id, attempt + 1, exc,
+                        )
+
+                    # Permanent errors should not be retried or escalated.
+                    if error_type == ErrorType.PERMANENT:
+                        logger.info(
+                            "Task %s: not retrying after PERMANENT error (%s): %s",
+                            task_id, type(exc).__name__, exc,
+                        )
+                        permanent_failure = True
+                        break
+
+                    # If the circuit breaker has just opened, stop retrying early.
+                    with _CIRCUIT_BREAKERS_LOCK:
+                        cb_now_open = _CIRCUIT_BREAKERS[model].is_open(
+                            retry_cfg.circuit_breaker_threshold, cb_reset_minutes
+                        )
+                    if cb_now_open:
+                        logger.warning(
+                            "Circuit breaker opened for model %s after task %s failure — "
+                            "aborting retry loop",
+                            model, task_id,
+                        )
+                        break
+
+                    # Otherwise loop to the next attempt (backoff applied at top of loop).
+
+            # ── 4b-outer. After inner retry loop: check chain for escalation ─
+            if succeeded:
+                # Task completed successfully — exit outer loop.
                 break
 
-            except Exception as exc:
-                last_exc = exc
-                error_type = classify_exception_error_type(exc)
+            if permanent_failure:
+                # Permanent errors (auth, bad-request) must not be retried on
+                # a different model — escalation would also fail.
+                break
 
-                # Record failure in the shared circuit breaker.
+            if chain.has_next():
+                # All retries exhausted on the current tier — escalate to next.
+                prev_tier = chain.current()
+                next_tier = chain.advance()
+                new_model = MODEL_MAP.get(next_tier, MODEL_MAP["sonnet"])
+                logger.warning(
+                    "Task %s: all retries exhausted on model '%s' (tier '%s') — "
+                    "escalating to tier '%s' (model '%s')",
+                    task_id, model, prev_tier, next_tier, new_model,
+                )
+                model = new_model
+
+                # Circuit-breaker pre-check for the new model tier.
                 with _CIRCUIT_BREAKERS_LOCK:
-                    _CIRCUIT_BREAKERS[model].record_failure(
-                        retry_cfg.circuit_breaker_threshold
-                    )
+                    if model not in _CIRCUIT_BREAKERS:
+                        _CIRCUIT_BREAKERS[model] = CircuitBreakerState(name=model)
+                    cb_new = _CIRCUIT_BREAKERS[model]
 
-                # Preserve partial output if the sub-agent produced any before failing.
-                partial_output = getattr(exc, "partial_output", "") or ""
-                partial_tokens = getattr(exc, "partial_tokens", 0) or 0
-
-                # Determine error code and emit a log at the appropriate level.
-                if isinstance(exc, TimeoutError):
-                    last_error_code = "timeout"
-                    last_error_msg = str(exc)
-                    logger.error(
-                        "OpenClaw session timed out for task %s (attempt %d): %s",
-                        task_id, attempt + 1, exc,
-                    )
-                elif isinstance(exc, RateLimitError):
-                    last_error_code = "rate_limited"
-                    last_error_msg = str(exc)
-                    retry_hint = (
-                        f" retry after {exc.retry_after}s"
-                        if exc.retry_after is not None else ""
-                    )
+                if cb_new.is_open(retry_cfg.circuit_breaker_threshold, cb_reset_minutes):
                     logger.warning(
-                        "Rate limited (429) —%s for task %s (attempt %d)",
-                        retry_hint, task_id, attempt + 1,
+                        "Circuit breaker open for escalated model %s — "
+                        "skipping tier '%s' for task %s",
+                        model, next_tier, task_id,
                     )
-                else:
-                    last_error_code = "execution_error"
-                    last_error_msg = str(exc)
-                    logger.error(
-                        "OpenClaw execution failed for task %s (attempt %d): %s",
-                        task_id, attempt + 1, exc,
-                    )
+                    # Treat the CB-blocked tier as exhausted and try the next one.
+                    continue
 
-                # Permanent errors should not be retried.
-                if error_type == ErrorType.PERMANENT:
-                    logger.info(
-                        "Task %s: not retrying after PERMANENT error (%s): %s",
-                        task_id, type(exc).__name__, exc,
-                    )
-                    break
+                # Reset per-attempt state and retry on the new model.
+                succeeded = False
+                continue
 
-                # If the circuit breaker has just opened, stop retrying early.
-                with _CIRCUIT_BREAKERS_LOCK:
-                    cb_now_open = _CIRCUIT_BREAKERS[model].is_open(
-                        retry_cfg.circuit_breaker_threshold, cb_reset_minutes
-                    )
-                if cb_now_open:
-                    logger.warning(
-                        "Circuit breaker opened for model %s after task %s failure — "
-                        "aborting retry loop",
-                        model, task_id,
-                    )
-                    break
-
-                # Otherwise loop to the next attempt (backoff applied at top of loop).
+            else:
+                # All tiers exhausted — fall through to failure path.
+                break
 
         # ── 4c. Handle overall failure ───────────────────────────────────────
         if not succeeded:

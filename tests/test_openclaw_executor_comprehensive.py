@@ -501,15 +501,21 @@ class TestAC3_DeadlineExceededRaisesTimeoutError:
         """TimeoutError from _run_session must be caught and become TaskState.FAILED
         with error code 'timeout' (AC-3, execute() wrapper).
 
-        Issue #346: The retry loop retries TimeoutError up to max_attempts times.
-        Provide enough monotonic values for all retry attempts so the test is stable.
+        Issue #346+#347: The retry loop retries TimeoutError up to max_attempts times
+        on the primary model tier, then the fallback chain escalates to the next tier
+        and retries again.  Provide enough monotonic values for all retry attempts
+        across both model tiers (sonnet + opus fallback) so the test is stable.
         """
-        # 3 values per _run_session attempt that times out (loop_start, poll-within, poll-over-deadline).
-        # With max_attempts=3, we need 9 values total to produce TimeoutError on each attempt.
+        # 3 values per _run_session attempt (loop_start, poll-within, poll-over-deadline).
+        # With max_attempts=3 and 2 model tiers (sonnet + opus fallback), we need
+        # 18 values total: 9 for sonnet attempts + 9 for opus fallback attempts.
         mono_values = iter([
-            0.0, 0.0, 9999.0,   # attempt 0 → TimeoutError
-            0.0, 0.0, 9999.0,   # attempt 1 → TimeoutError (retry)
-            0.0, 0.0, 9999.0,   # attempt 2 → TimeoutError (retry)
+            0.0, 0.0, 9999.0,   # sonnet attempt 0 → TimeoutError
+            0.0, 0.0, 9999.0,   # sonnet attempt 1 → TimeoutError (retry)
+            0.0, 0.0, 9999.0,   # sonnet attempt 2 → TimeoutError (retry)
+            0.0, 0.0, 9999.0,   # opus attempt 0 → TimeoutError (fallback tier)
+            0.0, 0.0, 9999.0,   # opus attempt 1 → TimeoutError (retry)
+            0.0, 0.0, 9999.0,   # opus attempt 2 → TimeoutError (retry)
         ])
 
         def mock_post(url, body):
