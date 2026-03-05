@@ -4,7 +4,7 @@
 > **Status:** Active engineering roadmap
 > **Maintainer:** @ToscanRivera
 
-> **Open Source Target:** After Sprint 3 (Self-Healing) — ~April 2026
+> **Open Source Target:** After Sprint 4 (Dark Factory) — ~May 2026
 > **License:** Apache 2.0
 > **V2 (Go rewrite):** In parallel — `ToscanRivera/orchemist-v2`
 
