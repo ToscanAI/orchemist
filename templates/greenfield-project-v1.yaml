@@ -1,0 +1,222 @@
+id: greenfield-project-v1
+name: "Greenfield Project Pipeline v1.0"
+description: "Idea-to-Issues pipeline: strategic research → architecture design → repo scaffold → GitHub issue creation. Input is a project concept, output is a fully specced repo with architecture docs and a prioritized issue board."
+author: "Toscan"
+version: "1.0.0"
+category: "content"
+tags: [strategy, architecture, planning, greenfield, project-setup]
+use_cases:
+  - "New project ideation and planning"
+  - "Technology migration strategy"
+  - "Repo bootstrapping with full architecture docs"
+  - "Breaking epics into shippable issues"
+
+config_schema:
+  type: object
+  required: [project_name, project_description, constraints]
+  properties:
+    project_name:
+      type: string
+      description: "Name of the project (e.g., orchemist-v2)"
+    project_description:
+      type: string
+      description: "What the project does, why it exists, what problem it solves"
+    constraints:
+      type: string
+      description: "Technical constraints, language preferences, timeline, team size, budget, dependencies"
+    existing_codebase:
+      type: string
+      default: ""
+      description: "Path to existing codebase if this is a rewrite/migration (empty for net-new)"
+    competitive_landscape:
+      type: string
+      default: ""
+      description: "Known competitors or similar tools to analyze"
+    repo_org:
+      type: string
+      default: "ToscanRivera"
+      description: "GitHub org/user for repo creation"
+    repo_visibility:
+      type: string
+      default: "private"
+      description: "public or private"
+
+phases:
+  # Phase 1: Strategic Research
+  - id: research
+    name: "Strategic Research & Analysis"
+    description: "Investigate market, competitors, technology options. Produce a strategy recommendation."
+    model_tier: opus
+    thinking_level: high
+    transitions:
+      success: architecture
+    prompt_template: |
+      You are a senior technical strategist researching a new project.
+
+      ## Project
+      **Name:** {config[project_name]}
+      **Description:** {config[project_description]}
+      **Constraints:** {config[constraints]}
+      **Existing Codebase:** {config[existing_codebase]}
+      **Competitive Landscape:** {config[competitive_landscape]}
+
+      ## Task
+      Produce a comprehensive strategy document covering:
+
+      1. **Market Analysis** — Who else is solving this problem? What are their strengths/weaknesses?
+      2. **Technology Evaluation** — Evaluate language/framework options against the constraints. Include weighted scoring matrix.
+      3. **Architecture Direction** — High-level recommendation: monolith vs microservices, language choice, key dependencies, deployment model.
+      4. **Risk Assessment** — What could go wrong? Technical risks, market risks, timeline risks.
+      5. **Phased Approach** — Break the project into 3-4 phases with clear milestones and estimated effort.
+      6. **Decision Criteria** — What metrics/signals should trigger Go/No-Go at each phase gate.
+      7. **Recommendation** — Clear, opinionated recommendation with reasoning.
+
+      If an existing codebase is provided, analyze it and include a migration strategy.
+      Research competitors using web search if competitive landscape info is provided.
+
+      Write your strategy to {output_dir}/strategy.md
+
+  # Phase 2: Architecture Design
+  - id: architecture
+    name: "Architecture Documentation"
+    description: "Design the system architecture based on strategy. Produce detailed technical docs."
+    model_tier: opus
+    thinking_level: high
+    transitions:
+      success: scaffold
+    prompt_template: |
+      You are a senior architect designing a new system.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the strategy document at: {output_dir}/strategy.md
+
+      ## Project
+      **Name:** {config[project_name]}
+      **Description:** {config[project_description]}
+      **Constraints:** {config[constraints]}
+      **Existing Codebase:** {config[existing_codebase]}
+
+      ## Task
+      Based on the strategy, produce detailed architecture documentation:
+
+      1. **ARCHITECTURE.md** — Full system design:
+         - Design principles
+         - Module/package structure with descriptions
+         - Key interfaces and types (with code snippets in the chosen language)
+         - Concurrency/scaling model
+         - Data model and persistence
+         - API design
+         - Security model
+         - Extension/plugin points
+
+      2. **MODULE_MAP.md** — If migrating from existing codebase: map every source file to its new equivalent. If net-new: map features to modules.
+
+      3. **TECH_SPEC.md** — Technology choices:
+         - Language and version
+         - Key dependencies/libraries
+         - Build system
+         - Test framework
+         - CI/CD approach
+         - Deployment model
+
+      Be specific enough that a developer (or coding pipeline) could implement each module from your docs.
+      Include code snippets for all key interfaces and types.
+
+      Write all documents to {output_dir}/
+
+  # Phase 3: Repository Scaffold
+  - id: scaffold
+    name: "Repository Scaffold"
+    description: "Create the repo, directory structure, go.mod/package.json, README, and commit."
+    model_tier: sonnet
+    thinking_level: low
+    transitions:
+      success: issues
+    prompt_template: |
+      You are setting up a new repository based on architecture documentation.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the architecture docs at {output_dir}/
+
+      ## Project
+      **Name:** {config[project_name]}
+      **Org:** {config[repo_org]}
+      **Visibility:** {config[repo_visibility]}
+
+      ## Task
+      1. Create the GitHub repo if it doesn't exist:
+         `gh repo create {config[repo_org]}/{config[project_name]} --{config[repo_visibility]} --clone`
+
+      2. Create the directory structure from ARCHITECTURE.md
+
+      3. Initialize the project (go mod init, npm init, etc. based on language choice)
+
+      4. Write README.md with:
+         - Project description
+         - Architecture overview (summary from ARCHITECTURE.md)
+         - Getting started (build, test, run)
+         - Project structure
+
+      5. Copy architecture docs into the repo's docs/ directory
+
+      6. Create placeholder files for each module (empty files with package declarations)
+
+      7. Commit and push:
+         ```
+         git add -A
+         git commit -m "docs: architecture documentation and project scaffold"
+         git push origin main
+         ```
+
+      Write a summary of what was created to {output_dir}/scaffold.md
+
+  # Phase 4: Issue Creation
+  - id: issues
+    name: "GitHub Issue Breakdown"
+    description: "Create milestones and issues from the architecture, ready for coding pipelines."
+    model_tier: opus
+    thinking_level: high
+    transitions:
+      success: __end__
+    prompt_template: |
+      You are creating a GitHub issue board from architecture documentation.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read all docs at {output_dir}/
+      Read the repo scaffold summary at {output_dir}/scaffold.md
+
+      ## Project
+      **Name:** {config[project_name]}
+      **Org:** {config[repo_org]}
+
+      ## Task
+      Create GitHub milestones and issues that break the architecture into shippable work.
+
+      1. **Create milestones** — one per phase from the strategy doc
+         ```
+         gh api repos/{config[repo_org]}/{config[project_name]}/milestones -f title="..." -f description="..."
+         ```
+
+      2. **Create labels** — one per phase + category labels (foundation, core, api, etc.)
+
+      3. **Create issues** (20-30 total, 5-8 per phase):
+         - Title: clear, actionable
+         - Body: description, architecture reference, key types/interfaces, files to create, acceptance criteria, test requirements, dependencies, complexity estimate
+         - Assigned to correct milestone and labels
+         - `sleep 2` between API calls
+
+      4. **Order matters** — issues within each milestone should be sequentially buildable
+
+      Rules:
+      - Each issue should be completable in one coding pipeline run (~20 min)
+      - Reference specific sections of ARCHITECTURE.md
+      - Include code snippets for key interfaces
+      - Keep scope tight — max 5-6 files per issue
+
+      Write a summary table to {output_dir}/issues.md with all issue numbers, titles, phases, and dependency chains.
