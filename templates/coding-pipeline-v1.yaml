@@ -48,6 +48,7 @@ phases:
     name: "Spec Interpretation"
     description: "Understand the issue and produce a clear implementation plan"
     model_tier: sonnet
+    thinking_level: high
     transitions:
       success: implement
     prompt_template: |
@@ -119,6 +120,7 @@ phases:
     name: "Opus Code Review"
     description: "Senior code review by Opus — quality gate with APPROVE/REQUEST_CHANGES verdict"
     model_tier: opus
+    thinking_level: high
     max_iterations: 3
     supervisor: true
     supervisor_model: opus
