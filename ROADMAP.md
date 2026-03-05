@@ -1,8 +1,12 @@
 # Orchemist Roadmap: Level 4 → Level 5 (Dark Factory)
 
-> **Last updated:** 2026-03-02
+> **Last updated:** 2026-03-05
 > **Status:** Active engineering roadmap
 > **Maintainer:** @ToscanRivera
+
+> **Open Source Target:** After Sprint 3 (Self-Healing) — ~April 2026
+> **License:** Apache 2.0
+> **V2 (Go rewrite):** In parallel — `ToscanRivera/orchemist-v2`
 
 ---
 
