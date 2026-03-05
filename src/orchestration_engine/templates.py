@@ -126,7 +126,8 @@ def _parse_auto_merge_config(raw: Any) -> Optional[AutoMergeConfig]:
     unknown = set(raw.keys()) - known_fields
     if unknown:
         logger.warning(
-            f"Template auto_merge config has unknown fields (ignored): {sorted(unknown)}"
+            "Template auto_merge config has unknown fields (ignored): %s",
+            sorted(unknown),
         )
 
     return AutoMergeConfig(

@@ -665,3 +665,97 @@ def test_list_gates_empty(tmp_path: Path) -> None:
         assert gates == []
     finally:
         GitContext.GATES_DIR = original_gates_dir
+
+
+# ===========================================================================
+# Tests for GitContext.auto_merge_pr (Issue #350)
+# ===========================================================================
+
+
+class TestAutoMergePr:
+    """Unit tests for GitContext.auto_merge_pr with mocked subprocess."""
+
+    def test_success_squash(self, tmp_path):
+        """Successful squash merge calls gh with correct args and does not raise."""
+        import subprocess
+        from orchestration_engine.git_integration import GitContext
+
+        mock_result = subprocess.CompletedProcess(
+            args=["gh", "pr", "merge", "--squash", "--delete-branch", "feat/x"],
+            returncode=0,
+            stdout="✓ Merged pull request #42",
+            stderr="",
+        )
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            GitContext.auto_merge_pr(
+                run_id="run-001",
+                branch_name="feat/x",
+                strategy="squash",
+                working_dir=tmp_path,
+            )
+
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert "gh" in cmd
+        assert "--squash" in cmd
+        assert "--delete-branch" in cmd
+        assert "feat/x" in cmd
+
+    def test_success_merge_strategy(self, tmp_path):
+        """--merge strategy flag passed correctly."""
+        import subprocess
+        from orchestration_engine.git_integration import GitContext
+
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="merged", stderr=""
+        )
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            GitContext.auto_merge_pr("run-002", "feat/y", strategy="merge", working_dir=tmp_path)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--merge" in cmd
+
+    def test_success_rebase_strategy(self, tmp_path):
+        """--rebase strategy flag passed correctly."""
+        import subprocess
+        from orchestration_engine.git_integration import GitContext
+
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="rebased", stderr=""
+        )
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            GitContext.auto_merge_pr("run-003", "feat/z", strategy="rebase", working_dir=tmp_path)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--rebase" in cmd
+
+    def test_non_zero_exit_raises_git_error(self, tmp_path):
+        """Non-zero exit code from gh must raise GitError."""
+        import subprocess
+        from orchestration_engine.git_integration import GitContext, GitError
+
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="no open PRs found"
+        )
+        with patch("subprocess.run", return_value=mock_result):
+            with pytest.raises(GitError, match="gh pr merge failed"):
+                GitContext.auto_merge_pr("run-fail", "feat/bad", working_dir=tmp_path)
+
+    def test_file_not_found_logs_warning_no_raise(self, tmp_path):
+        """Missing gh CLI logs a warning and does NOT raise (non-fatal)."""
+        from orchestration_engine.git_integration import GitContext
+        import logging
+
+        with patch("subprocess.run", side_effect=FileNotFoundError("gh not found")):
+            # Should not raise
+            GitContext.auto_merge_pr("run-ngh", "feat/ngh", working_dir=tmp_path)
+
+    def test_timeout_logs_warning_no_raise(self, tmp_path):
+        """subprocess.TimeoutExpired logs warning and does NOT raise (non-fatal)."""
+        import subprocess
+        from orchestration_engine.git_integration import GitContext
+
+        with patch("subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=60)):
+            # Should not raise
+            GitContext.auto_merge_pr("run-timeout", "feat/slow", working_dir=tmp_path)

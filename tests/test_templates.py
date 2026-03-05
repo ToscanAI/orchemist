@@ -660,3 +660,101 @@ class TestSafeDict:
         result = "{d[a]} {d[b]}".format(d=d)
         assert "hello" in result
         assert "MISSING" in result
+
+
+# ===========================================================================
+# 7. AutoMergeConfig and _parse_auto_merge_config (Issue #350)
+# ===========================================================================
+
+
+class TestAutoMergeConfig:
+    """Unit tests for AutoMergeConfig dataclass validation."""
+
+    def test_defaults(self):
+        from orchestration_engine.templates import AutoMergeConfig
+        cfg = AutoMergeConfig()
+        assert cfg.enabled is False
+        assert cfg.min_score == 0.90
+        assert cfg.require_approve is True
+        assert cfg.strategy == "squash"
+        assert cfg.review_phase_id == "review"
+
+    def test_custom_values(self):
+        from orchestration_engine.templates import AutoMergeConfig
+        cfg = AutoMergeConfig(enabled=True, min_score=0.75, strategy="merge", require_approve=False)
+        assert cfg.enabled is True
+        assert cfg.min_score == 0.75
+        assert cfg.strategy == "merge"
+        assert cfg.require_approve is False
+
+    def test_invalid_strategy_raises(self):
+        from orchestration_engine.templates import AutoMergeConfig
+        with pytest.raises(ValueError, match="strategy"):
+            AutoMergeConfig(strategy="cherry-pick")
+
+    def test_score_clamped_below_zero(self):
+        from orchestration_engine.templates import AutoMergeConfig
+        cfg = AutoMergeConfig(min_score=-0.5)
+        assert cfg.min_score == 0.0
+
+    def test_score_clamped_above_one(self):
+        from orchestration_engine.templates import AutoMergeConfig
+        cfg = AutoMergeConfig(min_score=1.5)
+        assert cfg.min_score == 1.0
+
+    def test_strategy_normalised_lowercase(self):
+        from orchestration_engine.templates import AutoMergeConfig
+        cfg = AutoMergeConfig(strategy="REBASE")
+        assert cfg.strategy == "rebase"
+
+    def test_all_valid_strategies_accepted(self):
+        from orchestration_engine.templates import AutoMergeConfig
+        for s in ("squash", "merge", "rebase"):
+            cfg = AutoMergeConfig(strategy=s)
+            assert cfg.strategy == s
+
+
+class TestParseAutoMergeConfig:
+    """Unit tests for _parse_auto_merge_config helper."""
+
+    def test_none_input_returns_none(self):
+        from orchestration_engine.templates import _parse_auto_merge_config
+        assert _parse_auto_merge_config(None) is None
+
+    def test_non_dict_returns_none(self):
+        from orchestration_engine.templates import _parse_auto_merge_config
+        assert _parse_auto_merge_config("enabled") is None
+        assert _parse_auto_merge_config(True) is None
+        assert _parse_auto_merge_config(42) is None
+
+    def test_empty_dict_returns_defaults(self):
+        from orchestration_engine.templates import _parse_auto_merge_config
+        cfg = _parse_auto_merge_config({})
+        assert cfg is not None
+        assert cfg.enabled is False
+        assert cfg.min_score == 0.90
+
+    def test_valid_dict_parsed_correctly(self):
+        from orchestration_engine.templates import _parse_auto_merge_config
+        cfg = _parse_auto_merge_config({
+            "enabled": True,
+            "min_score": 0.85,
+            "strategy": "rebase",
+            "require_approve": False,
+            "review_phase_id": "my_review",
+        })
+        assert cfg is not None
+        assert cfg.enabled is True
+        assert cfg.min_score == 0.85
+        assert cfg.strategy == "rebase"
+        assert cfg.require_approve is False
+        assert cfg.review_phase_id == "my_review"
+
+    def test_unknown_fields_warn_and_ignored(self, caplog):
+        import logging
+        from orchestration_engine.templates import _parse_auto_merge_config
+        with caplog.at_level(logging.WARNING):
+            cfg = _parse_auto_merge_config({"enabled": True, "unknown_field": "boom"})
+        assert cfg is not None
+        assert cfg.enabled is True
+        assert any("unknown" in r.message.lower() for r in caplog.records)

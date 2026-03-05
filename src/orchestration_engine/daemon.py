@@ -484,15 +484,20 @@ def _try_auto_merge(
                 )
                 return
 
-            # Extract text from review output and search for APPROVE verdict.
-            # The executor follows the convention of returning "APPROVE" or
-            # "REJECT" as a structured keyword in the review output text.
-            review_text = _extract_output_text(review_out).upper()
-            if "APPROVE" not in review_text:
+            # Extract text from review output and check the FIRST LINE for the
+            # structured verdict keyword.  By convention, reviews begin with
+            # "APPROVE" or "REQUEST_CHANGES" as a standalone keyword on the
+            # first line.  We check only that line to avoid false positives
+            # from bodies that mention "approve" in passing, e.g.:
+            #   "REQUEST_CHANGES: I cannot approve this until X is fixed."
+            review_text = _extract_output_text(review_out).strip()
+            first_line = review_text.split('\n')[0].strip().upper()
+            if first_line != "APPROVE":
                 logger.info(
                     "Auto-merge skipped for run '%s': review phase '%s' did not "
-                    "return an APPROVE verdict (require_approve=True).",
-                    run_id, am.review_phase_id,
+                    "return an APPROVE verdict on the first line (got: %r) "
+                    "(require_approve=True).",
+                    run_id, am.review_phase_id, first_line[:80],
                 )
                 return
 
