@@ -17,11 +17,18 @@ Security model
   structure when the interpolated string is later split by ``shlex.split``.
 * Output is capped at :data:`MAX_OUTPUT_BYTES` to prevent memory exhaustion
   from runaway commands.
+* :data:`DANGEROUS_PATTERNS` is a denylist checked unconditionally against the
+  raw command string *before* any allowlist logic.  Patterns here block
+  commands regardless of what ``allowed_commands`` a template declares.
+* :data:`DEFAULT_ALLOWED_COMMANDS` is intentionally restrictive; templates
+  should declare an explicit ``allowed_commands`` list per phase when they
+  need additional commands (e.g. ``npm``, ``node``, ``make``).
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import subprocess
 from datetime import datetime
@@ -35,18 +42,27 @@ logger = logging.getLogger(__name__)
 # commands that produce very large output).
 MAX_OUTPUT_BYTES: int = 1_048_576  # 1 MB
 
-# Default command prefixes that are considered safe to run
-DEFAULT_ALLOWED_COMMANDS: List[str] = [
-    "echo",
-    "python",
-    "python3",
-    "pytest",
-    "git",
-    "ls",
-    "cat",
-    "find",
-    "grep",
-    "sleep",
+# Default command prefixes that are considered safe to run.
+# Deliberately restrictive — individual template phases should declare an
+# explicit ``allowed_commands`` list if they need additional commands.
+DEFAULT_ALLOWED_COMMANDS: List[str] = ["python3", "pytest", "git"]
+
+# Denylist — matched against the FULL command string (before shlex split).
+# These patterns are blocked unconditionally regardless of what
+# ``allowed_commands`` the template declares.
+DANGEROUS_PATTERNS: List[re.Pattern] = [
+    re.compile(r"\brm\s+(-\w*f\w*|-\w*r\w*){1,}"),      # rm -rf, rm -fr, rm -f, rm -r
+    re.compile(r"\bsudo\b"),                               # privilege escalation
+    re.compile(r"\bsu\s"),                                 # switch user
+    re.compile(r"\bcurl\b.*\|\s*(?:sh|bash|zsh|fish)"),  # curl | sh (RCE pattern)
+    re.compile(r"\bwget\b.*\|\s*(?:sh|bash|zsh|fish)"),  # wget | sh (RCE pattern)
+    re.compile(r">\s*/dev/sd[a-z]"),                      # disk overwrite
+    re.compile(r"\bdd\b.*of=/dev/"),                      # dd to device
+    re.compile(r"\bmkfs\b"),                              # format filesystem
+    re.compile(r"\bchmod\s+777\b"),                       # world-writable
+    re.compile(r"\bchown\s+root\b"),                      # chown to root
+    re.compile(r":\(\)\{.*\}"),                           # fork bomb
+    re.compile(r"\bpkill\b|\bkillall\b"),                 # mass process kill
 ]
 
 # Default timeout in seconds for command execution
@@ -294,15 +310,29 @@ class CommandExecutor:
 
     @staticmethod
     def _check_security(command: str, allowed_commands: List[str]) -> Optional[str]:
-        """Validate *command* against *allowed_commands*.
+        """Validate *command* against the denylist, then the allowlist.
 
-        Splits the command with ``shlex`` to find the executable name (first
-        token) and checks whether it matches any prefix in *allowed_commands*.
+        Denylist (:data:`DANGEROUS_PATTERNS`) is checked **first** against the
+        raw command string and always wins — a match blocks the command
+        regardless of what *allowed_commands* the template declares.
+
+        The allowlist check then splits the command with ``shlex`` to extract
+        the executable name (first token) and verifies it matches an entry in
+        *allowed_commands*.
 
         Returns:
             ``None`` when the command is allowed.
             An error message string when the command is blocked.
         """
+        # ── 1. Denylist check (unconditional) ────────────────────────────────
+        for pattern in DANGEROUS_PATTERNS:
+            if pattern.search(command):
+                return (
+                    f"Command matches dangerous pattern '{pattern.pattern}' "
+                    f"and is unconditionally blocked."
+                )
+
+        # ── 2. Parse tokens for allowlist check ──────────────────────────────
         try:
             tokens = shlex.split(command)
         except ValueError:
@@ -314,6 +344,7 @@ class CommandExecutor:
 
         executable = tokens[0]
 
+        # ── 3. Allowlist check ───────────────────────────────────────────────
         for allowed in allowed_commands:
             if executable == allowed or executable.endswith(f"/{allowed}"):
                 return None
