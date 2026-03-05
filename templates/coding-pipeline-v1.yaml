@@ -41,6 +41,10 @@ config_schema:
     style_guide:
       type: string
       default: "Follow existing code style. Add docstrings. Type hints where practical."
+    issue_number:
+      type: integer
+      required: false
+      description: "GitHub issue number to auto-close via 'Closes #N' in PR body"
 
 phases:
   # Phase 1: Spec Interpretation

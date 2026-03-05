@@ -181,11 +181,13 @@ class GitContext:
         pipeline_id: str,
         run_id: str,
         output_dir: Optional[Path] = None,
+        issue_number: Optional[int] = None,
     ) -> None:
         self.config = config
         self.pipeline_id = pipeline_id
         self.run_id = run_id
         self.output_dir = output_dir or Path(".")
+        self.issue_number = issue_number  # GitHub issue to auto-close via PR body
 
         # Resolved lazily in on_pipeline_start
         self._repo_root: Optional[Path] = None
@@ -458,6 +460,7 @@ class GitContext:
             "approve_command": f"orch gate approve {self.run_id}",
             "reject_command": f"orch gate reject {self.run_id}",
             "create_pr": self.config.create_pr,
+            "issue_number": self.issue_number,  # None if not provided
             # Scoring fields — populated later by update_gate_scoring() once
             # auto-scoring completes.  None means scoring has not yet run.
             "scoring_status": None,
@@ -709,6 +712,7 @@ class GitContext:
         base = gate_data.get("base_branch", "main")
         pipeline_id = gate_data.get("pipeline_id", "pipeline")
         run_id = gate_data.get("run_id", "")
+        issue_number = gate_data.get("issue_number")
 
         title = f"[orch] {pipeline_id} — run {run_id}"
         body = (
@@ -722,6 +726,11 @@ class GitContext:
                 for c in gate_data.get("commits", [])
             )
         )
+
+        # Append GitHub closing keyword so merging the PR auto-closes the issue.
+        # Must be at the end of the body for GitHub's parser to recognise it.
+        if issue_number:
+            body += f"\n\nCloses #{issue_number}"
 
         try:
             result = subprocess.run(
