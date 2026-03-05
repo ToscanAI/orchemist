@@ -1202,6 +1202,7 @@ def run_template(
             pipeline_id=template.id,
             run_id=run_id,
             output_dir=output_dir,
+            issue_number=initial_input.get("issue_number"),  # None if not in input
         )
         console.print(
             f"[bold]Git:[/bold]      enabled  "
