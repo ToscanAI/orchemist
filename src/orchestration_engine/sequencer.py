@@ -33,6 +33,10 @@ from .transitions import PhaseOutcome, determine_outcome, extract_verdict
 
 logger = logging.getLogger(__name__)
 
+# Module-level constant for output-length validation (Issue #351).
+# Kept here so it is allocated once, not on every _validate_phase_output call.
+_TERMINAL_PUNCTUATION: frozenset = frozenset(".!?:")
+
 # Default supervisor prompt template (Issue #194).
 # Placeholders: {rubric}, {phase_output}
 _DEFAULT_SUPERVISOR_PROMPT = """\
@@ -975,8 +979,7 @@ class PhaseSequencer:
             return failed_result
 
         # Length passes — check for mid-sentence truncation (advisory warning)
-        terminal_punctuation = frozenset(".!?:")
-        if tail and not any(ch in terminal_punctuation for ch in tail):
+        if tail and not any(ch in _TERMINAL_PUNCTUATION for ch in tail):
             logger.warning(
                 f"Pipeline {self.template.id}: phase '{phase.id}' output may be "
                 f"truncated mid-sentence — last 50 chars contain no terminal "

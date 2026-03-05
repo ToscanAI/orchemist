@@ -1718,3 +1718,446 @@ class TestBackwardCompatibility:
 
         assert not result.get("aborted", False)
         assert order == ["a", "b"], f"Dependent phases must run in dependency order: {order}"
+
+
+# ---------------------------------------------------------------------------
+# Issue #351 — _validate_phase_output() unit tests
+# ---------------------------------------------------------------------------
+
+def _make_length_phase(
+    phase_id: str = "spec",
+    min_output_length: int = 0,
+) -> PhaseDefinition:
+    """Build a PhaseDefinition with a min_output_length threshold."""
+    return PhaseDefinition(
+        id=phase_id,
+        name=phase_id,
+        prompt_template="Write a spec. Input: {input}.",
+        retries=0,
+        retry_delay_seconds=0,
+        min_output_length=min_output_length,
+    )
+
+
+def _make_result_dict(text: str, state: str = "success") -> dict:
+    """Build a minimal phase result dict as returned by _execute_and_wait."""
+    return {
+        "state": state,
+        "result": {"text": text},
+        "errors": [],
+        "metadata": {"attempt_number": 1, "total_attempts": 1},
+        "confidence": 0.9,
+    }
+
+
+def _make_sequencer_for_phase(phase: PhaseDefinition) -> "PhaseSequencer":
+    """Build a PhaseSequencer wrapping a single phase with a mock runner."""
+    template = _make_template([phase])
+    runner = _build_runner(lambda ts, **kw: _success_result(ts))
+    return PhaseSequencer(template, runner)
+
+
+class TestValidatePhaseOutputUnit:
+    """Unit tests for PhaseSequencer._validate_phase_output() (#351)."""
+
+    # --- Disabled / skip cases ---
+
+    def test_returns_none_when_min_output_length_is_zero(self) -> None:
+        """Validation disabled (min_output_length=0) — always returns None."""
+        phase = _make_length_phase(min_output_length=0)
+        seq = _make_sequencer_for_phase(phase)
+        result = _make_result_dict(text="short")
+        assert seq._validate_phase_output(phase, result) is None
+
+    def test_returns_none_when_state_is_not_success(self) -> None:
+        """Non-success results are not validated — returns None regardless."""
+        phase = _make_length_phase(min_output_length=100)
+        seq = _make_sequencer_for_phase(phase)
+        for state in ("failed", "permanently_failed", "unknown"):
+            result = _make_result_dict(text="x" * 5, state=state)
+            assert seq._validate_phase_output(phase, result) is None, (
+                f"Expected None for state={state!r}"
+            )
+
+    def test_returns_none_when_output_meets_threshold(self) -> None:
+        """Output length ≥ threshold → validation passes → None returned."""
+        phase = _make_length_phase(min_output_length=50)
+        seq = _make_sequencer_for_phase(phase)
+        text = "A" * 49 + "."  # 50 chars, ends with terminal punctuation
+        result = _make_result_dict(text=text)
+        assert seq._validate_phase_output(phase, result) is None
+
+    def test_returns_none_when_output_exceeds_threshold(self) -> None:
+        """Output longer than threshold → validation passes → None returned."""
+        phase = _make_length_phase(min_output_length=100)
+        seq = _make_sequencer_for_phase(phase)
+        text = "B" * 200 + "."
+        result = _make_result_dict(text=text)
+        assert seq._validate_phase_output(phase, result) is None
+
+    # --- Failure case ---
+
+    def test_returns_failed_dict_when_output_too_short(self) -> None:
+        """Output shorter than threshold → synthetic FAILED dict returned."""
+        phase = _make_length_phase(min_output_length=200)
+        seq = _make_sequencer_for_phase(phase)
+        text = "Too short output."
+        result = _make_result_dict(text=text)
+        failure = seq._validate_phase_output(phase, result)
+        assert failure is not None, "Expected a failed dict, got None"
+        assert failure["state"] == "failed"
+
+    def test_failed_dict_has_output_too_short_error_code(self) -> None:
+        """Synthetic FAILED dict has errors[0].code == 'OUTPUT_TOO_SHORT'."""
+        phase = _make_length_phase(min_output_length=500)
+        seq = _make_sequencer_for_phase(phase)
+        result = _make_result_dict(text="Way too short.")
+        failure = seq._validate_phase_output(phase, result)
+        assert failure is not None
+        errors = failure.get("errors", [])
+        assert len(errors) == 1, f"Expected 1 error, got {len(errors)}"
+        assert errors[0]["code"] == "OUTPUT_TOO_SHORT"
+
+    def test_failed_dict_metadata_includes_actual_length(self) -> None:
+        """Synthetic FAILED dict metadata contains actual_length and min_output_length."""
+        phase = _make_length_phase(min_output_length=300)
+        seq = _make_sequencer_for_phase(phase)
+        text = "X" * 42
+        result = _make_result_dict(text=text)
+        failure = seq._validate_phase_output(phase, result)
+        assert failure is not None
+        meta = failure.get("metadata", {})
+        assert meta.get("actual_length") == 42
+        assert meta.get("min_output_length") == 300
+        assert meta.get("validation_failure") == "min_output_length"
+
+    def test_failed_dict_confidence_is_zero(self) -> None:
+        """Synthetic FAILED dict has confidence == 0.0."""
+        phase = _make_length_phase(min_output_length=1000)
+        seq = _make_sequencer_for_phase(phase)
+        result = _make_result_dict(text="short")
+        failure = seq._validate_phase_output(phase, result)
+        assert failure is not None
+        assert failure.get("confidence") == 0.0
+
+    def test_failed_dict_preserves_original_result_text(self) -> None:
+        """Synthetic FAILED dict preserves the original output text in 'result'."""
+        phase = _make_length_phase(min_output_length=500)
+        seq = _make_sequencer_for_phase(phase)
+        original_text = "Here is the partial output."
+        result = _make_result_dict(text=original_text)
+        failure = seq._validate_phase_output(phase, result)
+        assert failure is not None
+        # The original text should be findable in the failure result
+        stored_text = failure.get("result", {}).get("text", "")
+        assert stored_text == original_text
+
+    def test_failed_dict_metadata_tail_is_last_50_chars(self) -> None:
+        """Synthetic FAILED dict metadata 'tail' == last 50 chars of output."""
+        phase = _make_length_phase(min_output_length=500)
+        seq = _make_sequencer_for_phase(phase)
+        text = "A" * 30 + "B" * 30  # 60 chars total, tail = last 50
+        result = _make_result_dict(text=text)
+        failure = seq._validate_phase_output(phase, result)
+        assert failure is not None
+        tail = failure["metadata"]["tail"]
+        assert tail == text[-50:]
+
+    # --- Advisory punctuation warning ---
+
+    def test_emits_warning_when_no_terminal_punctuation_in_tail(self, caplog) -> None:
+        """When output passes length but tail lacks terminal punctuation → WARNING logged."""
+        phase = _make_length_phase(min_output_length=10)
+        seq = _make_sequencer_for_phase(phase)
+        # Text passes threshold (100 chars) but ends with no .!?:
+        text = "w" * 100  # no terminal punctuation
+        result = _make_result_dict(text=text)
+        with caplog.at_level(logging.WARNING):
+            validation_result = seq._validate_phase_output(phase, result)
+        # Must not fail — returns None
+        assert validation_result is None
+        # Must log a warning
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("truncat" in r.message.lower() or "punctuation" in r.message.lower()
+                   for r in warnings), f"Expected truncation warning, got: {[r.message for r in warnings]}"
+
+    def test_no_warning_when_output_ends_with_terminal_punctuation(self, caplog) -> None:
+        """Output ending with terminal punctuation (.!?:) does NOT trigger warning."""
+        phase = _make_length_phase(min_output_length=10)
+        seq = _make_sequencer_for_phase(phase)
+        for terminator in (".", "!", "?", ":"):
+            text = "x" * 99 + terminator  # ends with terminal punctuation
+            result = _make_result_dict(text=text)
+            with caplog.at_level(logging.WARNING):
+                validation_result = seq._validate_phase_output(phase, result)
+            assert validation_result is None
+            # No truncation warning should appear for this terminator
+            warnings = [
+                r for r in caplog.records
+                if r.levelno == logging.WARNING and "truncat" in r.message.lower()
+            ]
+            assert not warnings, (
+                f"Unexpected truncation warning for terminator {terminator!r}: "
+                f"{[r.message for r in warnings]}"
+            )
+            caplog.clear()
+
+
+# ---------------------------------------------------------------------------
+# Issue #351 — Integration tests: sequential path
+# ---------------------------------------------------------------------------
+
+
+class TestValidatePhaseOutputSequentialIntegration:
+    """Integration tests: validation failure aborts the pipeline in sequential path."""
+
+    def test_pipeline_aborts_when_output_too_short(self) -> None:
+        """Sequential pipeline aborts when a phase output is below min_output_length."""
+        phase = _make_length_phase("spec", min_output_length=500)
+        template = _make_template([phase], template_id="seq-abort-test")
+
+        def execute(task_spec, **kw):
+            # Return a short successful output
+            ts = task_spec
+            return TaskResult(
+                task_id=ts.id,
+                task_type=ts.type,
+                state=TaskState.SUCCESS,
+                confidence=0.9,
+                result={"text": "Too short."},
+            )
+
+        runner = _build_runner(execute)
+        seq = PhaseSequencer(template, runner)
+        result = seq.execute({})
+
+        assert result.get("aborted") is True
+        assert result.get("failed_phase") == "spec"
+
+    def test_phase_outputs_updated_with_failed_result(self) -> None:
+        """phase_outputs dict contains the synthetic FAILED result after validation failure."""
+        phase = _make_length_phase("spec", min_output_length=500)
+        template = _make_template([phase], template_id="seq-outputs-test")
+
+        def execute(task_spec, **kw):
+            ts = task_spec
+            return TaskResult(
+                task_id=ts.id,
+                task_type=ts.type,
+                state=TaskState.SUCCESS,
+                confidence=0.9,
+                result={"text": "Short."},
+            )
+
+        runner = _build_runner(execute)
+        seq = PhaseSequencer(template, runner)
+        result = seq.execute({})
+
+        assert result.get("aborted") is True
+        phase_out = result["phase_outputs"].get("spec")
+        assert phase_out is not None
+        assert phase_out["state"] == "failed"
+        errors = phase_out.get("errors", [])
+        assert any(e.get("code") == "OUTPUT_TOO_SHORT" for e in errors)
+
+    def test_supervisor_not_invoked_after_validation_failure(self) -> None:
+        """Supervisor hook must NOT be called when output validation fails."""
+        phase = PhaseDefinition(
+            id="spec",
+            name="Spec",
+            prompt_template="Write spec. Input: {input}.",
+            retries=0,
+            retry_delay_seconds=0,
+            min_output_length=500,
+            supervisor=True,
+        )
+        template = _make_template([phase], template_id="seq-supervisor-test")
+
+        def execute(task_spec, **kw):
+            ts = task_spec
+            return TaskResult(
+                task_id=ts.id,
+                task_type=ts.type,
+                state=TaskState.SUCCESS,
+                confidence=0.9,
+                result={"text": "Too short for supervisor to see."},
+            )
+
+        runner = _build_runner(execute)
+        seq = PhaseSequencer(template, runner)
+
+        with patch.object(seq, "_run_supervisor_for_phase") as mock_supervisor:
+            result = seq.execute({})
+
+        assert result.get("aborted") is True
+        mock_supervisor.assert_not_called()
+
+    def test_subsequent_phases_not_executed_after_validation_failure(self) -> None:
+        """Phases after a failed phase must not run when validation aborts the pipeline."""
+        spec_phase = _make_length_phase("spec", min_output_length=500)
+        build_phase = _make_phase("build", depends_on=["spec"])
+        template = _make_template([spec_phase, build_phase], template_id="seq-chain-abort")
+
+        executed: List[str] = []
+
+        def execute(task_spec, **kw):
+            pid = task_spec.payload.get("phase_id", "?")
+            executed.append(pid)
+            # spec returns short output, build returns long output
+            text = "Short." if pid == "spec" else ("Long output. " * 100)
+            ts = task_spec
+            return TaskResult(
+                task_id=ts.id,
+                task_type=ts.type,
+                state=TaskState.SUCCESS,
+                confidence=0.9,
+                result={"text": text},
+            )
+
+        runner = _build_runner(execute)
+        seq = PhaseSequencer(template, runner)
+        result = seq.execute({})
+
+        assert result.get("aborted") is True
+        assert "spec" in executed
+        assert "build" not in executed, "build phase should NOT run after spec validation failure"
+
+    def test_long_output_passes_validation_and_pipeline_continues(self) -> None:
+        """When output meets the threshold, the pipeline continues normally."""
+        long_text = "This is a detailed spec output. " * 20  # well above 200 chars
+        spec_phase = _make_length_phase("spec", min_output_length=200)
+        build_phase = _make_phase("build", depends_on=["spec"])
+        template = _make_template([spec_phase, build_phase], template_id="seq-pass-test")
+
+        executed: List[str] = []
+
+        def execute(task_spec, **kw):
+            pid = task_spec.payload.get("phase_id", "?")
+            executed.append(pid)
+            ts = task_spec
+            return TaskResult(
+                task_id=ts.id,
+                task_type=ts.type,
+                state=TaskState.SUCCESS,
+                confidence=0.9,
+                result={"text": long_text},
+            )
+
+        runner = _build_runner(execute)
+        seq = PhaseSequencer(template, runner)
+        result = seq.execute({})
+
+        assert not result.get("aborted", False)
+        assert executed == ["spec", "build"]
+
+
+# ---------------------------------------------------------------------------
+# Issue #351 — Integration tests: parallel path
+# ---------------------------------------------------------------------------
+
+
+class TestValidatePhaseOutputParallelIntegration:
+    """Integration tests: validation failure aborts the pipeline in parallel path."""
+
+    def test_parallel_pipeline_aborts_when_output_too_short(self) -> None:
+        """Parallel pipeline aborts when a phase output is below min_output_length."""
+        phase = _make_length_phase("spec", min_output_length=500)
+        template = _make_parallel_template([phase], parallel=True)
+
+        def execute(task_spec, **kw):
+            ts = task_spec
+            return TaskResult(
+                task_id=ts.id,
+                task_type=ts.type,
+                state=TaskState.SUCCESS,
+                confidence=0.9,
+                result={"text": "Too short."},
+            )
+
+        runner = _build_runner(execute)
+        seq = PhaseSequencer(template, runner)
+        result = seq.execute({})
+
+        assert result.get("aborted") is True
+        assert result.get("failed_phase") == "spec"
+
+    def test_parallel_phase_outputs_updated_with_failed_result(self) -> None:
+        """phase_outputs contains the synthetic FAILED result in parallel path."""
+        phase = _make_length_phase("spec", min_output_length=500)
+        template = _make_parallel_template([phase], parallel=True)
+
+        def execute(task_spec, **kw):
+            ts = task_spec
+            return TaskResult(
+                task_id=ts.id,
+                task_type=ts.type,
+                state=TaskState.SUCCESS,
+                confidence=0.9,
+                result={"text": "Short."},
+            )
+
+        runner = _build_runner(execute)
+        seq = PhaseSequencer(template, runner)
+        result = seq.execute({})
+
+        assert result.get("aborted") is True
+        phase_out = result["phase_outputs"].get("spec")
+        assert phase_out is not None
+        assert phase_out["state"] == "failed"
+        errors = phase_out.get("errors", [])
+        assert any(e.get("code") == "OUTPUT_TOO_SHORT" for e in errors)
+
+    def test_parallel_supervisor_not_invoked_after_validation_failure(self) -> None:
+        """Supervisor hook NOT called in parallel path when validation fails."""
+        phase = PhaseDefinition(
+            id="spec",
+            name="Spec",
+            prompt_template="Write spec. Input: {input}.",
+            retries=0,
+            retry_delay_seconds=0,
+            min_output_length=500,
+            supervisor=True,
+        )
+        template = _make_parallel_template([phase], parallel=True)
+
+        def execute(task_spec, **kw):
+            ts = task_spec
+            return TaskResult(
+                task_id=ts.id,
+                task_type=ts.type,
+                state=TaskState.SUCCESS,
+                confidence=0.9,
+                result={"text": "Short parallel output."},
+            )
+
+        runner = _build_runner(execute)
+        seq = PhaseSequencer(template, runner)
+
+        with patch.object(seq, "_run_supervisor_for_phase") as mock_supervisor:
+            result = seq.execute({})
+
+        assert result.get("aborted") is True
+        mock_supervisor.assert_not_called()
+
+    def test_parallel_long_output_passes_and_pipeline_continues(self) -> None:
+        """Parallel path: adequate output length lets the pipeline complete normally."""
+        long_text = "Detailed parallel spec output. " * 20  # well above 200 chars
+        phase = _make_length_phase("spec", min_output_length=200)
+        template = _make_parallel_template([phase], parallel=True)
+
+        def execute(task_spec, **kw):
+            ts = task_spec
+            return TaskResult(
+                task_id=ts.id,
+                task_type=ts.type,
+                state=TaskState.SUCCESS,
+                confidence=0.9,
+                result={"text": long_text},
+            )
+
+        runner = _build_runner(execute)
+        seq = PhaseSequencer(template, runner)
+        result = seq.execute({})
+
+        assert not result.get("aborted", False)
+        assert "spec" in result["phase_outputs"]
