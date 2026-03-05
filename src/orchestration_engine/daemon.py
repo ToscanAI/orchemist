@@ -291,6 +291,8 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # callers (e.g. CI/CD pipelines).  Issue #288.
     skip_scoring = bool(run.get('skip_scoring', 0))
     _final_status = 'success'
+    _scoring_passed: bool = False        # tracks scoring outcome for auto-merge check
+    _scoring_score_val: Optional[float] = None
     if not skip_scoring and template.scenario:
         try:
             from rich.console import Console
@@ -305,6 +307,8 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 template_file=template_path, exit_on_failure=False,
                 executor=_scoring_executor,
             )
+            _scoring_passed = bool(scoring_passed)
+            _scoring_score_val = scoring_score
             _scoring_status = 'passed' if scoring_passed else 'failed'
             logger.info("Auto-scoring complete: %s  score=%s", _scoring_status, f"{scoring_score:.4f}" if scoring_score is not None else "n/a")
             db.update_pipeline_run(
@@ -339,6 +343,23 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 _GitContext.update_gate_scoring(run_id, 'error', None)
             except Exception as _ge:
                 logger.warning("Could not update gate file with scoring error: %s", _ge)
+
+    # --- Auto-merge (Issue #350) ---
+    # When the template declares an `auto_merge:` block with `enabled: true`,
+    # and all criteria are met (score threshold + optional review verdict),
+    # call `gh pr merge` automatically so unattended pipelines can close PRs
+    # without human intervention.
+    #
+    # Failures here are non-fatal: the run is still marked with `_final_status`.
+    am = getattr(template, "auto_merge", None)
+    if am is not None and am.enabled and _final_status == "success":
+        _try_auto_merge(
+            run_id=run_id,
+            auto_merge_config=am,
+            scoring_passed=_scoring_passed,
+            scoring_score=_scoring_score_val,
+            phase_outputs=phase_outputs,
+        )
 
     db.update_pipeline_run(
         run_id,
@@ -407,6 +428,123 @@ def _write_phase_event(
         logger.warning(
             "Could not write phase event (run=%s phase=%s type=%s): %s",
             run_id, phase_id, event_type, exc,
+        )
+
+
+def _try_auto_merge(
+    run_id: str,
+    auto_merge_config: Any,
+    scoring_passed: bool,
+    scoring_score: Optional[float],
+    phase_outputs: Dict[str, Any],
+) -> None:
+    """Attempt an automatic PR merge if all configured criteria are met.
+
+    Called after pipeline + scoring complete.  Failures are logged and
+    swallowed — a broken merge never changes the pipeline's final status.
+
+    Args:
+        run_id:            The pipeline run identifier.
+        auto_merge_config: The :class:`~orchestration_engine.templates.AutoMergeConfig`
+                           instance from the loaded template.
+        scoring_passed:    Whether auto-scoring passed (True) or not (False / not run).
+        scoring_score:     The raw score value (0.0–1.0) or None if scoring didn't run.
+        phase_outputs:     Dict of phase_id → phase result dict.
+    """
+    try:
+        from .git_integration import GitContext as _GitContext
+
+        am = auto_merge_config  # short alias
+
+        # --- Criterion 1: score threshold ---
+        if scoring_score is None:
+            # Scoring did not run or returned None — cannot assert threshold met
+            logger.info(
+                "Auto-merge skipped for run '%s': scoring score is unavailable "
+                "(scenario not configured or scoring errored).",
+                run_id,
+            )
+            return
+
+        if not scoring_passed or scoring_score < am.min_score:
+            logger.info(
+                "Auto-merge skipped for run '%s': score %.4f < min_score %.4f.",
+                run_id, scoring_score, am.min_score,
+            )
+            return
+
+        # --- Criterion 2: review phase verdict (optional) ---
+        if am.require_approve:
+            review_out = phase_outputs.get(am.review_phase_id)
+            if review_out is None:
+                logger.info(
+                    "Auto-merge skipped for run '%s': review phase '%s' not found "
+                    "in phase outputs (require_approve=True).",
+                    run_id, am.review_phase_id,
+                )
+                return
+
+            # Extract text from review output and check the FIRST LINE for the
+            # structured verdict keyword.  By convention, reviews begin with
+            # "APPROVE" or "REQUEST_CHANGES" as a standalone keyword on the
+            # first line.  We check only that line to avoid false positives
+            # from bodies that mention "approve" in passing, e.g.:
+            #   "REQUEST_CHANGES: I cannot approve this until X is fixed."
+            review_text = _extract_output_text(review_out).strip()
+            first_line = review_text.split('\n')[0].strip().upper()
+            if first_line != "APPROVE":
+                logger.info(
+                    "Auto-merge skipped for run '%s': review phase '%s' did not "
+                    "return an APPROVE verdict on the first line (got: %r) "
+                    "(require_approve=True).",
+                    run_id, am.review_phase_id, first_line[:80],
+                )
+                return
+
+        # --- All criteria met — load gate data and call gh pr merge ---
+        gate_data = _GitContext.load_gate(run_id)
+        if gate_data is None:
+            logger.warning(
+                "Auto-merge: no gate file found for run '%s' — "
+                "cannot determine branch name.  Is git.enabled=true in the template?",
+                run_id,
+            )
+            return
+
+        branch_name = gate_data.get("branch", "")
+        if not branch_name:
+            logger.warning(
+                "Auto-merge: gate file for run '%s' has no 'branch' field — skipping.",
+                run_id,
+            )
+            return
+
+        logger.info(
+            "Auto-merge TRIGGERED for run '%s': score=%.4f >= %.4f, "
+            "branch='%s', strategy='%s'.",
+            run_id, scoring_score, am.min_score, branch_name, am.strategy,
+        )
+
+        _GitContext.auto_merge_pr(
+            run_id=run_id,
+            branch_name=branch_name,
+            strategy=am.strategy,
+        )
+
+        # Update gate status to merged
+        try:
+            _GitContext.update_gate_status(
+                run_id,
+                status="merged",
+                message=f"Auto-merged by orchestrator (score={scoring_score:.4f})",
+            )
+        except Exception as _ge:
+            logger.warning("Auto-merge: could not update gate status: %s", _ge)
+
+    except Exception as exc:
+        logger.warning(
+            "Auto-merge failed for run '%s' (non-fatal): %s",
+            run_id, exc,
         )
 
 

@@ -1257,3 +1257,145 @@ class TestScoringStatusDBFields:
         in_memory_db.insert_pipeline_run(sample_run)
         run = in_memory_db.get_pipeline_run(sample_run["run_id"])
         assert run["scoring_score"] is None
+
+
+# ===========================================================================
+# Tests for _try_auto_merge (Issue #350)
+# ===========================================================================
+
+
+def _make_auto_merge_config(**kwargs):
+    """Return an AutoMergeConfig with defaults overridden by kwargs."""
+    from orchestration_engine.templates import AutoMergeConfig
+    defaults = dict(
+        enabled=True,
+        min_score=0.90,
+        require_approve=True,
+        strategy="squash",
+        review_phase_id="review",
+    )
+    defaults.update(kwargs)
+    return AutoMergeConfig(**defaults)
+
+
+def _make_review_phase_output(text: str) -> dict:
+    """Wrap text in a phase output dict like _extract_output_text expects."""
+    return {"result": {"output": text}}
+
+
+class TestTryAutoMerge:
+    """Unit tests for daemon._try_auto_merge."""
+
+    def _call(self, auto_merge_config, scoring_score, phase_outputs=None,
+              scoring_passed=True):
+        from orchestration_engine.daemon import _try_auto_merge
+        _try_auto_merge(
+            run_id="test-run-001",
+            auto_merge_config=auto_merge_config,
+            scoring_passed=scoring_passed,
+            scoring_score=scoring_score,
+            phase_outputs=phase_outputs or {},
+        )
+
+    def test_skip_when_score_is_none(self):
+        """If scoring_score=None, auto-merge must be skipped — no merge call."""
+        cfg = _make_auto_merge_config(require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge:
+            self._call(cfg, scoring_score=None)
+        mock_merge.assert_not_called()
+
+    def test_skip_when_score_below_threshold(self):
+        """Score below min_score → no merge."""
+        cfg = _make_auto_merge_config(min_score=0.90, require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate", return_value={"branch": "feat/x"}):
+            self._call(cfg, scoring_score=0.80, scoring_passed=False)
+        mock_merge.assert_not_called()
+
+    def test_merge_triggered_on_approve_and_high_score(self):
+        """Score ≥ threshold + APPROVE on first line → merge is called."""
+        cfg = _make_auto_merge_config(min_score=0.85, require_approve=True)
+        phase_outputs = {"review": _make_review_phase_output("APPROVE\n\nLooks great!")}
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/my-feature"}), \
+             patch("orchestration_engine.git_integration.GitContext.update_gate_status"):
+            self._call(cfg, scoring_score=0.92, phase_outputs=phase_outputs)
+        mock_merge.assert_called_once_with(
+            run_id="test-run-001",
+            branch_name="feat/my-feature",
+            strategy="squash",
+        )
+
+    def test_no_merge_when_request_changes_contains_approve_word(self):
+        """Regression: REQUEST_CHANGES body containing 'approve' must NOT trigger merge.
+
+        This is the core blocker bug: naive substring 'APPROVE' in full text
+        would match 'I cannot approve this'.  First-line check prevents this.
+        """
+        cfg = _make_auto_merge_config(min_score=0.85, require_approve=True)
+        # First line is REQUEST_CHANGES — body contains "approve" as a word
+        review_text = (
+            "REQUEST_CHANGES\n\n"
+            "I cannot approve this until the logging is fixed.\n"
+            "Also, the team approval process requires two sign-offs."
+        )
+        phase_outputs = {"review": _make_review_phase_output(review_text)}
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/my-feature"}):
+            self._call(cfg, scoring_score=0.95, phase_outputs=phase_outputs)
+        mock_merge.assert_not_called()
+
+    def test_no_merge_when_disapprove_word_on_first_line(self):
+        """Regression: 'I disapprove' in first line must not trigger merge."""
+        cfg = _make_auto_merge_config(min_score=0.80, require_approve=True)
+        review_text = "I disapprove of this approach entirely."
+        phase_outputs = {"review": _make_review_phase_output(review_text)}
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/x"}):
+            self._call(cfg, scoring_score=0.95, phase_outputs=phase_outputs)
+        mock_merge.assert_not_called()
+
+    def test_skip_when_review_phase_missing(self):
+        """If the review phase output is absent and require_approve=True → skip."""
+        cfg = _make_auto_merge_config(min_score=0.80, require_approve=True, review_phase_id="review")
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge:
+            # phase_outputs has no "review" key
+            self._call(cfg, scoring_score=0.95, phase_outputs={"other": {}})
+        mock_merge.assert_not_called()
+
+    def test_skip_when_gate_file_missing(self):
+        """No gate file → cannot determine branch → skip merge gracefully."""
+        cfg = _make_auto_merge_config(min_score=0.80, require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate", return_value=None):
+            self._call(cfg, scoring_score=0.95)
+        mock_merge.assert_not_called()
+
+    def test_merge_without_approve_check_when_require_approve_false(self):
+        """require_approve=False: skip review phase check, merge on score alone."""
+        cfg = _make_auto_merge_config(min_score=0.80, require_approve=False, strategy="merge")
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/no-review"}), \
+             patch("orchestration_engine.git_integration.GitContext.update_gate_status"):
+            # No phase_outputs — review not needed
+            self._call(cfg, scoring_score=0.85, phase_outputs={})
+        mock_merge.assert_called_once_with(
+            run_id="test-run-001",
+            branch_name="feat/no-review",
+            strategy="merge",
+        )
+
+    def test_exception_in_merge_is_non_fatal(self):
+        """If auto_merge_pr raises, _try_auto_merge must swallow it (non-fatal)."""
+        from orchestration_engine.git_integration import GitError
+        cfg = _make_auto_merge_config(min_score=0.80, require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr",
+                   side_effect=GitError("merge conflict", command=[], stderr="")), \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/conflict"}):
+            # Should NOT raise
+            self._call(cfg, scoring_score=0.95)
