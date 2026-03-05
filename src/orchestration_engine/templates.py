@@ -67,6 +67,78 @@ def _parse_git_config(raw: Any) -> Optional[GitConfig]:
 
 
 @dataclass
+class AutoMergeConfig:
+    """Configuration for automatic PR merging after a pipeline completes scoring.
+
+    When ``enabled`` is ``True`` and the scoring result meets or exceeds
+    ``min_score``, and (optionally) the review phase returned an APPROVE
+    verdict, the daemon will call ``gh pr merge`` automatically.
+
+    This block is **disabled by default** — existing templates that do not
+    declare an ``auto_merge:`` section are completely unaffected.
+    """
+
+    enabled: bool = False
+    """Master switch — set to ``True`` to enable automatic merging."""
+
+    min_score: float = 0.90
+    """Minimum scoring threshold (0.0–1.0) required to trigger auto-merge."""
+
+    require_approve: bool = True
+    """When ``True``, the review phase must also return an APPROVE verdict."""
+
+    strategy: str = "squash"
+    """Merge strategy passed to ``gh pr merge``. One of: squash, merge, rebase."""
+
+    review_phase_id: str = "review"
+    """ID of the review phase whose verdict is checked when ``require_approve`` is True."""
+
+    def __post_init__(self) -> None:
+        self.enabled = bool(self.enabled)
+        self.min_score = float(self.min_score)
+        self.require_approve = bool(self.require_approve)
+        self.strategy = str(self.strategy).lower()
+        if self.strategy not in ("squash", "merge", "rebase"):
+            raise ValueError(
+                f"AutoMergeConfig.strategy must be squash/merge/rebase, got: {self.strategy!r}"
+            )
+        # Clamp score to [0.0, 1.0]
+        self.min_score = max(0.0, min(1.0, self.min_score))
+        if self.review_phase_id is None:
+            self.review_phase_id = "review"
+
+
+def _parse_auto_merge_config(raw: Any) -> Optional[AutoMergeConfig]:
+    """Parse the ``auto_merge:`` section of a pipeline YAML into an :class:`AutoMergeConfig`.
+
+    Args:
+        raw: The value of ``data.get("auto_merge")`` — a dict, ``None``, or a
+             non-dict value (treated as absent).
+
+    Returns:
+        An :class:`AutoMergeConfig` instance if ``raw`` is a non-empty dict,
+        else ``None`` (the feature is disabled when the section is absent).
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    known_fields = {"enabled", "min_score", "require_approve", "strategy", "review_phase_id"}
+    unknown = set(raw.keys()) - known_fields
+    if unknown:
+        logger.warning(
+            f"Template auto_merge config has unknown fields (ignored): {sorted(unknown)}"
+        )
+
+    return AutoMergeConfig(
+        enabled=bool(raw.get("enabled", False)),
+        min_score=float(raw.get("min_score", 0.90)),
+        require_approve=bool(raw.get("require_approve", True)),
+        strategy=str(raw.get("strategy", "squash")),
+        review_phase_id=str(raw.get("review_phase_id", "review")),
+    )
+
+
+@dataclass
 class PhaseDefinition:
     """A single phase in a pipeline template."""
 
@@ -220,6 +292,10 @@ class PipelineTemplate:
     Relative paths are resolved against the template file's parent directory.
     When set, the CLI will automatically run scoring after pipeline completion
     unless --skip-scoring is passed."""
+
+    # --- Per-repo auto-merge config (Issue #350) ---
+    auto_merge: Optional[AutoMergeConfig] = None
+    """Parsed ``auto_merge:`` section from the template YAML, or ``None`` if absent."""
 
     def __post_init__(self) -> None:
         if self.phases is None:
@@ -565,6 +641,9 @@ class TemplateEngine:
         # Parse optional git: section
         git_config: Optional[GitConfig] = _parse_git_config(data.get("git"))
 
+        # Parse optional auto_merge: section (Issue #350)
+        auto_merge_config: Optional[AutoMergeConfig] = _parse_auto_merge_config(data.get("auto_merge"))
+
         # --- Parse parallel-execution control fields (Issue #102) ---
         # Use explicit sentinel check so that `parallel: false` (which is falsy)
         # is correctly distinguished from "field absent" (→ default True).
@@ -621,6 +700,7 @@ class TemplateEngine:
             default_transitions=default_transitions,
             max_iterations=pipeline_max_iterations,
             scenario=data.get("scenario") or None,  # Issue #172: post-pipeline auto-scoring
+            auto_merge=auto_merge_config,            # Issue #350: per-repo auto-merge config
         )
 
     def get_execution_order(self, template: PipelineTemplate) -> List[List[str]]:

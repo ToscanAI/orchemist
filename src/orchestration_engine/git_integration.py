@@ -763,6 +763,92 @@ class GitContext:
             return None
 
     # ------------------------------------------------------------------
+    # Auto-merge (Issue #350)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def auto_merge_pr(
+        run_id: str,
+        branch_name: str,
+        strategy: str = "squash",
+        working_dir: Optional[Path] = None,
+    ) -> None:
+        """Merge a PR via ``gh pr merge``.
+
+        Runs ``gh pr merge --<strategy> --delete-branch <branch_name>`` in the
+        given working directory.  The ``run_id`` is used only for log messages.
+
+        This method is intentionally side-effect-free when the ``gh`` CLI is
+        absent — it logs a warning and returns rather than raising, so that a
+        missing ``gh`` binary never crashes the daemon.
+
+        Args:
+            run_id:      The pipeline run identifier (for log context).
+            branch_name: The name of the PR's head branch.
+            strategy:    One of ``"squash"`` (default), ``"merge"``, or
+                         ``"rebase"``.  Passed as ``--squash``, ``--merge``,
+                         or ``--rebase`` to ``gh pr merge``.
+            working_dir: Working directory for the ``gh`` subprocess.
+                         Defaults to the process CWD if ``None``.
+
+        Raises:
+            GitError: If ``gh pr merge`` exits with a non-zero return code.
+        """
+        flag_map = {
+            "squash": "--squash",
+            "merge": "--merge",
+            "rebase": "--rebase",
+        }
+        strategy_lower = str(strategy).lower()
+        strategy_flag = flag_map.get(strategy_lower, "--squash")
+
+        cmd = [
+            "gh", "pr", "merge",
+            strategy_flag,
+            "--delete-branch",
+            branch_name,
+        ]
+
+        cwd = working_dir or Path.cwd()
+        logger.info(
+            "Git: auto-merging PR for run '%s' — branch '%s' (strategy=%s)",
+            run_id, branch_name, strategy_lower,
+        )
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if result.returncode == 0:
+                logger.info(
+                    "Git: auto-merge SUCCESS for run '%s' — %s",
+                    run_id, result.stdout.strip() or "PR merged",
+                )
+            else:
+                stderr = result.stderr.strip()
+                raise GitError(
+                    f"auto_merge_pr: gh pr merge failed (rc={result.returncode}) "
+                    f"for branch '{branch_name}': {stderr}",
+                    command=cmd,
+                    stderr=stderr,
+                )
+        except FileNotFoundError:
+            logger.warning(
+                "Git: 'gh' CLI not found — cannot auto-merge run '%s'.  "
+                "Install GitHub CLI or set auto_merge.enabled: false.",
+                run_id,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Git: gh pr merge timed out for run '%s' — branch '%s'",
+                run_id, branch_name,
+            )
+
+    # ------------------------------------------------------------------
     # Internal git helpers
     # ------------------------------------------------------------------
 
