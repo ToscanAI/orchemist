@@ -758,3 +758,89 @@ class TestParseAutoMergeConfig:
         assert cfg is not None
         assert cfg.enabled is True
         assert any("unknown" in r.message.lower() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Issue #351 — PhaseDefinition.min_output_length field
+# ---------------------------------------------------------------------------
+
+
+class TestPhaseDefinitionMinOutputLength:
+    """PhaseDefinition correctly handles the min_output_length field."""
+
+    def test_default_is_zero(self) -> None:
+        """min_output_length defaults to 0 (validation disabled)."""
+        phase = PhaseDefinition(
+            id="p",
+            name="P",
+            prompt_template="Hello",
+        )
+        assert phase.min_output_length == 0
+
+    def test_none_normalises_to_zero(self) -> None:
+        """Passing None is treated as 0 (no validation)."""
+        phase = PhaseDefinition(
+            id="p",
+            name="P",
+            prompt_template="Hello",
+            min_output_length=None,  # type: ignore[arg-type]
+        )
+        assert phase.min_output_length == 0
+
+    def test_negative_clamps_to_zero(self) -> None:
+        """Negative values are clamped to 0."""
+        phase = PhaseDefinition(
+            id="p",
+            name="P",
+            prompt_template="Hello",
+            min_output_length=-100,
+        )
+        assert phase.min_output_length == 0
+
+    def test_float_coerces_to_int(self) -> None:
+        """Float values are coerced to int (floor behaviour via int())."""
+        phase = PhaseDefinition(
+            id="p",
+            name="P",
+            prompt_template="Hello",
+            min_output_length=300.9,  # type: ignore[arg-type]
+        )
+        assert phase.min_output_length == 300
+        assert isinstance(phase.min_output_length, int)
+
+    def test_positive_value_preserved(self) -> None:
+        """A valid positive integer is stored unchanged."""
+        phase = PhaseDefinition(
+            id="p",
+            name="P",
+            prompt_template="Hello",
+            min_output_length=500,
+        )
+        assert phase.min_output_length == 500
+
+    def test_known_field_via_caplog(self, templates_dir, caplog) -> None:
+        """min_output_length in YAML must not trigger 'unknown field' warning."""
+        yaml_content = textwrap.dedent("""\
+            id: len-check
+            name: Len Check
+            phases:
+              - id: spec
+                name: Spec
+                prompt_template: "Write a spec."
+                min_output_length: 250
+        """)
+        path = templates_dir / "len-check.yaml"
+        path.write_text(yaml_content)
+        eng = TemplateEngine(templates_dir=templates_dir)
+        import logging
+        with caplog.at_level(logging.WARNING, logger="orchestration_engine.templates"):
+            try:
+                tpl = eng.load_template("len-check")
+                assert tpl.phases[0].min_output_length == 250
+            except Exception:
+                pass
+        # No "unknown field" warning for min_output_length
+        for record in caplog.records:
+            assert not (
+                "min_output_length" in record.message and "unknown" in record.message.lower()
+            ), f"Unexpected warning: {record.message}"

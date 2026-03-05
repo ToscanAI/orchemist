@@ -33,6 +33,10 @@ from .transitions import PhaseOutcome, determine_outcome, extract_verdict
 
 logger = logging.getLogger(__name__)
 
+# Module-level constant for output-length validation (Issue #351).
+# Kept here so it is allocated once, not on every _validate_phase_output call.
+_TERMINAL_PUNCTUATION: frozenset = frozenset(".!?:")
+
 # Default supervisor prompt template (Issue #194).
 # Placeholders: {rubric}, {phase_output}
 _DEFAULT_SUPERVISOR_PROMPT = """\
@@ -290,6 +294,13 @@ class PhaseSequencer:
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
 
+            # Output length validation (#351) — fail phase if output is too short
+            validation_failure = self._validate_phase_output(phase, result)
+            if validation_failure is not None:
+                result = validation_failure
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+
             # Supervisor hook (#194) — sequential path
             if getattr(phase, 'supervisor', False) and result.get('state') == 'success':
                 result, abort_info = self._run_supervisor_for_phase(phase, result, initial_input)
@@ -431,6 +442,13 @@ class PhaseSequencer:
             # Write result under lock — prevents lost updates on shared dict
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
+
+            # Output length validation (#351) — fail phase if output is too short
+            validation_failure = self._validate_phase_output(phase, result)
+            if validation_failure is not None:
+                result = validation_failure
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
 
             # Supervisor hook (#194) — parallel path
             if getattr(phase, 'supervisor', False) and result.get('state') == 'success':
@@ -876,6 +894,99 @@ class PhaseSequencer:
             f"defaulting to APPROVE. Response preview: {text[:200]!r}"
         )
         return "APPROVE", "no verdict found — defaulting to APPROVE"
+
+    # ------------------------------------------------------------------
+    # Output length validation (Issue #351)
+    # ------------------------------------------------------------------
+
+    def _validate_phase_output(
+        self,
+        phase: "PhaseDefinition",
+        result: dict,
+    ) -> Optional[dict]:
+        """Validate the character length of a successfully completed phase output.
+
+        Only runs when:
+
+        * The result state is ``"success"`` (failures are already handled
+          upstream, so we only gate *successful* outputs here).
+        * ``phase.min_output_length > 0`` (validation is disabled by default).
+
+        Behaviour:
+
+        * **Length below threshold** — returns a synthetic FAILED result dict
+          with a clear diagnostic message (actual length, threshold, and the
+          last 50 characters of the output so the operator can see where
+          truncation happened).
+        * **Possible mid-sentence truncation** — when the output passes the
+          length check but its last 50 characters contain no terminal
+          punctuation (``'.', '!', '?', ':'``), emits a WARNING log.  The
+          pipeline continues normally; this is advisory only.
+        * **Validation passes** — returns ``None`` (no intervention).
+
+        Args:
+            phase:  The :class:`~.templates.PhaseDefinition` that produced
+                    *result*.
+            result: The phase result dict (as returned by
+                    :meth:`_execute_and_wait`).
+
+        Returns:
+            ``None`` when validation passes, or a synthetic FAILED result dict
+            when the output is shorter than ``phase.min_output_length``.
+        """
+        # Only validate successful phases — failures are handled by normal abort path
+        if result.get("state") != "success":
+            return None
+
+        min_len = getattr(phase, "min_output_length", 0)
+        if min_len <= 0:
+            return None  # validation disabled
+
+        text = _extract_phase_text(result)
+        actual_len = len(text)
+        tail = text[-50:] if len(text) >= 50 else text
+
+        if actual_len < min_len:
+            error_msg = (
+                f"Phase '{phase.id}' output too short: "
+                f"got {actual_len} chars, expected at least {min_len}. "
+                f"Last 50 chars: {tail!r}"
+            )
+            logger.error(
+                f"Pipeline {self.template.id}: {error_msg} — treating as failure."
+            )
+            # Build a synthetic FAILED result so the pipeline abort path handles it
+            # consistently with other phase failures.
+            failed_result: dict = {
+                "state": TaskState.FAILED.value,
+                "result": result.get("result", {"text": text}),
+                "errors": [
+                    {
+                        "code": "OUTPUT_TOO_SHORT",
+                        "message": error_msg,
+                        "severity": "error",
+                    }
+                ],
+                "metadata": {
+                    **result.get("metadata", {}),
+                    "validation_failure": "min_output_length",
+                    "actual_length": actual_len,
+                    "min_output_length": min_len,
+                    "tail": tail,
+                },
+                "confidence": 0.0,
+            }
+            return failed_result
+
+        # Length passes — check for mid-sentence truncation (advisory warning)
+        if tail and not any(ch in _TERMINAL_PUNCTUATION for ch in tail):
+            logger.warning(
+                f"Pipeline {self.template.id}: phase '{phase.id}' output may be "
+                f"truncated mid-sentence — last 50 chars contain no terminal "
+                f"punctuation (., !, ?, :). Last 50 chars: {tail!r}"
+            )
+
+        return None  # validation passed
 
     # ------------------------------------------------------------------
     # Internal helpers

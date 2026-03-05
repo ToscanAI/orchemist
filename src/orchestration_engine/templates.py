@@ -179,6 +179,13 @@ class PhaseDefinition:
     # Ordered list of model tiers to try on retry exhaustion, e.g. ["sonnet", "opus", "haiku"].
     # Empty list means use the executor's built-in default chain (["sonnet", "opus"]).
 
+    # Output length validation (Issue #351)
+    min_output_length: int = 0
+    # Minimum character count for successful phase output.
+    # 0 = disabled (no validation). When > 0, the sequencer will fail the phase
+    # if the output text is shorter than this threshold, catching truncated LLM
+    # responses before they propagate to downstream phases.
+
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
         if self.depends_on is None:
@@ -226,6 +233,10 @@ class PhaseDefinition:
         # Normalise model fallback chain field (#347)
         if self.model_chain is None:
             self.model_chain = []
+        # Normalise output length validation field (#351)
+        if self.min_output_length is None:
+            self.min_output_length = 0
+        self.min_output_length = max(0, int(self.min_output_length))
 
 
 @dataclass
@@ -626,6 +637,8 @@ class TemplateEngine:
                 "supervisor_max_retries",
                 # Model fallback chain fields (#347)
                 "model_chain",
+                # Output length validation (#351)
+                "min_output_length",
             }
 
             # Warn on unknown fields (prevents silent data loss)
