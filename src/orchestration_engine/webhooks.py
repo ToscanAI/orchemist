@@ -3,17 +3,24 @@
 Defines TriggerConfig — the canonical in-memory representation of a
 webhook trigger that maps an incoming HTTP request to a pipeline run.
 
+Also provides:
+  - TriggerMatcher: evaluates filter conditions against an incoming payload
+  - InputMapper: resolves ``{{payload.x.y}}`` template strings from a payload
+
 This module is intentionally HTTP-agnostic: it contains only data
 structures and validation, not request handling.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+
+_logger = logging.getLogger(__name__)
 
 
 # Valid mode values (exhaustive)
@@ -141,3 +148,175 @@ class TriggerConfig:
             A unique string matching the format ``trig-<12 hex chars>``.
         """
         return f"trig-{uuid.uuid4().hex[:12]}"
+
+
+# ---------------------------------------------------------------------------
+# TriggerMatcher
+# ---------------------------------------------------------------------------
+
+_KNOWN_FILTER_KEYS = frozenset({"branch", "labels", "action", "event_type"})
+
+
+class TriggerMatcher:
+    """Evaluates trigger filter conditions against an incoming webhook payload.
+
+    Filters are AND-combined: all filters must pass for the trigger to fire.
+    Each filter is a dict with one or more of the following keys:
+
+    * ``branch`` (str): Matches ``payload["ref"]`` after stripping the
+      ``refs/heads/`` prefix.  Case-sensitive exact match.
+    * ``labels`` (list[str]): Matches when **any** label name from the payload
+      is present in the filter list.  Looks in ``payload["label"]["name"]``
+      (single label object) and ``payload["labels"]`` (list of label dicts,
+      each with a ``name`` key).
+    * ``action`` (str): Exact match against ``payload["action"]``.
+    * ``event_type`` (str): Exact match against ``payload["event_type"]``.
+
+    Unknown filter keys emit a :pylogging:`logging.WARNING` and are ignored
+    (they do **not** cause the match to fail).
+    """
+
+    @staticmethod
+    def matches(filters: list, payload: dict) -> bool:
+        """Return True when *all* filters match the payload, False otherwise.
+
+        An empty ``filters`` list means "no filtering" — always returns ``True``.
+
+        Args:
+            filters: List of filter dicts.  Each dict is evaluated
+                independently; all must pass (AND logic).
+            payload: Parsed webhook JSON body.
+
+        Returns:
+            ``True`` if all filters match (or if filters is empty),
+            ``False`` if any filter does not match.
+        """
+        for f in filters:
+            # Warn on unknown keys but do not fail the match
+            for key in f:
+                if key not in _KNOWN_FILTER_KEYS:
+                    _logger.warning(
+                        "TriggerMatcher: unknown filter key %r — ignoring", key
+                    )
+
+            # branch filter: strip refs/heads/ prefix, then exact compare
+            if "branch" in f:
+                ref = payload.get("ref", "")
+                branch = (
+                    ref[len("refs/heads/"):]
+                    if ref.startswith("refs/heads/")
+                    else ref
+                )
+                if branch != f["branch"]:
+                    return False
+
+            # labels filter: ANY label name in the payload must be in the filter list
+            if "labels" in f:
+                allowed = set(f["labels"])
+                payload_labels: list = []
+
+                # Single label object: {"label": {"name": "bug"}}
+                single = payload.get("label")
+                if isinstance(single, dict) and "name" in single:
+                    payload_labels.append(single["name"])
+
+                # List of label objects: {"labels": [{"name": "bug"}, ...]}
+                multi = payload.get("labels")
+                if isinstance(multi, list):
+                    for lbl in multi:
+                        if isinstance(lbl, dict) and "name" in lbl:
+                            payload_labels.append(lbl["name"])
+
+                # Must have at least one matching label
+                if not any(lbl in allowed for lbl in payload_labels):
+                    return False
+
+            # action filter: exact match
+            if "action" in f:
+                if payload.get("action") != f["action"]:
+                    return False
+
+            # event_type filter: exact match
+            if "event_type" in f:
+                if payload.get("event_type") != f["event_type"]:
+                    return False
+
+        return True
+
+
+# ---------------------------------------------------------------------------
+# InputMapper
+# ---------------------------------------------------------------------------
+
+import re as _re  # noqa: E402 — already imported at top; alias for clarity
+
+_TEMPLATE_RE = _re.compile(r"\{\{payload\.([^}]+)\}\}")
+
+
+class InputMapper:
+    """Resolves ``{{payload.x.y}}`` template strings from a webhook payload.
+
+    This class is **additive** to the existing ``_apply_input_map()`` helper
+    in ``web/api.py``, which handles ``$.dot.path`` expressions.
+
+    ``InputMapper.apply()`` walks the *input_map* dict and substitutes any
+    value that is a string of the form ``{{payload.a.b.c}}`` with the value
+    found at ``payload["a"]["b"]["c"]`` using dot-notation traversal.
+
+    * Values that do **not** match ``{{payload.*}}`` are returned as-is.
+    * Paths that cannot be resolved yield ``None``.
+    * Partial template strings (i.e. a template token embedded in a larger
+      string) are **not** supported — the whole value must be a template.
+    """
+
+    @staticmethod
+    def _resolve_path(payload: dict, dot_path: str) -> Any:
+        """Traverse *payload* using *dot_path* (e.g. ``"repository.full_name"``).
+
+        Args:
+            payload: Parsed webhook JSON body.
+            dot_path: Dot-separated key path into the payload dict.
+
+        Returns:
+            The resolved value, or ``None`` if any segment is missing.
+        """
+        parts = dot_path.split(".")
+        value: Any = payload
+        for part in parts:
+            if isinstance(value, dict):
+                value = value.get(part)
+            else:
+                return None
+        return value
+
+    @staticmethod
+    def apply(payload: dict, input_map: dict) -> dict:
+        """Substitute ``{{payload.x.y}}`` templates in *input_map* values.
+
+        Args:
+            payload: Parsed webhook JSON body.
+            input_map: Dict mapping pipeline variable names to template
+                strings or literal values.
+
+        Returns:
+            A new dict where each ``{{payload.*}}`` value has been replaced
+            with the corresponding value from *payload*.  Non-template values
+            are returned unchanged.
+
+        Example::
+
+            payload   = {"repository": {"full_name": "org/repo"}, "ref": "refs/heads/main"}
+            input_map = {"repo": "{{payload.repository.full_name}}", "env": "prod"}
+            # result: {"repo": "org/repo", "env": "prod"}
+        """
+        result: dict = {}
+        for var_name, value in input_map.items():
+            if isinstance(value, str):
+                m = _TEMPLATE_RE.fullmatch(value)
+                if m:
+                    result[var_name] = InputMapper._resolve_path(payload, m.group(1))
+                else:
+                    result[var_name] = value
+            else:
+                result[var_name] = value
+        return result
