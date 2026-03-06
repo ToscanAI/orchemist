@@ -369,6 +369,32 @@ def run_daemon(run_id: str, db_path: str) -> None:
         phase_outputs=json.dumps(phase_outputs, default=str),
     )
 
+    # --- Chain execution (Issue #330.2) ---
+    # After the run's terminal status is persisted, evaluate on_complete entries
+    # and spawn any configured child pipelines.  Failures here are non-fatal:
+    # the parent run has already been marked with its final status.
+    try:
+        from .chains import evaluate_on_complete, spawn_chain_runs
+        child_configs = evaluate_on_complete(
+            template=template,
+            run=run,
+            result=result or {},
+            final_status=_final_status,
+        )
+        if child_configs:
+            spawned = spawn_chain_runs(
+                child_configs=child_configs,
+                db=db,
+                db_path=db_path,
+                parent_run_id=run_id,
+            )
+            logger.info(
+                "Chain execution: spawned %d child run(s): %s",
+                len(spawned), spawned,
+            )
+    except Exception as exc:
+        logger.warning("Chain execution failed (non-fatal): %s", exc)
+
     _remove_pid_file(pid_path)
     logger.info("Daemon exiting cleanly")
 
