@@ -180,8 +180,6 @@ phases:
     description: "Create milestones and issues from the architecture, ready for coding pipelines."
     model_tier: opus
     thinking_level: high
-    transitions:
-      success: __end__
     prompt_template: |
       You are creating a GitHub issue board from architecture documentation.
 
