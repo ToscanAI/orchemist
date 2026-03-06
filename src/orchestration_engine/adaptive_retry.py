@@ -305,6 +305,58 @@ class AdaptiveRetryEngine:
         )
 
     # ------------------------------------------------------------------
+    # Cost estimation helpers (Issue #396, 3.2.3)
+    # ------------------------------------------------------------------
+
+    #: Heuristic per-run cost estimates for each model tier.
+    #: Used by :meth:`estimate_cost` to decide whether a retry is budget-safe.
+    MODEL_COST_HEURISTIC: Dict[str, float] = {
+        "claude-haiku-4-5-20241022": 0.05,
+        "claude-sonnet-4-6": 0.15,
+        "claude-opus-4-6": 0.50,
+    }
+
+    def estimate_cost(self, plan: "RetryPlan") -> float:
+        """Estimate the monetary cost (USD) of executing *plan* on retry.
+
+        Uses a simple heuristic lookup keyed on the escalated model identifier
+        (``plan.model_override``).  When no escalation is specified the cost
+        defaults to the Sonnet heuristic (mid-tier).
+
+        Heuristics:
+            * Haiku  → $0.05
+            * Sonnet → $0.15
+            * Opus   → $0.50
+            * Unknown / None → $0.15 (Sonnet default)
+
+        Args:
+            plan: The :class:`RetryPlan` whose model override is used to look up
+                  the cost.
+
+        Returns:
+            Estimated cost in USD as a float.
+        """
+        model = plan.model_override or "claude-sonnet-4-6"
+        return self.MODEL_COST_HEURISTIC.get(model, 0.15)
+
+    @staticmethod
+    def count_existing_retries(original_run_id: str, db: Any) -> int:
+        """Return the number of retry runs already spawned for *original_run_id*.
+
+        A thin wrapper around :meth:`~orchestration_engine.db.Database.count_retries_for_run`
+        so callers in :mod:`orchestration_engine.daemon` can import a single
+        symbol from this module.
+
+        Args:
+            original_run_id: The run ID of the first-attempt run.
+            db: A :class:`~orchestration_engine.db.Database` instance.
+
+        Returns:
+            Integer count of existing retry runs.
+        """
+        return db.count_retries_for_run(original_run_id)
+
+    # ------------------------------------------------------------------
     # Strategy executor methods (Issue #395, 3.2.2)
     # ------------------------------------------------------------------
 
