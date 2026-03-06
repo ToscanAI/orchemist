@@ -1,8 +1,8 @@
 id: coding-pipeline-v1
-name: "Coding Pipeline v1.0"
-description: "5-phase coding pipeline: spec interpretation → implementation → Opus code review → fix → review loop until APPROVE. Uses file-path handoff, command execution for tests, and supervisor hooks for quality gates."
+name: "Coding Pipeline v1.2"
+description: "5-phase coding pipeline with confidence-based routing: spec → implement → Opus review → fix loop → test. Auto-merge on high confidence, human review on medium, auto-retry on low. Explicit branch management, git-based handoff."
 author: "Toscan"
-version: "1.1.0"
+version: "1.2.0"
 scenario: scenarios/coding-pipeline-v1-smoke.yaml
 category: "code"
 tags: [code, development, review, testing, pipeline]
@@ -13,7 +13,7 @@ use_cases:
 
 config_schema:
   type: object
-  required: [issue_title, issue_body, repo_path, branch_name]
+  required: [issue_title, issue_body, repo_path, branch_name, issue_number, repo_url]
   properties:
     issue_title:
       type: string
@@ -43,8 +43,10 @@ config_schema:
       default: "Follow existing code style. Add docstrings. Type hints where practical."
     issue_number:
       type: integer
-      required: false
-      description: "GitHub issue number to auto-close via 'Closes #N' in PR body"
+      description: "GitHub issue number — auto-injected into PR body as 'Closes #N'"
+    repo_url:
+      type: string
+      description: "GitHub repo URL (e.g. https://github.com/ToscanRivera/orchestration-engine)"
 
 phases:
   # Phase 1: Spec Interpretation
@@ -220,3 +222,36 @@ phases:
     command: "{config[test_command]}"
     working_dir: "{config[repo_path]}"
     allowed_commands: ["python3", "python", "pytest"]
+
+# Auto-merge configuration
+auto_merge:
+  enabled: true
+  min_score: 0.90
+  require_approve: true
+  strategy: squash
+
+# Confidence-based routing
+routing_config:
+  tiers:
+    - name: auto_merge
+      min_score: 0.90
+      max_score: 1.01
+      requires: ["tests_pass"]
+      notify: ["log"]
+    - name: human_review
+      min_score: 0.75
+      max_score: 0.90
+      requires: []
+      notify: ["log"]
+    - name: auto_retry
+      min_score: 0.50
+      max_score: 0.75
+      requires: []
+      notify: ["log"]
+      strategy: escalate_model
+      max_retries: 1
+    - name: reject
+      min_score: 0.0
+      max_score: 0.50
+      requires: []
+      notify: ["log"]
