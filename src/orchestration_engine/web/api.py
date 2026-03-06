@@ -9,6 +9,8 @@ All dependencies (fastapi, uvicorn) are optional extras — import this
 module only after confirming they are installed.
 """
 
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -17,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -31,6 +33,95 @@ def _get_persistent_db_path() -> str:
     default_dir = Path.home() / ".orchestration-engine"
     default_dir.mkdir(exist_ok=True)
     return str(default_dir / "engine.db")
+
+
+def _verify_github_signature(secret: str, payload_bytes: bytes, sig_header: Optional[str]) -> bool:
+    """Verify an HMAC-SHA256 GitHub-style webhook signature.
+
+    GitHub sends ``X-Hub-Signature-256: sha256=<hex_digest>``.  This function
+    recomputes the HMAC-SHA256 of *payload_bytes* using *secret* and compares
+    it to the digest in *sig_header* using a constant-time comparison to
+    prevent timing attacks.
+
+    Args:
+        secret: Shared HMAC secret string.
+        payload_bytes: Raw request body bytes.
+        sig_header: Value of the ``X-Hub-Signature-256`` header
+            (e.g. ``"sha256=abc123..."``).  May be ``None``.
+
+    Returns:
+        ``True`` when the signature is valid, ``False`` otherwise
+        (including when *sig_header* is ``None`` or malformed).
+    """
+    if not sig_header:
+        return False
+    if not sig_header.startswith("sha256="):
+        return False
+    expected = sig_header[len("sha256="):]
+    computed = hmac.new(
+        secret.encode("utf-8"),
+        payload_bytes,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(computed, expected)
+
+
+def _apply_input_map(payload: Dict[str, Any], input_map: Dict[str, Any]) -> Dict[str, Any]:
+    """Transform a webhook payload dict into pipeline input vars using *input_map*.
+
+    Each key in *input_map* becomes an input variable.  Values that start with
+    ``"$."`` are treated as simple dot-path expressions into *payload*.  Other
+    values are used as literals.
+
+    Example::
+
+        payload   = {"repository": {"full_name": "org/repo"}, "ref": "refs/heads/main"}
+        input_map = {"repo": "$.repository.full_name", "branch": "$.ref", "env": "prod"}
+        # result: {"repo": "org/repo", "branch": "refs/heads/main", "env": "prod"}
+
+    Args:
+        payload: Parsed webhook JSON body.
+        input_map: Dict mapping pipeline variable names to payload paths or
+            literal values.
+
+    Returns:
+        Dict of pipeline input variables.  Missing paths produce ``None``.
+    """
+    result: Dict[str, Any] = {}
+    for var_name, path_or_literal in input_map.items():
+        if isinstance(path_or_literal, str) and path_or_literal.startswith("$."):
+            # Simple dot-path resolution: "$.a.b.c" → payload["a"]["b"]["c"]
+            parts = path_or_literal[2:].split(".")
+            value: Any = payload
+            for part in parts:
+                if isinstance(value, dict):
+                    value = value.get(part)
+                else:
+                    value = None
+                    break
+            result[var_name] = value
+        else:
+            result[var_name] = path_or_literal
+    return result
+
+
+def _check_rate_limit(trigger_id: str, rate_limit: int, db: Any) -> bool:
+    """Check whether a webhook trigger has exceeded its per-minute rate limit.
+
+    Args:
+        trigger_id: The trigger identifier to check.
+        rate_limit: Maximum allowed invocations per minute (0 = unlimited).
+        db: :class:`~orchestration_engine.db.Database` instance.
+
+    Returns:
+        ``True`` when the rate limit is exceeded (caller should return 429).
+        ``False`` when the invocation is allowed.
+    """
+    if rate_limit == 0:
+        return False  # Unlimited
+    since = datetime.now() - timedelta(seconds=60)
+    count = db.count_webhook_invocations_since(trigger_id, since)
+    return count >= rate_limit
 
 
 def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (type hint only)
@@ -339,6 +430,84 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             status_code=404,
             detail=f"Template '{name_or_path}' not found",
         )
+
+    # ------------------------------------------------------------------
+    # Helper — launch a pipeline run (extracted for reuse by webhook route)
+    # ------------------------------------------------------------------
+
+    def _launch_pipeline_from_trigger(
+        template_file: Path,
+        template: Any,
+        input_data: Dict[str, Any],
+        mode: str,
+        gateway_url: Optional[str],
+        db: Any,
+        skip_scoring: bool = False,
+        output_dir_override: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Core pipeline launch logic: DB row + daemon spawn + return run dict.
+
+        Encapsulates the shared logic used by both ``POST /api/v1/runs`` and
+        ``POST /api/v1/webhooks/{trigger_id}`` so neither handler duplicates
+        it.
+
+        Args:
+            template_file: Resolved absolute path to the template YAML.
+            template: Loaded and validated template object.
+            input_data: Pipeline input variables dict.
+            mode: Execution mode (``'standalone'``, ``'openclaw'``,
+                ``'dry-run'``).
+            gateway_url: OpenClaw gateway URL (or ``None``).
+            db: Open :class:`~orchestration_engine.db.Database` instance.
+            skip_scoring: Skip auto-scoring.  Default ``False``.
+            output_dir_override: Optional explicit output directory path.
+
+        Returns:
+            A :class:`RunResponse`-shaped dict for the newly created run.
+        """
+        run_id = str(uuid.uuid4())[:8]
+        if output_dir_override:
+            output_dir = Path(output_dir_override)
+        else:
+            output_dir = Path(
+                f"./output/{re.sub(r'[^\\w\\-]', '_', template.id)}"
+                f"-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{run_id}"
+            )
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        db.insert_pipeline_run(
+            {
+                "run_id": run_id,
+                "template_path": str(template_file.resolve()),
+                "template_id": template.id,
+                "input_json": json.dumps(input_data),
+                "mode": mode,
+                "output_dir": str(output_dir.resolve()),
+                "gateway_url": gateway_url,
+                "skip_scoring": int(skip_scoring),
+                "status": "pending",
+            }
+        )
+
+        log_file_path = output_dir / ".orch-daemon.log"
+        with open(str(log_file_path), "a") as log_fh:
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "orchestration_engine.daemon",
+                    run_id,
+                    effective_db_path,
+                ],
+                start_new_session=True,
+                stdout=log_fh,
+                stderr=log_fh,
+            )
+
+        db.update_pipeline_run(run_id, pid=proc.pid)
+
+        run = db.get_pipeline_run(run_id)
+        return _run_to_dict(run)
 
     # ------------------------------------------------------------------
     # Routes
@@ -816,58 +985,139 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                 detail={"message": "Template has validation errors", "errors": errors},
             )
 
-        # 2. Build run_id and output_dir
-        run_id = str(uuid.uuid4())[:8]
-        if req.output_dir:
-            output_dir = Path(req.output_dir)
-        else:
-            output_dir = Path(
-                f"./output/{re.sub(r'[^\\w\\-]', '_', template.id)}"
-                f"-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{run_id}"
-            )
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        # 3. Persist run record
+        # 2. Launch via shared helper (DB row + daemon spawn)
         db = Database(Path(effective_db_path))
         effective_gw_url = req.gateway_url or os.environ.get("OPENCLAW_GATEWAY_URL")
-        db.insert_pipeline_run(
-            {
-                "run_id": run_id,
-                "template_path": str(template_file.resolve()),
-                "template_id": template.id,
-                "input_json": json.dumps(req.input),
-                "mode": req.mode,
-                "output_dir": str(output_dir.resolve()),
-                "gateway_url": effective_gw_url,
-                "skip_scoring": int(req.skip_scoring),
-                "status": "pending",
-            }
+        run_dict = _launch_pipeline_from_trigger(
+            template_file=template_file,
+            template=template,
+            input_data=req.input,
+            mode=req.mode,
+            gateway_url=effective_gw_url,
+            db=db,
+            skip_scoring=req.skip_scoring,
+            output_dir_override=req.output_dir,
         )
 
-        # 4. Spawn daemon subprocess (same as cli.py pipeline_launch)
-        log_file_path = output_dir / ".orch-daemon.log"
-        # Use a with block so log_fh is closed even if Popen raises, preventing
-        # a file-descriptor leak.  The child process (start_new_session=True)
-        # inherits the fd and keeps it open independently.
-        with open(str(log_file_path), "a") as log_fh:
-            proc = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "orchestration_engine.daemon",
-                    run_id,
-                    effective_db_path,
-                ],
-                start_new_session=True,
-                stdout=log_fh,
-                stderr=log_fh,
+        # 3. Return the created run record
+        return JSONResponse(run_dict, status_code=201)
+
+    @app.post("/api/v1/webhooks/{trigger_id}")
+    async def handle_webhook(trigger_id: str, request: Request) -> JSONResponse:
+        """Receive an incoming webhook and fire the associated pipeline.
+
+        Looks up the trigger configuration, verifies the HMAC-SHA256 signature
+        (when a ``secret`` is configured), enforces the per-trigger rate limit,
+        applies the ``input_map`` to transform the webhook payload into pipeline
+        input vars, and launches the pipeline.
+
+        Path parameter:
+            trigger_id (str): Trigger identifier (must match a row in the
+                ``triggers`` table).
+
+        Request headers:
+            X-Hub-Signature-256: Optional HMAC-SHA256 signature header
+                (required when the trigger has a ``secret`` configured).
+
+        Returns:
+            - **200** when the trigger is disabled (no pipeline launched).
+            - **201** when the pipeline was launched in ``async`` or ``sync``
+              mode.
+            - **200** when the trigger mode is ``fire_and_forget``.
+            - **403** when the signature is invalid or missing (and a secret
+              is configured).
+            - **404** when the trigger is not found.
+            - **429** when the rate limit is exceeded.
+        """
+        db = Database(Path(effective_db_path))
+
+        # 1. Look up trigger
+        trigger_row = db.get_trigger(trigger_id)
+        if trigger_row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Trigger '{trigger_id}' not found",
             )
 
-        db.update_pipeline_run(run_id, pid=proc.pid)
+        # 2. Check enabled flag — disabled triggers silently accept but skip
+        if not trigger_row.get("enabled", True):
+            return JSONResponse(
+                {"status": "skipped", "reason": "trigger_disabled"},
+                status_code=200,
+            )
 
-        # 5. Return the created run record
-        run = db.get_pipeline_run(run_id)
-        return JSONResponse(_run_to_dict(run), status_code=201)
+        # 3. Read body bytes (must happen before signature verification)
+        payload_bytes = await request.body()
+
+        # 4. Verify GitHub HMAC-SHA256 signature (if secret configured)
+        secret = trigger_row.get("secret")
+        if secret:
+            sig_header = request.headers.get("X-Hub-Signature-256")
+            if not _verify_github_signature(secret, payload_bytes, sig_header):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Invalid or missing webhook signature",
+                )
+
+        # 5. Rate-limit check
+        rate_limit = trigger_row.get("rate_limit", 0)
+        if _check_rate_limit(trigger_id, rate_limit, db):
+            raise HTTPException(
+                status_code=429,
+                detail=f"Rate limit of {rate_limit} req/min exceeded for trigger '{trigger_id}'",
+            )
+
+        # 6. Parse payload JSON
+        try:
+            payload: Dict[str, Any] = json.loads(payload_bytes) if payload_bytes else {}
+        except (json.JSONDecodeError, ValueError):
+            payload = {}
+
+        # 7. Apply input_map to transform payload → pipeline input
+        input_map = trigger_row.get("input_map") or {}
+        input_data = _apply_input_map(payload, input_map) if input_map else dict(payload)
+
+        # 8. Resolve and validate template
+        template_id = trigger_row["template_id"]
+        template_file = _resolve_template(template_id)
+
+        engine = TemplateEngine()
+        try:
+            template = engine.load_template(template_file)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid template: {exc}")
+
+        # 9. Record invocation (after all guards pass, before launching)
+        db.record_webhook_invocation(trigger_id)
+
+        # 10. Launch pipeline via shared helper
+        trigger_mode = trigger_row.get("mode", "async")
+        # Map trigger mode to daemon mode (fire_and_forget → standalone)
+        daemon_mode_map = {
+            "sync": "standalone",
+            "async": "standalone",
+            "fire_and_forget": "standalone",
+        }
+        daemon_mode = daemon_mode_map.get(trigger_mode, "standalone")
+
+        gateway_url = os.environ.get("OPENCLAW_GATEWAY_URL")
+        run_dict = _launch_pipeline_from_trigger(
+            template_file=template_file,
+            template=template,
+            input_data=input_data,
+            mode=daemon_mode,
+            gateway_url=gateway_url,
+            db=db,
+        )
+
+        # fire_and_forget → respond 200 (accepted, no run details)
+        if trigger_mode == "fire_and_forget":
+            return JSONResponse(
+                {"status": "accepted", "run_id": run_dict["run_id"]},
+                status_code=200,
+            )
+
+        return JSONResponse(run_dict, status_code=201)
 
     @app.get("/api/v1/runs")
     async def list_runs(

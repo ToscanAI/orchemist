@@ -57,6 +57,7 @@ class TriggerConfig:
     input_map: Dict[str, Any] = field(default_factory=dict)
     filters: List[Dict[str, Any]] = field(default_factory=list)
     created_at: Optional[str] = None
+    enabled: bool = True
 
     def __post_init__(self) -> None:
         self.validate()
@@ -89,6 +90,9 @@ class TriggerConfig:
         # filters must be a list
         if not isinstance(self.filters, list):
             raise TriggerValidationError("filters must be a list.")
+        # enabled must be a bool
+        if not isinstance(self.enabled, bool):
+            raise TriggerValidationError("enabled must be a bool.")
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise to a plain dict suitable for DB insertion.
@@ -107,6 +111,7 @@ class TriggerConfig:
             "input_map": self.input_map,   # JSON-serialised by DB layer
             "filters": self.filters,       # JSON-serialised by DB layer
             "created_at": self.created_at or datetime.now().isoformat(),
+            "enabled": self.enabled,
         }
 
     @classmethod
@@ -125,6 +130,7 @@ class TriggerConfig:
             input_map=data.get("input_map") or {},
             filters=data.get("filters") or [],
             created_at=data.get("created_at"),
+            enabled=bool(data.get("enabled", True)),
         )
 
     @staticmethod

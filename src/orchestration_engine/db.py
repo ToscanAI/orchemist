@@ -324,7 +324,17 @@ class Database:
                 input_map TEXT NOT NULL DEFAULT '{}',
                 filters TEXT NOT NULL DEFAULT '[]',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                enabled INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+
+        # Webhook invocation log for rate-limit enforcement (Issue #329.2)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS webhook_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trigger_id TEXT NOT NULL,
+                invoked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
     
@@ -423,6 +433,12 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_triggers_mode_created
             ON triggers(mode, created_at)
         """)
+
+        # Webhook invocation index for rate-limit queries (Issue #329.2)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_webhook_invocations_trigger_time
+            ON webhook_invocations(trigger_id, invoked_at)
+        """)
     
     def _run_migrations(self, conn: sqlite3.Connection) -> None:
         """Run any pending database migrations."""
@@ -444,6 +460,8 @@ class Database:
             ("001_add_scoring_status", self._migration_001_add_scoring_status),
             ("002_add_pipeline_run_events", self._migration_002_add_pipeline_run_events),
             ("003_add_triggers_table", self._migration_003_add_triggers_table),   # Issue #329.1
+            ("004_add_webhook_invocations", self._migration_004_add_webhook_invocations),   # Issue #329.2
+            ("005_add_trigger_enabled", self._migration_005_add_trigger_enabled),           # Issue #329.2
         ]
         
         # Apply pending migrations
@@ -525,6 +543,37 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_triggers_mode_created
             ON triggers(mode, created_at)
         """)
+
+    def _migration_004_add_webhook_invocations(self, conn: sqlite3.Connection) -> None:
+        """Add webhook_invocations table for per-trigger rate-limit enforcement (Issue #329.2).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS so it is safe to run on
+        both fresh and existing databases.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS webhook_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trigger_id TEXT NOT NULL,
+                invoked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_webhook_invocations_trigger_time
+            ON webhook_invocations(trigger_id, invoked_at)
+        """)
+
+    def _migration_005_add_trigger_enabled(self, conn: sqlite3.Connection) -> None:
+        """Add enabled column to triggers table (Issue #329.2).
+
+        Idempotent: silently ignores OperationalError if the column already
+        exists (e.g. fresh databases created with the updated DDL).
+        """
+        try:
+            conn.execute(
+                "ALTER TABLE triggers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
     # Task Operations
     
@@ -957,6 +1006,10 @@ class Database:
         for key, value in data.items():
             if isinstance(value, datetime):
                 data[key] = value.isoformat()
+
+        # Cast SQLite INTEGER columns that represent booleans to Python bool
+        if "enabled" in data and data["enabled"] is not None:
+            data["enabled"] = bool(data["enabled"])
         
         return data
     
@@ -1293,8 +1346,8 @@ class Database:
         with self.transaction() as conn:
             conn.execute("""
                 INSERT INTO triggers
-                    (id, template_id, mode, secret, rate_limit, input_map, filters, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, template_id, mode, secret, rate_limit, input_map, filters, created_at, enabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 trigger_data["id"],
                 trigger_data["template_id"],
@@ -1304,6 +1357,7 @@ class Database:
                 json.dumps(trigger_data.get("input_map") or {}),
                 json.dumps(trigger_data.get("filters") or []),
                 trigger_data.get("created_at") or datetime.now().isoformat(),
+                int(trigger_data.get("enabled", True)),
             ))
         return trigger_data["id"]
 
@@ -1387,7 +1441,7 @@ class Database:
             found" from "no valid kwargs".  Callers that need to distinguish
             these cases should call ``get_trigger`` first.
         """
-        allowed = {"mode", "secret", "rate_limit", "input_map", "filters"}
+        allowed = {"mode", "secret", "rate_limit", "input_map", "filters", "enabled"}
         updates = ["updated_at = ?"]
         values = [datetime.now().isoformat()]
 
@@ -1397,6 +1451,9 @@ class Database:
             if key in ("input_map", "filters"):
                 updates.append(f"{key} = ?")
                 values.append(json.dumps(value))
+            elif key == "enabled":
+                updates.append(f"{key} = ?")
+                values.append(int(value))
             else:
                 updates.append(f"{key} = ?")
                 values.append(value)
@@ -1428,6 +1485,39 @@ class Database:
                 "DELETE FROM triggers WHERE id = ?", (trigger_id,)
             )
             return cursor.rowcount > 0
+
+    def record_webhook_invocation(self, trigger_id: str) -> None:
+        """Record a webhook invocation timestamp for rate-limit tracking.
+
+        Args:
+            trigger_id: The ID of the trigger that was invoked.
+        """
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT INTO webhook_invocations (trigger_id, invoked_at) VALUES (?, ?)",
+                (trigger_id, datetime.now().isoformat()),
+            )
+
+    def count_webhook_invocations_since(self, trigger_id: str, since_dt: datetime) -> int:
+        """Count webhook invocations for a trigger since a given datetime.
+
+        Used for per-trigger rate-limit enforcement.
+
+        Args:
+            trigger_id: The trigger identifier to count invocations for.
+            since_dt: Datetime lower bound (inclusive).
+
+        Returns:
+            Number of invocation rows with ``invoked_at >= since_dt``.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM webhook_invocations "
+                "WHERE trigger_id = ? AND invoked_at >= ?",
+                (trigger_id, since_dt.isoformat()),
+            )
+            return cursor.fetchone()[0]
 
     def close(self) -> None:
         """Close database connections."""
