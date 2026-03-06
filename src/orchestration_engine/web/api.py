@@ -145,6 +145,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
     from orchestration_engine import __version__
     from orchestration_engine.db import Database
     from orchestration_engine.templates import TemplateEngine, TemplateNotFoundError
+    from orchestration_engine.webhooks import InputMapper, TriggerMatcher
 
     effective_db_path = db_path or _get_persistent_db_path()
 
@@ -1073,9 +1074,35 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         except (json.JSONDecodeError, ValueError):
             payload = {}
 
+        # 6b. Evaluate trigger filters — if any filter doesn't match, skip silently
+        filters = trigger_row.get("filters") or []
+        if filters and not TriggerMatcher.matches(filters, payload):
+            return JSONResponse(
+                {"status": "skipped", "reason": "filter_mismatch"},
+                status_code=200,
+            )
+
         # 7. Apply input_map to transform payload → pipeline input
+        # Values starting with "$." are resolved by _apply_input_map (dot-path).
+        # Values of the form "{{payload.x.y}}" are resolved by InputMapper (template).
+        # Other values are treated as literals.
         input_map = trigger_row.get("input_map") or {}
-        input_data = _apply_input_map(payload, input_map) if input_map else dict(payload)
+        if input_map:
+            # First pass: resolve $.path expressions
+            dot_path_map = {
+                k: v for k, v in input_map.items()
+                if not (isinstance(v, str) and v.startswith("{{payload."))
+            }
+            template_map = {
+                k: v for k, v in input_map.items()
+                if isinstance(v, str) and v.startswith("{{payload.")
+            }
+            input_data = _apply_input_map(payload, dot_path_map) if dot_path_map else {}
+            # Second pass: resolve {{payload.*}} templates
+            if template_map:
+                input_data.update(InputMapper.apply(payload, template_map))
+        else:
+            input_data = dict(payload)
 
         # 8. Resolve and validate template
         template_id = trigger_row["template_id"]
