@@ -23,6 +23,7 @@ from .schemas import (
 from .queue import TaskQueue
 from .db import Database
 from .sequencer import StateMachineSequencer
+from .webhooks import TriggerConfig, TriggerValidationError, VALID_MODES  # noqa: F401
 
 __all__ = [
     "__version__",
@@ -43,4 +44,8 @@ __all__ = [
     "TaskQueue",
     "Database",
     "StateMachineSequencer",
+    # Webhooks (Issue #329.1)
+    "TriggerConfig",
+    "TriggerValidationError",
+    "VALID_MODES",
 ]
