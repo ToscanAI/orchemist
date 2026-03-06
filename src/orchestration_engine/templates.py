@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import yaml
 
 from .git_integration import GitConfig
+from .routing import RoutingConfig, RoutingEngine, _parse_routing_config
 
 logger = logging.getLogger(__name__)
 
@@ -434,6 +435,11 @@ class PipelineTemplate:
     on_complete: Optional[OnCompleteConfig] = None
     """Parsed ``on_complete:`` section from the template YAML, or ``None`` if absent."""
 
+    # --- Confidence-based routing config (Issue #331.2) ---
+    routing_config: Optional[RoutingConfig] = None
+    """Parsed ``routing_config:`` section from the template YAML, or ``None`` if absent.
+    When ``None``, callers should fall back to :data:`~routing.DEFAULT_ROUTING_CONFIG`."""
+
     def __post_init__(self) -> None:
         if self.phases is None:
             self.phases = []
@@ -474,6 +480,9 @@ class PipelineTemplate:
         # Normalise on_complete field: non-OnCompleteConfig values → None
         if self.on_complete is not None and not isinstance(self.on_complete, OnCompleteConfig):
             self.on_complete = None
+        # Normalise routing_config field: non-RoutingConfig values → None
+        if self.routing_config is not None and not isinstance(self.routing_config, RoutingConfig):
+            self.routing_config = None
 
 
 class TemplateNotFoundError(FileNotFoundError):
@@ -824,6 +833,11 @@ class TemplateEngine:
         else:
             pipeline_max_iterations = max(1, int(raw_pipeline_max_iterations))
 
+        # Parse optional routing_config: section (Issue #331.2)
+        routing_config_parsed: Optional[RoutingConfig] = _parse_routing_config(
+            data.get("routing_config")
+        )
+
         return PipelineTemplate(
             id=data["id"],
             name=data["name"],
@@ -847,6 +861,7 @@ class TemplateEngine:
             scenario=data.get("scenario") or None,  # Issue #172: post-pipeline auto-scoring
             auto_merge=auto_merge_config,            # Issue #350: per-repo auto-merge config
             on_complete=on_complete_config,          # Issue #330.1: pipeline chaining config
+            routing_config=routing_config_parsed,    # Issue #331.2: confidence-based routing
         )
 
     def get_execution_order(self, template: PipelineTemplate) -> List[List[str]]:
@@ -1210,6 +1225,12 @@ class TemplateEngine:
                                 f"on_complete.{list_name}[{idx}]: template '{entry.template}' "
                                 f"references this template itself (self-referential chain is an error)"
                             )
+
+        # Issue #331.2: Validate routing_config threshold integrity
+        if template.routing_config is not None:
+            routing_errors = RoutingEngine(template.routing_config).validate_thresholds()
+            for re_msg in routing_errors:
+                errors.append(f"routing_config: {re_msg}")
 
         return errors
 

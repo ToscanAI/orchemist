@@ -31,6 +31,13 @@ from .confidence import (  # noqa: F401  # Issue #331.1
     ConfidenceLevel as RunConfidenceLevel,
     DEFAULT_WEIGHTS,
 )
+from .routing import (  # noqa: F401  # Issue #331.2
+    RoutingTier,
+    RoutingConfig,
+    RoutingDecision,
+    RoutingEngine,
+    DEFAULT_ROUTING_CONFIG,
+)
 
 __all__ = [
     "__version__",
@@ -61,4 +68,10 @@ __all__ = [
     "ConfidenceSignal",
     "RunConfidenceLevel",
     "DEFAULT_WEIGHTS",
+    # Confidence-based routing (Issue #331.2)
+    "RoutingTier",
+    "RoutingConfig",
+    "RoutingDecision",
+    "RoutingEngine",
+    "DEFAULT_ROUTING_CONFIG",
 ]
