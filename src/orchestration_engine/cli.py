@@ -1815,7 +1815,7 @@ def pipeline_wait(run_id: str, timeout: int, interval: int, db_path: Optional[st
     effective_db_path = db_path or _get_persistent_db_path()
     db = Database(Path(effective_db_path))
 
-    terminal_states = {'success', 'failed', 'cancelled', 'crashed', 'scoring_failed'}
+    terminal_states = {'success', 'failed', 'cancelled', 'crashed', 'scoring_failed', 'pending_review', 'rejected'}
     deadline = time.time() + timeout
     last_phase = None
 

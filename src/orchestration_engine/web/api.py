@@ -181,7 +181,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
     from sse_starlette.sse import EventSourceResponse
 
     from orchestration_engine import __version__
-    from orchestration_engine.db import Database
+    from orchestration_engine.db import Database, TERMINAL_STATUSES
     from orchestration_engine.templates import TemplateEngine, TemplateNotFoundError
     from orchestration_engine.webhooks import InputMapper, TriggerMatcher
 
@@ -1597,8 +1597,8 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         Connects to the ``pipeline_run_events`` table and emits fine-grained
         events as the daemon writes them.  The stream ends automatically once
         the run reaches a terminal state (``success``, ``failed``,
-        ``cancelled``, ``crashed``, ``scoring_failed``) **and** all buffered
-        events have been delivered.
+        ``cancelled``, ``crashed``, ``scoring_failed``, ``pending_review``,
+        ``rejected``) **and** all buffered events have been delivered.
 
         **Event types** (``event`` field):
 
@@ -1607,7 +1607,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
           ``tokens_consumed``, ``cost_usd``, and ``state``.
         * ``status_changed`` — run-level status transition (emitted once on
           terminal state: ``success``, ``failed``, ``cancelled``, ``crashed``,
-          ``scoring_failed``).
+          ``scoring_failed``, ``pending_review``, ``rejected``).
         * ``error`` — run not found or unexpected failure.
 
         **Data** is a JSON object with at minimum ``run_id`` and ``phase_id``
@@ -1620,7 +1620,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         ``error`` event rather than an HTTP error so the EventSource protocol
         stays clean).
         """
-        _TERMINAL_STATES = {"success", "failed", "cancelled", "crashed", "scoring_failed"}
+        _TERMINAL_STATES = TERMINAL_STATUSES
         _POLL_INTERVAL = 1.0  # seconds between DB polls
 
         db = Database(Path(effective_db_path))
@@ -1709,7 +1709,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         if run is None:
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
 
-        terminal_states = {"success", "failed", "cancelled", "crashed", "scoring_failed"}
+        terminal_states = TERMINAL_STATUSES
         if run.get("status") in terminal_states:
             raise HTTPException(
                 status_code=409,

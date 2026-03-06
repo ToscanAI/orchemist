@@ -23,6 +23,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .confidence import ConfidenceCalculator
+from .routing import RoutingEngine, DEFAULT_ROUTING_CONFIG
+
 # ---------------------------------------------------------------------------
 # Logging bootstrap — daemon writes to output_dir/.orch-daemon.log
 # We set up root logger after we know the output_dir from the DB record.
@@ -344,22 +347,22 @@ def run_daemon(run_id: str, db_path: str) -> None:
             except Exception as _ge:
                 logger.warning("Could not update gate file with scoring error: %s", _ge)
 
-    # --- Auto-merge (Issue #350) ---
-    # When the template declares an `auto_merge:` block with `enabled: true`,
-    # and all criteria are met (score threshold + optional review verdict),
-    # call `gh pr merge` automatically so unattended pipelines can close PRs
-    # without human intervention.
-    #
-    # Failures here are non-fatal: the run is still marked with `_final_status`.
-    am = getattr(template, "auto_merge", None)
-    if am is not None and am.enabled and _final_status == "success":
-        _try_auto_merge(
-            run_id=run_id,
-            auto_merge_config=am,
-            scoring_passed=_scoring_passed,
-            scoring_score=_scoring_score_val,
-            phase_outputs=phase_outputs,
-        )
+    # --- Routing dispatch (Issue #331.3) ---
+    # Compute confidence, route to action tier, persist decision, and dispatch.
+    # Returns (possibly updated) final_status: 'pending_review' or 'rejected'
+    # when routing selects those actions on a successful run.
+    # Non-fatal: all errors are caught inside _compute_and_dispatch_routing.
+    _final_status = _compute_and_dispatch_routing(
+        run_id=run_id,
+        output_dir=output_dir,
+        db=db,
+        auto_merge_config=getattr(template, "auto_merge", None),
+        routing_config=getattr(template, "routing_config", None),
+        scoring_passed=_scoring_passed,
+        scoring_score=_scoring_score_val,
+        phase_outputs=phase_outputs,
+        final_status=_final_status,
+    )
 
     db.update_pipeline_run(
         run_id,
@@ -457,119 +460,409 @@ def _write_phase_event(
         )
 
 
-def _try_auto_merge(
+def _do_auto_merge(
     run_id: str,
     auto_merge_config: Any,
-    scoring_passed: bool,
     scoring_score: Optional[float],
-    phase_outputs: Dict[str, Any],
 ) -> None:
-    """Attempt an automatic PR merge if all configured criteria are met.
+    """Execute the actual PR merge for a run.
 
-    Called after pipeline + scoring complete.  Failures are logged and
-    swallowed — a broken merge never changes the pipeline's final status.
+    Extracted from ``_try_auto_merge`` to allow both the legacy criteria-based
+    path and the new confidence-routing path (Issue #331.3) to share the same
+    merge execution logic.
+
+    Loads the gate file, resolves the branch name, and calls
+    ``_GitContext.auto_merge_pr``.  Failures are logged and re-raised so
+    the caller can decide whether to swallow them.
 
     Args:
         run_id:            The pipeline run identifier.
-        auto_merge_config: The :class:`~orchestration_engine.templates.AutoMergeConfig`
-                           instance from the loaded template.
-        scoring_passed:    Whether auto-scoring passed (True) or not (False / not run).
-        scoring_score:     The raw score value (0.0–1.0) or None if scoring didn't run.
+        auto_merge_config: The AutoMergeConfig instance (for strategy).  When
+                           ``None``, a default strategy of ``"merge"`` is used.
+        scoring_score:     The scoring score used for the log message.  May be
+                           ``None`` when called from the routing path.
+    """
+    from .git_integration import GitContext as _GitContext
+
+    strategy = auto_merge_config.strategy if auto_merge_config else "merge"
+    score_str = f"{scoring_score:.4f}" if scoring_score is not None else "n/a"
+
+    gate_data = _GitContext.load_gate(run_id)
+    if gate_data is None:
+        logger.warning(
+            "Auto-merge: no gate file found for run '%s' — "
+            "cannot determine branch name.  Is git.enabled=true in the template?",
+            run_id,
+        )
+        return
+
+    branch_name = gate_data.get("branch", "")
+    if not branch_name:
+        logger.warning(
+            "Auto-merge: gate file for run '%s' has no 'branch' field — skipping.",
+            run_id,
+        )
+        return
+
+    logger.info(
+        "Auto-merge TRIGGERED for run '%s': score=%s, branch='%s', strategy='%s'.",
+        run_id, score_str, branch_name, strategy,
+    )
+
+    _GitContext.auto_merge_pr(
+        run_id=run_id,
+        branch_name=branch_name,
+        strategy=strategy,
+    )
+
+    # Update gate status to merged
+    try:
+        _GitContext.update_gate_status(
+            run_id,
+            status="merged",
+            message=f"Auto-merged by orchestrator (score={score_str})",
+        )
+    except Exception as _ge:
+        logger.warning("Auto-merge: could not update gate status: %s", _ge)
+
+
+def _strategy_to_action(strategy: str) -> str:
+    """Map a RoutingTier strategy string to a dispatch action.
+
+    Mapping:
+        "merge"        → "auto_merge"
+        "reject"       → "reject"
+        everything else → "human_review"  (queue_review, retry, review, unrouted)
+
+    Args:
+        strategy: Strategy string from a :class:`~routing.RoutingTier`.
+
+    Returns:
+        One of ``"auto_merge"``, ``"reject"``, or ``"human_review"``.
+    """
+    if strategy == "merge":
+        return "auto_merge"
+    if strategy == "reject":
+        return "reject"
+    return "human_review"
+
+
+def _compute_and_dispatch_routing(
+    run_id: str,
+    output_dir: Path,
+    db: Any,
+    auto_merge_config: Any,
+    routing_config: Any,
+    scoring_passed: bool,
+    scoring_score: Optional[float],
+    phase_outputs: Dict[str, Any],
+    final_status: str,
+) -> str:
+    """Compute confidence, route to action tier, persist decision, dispatch action.
+
+    Called after pipeline execution and scoring complete.  Non-fatal: any
+    exception is caught, logged, and the pipeline final_status is not changed.
+
+    Steps:
+        1. Compute composite confidence from output directory artefacts.
+        2. Evaluate routing config to produce a :class:`~routing.RoutingDecision`.
+        3. Persist the decision to the ``routing_decisions`` DB table.
+        4. If the pipeline succeeded, dispatch the resolved action.
+
+    Args:
+        run_id:           Pipeline run identifier.
+        output_dir:       Path to output directory containing phase JSON files.
+        db:               Database instance.
+        auto_merge_config: AutoMergeConfig from template (or None).
+        routing_config:   Custom RoutingConfig from template (or None → default).
+        scoring_passed:   Whether auto-scoring passed.
+        scoring_score:    Composite scoring score (0–1), or None.
+        phase_outputs:    Dict of phase_id → phase result dict.
+        final_status:     Current intended final status of the pipeline run.
+
+    Returns:
+        The (possibly modified) final_status string.  Routing may update this
+        to ``'pending_review'`` or ``'rejected'`` when dispatching those actions
+        on a successful run.
+    """
+    try:
+        # 1. Compute composite confidence from output directory
+        confidence_result = ConfidenceCalculator().compute_confidence(output_dir)
+
+        logger.info(
+            "Confidence computed for run '%s': score=%.4f tier=%s",
+            run_id,
+            confidence_result.composite_score,
+            confidence_result.confidence_level.value,
+        )
+
+        # 2. Evaluate routing (use template config if provided, else default)
+        _routing_cfg = routing_config or DEFAULT_ROUTING_CONFIG
+        decision = RoutingEngine(_routing_cfg).route(confidence_result)
+
+        logger.info(
+            "Routing decision for run '%s': tier='%s' strategy='%s' score=%.4f",
+            run_id, decision.tier, decision.strategy, decision.score,
+        )
+
+        # 3. Map strategy → action
+        action = _strategy_to_action(decision.strategy)
+
+        # 4. Build signals_json from confidence result signals
+        signals_dict: Dict[str, Any] = {
+            s.name: {
+                "value": s.value,
+                "weight": s.weight,
+                "raw_value": s.raw_value,
+                "source": s.source,
+            }
+            for s in confidence_result.signals
+        }
+        signals_json = json.dumps(signals_dict, default=str)
+
+        # 5. Persist routing decision to DB (audit trail)
+        db.insert_routing_decision({
+            "run_id": run_id,
+            "confidence_score": confidence_result.composite_score,
+            "tier_name": decision.tier,
+            "action": action,
+            "justification": confidence_result.explanation,
+            "signals_json": signals_json,
+        })
+
+        logger.info(
+            "Routing decision persisted for run '%s': action='%s'",
+            run_id, action,
+        )
+
+        # 6. Only dispatch action if pipeline succeeded (don't auto-merge a failing run)
+        if final_status not in ('success',):
+            logger.info(
+                "Routing dispatch skipped for run '%s': final_status='%s' "
+                "(only dispatching on success)",
+                run_id, final_status,
+            )
+            return final_status
+
+        # 7. Determine updated final_status from routing action before dispatch
+        if action == "human_review":
+            final_status = 'pending_review'
+        elif action == "reject":
+            final_status = 'rejected'
+
+        # 8. Dispatch action (status already updated above; dispatch does I/O only)
+        _dispatch_routing_action(
+            run_id=run_id,
+            action=action,
+            decision=decision,
+            confidence_result=confidence_result,
+            auto_merge_config=auto_merge_config,
+            phase_outputs=phase_outputs,
+        )
+
+        return final_status
+
+    except Exception as exc:
+        logger.warning(
+            "Confidence/routing integration failed for run '%s' (non-fatal): %s",
+            run_id, exc,
+        )
+        return final_status
+
+
+def _dispatch_routing_action(
+    run_id: str,
+    action: str,
+    decision: Any,
+    confidence_result: Any,
+    auto_merge_config: Any,
+    phase_outputs: Dict[str, Any],
+) -> None:
+    """Execute the routing action determined by RoutingEngine.
+
+    Three actions are supported:
+    - ``"auto_merge"``   — attempt PR merge via GitContext.
+    - ``"human_review"`` — log for manual follow-up (status update handled by caller).
+    - ``"reject"``       — optionally post a GitHub comment explaining the rejection.
+
+    Status updates (``pending_review`` / ``rejected``) are managed by the caller
+    (:func:`_compute_and_dispatch_routing` returns the updated final_status, and
+    ``run_daemon()`` persists it in the terminal ``db.update_pipeline_run`` call).
+
+    All failures are logged and swallowed — routing dispatch never aborts
+    the pipeline.
+
+    Args:
+        run_id:            Pipeline run identifier.
+        action:            One of ``"auto_merge"``, ``"human_review"``, ``"reject"``.
+        decision:          :class:`~routing.RoutingDecision` from RoutingEngine.
+        confidence_result: :class:`~confidence.ConfidenceResult` from ConfidenceCalculator.
+        auto_merge_config: AutoMergeConfig from template (or None).
         phase_outputs:     Dict of phase_id → phase result dict.
     """
     try:
+        if action == "auto_merge":
+            _dispatch_auto_merge(
+                run_id=run_id,
+                auto_merge_config=auto_merge_config,
+                decision=decision,
+                phase_outputs=phase_outputs,
+            )
+        elif action == "human_review":
+            logger.info(
+                "Routing action 'human_review' for run '%s': tier='%s' score=%.4f "
+                "— queued for manual review (status will be set to pending_review).",
+                run_id, decision.tier, decision.score,
+            )
+        elif action == "reject":
+            logger.info(
+                "Routing action 'reject' for run '%s': tier='%s' score=%.4f "
+                "— run will be marked as rejected.",
+                run_id, decision.tier, decision.score,
+            )
+            _post_reject_comment(
+                run_id=run_id,
+                decision=decision,
+                confidence_result=confidence_result,
+            )
+        else:
+            logger.warning(
+                "Unknown routing action '%s' for run '%s' — treated as human_review.",
+                action, run_id,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Routing dispatch failed for run '%s' action='%s' (non-fatal): %s",
+            run_id, action, exc,
+        )
+
+
+def _dispatch_auto_merge(
+    run_id: str,
+    auto_merge_config: Any,
+    decision: Any,
+    phase_outputs: Dict[str, Any],
+) -> None:
+    """Attempt PR auto-merge when routing selects the auto_merge action.
+
+    Mirrors the former ``_try_auto_merge()`` logic but is driven by the routing
+    decision rather than a binary score/threshold check (that check is now in
+    :class:`~routing.RoutingEngine`).  The ``auto_merge_config`` is still
+    consulted for ``require_approve`` and ``strategy``.
+
+    When ``auto_merge_config`` is ``None`` or ``enabled=False``, logs and returns.
+
+    Args:
+        run_id:            Pipeline run identifier.
+        auto_merge_config: AutoMergeConfig from template (or None).
+        decision:          :class:`~routing.RoutingDecision` from RoutingEngine.
+        phase_outputs:     Dict of phase_id → phase result dict.
+    """
+    if auto_merge_config is None or not auto_merge_config.enabled:
+        logger.info(
+            "Routing selected auto_merge for run '%s' but template has no "
+            "auto_merge config (or enabled=false) — skipping PR merge.",
+            run_id,
+        )
+        return
+
+    am = auto_merge_config
+
+    # Honour require_approve check (delegated from template config)
+    if am.require_approve:
+        review_out = phase_outputs.get(am.review_phase_id)
+        if review_out is None:
+            logger.info(
+                "Auto-merge skipped for run '%s': review phase '%s' not found "
+                "(require_approve=True).",
+                run_id, am.review_phase_id,
+            )
+            return
+        review_text = _extract_output_text(review_out).strip()
+        first_line = review_text.split('\n')[0].strip().upper()
+        if first_line != "APPROVE":
+            logger.info(
+                "Auto-merge skipped for run '%s': review phase '%s' did not "
+                "return APPROVE on first line (got: %r).",
+                run_id, am.review_phase_id, first_line[:80],
+            )
+            return
+
+    # Delegate to shared merge execution helper
+    _do_auto_merge(
+        run_id=run_id,
+        auto_merge_config=am,
+        scoring_score=decision.score,
+    )
+
+
+def _post_reject_comment(
+    run_id: str,
+    decision: Any,
+    confidence_result: Any,
+) -> None:
+    """Post a GitHub PR comment explaining the rejection, if configured.
+
+    Silently skips if no gate file exists (git not configured for this run),
+    or if :meth:`~git_integration.GitContext.post_pr_comment` is not implemented.
+
+    Args:
+        run_id:            Pipeline run identifier.
+        decision:          :class:`~routing.RoutingDecision` from RoutingEngine.
+        confidence_result: :class:`~confidence.ConfidenceResult` for explanation text.
+    """
+    try:
         from .git_integration import GitContext as _GitContext
-
-        am = auto_merge_config  # short alias
-
-        # --- Criterion 1: score threshold ---
-        if scoring_score is None:
-            # Scoring did not run or returned None — cannot assert threshold met
-            logger.info(
-                "Auto-merge skipped for run '%s': scoring score is unavailable "
-                "(scenario not configured or scoring errored).",
-                run_id,
-            )
-            return
-
-        if not scoring_passed or scoring_score < am.min_score:
-            logger.info(
-                "Auto-merge skipped for run '%s': score %.4f < min_score %.4f.",
-                run_id, scoring_score, am.min_score,
-            )
-            return
-
-        # --- Criterion 2: review phase verdict (optional) ---
-        if am.require_approve:
-            review_out = phase_outputs.get(am.review_phase_id)
-            if review_out is None:
-                logger.info(
-                    "Auto-merge skipped for run '%s': review phase '%s' not found "
-                    "in phase outputs (require_approve=True).",
-                    run_id, am.review_phase_id,
-                )
-                return
-
-            # Extract text from review output and check the FIRST LINE for the
-            # structured verdict keyword.  By convention, reviews begin with
-            # "APPROVE" or "REQUEST_CHANGES" as a standalone keyword on the
-            # first line.  We check only that line to avoid false positives
-            # from bodies that mention "approve" in passing, e.g.:
-            #   "REQUEST_CHANGES: I cannot approve this until X is fixed."
-            review_text = _extract_output_text(review_out).strip()
-            first_line = review_text.split('\n')[0].strip().upper()
-            if first_line != "APPROVE":
-                logger.info(
-                    "Auto-merge skipped for run '%s': review phase '%s' did not "
-                    "return an APPROVE verdict on the first line (got: %r) "
-                    "(require_approve=True).",
-                    run_id, am.review_phase_id, first_line[:80],
-                )
-                return
-
-        # --- All criteria met — load gate data and call gh pr merge ---
         gate_data = _GitContext.load_gate(run_id)
         if gate_data is None:
-            logger.warning(
-                "Auto-merge: no gate file found for run '%s' — "
-                "cannot determine branch name.  Is git.enabled=true in the template?",
-                run_id,
-            )
             return
 
         branch_name = gate_data.get("branch", "")
         if not branch_name:
-            logger.warning(
-                "Auto-merge: gate file for run '%s' has no 'branch' field — skipping.",
-                run_id,
-            )
             return
 
-        logger.info(
-            "Auto-merge TRIGGERED for run '%s': score=%.4f >= %.4f, "
-            "branch='%s', strategy='%s'.",
-            run_id, scoring_score, am.min_score, branch_name, am.strategy,
+        comment_body = (
+            f"## ❌ Pipeline Rejected\n\n"
+            f"**Run ID:** `{run_id}`\n"
+            f"**Confidence Score:** {decision.score:.4f} (tier: `{decision.tier}`)\n\n"
+            f"### Reason\n{confidence_result.explanation}\n\n"
+            f"*This run was automatically rejected by the orchestration engine. "
+            f"Please review the signal breakdown above and resubmit when the "
+            f"issues are resolved.*"
         )
 
-        _GitContext.auto_merge_pr(
+        if not hasattr(_GitContext, 'post_pr_comment'):
+            # post_pr_comment not yet implemented — log and skip gracefully
+            logger.info(
+                "Reject comment for run '%s' not posted — GitContext.post_pr_comment "
+                "not available. Comment would have been:\n%s",
+                run_id, comment_body,
+            )
+            # Still update gate status to 'rejected' so orch gate info reflects it
+            try:
+                _GitContext.update_gate_status(
+                    run_id,
+                    status="rejected",
+                    message=(
+                        f"Rejected by routing engine "
+                        f"(confidence={decision.score:.4f})"
+                    ),
+                )
+            except Exception as _ge:
+                logger.warning(
+                    "Could not update gate status for rejected run '%s': %s",
+                    run_id, _ge,
+                )
+            return
+
+        _GitContext.post_pr_comment(
             run_id=run_id,
             branch_name=branch_name,
-            strategy=am.strategy,
+            comment=comment_body,
         )
-
-        # Update gate status to merged
-        try:
-            _GitContext.update_gate_status(
-                run_id,
-                status="merged",
-                message=f"Auto-merged by orchestrator (score={scoring_score:.4f})",
-            )
-        except Exception as _ge:
-            logger.warning("Auto-merge: could not update gate status: %s", _ge)
-
     except Exception as exc:
         logger.warning(
-            "Auto-merge failed for run '%s' (non-fatal): %s",
+            "Could not post reject comment for run '%s' (non-fatal): %s",
             run_id, exc,
         )
 

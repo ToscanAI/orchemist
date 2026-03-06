@@ -661,11 +661,17 @@ phases:
         # run_daemon returns normally on success (no sys.exit)
         run_daemon(run_id, str(db_path))
 
-        # Check DB updated to success
+        # Check DB updated to a valid terminal status.
+        # With routing integration (#331.3), the confidence-based routing engine
+        # may change 'success' to 'pending_review' or 'rejected' depending on
+        # the composite confidence score of the dry-run output.
         db2 = Database(db_path)
         run = db2.get_pipeline_run(run_id)
         assert run is not None
-        assert run["status"] == "success", f"Expected success, got {run['status']}"
+        valid_terminal_statuses = {"success", "pending_review", "rejected"}
+        assert run["status"] in valid_terminal_statuses, (
+            f"Expected one of {valid_terminal_statuses}, got {run['status']!r}"
+        )
 
     def test_daemon_marks_failed_on_bad_template(self, tmp_path):
         """run_daemon() marks run as failed when template can't be loaded."""
@@ -997,7 +1003,12 @@ phases:
         db2 = Database(db_path)
         run = db2.get_pipeline_run(run_id)
         assert run is not None
-        assert run["status"] == "success", f"Expected success, got {run['status']}"
+        # With routing integration (#331.3), confidence-based routing may change
+        # 'success' to 'pending_review' or 'rejected' based on dry-run output signals.
+        valid_terminal_statuses = {"success", "pending_review", "rejected"}
+        assert run["status"] in valid_terminal_statuses, (
+            f"Expected one of {valid_terminal_statuses}, got {run['status']!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1079,7 +1090,11 @@ class TestDaemonScoringStatusTracking:
 
         run = Database(db_path).get_pipeline_run("score-pass")
         assert run is not None
-        assert run["status"] == "success"
+        # With routing integration (#331.3), confidence routing may change 'success'
+        # to 'pending_review' or 'rejected'; the key assertion is scoring_status.
+        assert run["status"] in {"success", "pending_review", "rejected"}, (
+            f"Expected a valid terminal status, got {run['status']!r}"
+        )
         assert run["scoring_status"] == "passed", (
             f"Expected 'passed', got {run['scoring_status']!r}"
         )
@@ -1123,7 +1138,11 @@ class TestDaemonScoringStatusTracking:
 
         run = Database(db_path).get_pipeline_run("score-err")
         assert run is not None
-        assert run["status"] == "success"  # pipeline itself succeeded
+        # With routing integration (#331.3), confidence routing may change 'success'
+        # to 'pending_review' or 'rejected'. Pipeline phases still succeeded.
+        assert run["status"] in {"success", "pending_review", "rejected"}, (
+            f"Expected a valid terminal status, got {run['status']!r}"
+        )
         assert run["scoring_status"] == "error", (
             f"Expected 'error', got {run['scoring_status']!r}"
         )
@@ -1167,7 +1186,11 @@ class TestDaemonScoringStatusTracking:
 
         run = Database(db_path).get_pipeline_run(run_id)
         assert run is not None
-        assert run["status"] == "success"
+        # With routing integration (#331.3), confidence routing may change 'success'
+        # to 'pending_review' or 'rejected'; the key assertion is scoring_status.
+        assert run["status"] in {"success", "pending_review", "rejected"}, (
+            f"Expected a valid terminal status, got {run['status']!r}"
+        )
         assert run["scoring_status"] is None, (
             f"Expected None (no scenario), got {run['scoring_status']!r}"
         )
@@ -1198,7 +1221,11 @@ class TestDaemonScoringStatusTracking:
 
         run = Database(db_path).get_pipeline_run(run_id)
         assert run is not None
-        assert run["status"] == "success"
+        # With routing integration (#331.3), confidence routing may change 'success'
+        # to 'pending_review' or 'rejected'; the key assertion is scoring_status.
+        assert run["status"] in {"success", "pending_review", "rejected"}, (
+            f"Expected a valid terminal status, got {run['status']!r}"
+        )
         assert run["scoring_status"] is None, (
             f"Expected None (skip_scoring=1), got {run['scoring_status']!r}"
         )
@@ -1260,7 +1287,7 @@ class TestScoringStatusDBFields:
 
 
 # ===========================================================================
-# Tests for _try_auto_merge (Issue #350)
+# Tests for _dispatch_auto_merge (Issue #350 / #331.3)
 # ===========================================================================
 
 
@@ -1283,44 +1310,58 @@ def _make_review_phase_output(text: str) -> dict:
     return {"result": {"output": text}}
 
 
-class TestTryAutoMerge:
-    """Unit tests for daemon._try_auto_merge."""
+def _make_fake_decision(score: float = 0.95, tier: str = "auto_merge") -> Any:
+    """Return a minimal RoutingDecision-like object for _dispatch_auto_merge tests."""
+    from orchestration_engine.routing import RoutingDecision
+    from orchestration_engine.confidence import ConfidenceLevel
+    return RoutingDecision(
+        tier=tier,
+        score=score,
+        confidence_level=ConfidenceLevel.HIGH,
+        strategy="merge",
+        matched=True,
+    )
 
-    def _call(self, auto_merge_config, scoring_score, phase_outputs=None,
-              scoring_passed=True):
-        from orchestration_engine.daemon import _try_auto_merge
-        _try_auto_merge(
+
+class TestDispatchAutoMerge:
+    """Unit tests for daemon._dispatch_auto_merge (replaces TestTryAutoMerge).
+
+    _dispatch_auto_merge is the merge-execution helper called by the routing
+    dispatch path when action == "auto_merge".  It honours require_approve and
+    delegates to _do_auto_merge for the actual gh invocation.
+    """
+
+    def _call(self, auto_merge_config, phase_outputs=None, decision=None):
+        from orchestration_engine.daemon import _dispatch_auto_merge
+        _dispatch_auto_merge(
             run_id="test-run-001",
             auto_merge_config=auto_merge_config,
-            scoring_passed=scoring_passed,
-            scoring_score=scoring_score,
+            decision=decision or _make_fake_decision(),
             phase_outputs=phase_outputs or {},
         )
 
-    def test_skip_when_score_is_none(self):
-        """If scoring_score=None, auto-merge must be skipped — no merge call."""
-        cfg = _make_auto_merge_config(require_approve=False)
+    def test_skip_when_config_is_none(self):
+        """If auto_merge_config is None, merge must be skipped — no merge call."""
         with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge:
-            self._call(cfg, scoring_score=None)
+            self._call(auto_merge_config=None)
         mock_merge.assert_not_called()
 
-    def test_skip_when_score_below_threshold(self):
-        """Score below min_score → no merge."""
-        cfg = _make_auto_merge_config(min_score=0.90, require_approve=False)
-        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
-             patch("orchestration_engine.git_integration.GitContext.load_gate", return_value={"branch": "feat/x"}):
-            self._call(cfg, scoring_score=0.80, scoring_passed=False)
+    def test_skip_when_not_enabled(self):
+        """If auto_merge_config.enabled=False, merge must be skipped."""
+        cfg = _make_auto_merge_config(enabled=False, require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge:
+            self._call(cfg)
         mock_merge.assert_not_called()
 
-    def test_merge_triggered_on_approve_and_high_score(self):
-        """Score ≥ threshold + APPROVE on first line → merge is called."""
+    def test_merge_triggered_on_approve_verdict(self):
+        """APPROVE on first line → merge is called with correct args."""
         cfg = _make_auto_merge_config(min_score=0.85, require_approve=True)
         phase_outputs = {"review": _make_review_phase_output("APPROVE\n\nLooks great!")}
         with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
              patch("orchestration_engine.git_integration.GitContext.load_gate",
                    return_value={"branch": "feat/my-feature"}), \
              patch("orchestration_engine.git_integration.GitContext.update_gate_status"):
-            self._call(cfg, scoring_score=0.92, phase_outputs=phase_outputs)
+            self._call(cfg, phase_outputs=phase_outputs)
         mock_merge.assert_called_once_with(
             run_id="test-run-001",
             branch_name="feat/my-feature",
@@ -1330,11 +1371,10 @@ class TestTryAutoMerge:
     def test_no_merge_when_request_changes_contains_approve_word(self):
         """Regression: REQUEST_CHANGES body containing 'approve' must NOT trigger merge.
 
-        This is the core blocker bug: naive substring 'APPROVE' in full text
-        would match 'I cannot approve this'.  First-line check prevents this.
+        Naive substring 'APPROVE' in full text would match 'I cannot approve this'.
+        First-line check prevents this.
         """
         cfg = _make_auto_merge_config(min_score=0.85, require_approve=True)
-        # First line is REQUEST_CHANGES — body contains "approve" as a word
         review_text = (
             "REQUEST_CHANGES\n\n"
             "I cannot approve this until the logging is fixed.\n"
@@ -1344,7 +1384,7 @@ class TestTryAutoMerge:
         with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
              patch("orchestration_engine.git_integration.GitContext.load_gate",
                    return_value={"branch": "feat/my-feature"}):
-            self._call(cfg, scoring_score=0.95, phase_outputs=phase_outputs)
+            self._call(cfg, phase_outputs=phase_outputs)
         mock_merge.assert_not_called()
 
     def test_no_merge_when_disapprove_word_on_first_line(self):
@@ -1355,15 +1395,14 @@ class TestTryAutoMerge:
         with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
              patch("orchestration_engine.git_integration.GitContext.load_gate",
                    return_value={"branch": "feat/x"}):
-            self._call(cfg, scoring_score=0.95, phase_outputs=phase_outputs)
+            self._call(cfg, phase_outputs=phase_outputs)
         mock_merge.assert_not_called()
 
     def test_skip_when_review_phase_missing(self):
         """If the review phase output is absent and require_approve=True → skip."""
         cfg = _make_auto_merge_config(min_score=0.80, require_approve=True, review_phase_id="review")
         with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge:
-            # phase_outputs has no "review" key
-            self._call(cfg, scoring_score=0.95, phase_outputs={"other": {}})
+            self._call(cfg, phase_outputs={"other": {}})
         mock_merge.assert_not_called()
 
     def test_skip_when_gate_file_missing(self):
@@ -1371,18 +1410,17 @@ class TestTryAutoMerge:
         cfg = _make_auto_merge_config(min_score=0.80, require_approve=False)
         with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
              patch("orchestration_engine.git_integration.GitContext.load_gate", return_value=None):
-            self._call(cfg, scoring_score=0.95)
+            self._call(cfg)
         mock_merge.assert_not_called()
 
     def test_merge_without_approve_check_when_require_approve_false(self):
-        """require_approve=False: skip review phase check, merge on score alone."""
+        """require_approve=False: skip review phase check, merge directly."""
         cfg = _make_auto_merge_config(min_score=0.80, require_approve=False, strategy="merge")
         with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
              patch("orchestration_engine.git_integration.GitContext.load_gate",
                    return_value={"branch": "feat/no-review"}), \
              patch("orchestration_engine.git_integration.GitContext.update_gate_status"):
-            # No phase_outputs — review not needed
-            self._call(cfg, scoring_score=0.85, phase_outputs={})
+            self._call(cfg, phase_outputs={})
         mock_merge.assert_called_once_with(
             run_id="test-run-001",
             branch_name="feat/no-review",
@@ -1390,12 +1428,14 @@ class TestTryAutoMerge:
         )
 
     def test_exception_in_merge_is_non_fatal(self):
-        """If auto_merge_pr raises, _try_auto_merge must swallow it (non-fatal)."""
+        """If auto_merge_pr raises, the exception propagates to _dispatch_routing_action."""
         from orchestration_engine.git_integration import GitError
         cfg = _make_auto_merge_config(min_score=0.80, require_approve=False)
         with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr",
                    side_effect=GitError("merge conflict", command=[], stderr="")), \
              patch("orchestration_engine.git_integration.GitContext.load_gate",
                    return_value={"branch": "feat/conflict"}):
-            # Should NOT raise
-            self._call(cfg, scoring_score=0.95)
+            # _dispatch_auto_merge itself does not swallow — caller does
+            import pytest
+            with pytest.raises(GitError):
+                self._call(cfg)
