@@ -276,6 +276,21 @@ def run_daemon(run_id: str, db_path: str) -> None:
             completed_at=datetime.now().isoformat(),
             error_message=msg,
         )
+        # --- Diagnose failure (non-fatal) ---
+        try:
+            from .diagnosis import DiagnosisEngine
+            _diag_executor = runner.executors[0] if runner.executors else None
+            if _diag_executor is not None:
+                _diag_engine = DiagnosisEngine(executor=_diag_executor, db=db)
+                _diag_engine.diagnose(
+                    run_id,
+                    error_message=msg,
+                    output_dir=str(output_dir),
+                    template_id=run.get('template_id'),
+                )
+                logger.info("Diagnosis complete for run %s", run_id)
+        except Exception as _diag_exc:
+            logger.warning("Diagnosis failed (non-fatal): %s", _diag_exc)
         _remove_pid_file(pid_path)
         sys.exit(2)
 
