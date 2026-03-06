@@ -1808,10 +1808,25 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             note (str, optional): Approval note.
 
         Returns:
-            - **200** with ``{"run_id": ..., "approved": true}`` on success.
-            - **404** when the run is not found or not in ``pending_review`` status.
+            - **200** with the updated run dict on success.
+            - **404** when the run is not found.
+            - **409** when the run is not in ``pending_review`` status.
         """
         db = Database(Path(effective_db_path))
+        run = db.get_pipeline_run(run_id)
+        if run is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Run '{run_id}' not found",
+            )
+        if run.get("status") != "pending_review":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Run '{run_id}' is in status '{run.get('status')}', "
+                    "not 'pending_review'. Only pending_review runs can be approved."
+                ),
+            )
         ok = db.approve_pipeline_run(
             run_id=run_id,
             reviewed_by=body.reviewed_by,
@@ -1819,12 +1834,11 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         )
         if not ok:
             raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"Run '{run_id}' not found or is not in 'pending_review' status"
-                ),
+                status_code=409,
+                detail=f"Could not approve run '{run_id}'",
             )
-        return JSONResponse({"run_id": run_id, "approved": True})
+        run = db.get_pipeline_run(run_id)
+        return JSONResponse(_run_to_dict(run))
 
     @app.post("/api/v1/reviews/{run_id}/reject", status_code=200)
     async def reject_review(run_id: str, body: RejectRequest) -> JSONResponse:
@@ -1841,10 +1855,25 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             reviewed_by (str, optional): Operator identifier.
 
         Returns:
-            - **200** with ``{"run_id": ..., "rejected": true}`` on success.
-            - **404** when the run is not found or not in ``pending_review`` status.
+            - **200** with the updated run dict on success.
+            - **404** when the run is not found.
+            - **409** when the run is not in ``pending_review`` status.
         """
         db = Database(Path(effective_db_path))
+        run = db.get_pipeline_run(run_id)
+        if run is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Run '{run_id}' not found",
+            )
+        if run.get("status") != "pending_review":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Run '{run_id}' is in status '{run.get('status')}', "
+                    "not 'pending_review'. Only pending_review runs can be rejected."
+                ),
+            )
         ok = db.reject_pipeline_run(
             run_id=run_id,
             reason=body.reason,
@@ -1852,12 +1881,11 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         )
         if not ok:
             raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"Run '{run_id}' not found or is not in 'pending_review' status"
-                ),
+                status_code=409,
+                detail=f"Could not reject run '{run_id}'",
             )
-        return JSONResponse({"run_id": run_id, "rejected": True})
+        run = db.get_pipeline_run(run_id)
+        return JSONResponse(_run_to_dict(run))
 
     @app.delete("/api/v1/runs/{run_id}", status_code=200)
     async def cancel_run(run_id: str) -> JSONResponse:
@@ -1888,128 +1916,5 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
 
         cancelled = db.cancel_pipeline_run(run_id)
         return JSONResponse({"run_id": run_id, "cancelled": cancelled})
-
-    # ------------------------------------------------------------------
-    # Review Queue endpoints (Issue #331.4)
-    # ------------------------------------------------------------------
-
-    class ApproveRequest(BaseModel):
-        """Body for POST /api/v1/reviews/{run_id}/approve."""
-        reviewed_by: Optional[str] = None
-        note: Optional[str] = None
-        trigger_merge: bool = False
-
-    class RejectRequest(BaseModel):
-        """Body for POST /api/v1/reviews/{run_id}/reject."""
-        reason: str
-        reviewed_by: Optional[str] = None
-
-    @app.get("/api/v1/reviews")
-    async def list_reviews(
-        limit: int = 20,
-        offset: int = 0,
-    ) -> JSONResponse:
-        """List pipeline runs pending human review.
-
-        Query parameters:
-            limit:  Maximum number of results (default 20, max 100).
-            offset: Number of results to skip (for pagination).
-
-        Returns:
-            JSON object with ``items`` array, ``total`` count, ``limit``, and
-            ``offset``.
-        """
-        limit = max(1, min(limit, 100))
-        offset = max(0, offset)
-        db = Database(Path(effective_db_path))
-        items = db.list_pending_reviews(limit=limit, offset=offset)
-        total = db.count_pending_reviews()
-        return JSONResponse({
-            "items": [_run_to_dict(r) for r in items],
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-        })
-
-    @app.post("/api/v1/reviews/{run_id}/approve")
-    async def approve_review(run_id: str, body: ApproveRequest) -> JSONResponse:
-        """Approve a pipeline run that is pending human review.
-
-        Sets run status to ``'success'`` and records reviewer metadata.
-
-        Path parameter:
-            run_id: Pipeline run identifier.
-
-        Request body (optional JSON):
-            reviewed_by (str): Reviewer identifier.
-            note (str): Review note stored as review_reason.
-            trigger_merge (bool): Reserved for future auto-merge logic.
-
-        Returns:
-            - **200** with the updated run dict on success.
-            - **404** when the run ID is not found.
-            - **409** when the run is not in ``pending_review`` status.
-        """
-        db = Database(Path(effective_db_path))
-        run = db.get_pipeline_run(run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-        if run.get("status") != "pending_review":
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Run '{run_id}' is in status '{run.get('status')}', "
-                    "not 'pending_review'. Only pending_review runs can be approved."
-                ),
-            )
-        updated = db.approve_pipeline_run(
-            run_id,
-            reviewed_by=body.reviewed_by,
-            note=body.note,
-        )
-        if not updated:
-            raise HTTPException(status_code=409, detail=f"Could not approve run '{run_id}'")
-        run = db.get_pipeline_run(run_id)
-        return JSONResponse(_run_to_dict(run))
-
-    @app.post("/api/v1/reviews/{run_id}/reject")
-    async def reject_review(run_id: str, body: RejectRequest) -> JSONResponse:
-        """Reject a pipeline run that is pending human review.
-
-        Sets run status to ``'rejected'`` and records the reason.
-
-        Path parameter:
-            run_id: Pipeline run identifier.
-
-        Request body (JSON):
-            reason (str): Required rejection reason.
-            reviewed_by (str): Optional reviewer identifier.
-
-        Returns:
-            - **200** with the updated run dict on success.
-            - **404** when the run ID is not found.
-            - **409** when the run is not in ``pending_review`` status.
-        """
-        db = Database(Path(effective_db_path))
-        run = db.get_pipeline_run(run_id)
-        if run is None:
-            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
-        if run.get("status") != "pending_review":
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Run '{run_id}' is in status '{run.get('status')}', "
-                    "not 'pending_review'. Only pending_review runs can be rejected."
-                ),
-            )
-        updated = db.reject_pipeline_run(
-            run_id,
-            reason=body.reason,
-            reviewed_by=body.reviewed_by,
-        )
-        if not updated:
-            raise HTTPException(status_code=409, detail=f"Could not reject run '{run_id}'")
-        run = db.get_pipeline_run(run_id)
-        return JSONResponse(_run_to_dict(run))
 
     return app

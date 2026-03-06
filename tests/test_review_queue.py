@@ -565,7 +565,9 @@ class TestReviewApproveEndpoint:
             json={"reviewed_by": "ops@example.com", "note": "Ship it"},
         )
         assert resp.status_code == 200
-        assert resp.json()["approved"] is True
+        data = resp.json()
+        assert data["status"] == "success"
+        assert data["run_id"] == "run-api-approve-001"
 
     def test_approve_updates_db_status(self, api_client):
         client, db_path = api_client
@@ -582,13 +584,13 @@ class TestReviewApproveEndpoint:
         resp = client.post("/api/v1/reviews/run-ghost/approve", json={})
         assert resp.status_code == 404
 
-    def test_approve_non_pending_run_returns_404(self, api_client):
+    def test_approve_non_pending_run_returns_409(self, api_client):
         client, db_path = api_client
         db = Database(Path(db_path))
         _seed_run(db, "run-api-approve-done", status="success")
 
         resp = client.post("/api/v1/reviews/run-api-approve-done/approve", json={})
-        assert resp.status_code == 404
+        assert resp.status_code == 409
 
 
 class TestReviewRejectEndpoint:
@@ -604,7 +606,9 @@ class TestReviewRejectEndpoint:
             json={"reason": "Output quality insufficient", "reviewed_by": "qa@example.com"},
         )
         assert resp.status_code == 200
-        assert resp.json()["rejected"] is True
+        data = resp.json()
+        assert data["status"] == "rejected"
+        assert data["run_id"] == "run-api-reject-001"
 
     def test_reject_updates_db_status(self, api_client):
         client, db_path = api_client
@@ -628,7 +632,7 @@ class TestReviewRejectEndpoint:
         )
         assert resp.status_code == 404
 
-    def test_reject_non_pending_run_returns_404(self, api_client):
+    def test_reject_non_pending_run_returns_409(self, api_client):
         client, db_path = api_client
         db = Database(Path(db_path))
         _seed_run(db, "run-api-reject-done", status="rejected")
@@ -637,7 +641,7 @@ class TestReviewRejectEndpoint:
             "/api/v1/reviews/run-api-reject-done/reject",
             json={"reason": "Already rejected"},
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 409
 
     def test_reject_missing_reason_returns_422(self, api_client):
         """reason field is mandatory; missing it should return 422."""
