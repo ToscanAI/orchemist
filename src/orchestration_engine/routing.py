@@ -1,36 +1,56 @@
-"""Routing config schema and rules engine for pipeline confidence-based routing.
+"""Routing config schema and rules engine for confidence-based pipeline routing.
 
-Issue #331.2 — maps ConfidenceResult composite scores to RoutingDecisions
-via a configurable tier system.
+Provides a declarative way to map a composite confidence score (from
+:class:`~orchestration_engine.confidence.ConfidenceResult`) to one of several
+named tiers, each with its own action strategy, notification list, and retry cap.
+
+Typical usage::
+
+    from orchestration_engine.routing import RoutingEngine
+
+    engine = RoutingEngine()          # uses DEFAULT_ROUTING_CONFIG
+    decision = engine.route(confidence_result)
+    print(decision.strategy)          # e.g. "merge", "queue_review", …
+
+Custom configurations can be loaded from a pipeline template YAML via
+:func:`_parse_routing_config` and passed to :class:`RoutingEngine`.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
-from .confidence import ConfidenceLevel, ConfidenceResult
+from .confidence import ConfidenceLevel
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class RoutingTier:
-    """A single tier in a routing configuration.
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
 
-    Score ranges use half-open intervals [min_score, max_score) so adjacent
-    tiers never overlap. The highest tier conventionally sets max_score
-    slightly above 1.0 (e.g. 1.01) so a perfect score of 1.0 still matches.
+
+@dataclass(frozen=True)
+class RoutingTier:
+    """A named confidence band with associated routing strategy.
 
     Attributes:
-        name:        Unique identifier for this tier (e.g. "auto_merge").
-        min_score:   Minimum composite score (inclusive).
-        max_score:   Maximum composite score (exclusive). May exceed 1.0.
-        requires:    Optional prerequisite conditions (e.g. ["review:APPROVE"]).
-        notify:      Optional notification targets (e.g. ["slack:#deploys"]).
-        strategy:    Action strategy ("merge", "queue_review", "retry", "reject").
-        max_retries: Max retry count when strategy == "retry".
+        name:        Unique human-readable name for this tier
+                     (e.g. ``"auto_merge"``).
+        min_score:   Lower bound of the confidence band (inclusive), in [0, 1].
+        max_score:   Upper bound of the confidence band (exclusive), may exceed
+                     1.0 so the highest tier can capture a score of exactly 1.0.
+        requires:    Optional list of preconditions that must be met before the
+                     strategy fires (e.g. ``["approve_verdict"]``).
+        notify:      Optional list of notification targets
+                     (e.g. ``["slack:dev-team"]``).
+        strategy:    Action verb to execute when this tier is matched
+                     (e.g. ``"merge"``, ``"queue_review"``, ``"retry"``,
+                     ``"reject"``).
+        max_retries: Maximum number of retry attempts, meaningful only when
+                     ``strategy == "retry"``.  Negative values are clamped to 0.
     """
 
     name: str
@@ -42,107 +62,125 @@ class RoutingTier:
     max_retries: int = 0
 
     def __post_init__(self) -> None:
-        self.name = str(self.name)
-        self.min_score = float(self.min_score)
-        self.max_score = float(self.max_score)
+        # Normalize types — frozen dataclass requires object.__setattr__
+        object.__setattr__(self, "min_score", float(self.min_score))
+        object.__setattr__(self, "max_score", float(self.max_score))
+        # Clamp max_retries to 0 if negative
+        object.__setattr__(self, "max_retries", max(0, int(self.max_retries)))
         if self.requires is None:
-            self.requires = []
+            object.__setattr__(self, "requires", [])
         if self.notify is None:
-            self.notify = []
-        self.strategy = str(self.strategy)
-        self.max_retries = max(0, int(self.max_retries))
+            object.__setattr__(self, "notify", [])
 
-        if self.min_score < 0.0 or self.min_score > 1.0:
+        if not (0.0 <= self.min_score <= 1.0):
             raise ValueError(
-                f"RoutingTier '{self.name}': min_score must be in [0.0, 1.0], "
+                f"RoutingTier '{self.name}': min_score must be in [0, 1], "
                 f"got {self.min_score}"
             )
-        # max_score may exceed 1.0 for the highest tier.
+        # max_score may exceed 1.0 (e.g. 1.01) so the top tier captures 1.0
+        # under exclusive-upper-bound semantics.  Only validate that it is
+        # strictly greater than min_score (tier must have positive width).
         if self.max_score <= self.min_score:
             raise ValueError(
-                f"RoutingTier '{self.name}': max_score must be > min_score "
-                f"({self.max_score} <= {self.min_score})"
+                f"RoutingTier '{self.name}': max_score ({self.max_score}) "
+                f"must be strictly greater than min_score ({self.min_score})"
             )
 
     def matches(self, score: float) -> bool:
-        """Return True when score falls within [min_score, max_score)."""
+        """Return True if *score* falls within this tier's [min_score, max_score) range.
+
+        The upper bound is **exclusive** so that adjacent tiers with a shared
+        boundary (e.g. ``[0.75, 0.90)`` and ``[0.90, 1.01)``) never both claim
+        the same score.  The higher tier always wins because
+        :meth:`RoutingEngine.route` iterates in descending ``min_score`` order.
+
+        Args:
+            score: Composite confidence score in [0, 1].
+
+        Returns:
+            ``True`` if ``min_score <= score < max_score``.
+        """
         return self.min_score <= score < self.max_score
 
 
-@dataclass
+@dataclass(frozen=True)
 class RoutingConfig:
-    """A complete routing configuration made up of ordered tiers.
+    """Container for an ordered list of :class:`RoutingTier` definitions.
 
     Attributes:
-        tiers: List of RoutingTier instances.
+        tiers: Ordered list of routing tiers.  Evaluation order is determined
+               by :class:`RoutingEngine` (sorted by ``min_score`` descending).
     """
 
     tiers: List[RoutingTier] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.tiers is None:
-            self.tiers = []
+            object.__setattr__(self, "tiers", [])
 
 
-@dataclass
+@dataclass(frozen=True)
 class RoutingDecision:
-    """The routing outcome for a single pipeline run.
+    """The outcome of routing a confidence result against a routing config.
 
     Attributes:
-        tier:             Name of the matched tier, or "unrouted" when none matches.
-        score:            The composite score from ConfidenceResult.
-        confidence_level: The coarse ConfidenceLevel from ConfidenceResult.
-        strategy:         The action strategy from the matched tier.
-        requires:         Prerequisite condition strings from the matched tier.
-        notify:           Notification targets from the matched tier.
-        max_retries:      Max retry count from the matched tier.
-        matched:          True when a tier was successfully matched.
+        tier:             Name of the matched tier, or ``"unrouted"`` when no
+                          tier matched.
+        score:            The composite confidence score that was evaluated.
+        confidence_level: The :class:`~confidence.ConfidenceLevel` from the
+                          originating :class:`~confidence.ConfidenceResult`.
+        strategy:         Action verb from the matched tier
+                          (e.g. ``"merge"``).  Defaults to ``"review"`` when
+                          no tier matched.
+        matched:          ``True`` when a tier was matched, ``False`` for the
+                          unrouted fallback.
+        requires:         Copy of the matched tier's ``requires`` list, or an
+                          empty list when unrouted.
+        notify:           Copy of the matched tier's ``notify`` list, or an
+                          empty list when unrouted.
+        max_retries:      Maximum retry count from the matched tier, or ``0``
+                          when unrouted.
     """
 
     tier: str
     score: float
     confidence_level: ConfidenceLevel
     strategy: str = "review"
+    matched: bool = True
     requires: List[str] = field(default_factory=list)
     notify: List[str] = field(default_factory=list)
     max_retries: int = 0
-    matched: bool = True
 
     def __post_init__(self) -> None:
         if self.requires is None:
-            self.requires = []
+            object.__setattr__(self, "requires", [])
         if self.notify is None:
-            self.notify = []
+            object.__setattr__(self, "notify", [])
 
 
-#: Four canonical tiers used when no custom routing config is declared.
+# ---------------------------------------------------------------------------
+# Default configuration
+# ---------------------------------------------------------------------------
+
 DEFAULT_ROUTING_CONFIG: RoutingConfig = RoutingConfig(
     tiers=[
         RoutingTier(
             name="auto_merge",
             min_score=0.90,
-            max_score=1.01,
+            max_score=1.01,  # exclusive upper bound — captures score == 1.0
             strategy="merge",
-            requires=["review:APPROVE"],
-            notify=["slack:#deploys"],
-            max_retries=0,
         ),
         RoutingTier(
             name="queue_review",
             min_score=0.75,
             max_score=0.90,
             strategy="queue_review",
-            requires=[],
-            notify=["slack:#review-queue"],
-            max_retries=0,
         ),
         RoutingTier(
             name="retry",
             min_score=0.60,
             max_score=0.75,
             strategy="retry",
-            requires=[],
-            notify=[],
             max_retries=2,
         ),
         RoutingTier(
@@ -150,199 +188,218 @@ DEFAULT_ROUTING_CONFIG: RoutingConfig = RoutingConfig(
             min_score=0.00,
             max_score=0.60,
             strategy="reject",
-            requires=[],
-            notify=["slack:#failures"],
-            max_retries=0,
         ),
     ]
 )
 
 
+# ---------------------------------------------------------------------------
+# Engine
+# ---------------------------------------------------------------------------
+
+
 class RoutingEngine:
-    """Routes a ConfidenceResult to a RoutingDecision via configured tiers.
+    """Evaluates a :class:`~orchestration_engine.confidence.ConfidenceResult`
+    against a :class:`RoutingConfig` and returns a :class:`RoutingDecision`.
 
     Args:
-        config: A RoutingConfig instance. When None, uses DEFAULT_ROUTING_CONFIG.
+        config: Optional custom :class:`RoutingConfig`.  When ``None`` the
+                :data:`DEFAULT_ROUTING_CONFIG` is used.
     """
 
     def __init__(self, config: Optional[RoutingConfig] = None) -> None:
-        self.config: RoutingConfig = (
-            config if config is not None else DEFAULT_ROUTING_CONFIG
-        )
+        self._config: RoutingConfig = config if config is not None else DEFAULT_ROUTING_CONFIG
 
-    def route(self, confidence_result: ConfidenceResult) -> RoutingDecision:
-        """Determine the routing tier for confidence_result.
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-        Tiers are checked in descending order of min_score so the
-        highest-priority tier wins when ranges overlap.
+    def route(self, confidence_result: Any) -> RoutingDecision:
+        """Route *confidence_result* to the highest-matching tier.
+
+        Tiers are sorted by ``min_score`` **descending** so that the most
+        specific (highest-threshold) tier is tested first.  The first tier
+        whose :meth:`RoutingTier.matches` returns ``True`` wins.
+
+        .. note::
+            **Adjacent boundary behaviour:** when two tiers share a boundary
+            value (e.g. tier A covers ``[0.5, 1.01)`` and tier B covers
+            ``[0.0, 0.5)``), the *higher* tier always wins because tiers are
+            evaluated in descending ``min_score`` order — A is checked before
+            B, so a score of exactly ``0.5`` is routed to A.  The exclusive
+            upper bound on :meth:`RoutingTier.matches` ensures the same score
+            cannot match both tiers simultaneously.
 
         Args:
-            confidence_result: A populated ConfidenceResult.
+            confidence_result: A
+                :class:`~orchestration_engine.confidence.ConfidenceResult`
+                instance (or any object with ``composite_score`` and
+                ``confidence_level`` attributes).
 
         Returns:
-            A RoutingDecision with the matched tier's metadata, or a
-            fallback "unrouted" decision when no tier matches.
+            A :class:`RoutingDecision` describing the matched tier and action.
         """
-        score = confidence_result.composite_score
-        level = confidence_result.confidence_level
+        score: float = float(confidence_result.composite_score)
+        confidence_level: ConfidenceLevel = confidence_result.confidence_level
 
+        # Sort tiers by min_score DESC — highest threshold wins first
         sorted_tiers = sorted(
-            self.config.tiers, key=lambda t: t.min_score, reverse=True
+            self._config.tiers, key=lambda t: t.min_score, reverse=True
         )
 
         for tier in sorted_tiers:
             if tier.matches(score):
-                logger.debug(
-                    "route: score=%.4f matched tier '%s' (strategy=%s)",
-                    score, tier.name, tier.strategy,
-                )
                 return RoutingDecision(
                     tier=tier.name,
                     score=score,
-                    confidence_level=level,
+                    confidence_level=confidence_level,
                     strategy=tier.strategy,
+                    matched=True,
                     requires=list(tier.requires),
                     notify=list(tier.notify),
                     max_retries=tier.max_retries,
-                    matched=True,
                 )
 
-        logger.warning(
-            "route: score=%.4f did not match any configured tier", score
-        )
+        # Fallback — no tier matched
         return RoutingDecision(
             tier="unrouted",
             score=score,
-            confidence_level=level,
+            confidence_level=confidence_level,
             strategy="review",
-            requires=[],
-            notify=[],
-            max_retries=0,
             matched=False,
         )
 
+    def evaluate(self, confidence_result: Any) -> RoutingDecision:
+        """Alias for :meth:`route` (kept for backward compatibility)."""
+        return self.route(confidence_result)
+
     def validate_thresholds(self) -> List[str]:
-        """Validate tier thresholds for gaps, overlaps, and duplicate names.
+        """Check the configured tiers for gaps, overlaps, and duplicate names.
+
+        Tiers are inspected in ascending ``min_score`` order.
+
+        Errors are reported for:
+        * **Duplicate tier names** — two tiers share the same ``name``.
+        * **Start gap** — ``min_score`` of the lowest tier is above ``0.0``.
+        * **End gap** — ``max_score`` of the highest tier is below ``1.0``.
+        * **Gap between tiers** — ``a.max_score < b.min_score`` for consecutive
+          tiers ``(a, b)`` — scores in that range fall through unmatched.
+        * **Overlap between tiers** — ``a.max_score > b.min_score`` — two tiers
+          both claim the same score range.
 
         Returns:
-            A list of error strings. Empty list means config is valid.
+            List of error strings.  An empty list means no issues were found.
         """
         errors: List[str] = []
-        tiers = self.config.tiers
 
-        if not tiers:
-            return []
+        if not self._config.tiers:
+            return errors
 
-        # Duplicate name check
-        seen_names: Dict[str, int] = {}
-        for idx, tier in enumerate(tiers):
+        sorted_tiers = sorted(self._config.tiers, key=lambda t: t.min_score)
+
+        # Detect duplicate tier names
+        seen_names: set[str] = set()
+        for tier in sorted_tiers:
             if tier.name in seen_names:
                 errors.append(
-                    f"Duplicate tier name '{tier.name}' "
-                    f"(first at index {seen_names[tier.name]}, again at index {idx})"
+                    f"Duplicate tier name '{tier.name}' detected in routing config."
                 )
-            else:
-                seen_names[tier.name] = idx
+            seen_names.add(tier.name)
 
-        sorted_tiers = sorted(tiers, key=lambda t: t.min_score)
-
-        # Gap: coverage must start at 0.0
+        # Coverage start gap
         if sorted_tiers[0].min_score > 0.0:
             errors.append(
-                f"Routing config has a gap: scores below "
-                f"{sorted_tiers[0].min_score:.4f} are not covered by any tier "
-                f"(lowest tier '{sorted_tiers[0].name}' starts at "
-                f"{sorted_tiers[0].min_score:.4f})"
+                f"Gap detected: coverage starts at "
+                f"{sorted_tiers[0].min_score:.4f}; "
+                f"scores below {sorted_tiers[0].min_score:.4f} are unmatched."
             )
 
-        # Check consecutive tiers for gaps and overlaps
-        for i in range(len(sorted_tiers) - 1):
-            current = sorted_tiers[i]
-            nxt = sorted_tiers[i + 1]
-
-            if current.max_score > nxt.min_score:
-                errors.append(
-                    f"Routing tiers '{current.name}' and '{nxt.name}' overlap: "
-                    f"'{current.name}' ends at {current.max_score:.4f} but "
-                    f"'{nxt.name}' starts at {nxt.min_score:.4f}"
-                )
-            elif current.max_score < nxt.min_score:
-                errors.append(
-                    f"Routing config has a gap between tiers '{current.name}' "
-                    f"and '{nxt.name}': range "
-                    f"[{current.max_score:.4f}, {nxt.min_score:.4f}) is not covered"
-                )
-
-        # Gap: highest tier must reach score 1.0
+        # Coverage end gap
         if sorted_tiers[-1].max_score < 1.0:
             errors.append(
-                f"Routing config has a gap: scores above "
-                f"{sorted_tiers[-1].max_score:.4f} are not covered by any tier "
-                f"(highest tier '{sorted_tiers[-1].name}' ends at "
-                f"{sorted_tiers[-1].max_score:.4f})"
+                f"Gap detected: coverage ends at "
+                f"{sorted_tiers[-1].max_score:.4f}; "
+                f"scores of {sorted_tiers[-1].max_score:.4f} and above are unmatched."
             )
+
+        # Detect gaps and overlaps between adjacent pairs
+        for i in range(len(sorted_tiers) - 1):
+            a = sorted_tiers[i]
+            b = sorted_tiers[i + 1]
+
+            if a.max_score < b.min_score:
+                errors.append(
+                    f"Gap detected between tiers '{a.name}' and '{b.name}': "
+                    f"scores in ({a.max_score}, {b.min_score}) are unmatched."
+                )
+            elif a.max_score > b.min_score:
+                errors.append(
+                    f"Overlap detected between tiers '{a.name}' and '{b.name}': "
+                    f"scores in [{b.min_score}, {a.max_score}] match both tiers."
+                )
 
         return errors
 
 
+# ---------------------------------------------------------------------------
+# Parser helper
+# ---------------------------------------------------------------------------
+
+
 def _parse_routing_config(raw: Any) -> Optional[RoutingConfig]:
-    """Parse the routing_config: section of a pipeline YAML.
+    """Parse a raw ``routing_config:`` dict from a pipeline template YAML.
 
     Args:
-        raw: The value of data.get("routing_config").
+        raw: The value of ``data.get("routing_config")`` — expected to be a
+             dict with a ``"tiers"`` list, ``None``, or any other type
+             (treated as absent).
 
     Returns:
-        A RoutingConfig instance or None.
+        A :class:`RoutingConfig` instance when *raw* is a valid dict with a
+        non-empty ``"tiers"`` list, otherwise ``None``.
     """
     if not isinstance(raw, dict):
         return None
 
-    known_config_fields = {"tiers"}
-    unknown = set(raw.keys()) - known_config_fields
-    if unknown:
-        logger.warning(
-            "Template routing_config has unknown fields (ignored): %s",
-            sorted(unknown),
-        )
-
     raw_tiers = raw.get("tiers")
     if not isinstance(raw_tiers, list):
+        logger.warning(
+            "_parse_routing_config: 'tiers' key missing or not a list — "
+            "returning None."
+        )
         return None
 
-    known_tier_fields = {
-        "name", "min_score", "max_score", "requires", "notify",
-        "strategy", "max_retries",
-    }
+    if not raw_tiers:
+        logger.warning(
+            "routing_config has empty tiers list — no scores will match any tier"
+        )
+        return None
 
     tiers: List[RoutingTier] = []
-    for idx, raw_tier in enumerate(raw_tiers):
-        if not isinstance(raw_tier, dict):
+    for item in raw_tiers:
+        if not isinstance(item, dict):
             logger.warning(
-                "routing_config.tiers[%d] is not a dict (ignored): %r",
-                idx, raw_tier,
+                "_parse_routing_config: tier entry is not a dict (skipped): %r",
+                item,
             )
             continue
-        unknown_tier = set(raw_tier.keys()) - known_tier_fields
-        if unknown_tier:
-            logger.warning(
-                "routing_config.tiers[%d] has unknown fields (ignored): %s",
-                idx, sorted(unknown_tier),
-            )
         try:
             tiers.append(
                 RoutingTier(
-                    name=str(raw_tier.get("name", f"tier_{idx}")),
-                    min_score=float(raw_tier.get("min_score", 0.0)),
-                    max_score=float(raw_tier.get("max_score", 1.0)),
-                    requires=list(raw_tier.get("requires") or []),
-                    notify=list(raw_tier.get("notify") or []),
-                    strategy=str(raw_tier.get("strategy", "review")),
-                    max_retries=int(raw_tier.get("max_retries", 0)),
+                    name=str(item.get("name", "")),
+                    min_score=float(item.get("min_score", 0.0)),
+                    max_score=float(item.get("max_score", 1.0)),
+                    requires=list(item.get("requires") or []),
+                    notify=list(item.get("notify") or []),
+                    strategy=str(item.get("strategy", "review")),
+                    max_retries=int(item.get("max_retries", 0)),
                 )
             )
         except (ValueError, TypeError) as exc:
-            logger.error(
-                "routing_config.tiers[%d]: failed to parse tier: %s", idx, exc,
+            logger.warning(
+                "_parse_routing_config: failed to parse tier %r: %s",
+                item,
+                exc,
             )
 
-    return RoutingConfig(tiers=tiers) if tiers else None
+    return RoutingConfig(tiers=tiers)
