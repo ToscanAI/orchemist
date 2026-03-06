@@ -173,6 +173,7 @@ class Database:
             self._create_tables_pipeline_run_events(conn)
             self._create_table_routing_decisions(conn)
             self._create_table_failure_patterns(conn)
+            self._create_table_regressions(conn)      # Issue #3.3a.1
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -445,6 +446,36 @@ class Database:
             ON failure_patterns (template_id, last_seen_at)
         """)
 
+    def _create_table_regressions(self, conn: sqlite3.Connection) -> None:
+        """Create regressions table for regression tracking (Issue #3.3a.1).
+
+        Called from _initialize_database so fresh databases get the table
+        without requiring a migration run.  Idempotent via
+        ``CREATE TABLE IF NOT EXISTS``.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS regressions (
+                id                TEXT PRIMARY KEY,
+                commit_sha        TEXT NOT NULL,
+                ci_run_url        TEXT NOT NULL,
+                failure_type      TEXT NOT NULL,
+                affected_files    TEXT NOT NULL DEFAULT '[]',
+                diagnosis         TEXT,
+                fix_run_id        TEXT,
+                status            TEXT NOT NULL DEFAULT 'detected',
+                fix_attempt_count INTEGER NOT NULL DEFAULT 0,
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_regressions_status_created
+            ON regressions(status, created_at)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_regressions_commit_sha
+            ON regressions(commit_sha)
+        """)
+
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """Create performance indexes."""
 
@@ -554,6 +585,7 @@ class Database:
             ("009_add_diagnosis_tables", self._migration_009_add_diagnosis_tables),         # Issue #3.1.1
             ("010_add_failure_patterns_table", self._migration_010_add_failure_patterns_table),  # Issue #3.1.3
             ("011_add_retry_columns", self._migration_011_add_retry_columns),               # Issue #3.2.1
+            ("012_add_regressions_table", self._migration_012_add_regressions_table),      # Issue #3.3a.1
         ]
         
         # Apply pending migrations
@@ -1132,6 +1164,7 @@ class Database:
             'error_patterns', 'suggested_fixes',
             'input_map', 'filters',   # trigger fields (Issue #329.1)
             'signals_json',           # routing_decisions (Issue #331.3)
+            'affected_files',         # regressions (Issue #3.3a.1)
         ]
         for field in json_fields:
             if field in data and data[field] is not None:
@@ -1943,6 +1976,35 @@ class Database:
             ON pipeline_runs (retry_of_run_id)
         """)
 
+    def _migration_012_add_regressions_table(self, conn: sqlite3.Connection) -> None:
+        """Add regressions table for regression event tracking (Issue #3.3a.1).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+        Safe to run on both fresh and existing databases.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS regressions (
+                id                TEXT PRIMARY KEY,
+                commit_sha        TEXT NOT NULL,
+                ci_run_url        TEXT NOT NULL,
+                failure_type      TEXT NOT NULL,
+                affected_files    TEXT NOT NULL DEFAULT '[]',
+                diagnosis         TEXT,
+                fix_run_id        TEXT,
+                status            TEXT NOT NULL DEFAULT 'detected',
+                fix_attempt_count INTEGER NOT NULL DEFAULT 0,
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_regressions_status_created
+            ON regressions(status, created_at)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_regressions_commit_sha
+            ON regressions(commit_sha)
+        """)
+
     # ------------------------------------------------------------------
     # Failure pattern CRUD (Issue #3.1.3)
     # ------------------------------------------------------------------
@@ -2222,6 +2284,134 @@ class Database:
                 (reason, now, reviewed_by, now, run_id),
             )
             return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Regression CRUD (Issue #3.3a.1)
+    # ------------------------------------------------------------------
+
+    def insert_regression(self, regression_data: Dict[str, Any]) -> str:
+        """Insert a new regression record.
+
+        Args:
+            regression_data: Dict matching the Regression dataclass fields.
+                ``affected_files`` may be a Python list or an already
+                JSON-serialised string (use ``Regression.to_dict()`` for
+                the canonical format).
+
+        Returns:
+            The ``id`` of the inserted row.
+        """
+        import json as _json
+        # Normalise affected_files: accept both list and pre-serialised string.
+        af = regression_data.get("affected_files", [])
+        if isinstance(af, str):
+            af_serialised = af
+        else:
+            af_serialised = _json.dumps(af)
+
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO regressions
+                    (id, commit_sha, ci_run_url, failure_type, affected_files,
+                     diagnosis, fix_run_id, status, fix_attempt_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    regression_data["id"],
+                    regression_data["commit_sha"],
+                    regression_data["ci_run_url"],
+                    regression_data["failure_type"],
+                    af_serialised,
+                    regression_data.get("diagnosis"),
+                    regression_data.get("fix_run_id"),
+                    regression_data.get("status", "detected"),
+                    regression_data.get("fix_attempt_count", 0),
+                    regression_data.get("created_at"),
+                ),
+            )
+        return regression_data["id"]
+
+    def get_regression(self, regression_id: str) -> Optional[Dict[str, Any]]:
+        """Return a regression record by id, or None if not found.
+
+        Args:
+            regression_id: UUID of the regression to retrieve.
+
+        Returns:
+            Dict with all regression fields (``affected_files`` deserialised
+            to a Python list), or ``None`` if no matching row exists.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT * FROM regressions WHERE id = ?", (regression_id,)
+            )
+            row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def update_regression(self, regression_id: str, **kwargs: Any) -> bool:
+        """Update fields on a regressions row.
+
+        Only the following fields may be updated:
+        ``status``, ``diagnosis``, ``fix_run_id``, ``fix_attempt_count``.
+        Unrecognised kwargs are silently ignored.
+
+        Args:
+            regression_id: UUID of the row to update.
+            **kwargs:      Field-value pairs to update.
+
+        Returns:
+            ``True`` if the row was found and at least one column updated,
+            ``False`` if no matching row exists or no valid kwargs were given.
+        """
+        allowed = {"status", "diagnosis", "fix_run_id", "fix_attempt_count"}
+        updates: List[str] = []
+        values: List[Any] = []
+        for key, value in kwargs.items():
+            if key not in allowed:
+                continue
+            updates.append(f"{key} = ?")
+            values.append(value)
+        if not updates:
+            return False
+        values.append(regression_id)
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                f"UPDATE regressions SET {', '.join(updates)} WHERE id = ?",
+                values,
+            )
+            return cursor.rowcount > 0
+
+    def list_regressions(
+        self,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List regression records, newest first.
+
+        Args:
+            status: Optional status filter (e.g. ``'detected'``, ``'fixed'``).
+            limit:  Maximum rows to return (default ``100``).
+            offset: Rows to skip for pagination (default ``0``).
+
+        Returns:
+            List of regression dicts ordered by ``created_at DESC``.
+            ``affected_files`` is deserialised to a Python list.
+        """
+        query = "SELECT * FROM regressions WHERE 1=1"
+        params: List[Any] = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(query, params)
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
 
     def close(self) -> None:
         """Close database connections."""
