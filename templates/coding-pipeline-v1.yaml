@@ -204,6 +204,7 @@ phases:
       4. If REQUEST_CHANGES — apply ALL fixes mentioned:
          - Address every blocker and major issue
          - Address minor issues where practical
+         - IMPORTANT: Only modify code directly related to the reviewer's feedback. Do not refactor, reorganize, or rewrite code that wasn't flagged. Minimal diff — if the reviewer flagged 1 issue, your diff should touch ~1 area.
       5. Run tests: `{config[test_command]}`
       6. Commit fixes on this branch: `fix: address code review feedback`
 
