@@ -155,6 +155,7 @@ class Database:
             # Create tables
             self._create_tables(conn)
             self._create_tables_pipeline_run_events(conn)
+            self._create_table_routing_decisions(conn)
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -359,6 +360,26 @@ class Database:
             ON pipeline_run_events(run_id, id)
         """)
 
+    def _create_table_routing_decisions(self, conn: sqlite3.Connection) -> None:
+        """Create routing_decisions table for confidence-based routing outcomes (Issue #331.3)."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS routing_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                confidence_score REAL NOT NULL,
+                tier_name TEXT NOT NULL,
+                action TEXT NOT NULL,
+                justification TEXT,
+                signals_json TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_routing_decisions_run_id
+            ON routing_decisions(run_id)
+        """)
+
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """Create performance indexes."""
 
@@ -463,6 +484,7 @@ class Database:
             ("004_add_webhook_invocations", self._migration_004_add_webhook_invocations),   # Issue #329.2
             ("005_add_trigger_enabled", self._migration_005_add_trigger_enabled),           # Issue #329.2
             ("006_add_chain_columns", self._migration_006_add_chain_columns),               # Issue #330.1
+            ("007_add_routing_decisions", self._migration_007_add_routing_decisions),       # Issue #331.3
         ]
         
         # Apply pending migrations
@@ -599,6 +621,30 @@ class Database:
             )
         except sqlite3.OperationalError:
             pass  # column already exists
+
+    def _migration_007_add_routing_decisions(self, conn: sqlite3.Connection) -> None:
+        """Add routing_decisions table for confidence-based routing outcomes (Issue #331.3).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+        Safe to run on both fresh and existing databases.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS routing_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                confidence_score REAL NOT NULL,
+                tier_name TEXT NOT NULL,
+                action TEXT NOT NULL,
+                justification TEXT,
+                signals_json TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_routing_decisions_run_id
+            ON routing_decisions(run_id)
+        """)
 
     # Task Operations
     
@@ -1016,6 +1062,7 @@ class Database:
             'payload', 'tags', 'metadata', 'config', 'result',
             'error_patterns', 'suggested_fixes',
             'input_map', 'filters',   # trigger fields (Issue #329.1)
+            'signals_json',           # routing_decisions (Issue #331.3)
         ]
         for field in json_fields:
             if field in data and data[field] is not None:
@@ -1576,6 +1623,85 @@ class Database:
                 (trigger_id, since_dt.isoformat()),
             )
             return cursor.fetchone()[0]
+
+    # ------------------------------------------------------------------
+    # Routing Decision Operations (Issue #331.3)
+    # ------------------------------------------------------------------
+
+    def insert_routing_decision(self, decision_data: dict) -> int:
+        """Insert a routing decision record and return the auto-incremented id.
+
+        Args:
+            decision_data: Dict with keys:
+                - run_id (str): The pipeline run identifier.
+                - confidence_score (float): Composite confidence score in [0, 1].
+                - tier_name (str): Matched routing tier name (e.g. "auto_merge").
+                - action (str): Dispatched action (e.g. "auto_merge", "human_review").
+                - justification (str, optional): Human-readable explanation.
+                - signals_json (str): JSON-serialised signal dict.
+
+        Returns:
+            The ``id`` of the newly inserted row.
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO routing_decisions
+                    (run_id, confidence_score, tier_name, action, justification, signals_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision_data["run_id"],
+                    float(decision_data["confidence_score"]),
+                    decision_data["tier_name"],
+                    decision_data["action"],
+                    decision_data.get("justification"),
+                    decision_data.get("signals_json", "{}"),
+                ),
+            )
+            return cursor.lastrowid  # type: ignore[return-value]
+
+    def get_routing_decisions(self, run_id: str) -> List[Dict]:
+        """Return all routing decision rows for a given pipeline run.
+
+        Args:
+            run_id: The pipeline run identifier to look up.
+
+        Returns:
+            List of routing decision dicts ordered by ``id ASC``.
+            Returns an empty list when no decisions exist for the run.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT * FROM routing_decisions WHERE run_id = ? ORDER BY id ASC",
+                (run_id,),
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def get_routing_decision(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Return the most recent routing decision row for a given pipeline run.
+
+        Convenience method that returns a single dict (the latest decision)
+        rather than the full list returned by :meth:`get_routing_decisions`.
+
+        Args:
+            run_id: The pipeline run identifier to look up.
+
+        Returns:
+            The most recent routing decision dict (``signals_json`` parsed to a
+            Python dict), or ``None`` when no decision has been recorded for
+            the run.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT * FROM routing_decisions WHERE run_id = ? ORDER BY id DESC LIMIT 1",
+                (run_id,),
+            )
+            row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
 
     def close(self) -> None:
         """Close database connections."""
