@@ -312,6 +312,21 @@ class Database:
                 FOREIGN KEY(original_task_id) REFERENCES tasks(id)
             )
         """)
+
+        # Webhook trigger configuration (Issue #329.1)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS triggers (
+                id TEXT PRIMARY KEY,
+                template_id TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'async',
+                secret TEXT,
+                rate_limit INTEGER NOT NULL DEFAULT 0,
+                input_map TEXT NOT NULL DEFAULT '{}',
+                filters TEXT NOT NULL DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
     
     def _create_tables_pipeline_run_events(self, conn: sqlite3.Connection) -> None:
         """Create pipeline_run_events table for SSE live-progress streaming (Issue #258)."""
@@ -397,6 +412,17 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_dead_letter_analysis
             ON dead_letter_queue(task_type, created_at)
         """)
+
+        # Trigger indexes (Issue #329.1)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_triggers_template_id
+            ON triggers(template_id)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_triggers_mode_created
+            ON triggers(mode, created_at)
+        """)
     
     def _run_migrations(self, conn: sqlite3.Connection) -> None:
         """Run any pending database migrations."""
@@ -417,6 +443,7 @@ class Database:
         migrations = [
             ("001_add_scoring_status", self._migration_001_add_scoring_status),
             ("002_add_pipeline_run_events", self._migration_002_add_pipeline_run_events),
+            ("003_add_triggers_table", self._migration_003_add_triggers_table),   # Issue #329.1
         ]
         
         # Apply pending migrations
@@ -468,6 +495,35 @@ class Database:
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_pipeline_run_events_run_id
             ON pipeline_run_events(run_id, id)
+        """)
+
+    def _migration_003_add_triggers_table(self, conn: sqlite3.Connection) -> None:
+        """Add triggers table for webhook trigger configuration (Issue #329.1).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and
+        CREATE INDEX IF NOT EXISTS so it is safe to run on both fresh and
+        existing databases without data loss.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS triggers (
+                id TEXT PRIMARY KEY,
+                template_id TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'async',
+                secret TEXT,
+                rate_limit INTEGER NOT NULL DEFAULT 0,
+                input_map TEXT NOT NULL DEFAULT '{}',
+                filters TEXT NOT NULL DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_triggers_template_id
+            ON triggers(template_id)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_triggers_mode_created
+            ON triggers(mode, created_at)
         """)
 
     # Task Operations
@@ -882,7 +938,11 @@ class Database:
         data = dict(row)
         
         # Parse JSON fields
-        json_fields = ['payload', 'tags', 'metadata', 'config', 'result', 'error_patterns', 'suggested_fixes']
+        json_fields = [
+            'payload', 'tags', 'metadata', 'config', 'result',
+            'error_patterns', 'suggested_fixes',
+            'input_map', 'filters',   # trigger fields (Issue #329.1)
+        ]
         for field in json_fields:
             if field in data and data[field] is not None:
                 try:
@@ -1210,6 +1270,164 @@ class Database:
             )
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
+
+    # --- Trigger CRUD Operations (Issue #329.1) ---
+
+    def create_trigger(self, trigger_data: Dict[str, Any]) -> str:
+        """Insert a new trigger configuration row.
+
+        Args:
+            trigger_data: A plain dict as returned by
+                ``TriggerConfig.to_dict()``.  Must contain ``'id'`` and
+                ``'template_id'``.  ``input_map`` and ``filters`` must be
+                Python dict/list (not pre-serialised JSON strings) — this
+                method performs the JSON serialisation.
+
+        Returns:
+            The trigger ``id``.
+
+        Raises:
+            sqlite3.IntegrityError: If a trigger with the same ``id`` already
+                exists.
+        """
+        with self.transaction() as conn:
+            conn.execute("""
+                INSERT INTO triggers
+                    (id, template_id, mode, secret, rate_limit, input_map, filters, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                trigger_data["id"],
+                trigger_data["template_id"],
+                trigger_data.get("mode", "async"),
+                trigger_data.get("secret"),
+                trigger_data.get("rate_limit", 0),
+                json.dumps(trigger_data.get("input_map") or {}),
+                json.dumps(trigger_data.get("filters") or []),
+                trigger_data.get("created_at") or datetime.now().isoformat(),
+            ))
+        return trigger_data["id"]
+
+    def get_trigger(self, trigger_id: str) -> Optional[Dict[str, Any]]:
+        """Return a trigger config row by id, or None if not found.
+
+        Args:
+            trigger_id: The trigger identifier to look up.
+
+        Returns:
+            A dict with all trigger fields (JSON columns parsed to Python
+            objects), or ``None`` if no matching row exists.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT * FROM triggers WHERE id = ?", (trigger_id,)
+            )
+            row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def list_triggers(
+        self,
+        template_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List trigger configs with optional filtering and pagination.
+
+        Args:
+            template_id: Filter by template id.
+            mode: Filter by execution mode (``'sync'``, ``'async'``,
+                ``'fire_and_forget'``).
+            limit: Maximum rows to return (default 100).
+            offset: Rows to skip for pagination (default 0).
+
+        Returns:
+            List of trigger dicts ordered by ``created_at DESC``.
+        """
+        query = "SELECT * FROM triggers WHERE 1=1"
+        params: list = []
+
+        if template_id:
+            query += " AND template_id = ?"
+            params.append(template_id)
+
+        if mode:
+            query += " AND mode = ?"
+            params.append(mode)
+
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(query, params)
+            rows = cursor.fetchall()
+
+        return [self._row_to_dict(row) for row in rows]
+
+    def update_trigger(self, trigger_id: str, **kwargs) -> bool:
+        """Update whitelisted fields on a trigger config row.
+
+        ``updated_at`` is always refreshed when at least one valid field is
+        supplied.  Unknown kwargs are silently ignored.
+
+        Allowed kwargs: ``mode``, ``secret``, ``rate_limit``,
+        ``input_map``, ``filters``.
+
+        Args:
+            trigger_id: The trigger identifier to update.
+            **kwargs: Field name → new value pairs.
+
+        Returns:
+            ``True`` if a DB row was modified, ``False`` if the trigger was
+            not found **or** no valid fields were supplied.
+
+        Note:
+            A return value of ``False`` does not distinguish "trigger not
+            found" from "no valid kwargs".  Callers that need to distinguish
+            these cases should call ``get_trigger`` first.
+        """
+        allowed = {"mode", "secret", "rate_limit", "input_map", "filters"}
+        updates = ["updated_at = ?"]
+        values = [datetime.now().isoformat()]
+
+        for key, value in kwargs.items():
+            if key not in allowed:
+                continue
+            if key in ("input_map", "filters"):
+                updates.append(f"{key} = ?")
+                values.append(json.dumps(value))
+            else:
+                updates.append(f"{key} = ?")
+                values.append(value)
+
+        # Only updated_at — no valid fields were provided
+        if len(updates) == 1:
+            return False
+
+        values.append(trigger_id)
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                f"UPDATE triggers SET {', '.join(updates)} WHERE id = ?",
+                values,
+            )
+            return cursor.rowcount > 0
+
+    def delete_trigger(self, trigger_id: str) -> bool:
+        """Delete a trigger config by id.
+
+        Args:
+            trigger_id: The trigger identifier to delete.
+
+        Returns:
+            ``True`` if a row was deleted, ``False`` if no matching row
+            was found.
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                "DELETE FROM triggers WHERE id = ?", (trigger_id,)
+            )
+            return cursor.rowcount > 0
 
     def close(self) -> None:
         """Close database connections."""
