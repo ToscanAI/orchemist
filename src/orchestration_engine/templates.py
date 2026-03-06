@@ -1198,6 +1198,126 @@ class TemplateEngine:
                         f"got: {oc.max_chain_depth!r}"
                     )
 
+                # Issue #330.3: Self-referential on_complete is a static error
+                for list_name, entry_list in (("success", oc.success), ("failed", oc.failed)):
+                    if not isinstance(entry_list, list):
+                        continue
+                    for idx, entry in enumerate(entry_list):
+                        if not isinstance(entry, OnCompleteEntry):
+                            continue
+                        if entry.template == template.id:
+                            errors.append(
+                                f"on_complete.{list_name}[{idx}]: template '{entry.template}' "
+                                f"references this template itself (self-referential chain is an error)"
+                            )
+
+        return errors
+
+    # ------------------------------------------------------------------
+    # Chain DAG validation  (Issue #330.3)
+    # ------------------------------------------------------------------
+
+    def validate_chain_dag(self, template: "PipelineTemplate") -> List[str]:
+        """Validate the full chain graph rooted at *template* for cycles.
+
+        Traces all transitive ``on_complete`` references by loading each
+        referenced template using the engine's configured search paths.
+        Cycles are detected via depth-first search.
+
+        Self-referential entries (template → itself) are reported as a cycle
+        even when the entry is the only reference.
+
+        Args:
+            template: Entry-point template whose ``on_complete`` graph is traced.
+
+        Returns:
+            List of human-readable error strings.  An empty list means the
+            DAG is acyclic.  Unresolvable template references are skipped
+            with a warning (not treated as a DAG error).
+        """
+        errors: List[str] = []
+
+        # adjacency: template_id → list of referenced template ids
+        graph: Dict[str, List[str]] = {}
+        # cache of loaded templates so we don't re-load on revisit
+        loaded: Dict[str, "PipelineTemplate"] = {}
+
+        def _get_children(tpl: "PipelineTemplate") -> List[str]:
+            """Return the list of template IDs referenced in on_complete."""
+            if tpl.on_complete is None or not isinstance(tpl.on_complete, OnCompleteConfig):
+                return []
+            children: List[str] = []
+            for entry_list in (tpl.on_complete.success, tpl.on_complete.failed):
+                if not isinstance(entry_list, list):
+                    continue
+                for entry in entry_list:
+                    if isinstance(entry, OnCompleteEntry) and entry.template:
+                        children.append(entry.template)
+            return children
+
+        def _load_and_cache(template_id: str) -> Optional["PipelineTemplate"]:
+            """Try to resolve and load *template_id*, returning None on failure."""
+            if template_id in loaded:
+                return loaded[template_id]
+            try:
+                path = self.resolve_template(template_id)
+                tpl = self.load_template(path)
+                loaded[tpl.id] = tpl
+                return tpl
+            except Exception as exc:
+                logger.debug(
+                    "validate_chain_dag: could not load template '%s': %s",
+                    template_id,
+                    exc,
+                )
+                return None
+
+        # Seed graph with the entry-point template
+        loaded[template.id] = template
+        to_explore = [template.id]
+
+        while to_explore:
+            tid = to_explore.pop()
+            if tid in graph:
+                continue
+            tpl = loaded.get(tid) or _load_and_cache(tid)
+            if tpl is None:
+                graph[tid] = []
+                continue
+            children = _get_children(tpl)
+            graph[tid] = children
+            for child_id in children:
+                if child_id not in graph:
+                    to_explore.append(child_id)
+
+        # DFS cycle detection
+        visited: Set[str] = set()
+        rec_stack: Set[str] = set()
+        cycles_found: List[List[str]] = []
+
+        def dfs(node: str, path: List[str]) -> None:
+            visited.add(node)
+            rec_stack.add(node)
+            path.append(node)
+            for neighbor in graph.get(node, []):
+                if neighbor not in visited:
+                    dfs(neighbor, path)
+                elif neighbor in rec_stack:
+                    cycle_start = path.index(neighbor)
+                    cycle = path[cycle_start:] + [neighbor]
+                    cycles_found.append(cycle)
+            path.pop()
+            rec_stack.discard(node)
+
+        for node in sorted(graph):
+            if node not in visited:
+                dfs(node, [])
+
+        for cycle in cycles_found:
+            errors.append(
+                f"Cycle detected in chain DAG: {' → '.join(cycle)}"
+            )
+
         return errors
 
     # ------------------------------------------------------------------

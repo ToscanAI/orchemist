@@ -1165,6 +1165,29 @@ class Database:
 
         return [self._row_to_dict(row) for row in rows]
 
+    def list_pipeline_run_children(self, parent_run_id: str) -> List[Dict[str, Any]]:
+        """Return all child pipeline runs for a given parent run.
+
+        Queries ``pipeline_runs WHERE parent_run_id = ?`` ordered by
+        ``created_at ASC`` so callers see children in spawn order.
+
+        Args:
+            parent_run_id: The run ID of the parent pipeline run.
+
+        Returns:
+            List of pipeline run dicts (same shape as
+            :meth:`list_pipeline_runs`) ordered by ``created_at ASC``.
+            Returns an empty list when no children exist.
+        """  # Issue #330.3: children REST API
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT * FROM pipeline_runs WHERE parent_run_id = ? ORDER BY created_at ASC",
+                (parent_run_id,),
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
     def count_pipeline_runs(
         self,
         status: Optional[str] = None,

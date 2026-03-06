@@ -1744,6 +1744,53 @@ def pipeline_logs(run_id: str, follow: bool, db_path: Optional[str]) -> None:
         click.echo(log_path.read_text())
 
 
+@main.command("children")
+@click.argument("run_id")
+@click.option(
+    "--db-path",
+    default=None,
+    help="Override path to the persistent pipeline-runs DB.",
+)
+def pipeline_children(run_id: str, db_path: Optional[str]) -> None:
+    """List child pipeline runs spawned by a parent run.
+
+    Prints a table of all child runs (run_id, template_id, chain_depth,
+    status) ordered by creation time.  Exits non-zero when the parent run
+    ID is not found.
+
+    \b
+    Examples:
+      orch children a3f8c2d1
+      orch children a3f8c2d1 --db-path /tmp/custom.db
+    """  # Issue #330.3: children CLI command
+    from orchestration_engine.db import Database
+
+    effective_db_path = db_path or _get_persistent_db_path()
+    db = Database(Path(effective_db_path))
+
+    run = db.get_pipeline_run(run_id)
+    if run is None:
+        click.echo(f"✗ Run '{run_id}' not found.", err=True)
+        sys.exit(1)
+
+    children = db.list_pipeline_run_children(run_id)
+
+    if not children:
+        click.echo(f"No child runs found for '{run_id}'.")
+        return
+
+    # Header
+    click.echo(f"{'RUN ID':<36}  {'TEMPLATE':<30}  {'DEPTH':>5}  {'STATUS'}")
+    click.echo("-" * 90)
+    for child in children:
+        click.echo(
+            f"{child.get('run_id', ''):<36}  "
+            f"{child.get('template_id', ''):<30}  "
+            f"{child.get('chain_depth', 0):>5}  "
+            f"{child.get('status', '')}"
+        )
+
+
 @main.command("wait")
 @click.argument('run_id')
 @click.option('--timeout', type=int, default=1800, show_default=True,

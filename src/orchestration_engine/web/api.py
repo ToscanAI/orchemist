@@ -252,6 +252,8 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         started_at: Optional[str]
         completed_at: Optional[str]
         created_at: Optional[str]
+        parent_run_id: Optional[str] = None
+        chain_depth: int = 0
 
     class TemplateCreateRequest(BaseModel):
         """Body for POST /api/v1/templates — create a new template."""
@@ -421,6 +423,8 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             "started_at": run.get("started_at"),
             "completed_at": run.get("completed_at"),
             "created_at": run.get("created_at"),
+            "parent_run_id": run.get("parent_run_id"),       # Issue #330.3: chaining parent
+            "chain_depth": int(run.get("chain_depth") or 0), # Issue #330.3: chaining depth
         }
 
     # ------------------------------------------------------------------
@@ -1534,6 +1538,33 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                 pass
 
         return JSONResponse(_run_to_dict(run))
+
+    @app.get("/api/v1/runs/{run_id}/children")
+    async def get_run_children(run_id: str) -> JSONResponse:
+        """Return all child pipeline runs spawned by a parent run.
+
+        Queries ``pipeline_runs WHERE parent_run_id = run_id`` ordered by
+        ``created_at ASC``.
+
+        Returns::
+
+            {
+                "run_id": "<parent-run-id>",
+                "children": [<RunResponse-shaped dicts>, ...]
+            }
+
+        Raises 404 when the parent run ID is not found.
+        """  # Issue #330.3: children REST API
+        db = Database(Path(effective_db_path))
+        run = db.get_pipeline_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+        children = db.list_pipeline_run_children(run_id)
+        return JSONResponse({
+            "run_id": run_id,
+            "children": [_run_to_dict(c) for c in children],
+        })
 
     @app.get("/api/v1/runs/{run_id}/logs")
     async def get_run_logs(run_id: str) -> JSONResponse:
