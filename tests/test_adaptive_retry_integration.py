@@ -465,6 +465,89 @@ class TestAdaptiveRetryEnginePlanAndExecute:
             f"but got {[r['run_id'] for r in new_retries]}"
         )
 
+    @patch("subprocess.Popen")
+    def test_timeout_retry_with_tight_budget_passes(self, mock_popen, db_with_original_run):
+        """Budget guard: TIMEOUT on Haiku with $0.20 budget must NOT escalate.
+
+        Regression test for the bug where estimate_cost(None) returned $0.50
+        (the max-safe default) instead of the current model's cost ($0.05).
+        TIMEOUT → INCREASE_TIMEOUT → plan.model_override is None, so we must
+        fall back to current_model when computing the cost estimate.
+
+        With the fix: estimate_cost(None or 'claude-haiku-4-5-20241022') → $0.05
+        $0.05 < $0.20 budget → retry IS spawned.
+        """
+        mock_proc = MagicMock()
+        mock_proc.pid = 99999
+        mock_popen.return_value = mock_proc
+
+        run = _base_run(
+            run_id="orig-001",
+            input_json={"budget_usd": 0.20, "timeout_seconds": 60},
+            model_override="claude-haiku-4-5-20241022",
+        )
+        diagnosis = _make_diagnosis(FailureClass.TIMEOUT)
+        engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=":memory:")
+
+        engine.plan_and_execute(diagnosis, run, "orig-001")
+
+        # The retry MUST be spawned — budget ($0.20) > Haiku cost ($0.05)
+        assert mock_popen.call_count == 1, (
+            "Expected Popen to be called once, but it was not called. "
+            "Check that estimate_cost falls back to current_model when "
+            "plan.model_override is None."
+        )
+        # Status of orig run should NOT be escalated
+        row = db_with_original_run.get_pipeline_run("orig-001")
+        assert row["status"] != "escalated"
+
+    @patch("subprocess.Popen")
+    def test_popen_called_with_correct_arguments(self, mock_popen, db_with_original_run):
+        """subprocess.Popen is called with correct daemon module path and args.
+
+        Verifies:
+        - sys.executable used
+        - '-m', 'orchestration_engine.daemon' module invocation
+        - retry_run_id and db_path are passed as positional args
+        - start_new_session=True (detaches from parent)
+        - stdout and stderr are DEVNULL
+        """
+        import subprocess
+        import sys
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 88888
+        mock_popen.return_value = mock_proc
+
+        run = _base_run(
+            run_id="orig-001",
+            input_json={"budget_usd": 5.0},
+            model_override="claude-haiku-4-5-20241022",
+        )
+        diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)
+        db_path = ":memory:"
+        engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=db_path)
+
+        engine.plan_and_execute(diagnosis, run, "orig-001")
+
+        assert mock_popen.call_count == 1
+        args, kwargs = mock_popen.call_args
+
+        # Positional arg is the command list
+        cmd = args[0]
+        assert cmd[0] == sys.executable, "Must use sys.executable"
+        assert cmd[1] == "-m", "Must invoke as module with -m"
+        assert cmd[2] == "orchestration_engine.daemon", "Daemon module path is wrong"
+        # retry_run_id is cmd[3], db_path is cmd[4]
+        assert cmd[4] == str(db_path), f"db_path not passed; got {cmd}"
+        # retry_run_id should contain 'retry-' prefix
+        assert cmd[3].startswith("retry-"), f"retry_run_id should start with 'retry-'; got {cmd[3]}"
+
+        # Keyword args
+        assert kwargs.get("start_new_session") is True, "Must detach with start_new_session=True"
+        assert kwargs.get("stdout") == subprocess.DEVNULL, "stdout must be DEVNULL"
+        assert kwargs.get("stderr") == subprocess.DEVNULL, "stderr must be DEVNULL"
+
     def test_requires_db_raises_when_none(self):
         """plan_and_execute() raises RuntimeError when db is not provided."""
         engine = AdaptiveRetryEngine()  # no db
