@@ -22,6 +22,21 @@ sqlite3.register_converter(
 
 from .schemas import TaskState, OrchestraState, Priority, TaskType
 
+# ---------------------------------------------------------------------------
+# Shared terminal-state set — single source of truth used by db, api, and
+# any other module that needs to distinguish "run is done" from "run is live".
+# Add new terminal statuses here; they propagate automatically everywhere.
+# ---------------------------------------------------------------------------
+TERMINAL_STATUSES: frozenset = frozenset({
+    "success",
+    "failed",
+    "cancelled",
+    "crashed",
+    "scoring_failed",
+    "pending_review",
+    "rejected",
+})
+
 
 class Database:
     """SQLite database manager with connection pooling and migrations."""
@@ -1289,7 +1304,7 @@ class Database:
         import os as _os
         import signal as _signal
 
-        terminal_states = {"success", "failed", "cancelled", "crashed", "scoring_failed"}
+        terminal_states = TERMINAL_STATUSES
 
         with self._locked():
             conn = self.get_connection()
@@ -1330,7 +1345,7 @@ class Database:
                 UPDATE pipeline_runs
                 SET status = 'cancelled', completed_at = ?
                 WHERE run_id = ?
-                  AND status NOT IN ('success', 'failed', 'cancelled', 'crashed', 'scoring_failed')
+                  AND status NOT IN ('success', 'failed', 'cancelled', 'crashed', 'scoring_failed', 'pending_review', 'rejected')
                 """,
                 (datetime.now().isoformat(), run_id),
             )
