@@ -1,36 +1,40 @@
-"""Tests for the routing config engine (Issue #331.2).
+"""Tests for Issue #331.2 — Routing Config Schema, Rules Engine, and Template Integration.
 
 Covers:
-- RoutingTier dataclass validation and matches()
-- DEFAULT_ROUTING_CONFIG: all 4 tiers matched correctly
-- Boundary score mapping
-- Custom tier configs
-- RoutingDecision content
-- RoutingEngine.validate_thresholds(): gaps, overlaps, valid configs, coverage warnings
-- _parse_routing_config(): None, non-dict, valid dict
-- PipelineTemplate integration: no config, with config, gap/overlap causes validation error
+- RoutingTier dataclass (construction, validation, matches())
+- RoutingConfig dataclass
+- RoutingDecision dataclass
+- RoutingEngine.route() — all four DEFAULT tiers
+- RoutingEngine.route() — unrouted fallback
+- RoutingEngine.validate_thresholds() — valid config
+- RoutingEngine.validate_thresholds() — gaps and overlaps
+- DEFAULT_ROUTING_CONFIG tier structure and completeness
+- _parse_routing_config() YAML parsing helper
+- PipelineTemplate.routing_config field
+- Template load_template() persists routing_config
+- validate_template() reports routing config errors
+- Module exports via __init__.py
 """
 
 from __future__ import annotations
 
-import logging
 import textwrap
-import tempfile
 from pathlib import Path
 
 import pytest
-import yaml
 
-from src.orchestration_engine.routing import (
+from orchestration_engine.confidence import (
+    ConfidenceLevel,
+    ConfidenceResult,
+)
+from orchestration_engine.routing import (
+    DEFAULT_ROUTING_CONFIG,
     RoutingConfig,
     RoutingDecision,
     RoutingEngine,
     RoutingTier,
-    DEFAULT_ROUTING_CONFIG,
     _parse_routing_config,
 )
-from src.orchestration_engine.confidence import ConfidenceResult, ConfidenceLevel
-from src.orchestration_engine.templates import PipelineTemplate, TemplateEngine
 
 
 # ---------------------------------------------------------------------------
@@ -39,355 +43,434 @@ from src.orchestration_engine.templates import PipelineTemplate, TemplateEngine
 
 
 def _make_result(score: float) -> ConfidenceResult:
-    """Return a minimal ConfidenceResult with the given composite_score."""
+    """Build a minimal ConfidenceResult with the given composite_score."""
+    if score >= 0.90:
+        level = ConfidenceLevel.HIGH
+    elif score >= 0.75:
+        level = ConfidenceLevel.MEDIUM
+    else:
+        level = ConfidenceLevel.LOW
     return ConfidenceResult(
+        signals=[],
         composite_score=score,
-        confidence_level=ConfidenceLevel.LOW,
-        explanation="test",
+        confidence_level=level,
+        explanation="",
     )
 
 
-def _engine_default() -> RoutingEngine:
-    return RoutingEngine()
+def _two_tier_config(gap: bool = False, overlap: bool = False) -> RoutingConfig:
+    """Return a two-tier config, optionally with gap or overlap."""
+    if gap:
+        # [0.00, 0.50) then [0.60, 1.01) — gap [0.50, 0.60)
+        return RoutingConfig(tiers=[
+            RoutingTier(name="low", min_score=0.00, max_score=0.50, strategy="reject"),
+            RoutingTier(name="high", min_score=0.60, max_score=1.01, strategy="merge"),
+        ])
+    if overlap:
+        # [0.00, 0.70) then [0.60, 1.01) — overlap [0.60, 0.70)
+        return RoutingConfig(tiers=[
+            RoutingTier(name="low", min_score=0.00, max_score=0.70, strategy="reject"),
+            RoutingTier(name="high", min_score=0.60, max_score=1.01, strategy="merge"),
+        ])
+    # Clean two-tier config
+    return RoutingConfig(tiers=[
+        RoutingTier(name="low", min_score=0.00, max_score=0.75, strategy="retry"),
+        RoutingTier(name="high", min_score=0.75, max_score=1.01, strategy="merge"),
+    ])
 
 
 # ---------------------------------------------------------------------------
-# RoutingTier unit tests
+# RoutingTier
 # ---------------------------------------------------------------------------
 
 
 class TestRoutingTier:
     def test_basic_construction(self):
-        tier = RoutingTier(name="t", min_score=0.5, max_score=0.8)
-        assert tier.name == "t"
-        assert tier.min_score == 0.5
-        assert tier.max_score == 0.8
-
-    def test_defaults(self):
-        tier = RoutingTier(name="x", min_score=0.0, max_score=1.0)
-        assert tier.requires == []
-        assert tier.notify == []
-        assert tier.strategy == ""
+        tier = RoutingTier(name="auto_merge", min_score=0.90, max_score=1.01)
+        assert tier.name == "auto_merge"
+        assert tier.min_score == 0.90
+        assert tier.max_score == 1.01
+        assert tier.strategy == "review"  # default
         assert tier.max_retries == 0
 
-    def test_matches_within_range(self):
-        tier = RoutingTier(name="t", min_score=0.5, max_score=0.8)
-        assert tier.matches(0.5)
-        assert tier.matches(0.65)
-        assert tier.matches(0.8)
+    def test_full_construction(self):
+        tier = RoutingTier(
+            name="retry",
+            min_score=0.60,
+            max_score=0.75,
+            requires=["ci:pass"],
+            notify=["slack:#alerts"],
+            strategy="retry",
+            max_retries=3,
+        )
+        assert tier.name == "retry"
+        assert tier.strategy == "retry"
+        assert tier.max_retries == 3
+        assert "ci:pass" in tier.requires
+        assert "slack:#alerts" in tier.notify
 
-    def test_matches_outside_range(self):
-        tier = RoutingTier(name="t", min_score=0.5, max_score=0.8)
-        assert not tier.matches(0.4999)
-        assert not tier.matches(0.8001)
-        assert not tier.matches(0.0)
-        assert not tier.matches(1.0)
+    def test_matches_inclusive_lower_bound(self):
+        tier = RoutingTier(name="t", min_score=0.75, max_score=0.90)
+        assert tier.matches(0.75) is True
 
-    def test_invalid_min_score_below_zero(self):
-        with pytest.raises(ValueError, match="min_score must be in"):
+    def test_matches_exclusive_upper_bound(self):
+        tier = RoutingTier(name="t", min_score=0.75, max_score=0.90)
+        assert tier.matches(0.90) is False
+
+    def test_matches_interior_score(self):
+        tier = RoutingTier(name="t", min_score=0.60, max_score=0.75)
+        assert tier.matches(0.67) is True
+
+    def test_matches_below_range(self):
+        tier = RoutingTier(name="t", min_score=0.60, max_score=0.75)
+        assert tier.matches(0.50) is False
+
+    def test_matches_above_range(self):
+        tier = RoutingTier(name="t", min_score=0.60, max_score=0.75)
+        assert tier.matches(0.80) is False
+
+    def test_max_score_above_one_allowed(self):
+        # max_score > 1.0 is legal — needed for the highest tier to capture 1.0
+        tier = RoutingTier(name="t", min_score=0.90, max_score=1.01)
+        assert tier.max_score == 1.01
+        assert tier.matches(1.0) is True
+
+    def test_invalid_min_score_negative(self):
+        with pytest.raises(ValueError, match="min_score"):
             RoutingTier(name="t", min_score=-0.1, max_score=0.5)
 
-    def test_invalid_max_score_above_one(self):
-        with pytest.raises(ValueError, match="max_score must be in"):
-            RoutingTier(name="t", min_score=0.5, max_score=1.1)
+    def test_invalid_min_score_above_one(self):
+        with pytest.raises(ValueError, match="min_score"):
+            RoutingTier(name="t", min_score=1.5, max_score=2.0)
 
-    def test_min_greater_than_max(self):
-        with pytest.raises(ValueError, match="min_score.*must be.*max_score"):
+    def test_invalid_max_not_greater_than_min(self):
+        with pytest.raises(ValueError, match="max_score"):
+            RoutingTier(name="t", min_score=0.5, max_score=0.5)
+
+    def test_invalid_max_less_than_min(self):
+        with pytest.raises(ValueError, match="max_score"):
             RoutingTier(name="t", min_score=0.8, max_score=0.5)
 
-    def test_strategy_stored(self):
-        tier = RoutingTier(name="t", min_score=0.0, max_score=1.0, strategy="merge")
-        assert tier.strategy == "merge"
+    def test_negative_max_retries_clamped_to_zero(self):
+        tier = RoutingTier(name="t", min_score=0.0, max_score=0.5, max_retries=-5)
+        assert tier.max_retries == 0
 
-    def test_max_retries_stored(self):
-        tier = RoutingTier(name="t", min_score=0.0, max_score=1.0, max_retries=3)
-        assert tier.max_retries == 3
+    def test_none_requires_normalised_to_empty_list(self):
+        tier = RoutingTier(name="t", min_score=0.0, max_score=1.0, requires=None)  # type: ignore[arg-type]
+        assert tier.requires == []
 
-    def test_requires_and_notify_stored(self):
-        tier = RoutingTier(
-            name="t",
-            min_score=0.0,
-            max_score=1.0,
-            requires=["approve"],
-            notify=["slack:team"],
-        )
-        assert tier.requires == ["approve"]
-        assert tier.notify == ["slack:team"]
+    def test_none_notify_normalised_to_empty_list(self):
+        tier = RoutingTier(name="t", min_score=0.0, max_score=1.0, notify=None)  # type: ignore[arg-type]
+        assert tier.notify == []
 
 
 # ---------------------------------------------------------------------------
-# DEFAULT_ROUTING_CONFIG: standard tier lookup
+# RoutingConfig
+# ---------------------------------------------------------------------------
+
+
+class TestRoutingConfig:
+    def test_empty_config(self):
+        config = RoutingConfig()
+        assert config.tiers == []
+
+    def test_with_tiers(self):
+        tiers = [
+            RoutingTier(name="high", min_score=0.75, max_score=1.01, strategy="merge"),
+            RoutingTier(name="low", min_score=0.00, max_score=0.75, strategy="reject"),
+        ]
+        config = RoutingConfig(tiers=tiers)
+        assert len(config.tiers) == 2
+
+    def test_none_tiers_normalised(self):
+        config = RoutingConfig(tiers=None)  # type: ignore[arg-type]
+        assert config.tiers == []
+
+
+# ---------------------------------------------------------------------------
+# RoutingDecision
+# ---------------------------------------------------------------------------
+
+
+class TestRoutingDecision:
+    def test_basic_construction(self):
+        decision = RoutingDecision(
+            tier="auto_merge",
+            score=0.95,
+            confidence_level=ConfidenceLevel.HIGH,
+            strategy="merge",
+            matched=True,
+        )
+        assert decision.tier == "auto_merge"
+        assert decision.strategy == "merge"
+        assert decision.matched is True
+        assert decision.max_retries == 0
+
+    def test_unmatched_decision(self):
+        decision = RoutingDecision(
+            tier="unrouted",
+            score=0.5,
+            confidence_level=ConfidenceLevel.LOW,
+            strategy="review",
+            matched=False,
+        )
+        assert decision.matched is False
+        assert decision.tier == "unrouted"
+
+    def test_none_requires_normalised(self):
+        decision = RoutingDecision(
+            tier="t",
+            score=0.8,
+            confidence_level=ConfidenceLevel.MEDIUM,
+            requires=None,  # type: ignore[arg-type]
+        )
+        assert decision.requires == []
+
+    def test_none_notify_normalised(self):
+        decision = RoutingDecision(
+            tier="t",
+            score=0.8,
+            confidence_level=ConfidenceLevel.MEDIUM,
+            notify=None,  # type: ignore[arg-type]
+        )
+        assert decision.notify == []
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_ROUTING_CONFIG
 # ---------------------------------------------------------------------------
 
 
 class TestDefaultRoutingConfig:
-    """Verify the four default tiers are configured correctly."""
-
-    def test_default_has_four_tiers(self):
+    def test_has_four_tiers(self):
         assert len(DEFAULT_ROUTING_CONFIG.tiers) == 4
+
+    def test_tier_names(self):
+        names = {t.name for t in DEFAULT_ROUTING_CONFIG.tiers}
+        assert names == {"auto_merge", "queue_review", "retry", "reject"}
 
     def test_auto_merge_tier(self):
         tier = next(t for t in DEFAULT_ROUTING_CONFIG.tiers if t.name == "auto_merge")
         assert tier.min_score == 0.90
-        assert tier.max_score == 1.00
         assert tier.strategy == "merge"
 
-    def test_human_review_tier(self):
-        tier = next(t for t in DEFAULT_ROUTING_CONFIG.tiers if t.name == "human_review")
+    def test_queue_review_tier(self):
+        tier = next(t for t in DEFAULT_ROUTING_CONFIG.tiers if t.name == "queue_review")
         assert tier.min_score == 0.75
         assert tier.max_score == 0.90
         assert tier.strategy == "queue_review"
 
-    def test_auto_retry_tier(self):
-        tier = next(t for t in DEFAULT_ROUTING_CONFIG.tiers if t.name == "auto_retry")
-        assert tier.min_score == 0.50
+    def test_retry_tier(self):
+        tier = next(t for t in DEFAULT_ROUTING_CONFIG.tiers if t.name == "retry")
+        assert tier.min_score == 0.60
         assert tier.max_score == 0.75
         assert tier.strategy == "retry"
-        assert tier.max_retries == 3
+        assert tier.max_retries == 2
 
     def test_reject_tier(self):
         tier = next(t for t in DEFAULT_ROUTING_CONFIG.tiers if t.name == "reject")
         assert tier.min_score == 0.00
-        assert tier.max_score == 0.50
+        assert tier.max_score == 0.60
         assert tier.strategy == "reject"
 
-
-# ---------------------------------------------------------------------------
-# RoutingEngine.evaluate(): standard scores
-# ---------------------------------------------------------------------------
-
-
-class TestRoutingEngineEvaluateStandard:
-    """Test the four main confidence bands."""
-
-    def test_095_auto_merge(self):
-        decision = _engine_default().evaluate(_make_result(0.95))
-        assert decision.tier is not None
-        assert decision.tier.name == "auto_merge"
-        assert decision.action == "merge"
-
-    def test_080_human_review(self):
-        decision = _engine_default().evaluate(_make_result(0.80))
-        assert decision.tier.name == "human_review"
-        assert decision.action == "queue_review"
-
-    def test_060_auto_retry(self):
-        decision = _engine_default().evaluate(_make_result(0.60))
-        assert decision.tier.name == "auto_retry"
-        assert decision.action == "retry"
-
-    def test_020_reject(self):
-        decision = _engine_default().evaluate(_make_result(0.20))
-        assert decision.tier.name == "reject"
-        assert decision.action == "reject"
+    def test_default_config_has_no_threshold_errors(self):
+        """The DEFAULT_ROUTING_CONFIG must be self-consistent."""
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        errors = engine.validate_thresholds()
+        assert errors == [], f"DEFAULT_ROUTING_CONFIG has errors: {errors}"
 
 
 # ---------------------------------------------------------------------------
-# RoutingEngine.evaluate(): boundary scores
+# RoutingEngine.route()
 # ---------------------------------------------------------------------------
 
 
-class TestRoutingEngineEvaluateBoundaries:
-    """Exact boundary values — the spec calls these out explicitly."""
+class TestRoutingEngineRoute:
+    def test_route_auto_merge_at_high_boundary(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.90))
+        assert decision.tier == "auto_merge"
+        assert decision.strategy == "merge"
+        assert decision.matched is True
 
-    def test_090_auto_merge(self):
-        """Score of exactly 0.90 → auto_merge (highest-priority tier wins)."""
-        decision = _engine_default().evaluate(_make_result(0.90))
-        assert decision.tier.name == "auto_merge"
+    def test_route_auto_merge_high_score(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.95))
+        assert decision.tier == "auto_merge"
 
-    def test_08999_human_review(self):
-        """Score just below 0.90 → human_review."""
-        decision = _engine_default().evaluate(_make_result(0.8999))
-        assert decision.tier.name == "human_review"
+    def test_route_auto_merge_perfect_score(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(1.0))
+        assert decision.tier == "auto_merge"
 
-    def test_075_human_review(self):
-        """Score of exactly 0.75 → human_review (ties go to higher tier)."""
-        decision = _engine_default().evaluate(_make_result(0.75))
-        assert decision.tier.name == "human_review"
+    def test_route_queue_review_at_boundary(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.75))
+        assert decision.tier == "queue_review"
+        assert decision.strategy == "queue_review"
 
-    def test_07499_auto_retry(self):
-        """Score just below 0.75 → auto_retry."""
-        decision = _engine_default().evaluate(_make_result(0.7499))
-        assert decision.tier.name == "auto_retry"
+    def test_route_queue_review_interior(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.82))
+        assert decision.tier == "queue_review"
 
-    def test_050_auto_retry(self):
-        """Score of exactly 0.50 → auto_retry."""
-        decision = _engine_default().evaluate(_make_result(0.50))
-        assert decision.tier.name == "auto_retry"
+    def test_route_queue_review_just_below_auto_merge(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.8999))
+        assert decision.tier == "queue_review"
 
-    def test_04999_reject(self):
-        """Score just below 0.50 → reject."""
-        decision = _engine_default().evaluate(_make_result(0.4999))
-        assert decision.tier.name == "reject"
+    def test_route_retry_at_boundary(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.60))
+        assert decision.tier == "retry"
+        assert decision.strategy == "retry"
+        assert decision.max_retries == 2
 
-    def test_100_auto_merge(self):
-        """Maximum score → auto_merge."""
-        decision = _engine_default().evaluate(_make_result(1.0))
-        assert decision.tier.name == "auto_merge"
+    def test_route_retry_interior(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.67))
+        assert decision.tier == "retry"
 
-    def test_000_reject(self):
-        """Minimum score → reject."""
-        decision = _engine_default().evaluate(_make_result(0.0))
-        assert decision.tier.name == "reject"
+    def test_route_retry_just_below_queue_review(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.7499))
+        assert decision.tier == "retry"
 
+    def test_route_reject_at_zero(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.0))
+        assert decision.tier == "reject"
+        assert decision.strategy == "reject"
 
-# ---------------------------------------------------------------------------
-# RoutingDecision content
-# ---------------------------------------------------------------------------
+    def test_route_reject_interior(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.30))
+        assert decision.tier == "reject"
 
+    def test_route_reject_just_below_retry(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.5999))
+        assert decision.tier == "reject"
 
-class TestRoutingDecisionContent:
-    """Verify action matches tier.strategy and explanation is non-empty."""
+    def test_route_preserves_score(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.92))
+        assert decision.score == pytest.approx(0.92)
 
-    @pytest.mark.parametrize("score,expected_strategy,expected_tier_name", [
-        (0.95, "merge", "auto_merge"),
-        (0.80, "queue_review", "human_review"),
-        (0.60, "retry", "auto_retry"),
-        (0.20, "reject", "reject"),
-    ])
-    def test_action_matches_strategy(self, score, expected_strategy, expected_tier_name):
-        decision = _engine_default().evaluate(_make_result(score))
-        assert decision.action == expected_strategy
-        assert decision.tier.name == expected_tier_name
+    def test_route_preserves_confidence_level(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        result = _make_result(0.92)
+        decision = engine.route(result)
+        assert decision.confidence_level == result.confidence_level
 
-    @pytest.mark.parametrize("score", [0.95, 0.80, 0.60, 0.20, 0.0, 1.0])
-    def test_explanation_non_empty(self, score):
-        decision = _engine_default().evaluate(_make_result(score))
-        assert decision.explanation
-        assert len(decision.explanation) > 0
-
-    def test_explanation_contains_score(self):
-        decision = _engine_default().evaluate(_make_result(0.95))
-        assert "0.9500" in decision.explanation
-
-    def test_explanation_contains_tier_name(self):
-        decision = _engine_default().evaluate(_make_result(0.95))
-        assert "auto_merge" in decision.explanation
-
-
-# ---------------------------------------------------------------------------
-# Custom tier configs
-# ---------------------------------------------------------------------------
-
-
-class TestCustomTierConfig:
-    def test_single_tier_full_range(self):
+    def test_route_unrouted_when_no_tier_matches(self):
+        # Config with only a high tier — score 0.55 has no match
         config = RoutingConfig(tiers=[
-            RoutingTier(name="all", min_score=0.0, max_score=1.0, strategy="pass"),
+            RoutingTier(name="high", min_score=0.60, max_score=1.01, strategy="merge"),
         ])
         engine = RoutingEngine(config)
-        for score in [0.0, 0.5, 1.0]:
-            decision = engine.evaluate(_make_result(score))
-            assert decision.tier.name == "all"
-            assert decision.action == "pass"
+        decision = engine.route(_make_result(0.55))
+        assert decision.matched is False
+        assert decision.tier == "unrouted"
+        assert decision.strategy == "review"
 
-    def test_two_tier_config(self):
-        config = RoutingConfig(tiers=[
-            RoutingTier(name="high", min_score=0.7, max_score=1.0, strategy="approve"),
-            RoutingTier(name="low", min_score=0.0, max_score=0.7, strategy="deny"),
-        ])
-        engine = RoutingEngine(config)
-        assert engine.evaluate(_make_result(0.9)).tier.name == "high"
-        assert engine.evaluate(_make_result(0.3)).tier.name == "low"
-        # Boundary — 0.7 matches "high" (higher min_score wins)
-        assert engine.evaluate(_make_result(0.7)).tier.name == "high"
+    def test_route_empty_config_always_unrouted(self):
+        engine = RoutingEngine(RoutingConfig(tiers=[]))
+        decision = engine.route(_make_result(0.80))
+        assert decision.matched is False
+        assert decision.tier == "unrouted"
 
-    def test_none_config_uses_default(self):
+    def test_route_none_config_falls_back_to_default(self):
         engine = RoutingEngine(None)
-        decision = engine.evaluate(_make_result(0.95))
-        assert decision.tier.name == "auto_merge"
+        decision = engine.route(_make_result(0.95))
+        assert decision.tier == "auto_merge"
 
-    def test_no_matching_tier_returns_reject_action(self):
-        # Config that only covers 0.8-1.0; a score of 0.5 won't match
-        config = RoutingConfig(tiers=[
-            RoutingTier(name="top", min_score=0.8, max_score=1.0, strategy="merge"),
-        ])
-        engine = RoutingEngine(config)
-        decision = engine.evaluate(_make_result(0.5))
-        assert decision.tier is None
-        assert decision.action == "reject"
-        assert decision.explanation  # non-empty
+    def test_route_copies_requires_list(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.92))
+        # Should be a copy, not a reference to the tier's list
+        decision.requires.append("extra")
+        tier = next(t for t in DEFAULT_ROUTING_CONFIG.tiers if t.name == "auto_merge")
+        assert "extra" not in tier.requires
+
+    def test_route_copies_notify_list(self):
+        engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
+        decision = engine.route(_make_result(0.92))
+        decision.notify.append("extra")
+        tier = next(t for t in DEFAULT_ROUTING_CONFIG.tiers if t.name == "auto_merge")
+        assert "extra" not in tier.notify
 
 
 # ---------------------------------------------------------------------------
-# validate_thresholds()
+# RoutingEngine.validate_thresholds()
 # ---------------------------------------------------------------------------
 
 
 class TestValidateThresholds:
-    def test_default_config_no_errors(self):
-        engine = RoutingEngine()
+    def test_valid_two_tier_config(self):
+        engine = RoutingEngine(_two_tier_config())
         errors = engine.validate_thresholds()
         assert errors == []
 
-    def test_gap_detected(self):
-        config = RoutingConfig(tiers=[
-            RoutingTier(name="high", min_score=0.8, max_score=1.0, strategy="merge"),
-            RoutingTier(name="low", min_score=0.0, max_score=0.6, strategy="reject"),
-        ])
-        engine = RoutingEngine(config)
+    def test_gap_between_tiers(self):
+        engine = RoutingEngine(_two_tier_config(gap=True))
         errors = engine.validate_thresholds()
         assert len(errors) == 1
-        assert "Gap" in errors[0]
-        assert "low" in errors[0]
-        assert "high" in errors[0]
+        assert "gap" in errors[0].lower()
 
-    def test_overlap_detected(self):
-        config = RoutingConfig(tiers=[
-            RoutingTier(name="high", min_score=0.6, max_score=1.0, strategy="merge"),
-            RoutingTier(name="low", min_score=0.0, max_score=0.8, strategy="reject"),
-        ])
-        engine = RoutingEngine(config)
+    def test_overlap_between_tiers(self):
+        engine = RoutingEngine(_two_tier_config(overlap=True))
         errors = engine.validate_thresholds()
         assert len(errors) == 1
-        assert "Overlap" in errors[0]
+        assert "overlap" in errors[0].lower()
 
-    def test_valid_contiguous_tiers_no_errors(self):
+    def test_gap_at_start_below_zero_point_zero(self):
         config = RoutingConfig(tiers=[
-            RoutingTier(name="a", min_score=0.5, max_score=1.0, strategy="a"),
-            RoutingTier(name="b", min_score=0.0, max_score=0.5, strategy="b"),
+            RoutingTier(name="high", min_score=0.10, max_score=1.01, strategy="merge"),
         ])
         engine = RoutingEngine(config)
         errors = engine.validate_thresholds()
-        assert errors == []
+        assert any("gap" in e.lower() for e in errors)
+
+    def test_gap_at_end_above_one_point_zero(self):
+        config = RoutingConfig(tiers=[
+            RoutingTier(name="low", min_score=0.00, max_score=0.80, strategy="reject"),
+        ])
+        engine = RoutingEngine(config)
+        errors = engine.validate_thresholds()
+        assert any("gap" in e.lower() for e in errors)
+
+    def test_duplicate_tier_names(self):
+        config = RoutingConfig(tiers=[
+            RoutingTier(name="dup", min_score=0.00, max_score=0.50, strategy="reject"),
+            RoutingTier(name="dup", min_score=0.50, max_score=1.01, strategy="merge"),
+        ])
+        engine = RoutingEngine(config)
+        errors = engine.validate_thresholds()
+        assert any("dup" in e.lower() for e in errors)
 
     def test_empty_config_no_errors(self):
         engine = RoutingEngine(RoutingConfig(tiers=[]))
         errors = engine.validate_thresholds()
         assert errors == []
 
-    def test_single_tier_no_errors(self):
+    def test_single_full_coverage_tier(self):
         config = RoutingConfig(tiers=[
-            RoutingTier(name="x", min_score=0.0, max_score=1.0, strategy="pass"),
+            RoutingTier(name="only", min_score=0.00, max_score=1.01, strategy="review"),
         ])
         engine = RoutingEngine(config)
         errors = engine.validate_thresholds()
         assert errors == []
 
-    def test_incomplete_coverage_logs_warning_not_error(self, caplog):
-        """Coverage that doesn't span [0, 1] should WARN, not error."""
+    def test_multiple_errors_reported(self):
+        # Duplicate name + gap at start + gap between
         config = RoutingConfig(tiers=[
-            RoutingTier(name="mid", min_score=0.3, max_score=0.8, strategy="review"),
-        ])
-        engine = RoutingEngine(config)
-        with caplog.at_level(logging.WARNING, logger="src.orchestration_engine.routing"):
-            errors = engine.validate_thresholds()
-        # No errors — only warnings
-        assert errors == []
-        # Warnings emitted
-        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("0.0" in w or "start" in w.lower() for w in warnings)
-
-    def test_multiple_gaps(self):
-        config = RoutingConfig(tiers=[
-            RoutingTier(name="a", min_score=0.8, max_score=1.0, strategy="a"),
-            RoutingTier(name="b", min_score=0.4, max_score=0.5, strategy="b"),
-            RoutingTier(name="c", min_score=0.0, max_score=0.2, strategy="c"),
+            RoutingTier(name="t", min_score=0.20, max_score=0.50, strategy="reject"),
+            RoutingTier(name="t", min_score=0.60, max_score=1.01, strategy="merge"),
         ])
         engine = RoutingEngine(config)
         errors = engine.validate_thresholds()
-        assert len(errors) == 2
-        assert all("Gap" in e for e in errors)
+        assert len(errors) >= 2  # duplicate + gap at start + gap between
 
 
 # ---------------------------------------------------------------------------
@@ -399,32 +482,34 @@ class TestParseRoutingConfig:
     def test_none_returns_none(self):
         assert _parse_routing_config(None) is None
 
-    def test_non_dict_string_returns_none(self):
-        assert _parse_routing_config("not a dict") is None
-
-    def test_non_dict_int_returns_none(self):
+    def test_non_dict_returns_none(self):
+        assert _parse_routing_config("string") is None
         assert _parse_routing_config(42) is None
+        assert _parse_routing_config([]) is None
 
-    def test_non_dict_list_returns_none(self):
-        assert _parse_routing_config([{"name": "x"}]) is None
+    def test_dict_without_tiers_returns_none(self):
+        assert _parse_routing_config({"unknown": "value"}) is None
 
-    def test_valid_dict_parses_correctly(self):
+    def test_empty_tiers_list_returns_none(self):
+        assert _parse_routing_config({"tiers": []}) is None
+
+    def test_valid_two_tier_config(self):
         raw = {
             "tiers": [
                 {
-                    "name": "top",
-                    "min_score": 0.8,
-                    "max_score": 1.0,
+                    "name": "high",
+                    "min_score": 0.75,
+                    "max_score": 1.01,
                     "strategy": "merge",
+                    "requires": ["review:APPROVE"],
+                    "notify": ["slack:#main"],
+                    "max_retries": 0,
                 },
                 {
-                    "name": "bottom",
-                    "min_score": 0.0,
-                    "max_score": 0.8,
+                    "name": "low",
+                    "min_score": 0.00,
+                    "max_score": 0.75,
                     "strategy": "reject",
-                    "max_retries": 2,
-                    "requires": ["approve"],
-                    "notify": ["slack:ops"],
                 },
             ]
         }
@@ -432,177 +517,263 @@ class TestParseRoutingConfig:
         assert config is not None
         assert isinstance(config, RoutingConfig)
         assert len(config.tiers) == 2
-        top = next(t for t in config.tiers if t.name == "top")
-        bottom = next(t for t in config.tiers if t.name == "bottom")
-        assert top.min_score == 0.8
-        assert top.strategy == "merge"
-        assert bottom.max_retries == 2
-        assert bottom.requires == ["approve"]
-        assert bottom.notify == ["slack:ops"]
 
-    def test_missing_tiers_key_returns_none(self):
-        assert _parse_routing_config({"not_tiers": []}) is None
-
-    def test_empty_tiers_list_returns_empty_config(self):
-        config = _parse_routing_config({"tiers": []})
+    def test_tier_fields_parsed_correctly(self):
+        raw = {
+            "tiers": [
+                {
+                    "name": "retry_tier",
+                    "min_score": 0.60,
+                    "max_score": 0.90,
+                    "strategy": "retry",
+                    "max_retries": 3,
+                }
+            ]
+        }
+        config = _parse_routing_config(raw)
         assert config is not None
-        assert config.tiers == []
+        tier = config.tiers[0]
+        assert tier.name == "retry_tier"
+        assert tier.min_score == pytest.approx(0.60)
+        assert tier.max_score == pytest.approx(0.90)
+        assert tier.strategy == "retry"
+        assert tier.max_retries == 3
 
-    def test_tiers_not_list_returns_none(self):
-        assert _parse_routing_config({"tiers": "oops"}) is None
+    def test_non_dict_tier_entry_skipped(self):
+        raw = {
+            "tiers": [
+                "not-a-dict",
+                {"name": "ok", "min_score": 0.0, "max_score": 1.01, "strategy": "merge"},
+            ]
+        }
+        config = _parse_routing_config(raw)
+        assert config is not None
+        assert len(config.tiers) == 1
+        assert config.tiers[0].name == "ok"
+
+    def test_invalid_tier_scores_skipped(self):
+        # min_score > max_score should raise ValueError and be skipped
+        raw = {
+            "tiers": [
+                {"name": "bad", "min_score": 0.9, "max_score": 0.5},
+                {"name": "good", "min_score": 0.0, "max_score": 1.01},
+            ]
+        }
+        config = _parse_routing_config(raw)
+        assert config is not None
+        assert len(config.tiers) == 1
+        assert config.tiers[0].name == "good"
 
 
 # ---------------------------------------------------------------------------
-# PipelineTemplate integration
+# Template integration
 # ---------------------------------------------------------------------------
 
 
-def _make_minimal_template_yaml(extra: str = "") -> str:
-    """Return a minimal valid pipeline YAML with an optional extra block.
+@pytest.fixture()
+def template_engine(tmp_path):
+    """Return a TemplateEngine rooted at tmp_path."""
+    from orchestration_engine.templates import TemplateEngine
+    return TemplateEngine(templates_dir=tmp_path)
 
-    The base YAML and extra block are concatenated *after* each is dedented
-    independently, so indentation isn't corrupted by f-string embedding.
-    """
-    base = textwrap.dedent("""
-        id: test-pipeline
-        name: Test Pipeline
-        phases:
-          - id: phase1
-            name: Phase 1
-            prompt_template: "Do something with {input}"
-    """).strip()
+
+def _write_template(tmp_path: Path, extra: str = "") -> Path:
+    """Write a minimal valid template YAML with optional extra content."""
+    base = (
+        "id: test-template\n"
+        "name: Test Template\n"
+        'version: "1.0.0"\n'
+        "description: A test template\n"
+        "author: Tester\n"
+        "category: content\n"
+        "use_cases:\n"
+        "  - testing\n"
+        "example_input:\n"
+        "  topic: foo\n"
+        "phases:\n"
+        "  - id: write\n"
+        "    name: Write\n"
+        "    task_type: content\n"
+        "    model_tier: sonnet\n"
+        '    prompt_template: "Write about {input}"\n'
+    )
     if extra:
-        extra_clean = textwrap.dedent(extra).strip()
-        return base + "\n" + extra_clean
-    return base
-
-
-@pytest.fixture
-def templates_dir():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield Path(tmpdir)
-
-
-@pytest.fixture
-def engine(templates_dir):
-    return TemplateEngine(templates_dir=templates_dir)
+        base += extra.strip() + "\n"
+    p = tmp_path / "test-template.yaml"
+    p.write_text(base)
+    return p
 
 
 class TestTemplateIntegration:
-    def test_template_without_routing_config_has_none(self, templates_dir, engine):
-        path = templates_dir / "no_routing.yaml"
-        path.write_text(_make_minimal_template_yaml())
-        template = engine.load_template(path)
+    def test_template_without_routing_config_is_none(self, tmp_path, template_engine):
+        p = _write_template(tmp_path)
+        template = template_engine.load_template(p)
         assert template.routing_config is None
 
-    def test_template_with_routing_config_parses(self, templates_dir, engine):
-        routing_block = textwrap.dedent("""
-            routing_config:
-              tiers:
-                - name: auto_merge
-                  min_score: 0.80
-                  max_score: 1.00
-                  strategy: merge
-                - name: reject
-                  min_score: 0.00
-                  max_score: 0.80
-                  strategy: reject
-        """)
-        path = templates_dir / "with_routing.yaml"
-        path.write_text(_make_minimal_template_yaml(routing_block))
-        template = engine.load_template(path)
-        assert template.routing_config is not None
-        assert len(template.routing_config.tiers) == 2
-        names = {t.name for t in template.routing_config.tiers}
-        assert names == {"auto_merge", "reject"}
-
-    def test_valid_routing_config_no_validation_errors(self, templates_dir, engine):
-        routing_block = textwrap.dedent("""
+    def test_template_with_routing_config_parsed(self, tmp_path, template_engine):
+        extra = textwrap.dedent("""
             routing_config:
               tiers:
                 - name: high
-                  min_score: 0.70
-                  max_score: 1.00
+                  min_score: 0.75
+                  max_score: 1.01
                   strategy: merge
                 - name: low
                   min_score: 0.00
-                  max_score: 0.70
+                  max_score: 0.75
                   strategy: reject
         """)
-        path = templates_dir / "valid_routing.yaml"
-        path.write_text(_make_minimal_template_yaml(routing_block))
-        template = engine.load_template(path)
-        errors = engine.validate_template(template)
+        p = _write_template(tmp_path, extra=extra)
+        template = template_engine.load_template(p)
+        assert template.routing_config is not None
+        assert isinstance(template.routing_config, RoutingConfig)
+        assert len(template.routing_config.tiers) == 2
+
+    def test_template_routing_tier_fields(self, tmp_path, template_engine):
+        extra = textwrap.dedent("""
+            routing_config:
+              tiers:
+                - name: auto_merge
+                  min_score: 0.90
+                  max_score: 1.01
+                  strategy: merge
+                  requires:
+                    - "review:APPROVE"
+                  notify:
+                    - "slack:#deploys"
+                  max_retries: 0
+                - name: reject
+                  min_score: 0.00
+                  max_score: 0.90
+                  strategy: reject
+        """)
+        p = _write_template(tmp_path, extra=extra)
+        template = template_engine.load_template(p)
+        assert template.routing_config is not None
+        high_tier = next(
+            t for t in template.routing_config.tiers if t.name == "auto_merge"
+        )
+        assert high_tier.strategy == "merge"
+        assert "review:APPROVE" in high_tier.requires
+        assert "slack:#deploys" in high_tier.notify
+
+    def test_validate_template_valid_routing_config_no_errors(self, tmp_path, template_engine):
+        extra = textwrap.dedent("""
+            routing_config:
+              tiers:
+                - name: high
+                  min_score: 0.75
+                  max_score: 1.01
+                  strategy: merge
+                - name: low
+                  min_score: 0.00
+                  max_score: 0.75
+                  strategy: reject
+        """)
+        p = _write_template(tmp_path, extra=extra)
+        template = template_engine.load_template(p)
+        errors = template_engine.validate_template(template)
         routing_errors = [e for e in errors if "routing_config" in e]
         assert routing_errors == []
 
-    def test_routing_config_with_gap_causes_validation_error(self, templates_dir, engine):
-        routing_block = textwrap.dedent("""
+    def test_validate_template_gap_in_routing_config_reports_error(self, tmp_path, template_engine):
+        extra = textwrap.dedent("""
             routing_config:
               tiers:
                 - name: high
                   min_score: 0.80
-                  max_score: 1.00
+                  max_score: 1.01
                   strategy: merge
                 - name: low
                   min_score: 0.00
                   max_score: 0.60
                   strategy: reject
         """)
-        path = templates_dir / "gap_routing.yaml"
-        path.write_text(_make_minimal_template_yaml(routing_block))
-        template = engine.load_template(path)
-        errors = engine.validate_template(template)
+        p = _write_template(tmp_path, extra=extra)
+        template = template_engine.load_template(p)
+        errors = template_engine.validate_template(template)
         routing_errors = [e for e in errors if "routing_config" in e]
         assert len(routing_errors) >= 1
-        assert any("Gap" in e for e in routing_errors)
+        assert any("gap" in e.lower() for e in routing_errors)
 
-    def test_routing_config_with_overlap_causes_validation_error(self, templates_dir, engine):
-        routing_block = textwrap.dedent("""
+    def test_validate_template_overlap_in_routing_config_reports_error(self, tmp_path, template_engine):
+        extra = textwrap.dedent("""
             routing_config:
               tiers:
                 - name: high
-                  min_score: 0.50
-                  max_score: 1.00
+                  min_score: 0.60
+                  max_score: 1.01
                   strategy: merge
                 - name: low
                   min_score: 0.00
-                  max_score: 0.70
+                  max_score: 0.80
                   strategy: reject
         """)
-        path = templates_dir / "overlap_routing.yaml"
-        path.write_text(_make_minimal_template_yaml(routing_block))
-        template = engine.load_template(path)
-        errors = engine.validate_template(template)
+        p = _write_template(tmp_path, extra=extra)
+        template = template_engine.load_template(p)
+        errors = template_engine.validate_template(template)
         routing_errors = [e for e in errors if "routing_config" in e]
         assert len(routing_errors) >= 1
-        assert any("Overlap" in e for e in routing_errors)
+        assert any("overlap" in e.lower() for e in routing_errors)
 
-    def test_no_routing_config_no_extra_errors(self, templates_dir, engine):
-        """A template without routing_config should not produce routing errors."""
-        path = templates_dir / "no_routing2.yaml"
-        path.write_text(_make_minimal_template_yaml())
-        template = engine.load_template(path)
-        errors = engine.validate_template(template)
-        routing_errors = [e for e in errors if "routing_config" in e]
-        assert routing_errors == []
+    def test_post_init_non_routing_config_normalised_to_none(self, tmp_path):
+        from orchestration_engine.templates import PipelineTemplate
+        template = PipelineTemplate(
+            id="t",
+            name="Test",
+            routing_config="not-a-RoutingConfig",  # type: ignore[arg-type]
+        )
+        assert template.routing_config is None
+
+    def test_post_init_valid_routing_config_preserved(self, tmp_path):
+        from orchestration_engine.templates import PipelineTemplate
+        config = RoutingConfig(tiers=[
+            RoutingTier(name="only", min_score=0.0, max_score=1.01, strategy="review"),
+        ])
+        template = PipelineTemplate(
+            id="t",
+            name="Test",
+            routing_config=config,
+        )
+        assert template.routing_config is config
 
 
 # ---------------------------------------------------------------------------
-# __init__ exports
+# __init__.py exports
 # ---------------------------------------------------------------------------
 
 
-class TestInitExports:
-    def test_exports_accessible(self):
-        import orchestration_engine as oe
-        assert hasattr(oe, "RoutingTier")
-        assert hasattr(oe, "RoutingConfig")
-        assert hasattr(oe, "RoutingDecision")
-        assert hasattr(oe, "RoutingEngine")
-        assert hasattr(oe, "DEFAULT_ROUTING_CONFIG")
+class TestModuleExports:
+    def test_routing_tier_exported(self):
+        import orchestration_engine
+        assert hasattr(orchestration_engine, "RoutingTier")
+
+    def test_routing_config_exported(self):
+        import orchestration_engine
+        assert hasattr(orchestration_engine, "RoutingConfig")
+
+    def test_routing_decision_exported(self):
+        import orchestration_engine
+        assert hasattr(orchestration_engine, "RoutingDecision")
+
+    def test_routing_engine_exported(self):
+        import orchestration_engine
+        assert hasattr(orchestration_engine, "RoutingEngine")
 
     def test_default_routing_config_exported(self):
-        from orchestration_engine import DEFAULT_ROUTING_CONFIG as drc
-        assert drc is not None
-        assert len(drc.tiers) == 4
+        import orchestration_engine
+        assert hasattr(orchestration_engine, "DEFAULT_ROUTING_CONFIG")
+
+    def test_all_contains_routing_names(self):
+        import orchestration_engine
+        for name in ("RoutingTier", "RoutingConfig", "RoutingDecision",
+                     "RoutingEngine", "DEFAULT_ROUTING_CONFIG"):
+            assert name in orchestration_engine.__all__, f"{name} not in __all__"
+
+    def test_exported_routing_tier_is_correct_class(self):
+        from orchestration_engine import RoutingTier as ExportedTier
+        assert ExportedTier is RoutingTier
+
+    def test_exported_default_config_is_correct_instance(self):
+        from orchestration_engine import DEFAULT_ROUTING_CONFIG as exported
+        assert exported is DEFAULT_ROUTING_CONFIG
