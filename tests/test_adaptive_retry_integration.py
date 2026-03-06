@@ -268,6 +268,36 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         assert retry_input.get("timeout_seconds") == 120
 
     @patch("subprocess.Popen")
+    def test_ac3_timeout_tight_budget_allows_retry(self, mock_popen, db_with_original_run):
+        """AC-3 budget guard: TIMEOUT on Haiku + $0.20 budget → retry ALLOWED.
+
+        INCREASE_TIMEOUT does not set model_override.  The budget guard must
+        use the *current* model (Haiku, ~$0.05) rather than the fallback
+        ($0.50 for None), so the retry should be spawned, not escalated.
+        """
+        mock_proc = MagicMock()
+        mock_proc.pid = 12347
+        mock_popen.return_value = mock_proc
+
+        run = _base_run(
+            run_id="orig-001",
+            input_json={
+                "budget_usd": 0.20,
+                "timeout_seconds": 60,
+                "model_override": "claude-haiku-4-5-20241022",
+            },
+        )
+        diagnosis = _make_diagnosis(FailureClass.TIMEOUT)
+        engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=":memory:")
+
+        engine.plan_and_execute(diagnosis, run, "orig-001")
+
+        # Haiku cost ($0.05) < budget ($0.20) → Popen must be called once
+        assert mock_popen.call_count == 1
+        row = db_with_original_run.get_pipeline_run("orig-001")
+        assert row["status"] != "escalated"
+
+    @patch("subprocess.Popen")
     def test_ac4_budget_exceeded_escalates(self, mock_popen, db_with_original_run):
         """AC-4: Opus retry cost ($0.50) > budget ($0.10) → escalated, no Popen."""
         run = _base_run(

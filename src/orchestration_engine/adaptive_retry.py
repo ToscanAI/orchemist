@@ -462,7 +462,7 @@ class AdaptiveRetryEngine:
             budget = 0.0
 
         if budget > 0:
-            estimated_cost = self.estimate_cost(plan.model_override)
+            estimated_cost = self.estimate_cost(plan.model_override or current_model)
             if estimated_cost > budget:
                 _logger.warning(
                     "Retry for run %s would cost ~$%.2f but budget is $%.2f — escalating.",
