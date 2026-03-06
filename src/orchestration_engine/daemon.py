@@ -714,6 +714,22 @@ def _dispatch_routing_action(
                 "— queued for manual review (status will be set to pending_review).",
                 run_id, decision.tier, decision.score,
             )
+            try:
+                from .notifications import NotificationDispatcher
+                dispatcher = NotificationDispatcher.from_env()
+                dispatcher.dispatch(
+                    event="human_review",
+                    run_id=run_id,
+                    tier=decision.tier,
+                    score=decision.score,
+                    justification=getattr(confidence_result, "explanation", ""),
+                )
+            except Exception as _ne:
+                logger.warning(
+                    "Notification dispatch failed for run '%s' (non-fatal): %s",
+                    run_id,
+                    _ne,
+                )
         elif action == "reject":
             logger.info(
                 "Routing action 'reject' for run '%s': tier='%s' score=%.4f "

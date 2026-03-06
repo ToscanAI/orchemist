@@ -4708,5 +4708,117 @@ def _print_score_report(console, score_result, scenario: dict) -> None:
     console.print()
 
 
+# ---------------------------------------------------------------------------
+# Review Queue Commands (Issue #331.4)
+# ---------------------------------------------------------------------------
+
+@main.group()
+def reviews() -> None:
+    """Manage the human review queue for pipeline runs."""
+
+
+@reviews.command(name="list")
+@click.option("--limit", type=int, default=20, show_default=True, help="Maximum number of items.")
+@click.option("--offset", type=int, default=0, show_default=True, help="Number of items to skip.")
+@click.option("--db-path", "reviews_db_path", type=click.Path(path_type=Path), default=None,
+              help="Path to the orchestration engine database.")
+def reviews_list(limit: int, offset: int, reviews_db_path: Optional[Path]) -> None:
+    """List pipeline runs pending human review."""
+    from .db import Database as _Database
+
+    _db_path = reviews_db_path or (Path.home() / ".orchestration-engine" / "engine.db")
+    db = _Database(_db_path)
+    items = db.list_pending_reviews(limit=limit, offset=offset)
+    total = db.count_pending_reviews()
+
+    if not items:
+        click.echo("No runs pending review.")
+        return
+
+    click.echo(f"Pending reviews: {total} total  (showing {len(items)}  offset={offset})\n")
+    headers = ["RUN ID", "TEMPLATE", "CREATED AT", "SCORE", "TIER"]
+    rows = []
+    for r in items:
+        rows.append([
+            r.get("run_id", ""),
+            r.get("template_id", ""),
+            str(r.get("created_at", ""))[:19],
+            f"{r.get('confidence_score', ''):.4f}" if r.get("confidence_score") is not None else "n/a",
+            r.get("tier_name", "n/a"),
+        ])
+    print_table(headers, rows)
+
+
+@reviews.command(name="approve")
+@click.argument("run_id")
+@click.option("--reviewed-by", default=None, help="Reviewer identifier.")
+@click.option("--note", default=None, help="Review note.")
+@click.option("--db-path", "reviews_db_path", type=click.Path(path_type=Path), default=None,
+              help="Path to the orchestration engine database.")
+def reviews_approve(run_id: str, reviewed_by: Optional[str], note: Optional[str],
+                    reviews_db_path: Optional[Path]) -> None:
+    """Approve a pipeline run that is pending human review."""
+    from .db import Database as _Database
+
+    _db_path = reviews_db_path or (Path.home() / ".orchestration-engine" / "engine.db")
+    db = _Database(_db_path)
+
+    run = db.get_pipeline_run(run_id)
+    if run is None:
+        click.echo(f"Error: run '{run_id}' not found.", err=True)
+        sys.exit(1)
+    if run.get("status") != "pending_review":
+        click.echo(
+            f"Error: run '{run_id}' is in status '{run.get('status')}', "
+            "not 'pending_review'.",
+            err=True,
+        )
+        sys.exit(1)
+
+    updated = db.approve_pipeline_run(run_id, reviewed_by=reviewed_by, note=note)
+    if updated:
+        click.echo(f"✓ Run '{run_id}' approved (status → success).")
+    else:
+        click.echo(f"✗ Could not approve run '{run_id}'.", err=True)
+        sys.exit(1)
+
+
+@reviews.command(name="reject")
+@click.argument("run_id")
+@click.argument("reason")
+@click.option("--reviewed-by", default=None, help="Reviewer identifier.")
+@click.option("--db-path", "reviews_db_path", type=click.Path(path_type=Path), default=None,
+              help="Path to the orchestration engine database.")
+def reviews_reject(run_id: str, reason: str, reviewed_by: Optional[str],
+                   reviews_db_path: Optional[Path]) -> None:
+    """Reject a pipeline run that is pending human review.
+
+    REASON is a short description of why the run was rejected.
+    """
+    from .db import Database as _Database
+
+    _db_path = reviews_db_path or (Path.home() / ".orchestration-engine" / "engine.db")
+    db = _Database(_db_path)
+
+    run = db.get_pipeline_run(run_id)
+    if run is None:
+        click.echo(f"Error: run '{run_id}' not found.", err=True)
+        sys.exit(1)
+    if run.get("status") != "pending_review":
+        click.echo(
+            f"Error: run '{run_id}' is in status '{run.get('status')}', "
+            "not 'pending_review'.",
+            err=True,
+        )
+        sys.exit(1)
+
+    updated = db.reject_pipeline_run(run_id, reason=reason, reviewed_by=reviewed_by)
+    if updated:
+        click.echo(f"✓ Run '{run_id}' rejected (status → rejected).")
+    else:
+        click.echo(f"✗ Could not reject run '{run_id}'.", err=True)
+        sys.exit(1)
+
+
 if __name__ == '__main__':
     main()

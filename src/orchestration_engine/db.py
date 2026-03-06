@@ -200,7 +200,10 @@ class Database:
                 skip_scoring INTEGER DEFAULT 0,
                 scoring_status TEXT DEFAULT NULL,
                 scoring_score REAL DEFAULT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                review_reason TEXT DEFAULT NULL,
+                reviewed_at TIMESTAMP DEFAULT NULL,
+                reviewed_by TEXT DEFAULT NULL
             )
         """)
 
@@ -500,6 +503,7 @@ class Database:
             ("005_add_trigger_enabled", self._migration_005_add_trigger_enabled),           # Issue #329.2
             ("006_add_chain_columns", self._migration_006_add_chain_columns),               # Issue #330.1
             ("007_add_routing_decisions", self._migration_007_add_routing_decisions),       # Issue #331.3
+            ("008_add_review_columns", self._migration_008_add_review_columns),             # Issue #331.4
         ]
         
         # Apply pending migrations
@@ -1676,6 +1680,21 @@ class Database:
             )
             return cursor.lastrowid  # type: ignore[return-value]
 
+    def _migration_008_add_review_columns(self, conn: sqlite3.Connection) -> None:
+        """Add review_reason, reviewed_at, reviewed_by columns to pipeline_runs (Issue #331.4).
+
+        Idempotent: silently ignores errors if columns already exist.
+        """
+        for col in [
+            ("review_reason", "TEXT DEFAULT NULL"),
+            ("reviewed_at", "TIMESTAMP DEFAULT NULL"),
+            ("reviewed_by", "TEXT DEFAULT NULL"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE pipeline_runs ADD COLUMN {col[0]} {col[1]}")
+            except Exception:
+                pass  # column already exists
+
     def get_routing_decisions(self, run_id: str) -> List[Dict]:
         """Return all routing decision rows for a given pipeline run.
 
@@ -1717,6 +1736,136 @@ class Database:
             )
             row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Review Queue Operations (Issue #331.4)
+    # ------------------------------------------------------------------
+
+    def list_pending_reviews(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return pipeline runs with status='pending_review', enriched with routing decision data.
+
+        Performs a LEFT JOIN against ``routing_decisions`` to include the
+        latest confidence score and tier for each pending run.
+
+        Args:
+            limit: Maximum number of rows to return (default 20).
+            offset: Number of rows to skip for pagination (default 0).
+
+        Returns:
+            List of dicts, each containing all pipeline_runs columns plus
+            ``confidence_score`` and ``tier_name`` from the most recent
+            routing decision (or ``None`` when no decision exists).
+        """
+        query = """
+            SELECT pr.*,
+                   rd.confidence_score,
+                   rd.tier_name,
+                   rd.action,
+                   rd.justification
+            FROM pipeline_runs pr
+            LEFT JOIN (
+                SELECT run_id,
+                       confidence_score,
+                       tier_name,
+                       action,
+                       justification,
+                       MAX(id) AS max_id
+                FROM routing_decisions
+                GROUP BY run_id
+            ) rd ON pr.run_id = rd.run_id
+            WHERE pr.status = 'pending_review'
+            ORDER BY pr.created_at DESC
+            LIMIT ? OFFSET ?
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(query, (limit, offset))
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def count_pending_reviews(self) -> int:
+        """Return the total count of pipeline runs with status='pending_review'.
+
+        Returns:
+            Integer count of pending review runs.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM pipeline_runs WHERE status = 'pending_review'"
+            )
+            row = cursor.fetchone()
+        return row[0] if row else 0
+
+    def approve_pipeline_run(
+        self,
+        run_id: str,
+        reviewed_by: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> bool:
+        """Approve a pending_review pipeline run, setting status to 'success'.
+
+        Args:
+            run_id: The pipeline run identifier to approve.
+            reviewed_by: Optional identifier of the reviewer (user/system).
+            note: Optional review note stored in review_reason.
+
+        Returns:
+            ``True`` if a row was updated, ``False`` if no matching
+            pending_review run was found.
+        """
+        now = datetime.now().isoformat()
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE pipeline_runs
+                SET status = 'success',
+                    review_reason = ?,
+                    reviewed_at = ?,
+                    reviewed_by = ?,
+                    completed_at = COALESCE(completed_at, ?)
+                WHERE run_id = ? AND status = 'pending_review'
+                """,
+                (note, now, reviewed_by, now, run_id),
+            )
+            return cursor.rowcount > 0
+
+    def reject_pipeline_run(
+        self,
+        run_id: str,
+        reason: str,
+        reviewed_by: Optional[str] = None,
+    ) -> bool:
+        """Reject a pending_review pipeline run, setting status to 'rejected'.
+
+        Args:
+            run_id: The pipeline run identifier to reject.
+            reason: Human-readable rejection reason stored in review_reason.
+            reviewed_by: Optional identifier of the reviewer.
+
+        Returns:
+            ``True`` if a row was updated, ``False`` if no matching
+            pending_review run was found.
+        """
+        now = datetime.now().isoformat()
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE pipeline_runs
+                SET status = 'rejected',
+                    review_reason = ?,
+                    reviewed_at = ?,
+                    reviewed_by = ?,
+                    completed_at = COALESCE(completed_at, ?)
+                WHERE run_id = ? AND status = 'pending_review'
+                """,
+                (reason, now, reviewed_by, now, run_id),
+            )
+            return cursor.rowcount > 0
 
     def close(self) -> None:
         """Close database connections."""
