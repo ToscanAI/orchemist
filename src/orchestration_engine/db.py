@@ -552,6 +552,7 @@ class Database:
             ("008_add_review_columns", self._migration_008_add_review_columns),             # Issue #331.4
             ("009_add_diagnosis_tables", self._migration_009_add_diagnosis_tables),         # Issue #3.1.1
             ("010_add_failure_patterns_table", self._migration_010_add_failure_patterns_table),  # Issue #3.1.3
+            ("011_add_retry_columns", self._migration_011_add_retry_columns),               # Issue #3.2.1
         ]
         
         # Apply pending migrations
@@ -1163,8 +1164,9 @@ class Database:
                 INSERT INTO pipeline_runs (
                     run_id, template_path, template_id, input_json, mode,
                     output_dir, status, gateway_url, skip_scoring,
-                    parent_run_id, chain_depth
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    parent_run_id, chain_depth,
+                    retry_of_run_id, retry_strategy
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 run_data['run_id'],
                 run_data['template_path'],
@@ -1177,6 +1179,8 @@ class Database:
                 int(run_data.get('skip_scoring', 0)),
                 run_data.get('parent_run_id'),         # Issue #330.1: chaining parent
                 int(run_data.get('chain_depth', 0)),   # Issue #330.1: chaining depth
+                run_data.get('retry_of_run_id'),       # Issue #3.2.1: retry linkage
+                run_data.get('retry_strategy'),        # Issue #3.2.1: retry strategy applied
             ))
         return run_data['run_id']
 
@@ -1188,6 +1192,7 @@ class Database:
             'status', 'current_phase', 'completed_phases', 'phase_outputs',
             'pid', 'started_at', 'completed_at', 'error_message', 'gateway_url',
             'skip_scoring', 'scoring_status', 'scoring_score',
+            'retry_of_run_id', 'retry_strategy',       # Issue #3.2.1: retry linkage
         }
         updates = []
         values = []
@@ -1877,6 +1882,42 @@ class Database:
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_failure_patterns_template
             ON failure_patterns (template_id, last_seen_at)
+        """)
+
+    def _migration_011_add_retry_columns(self, conn: sqlite3.Connection) -> None:
+        """Add retry linkage columns to pipeline_runs (Issue #3.2.1).
+
+        Adds two nullable columns:
+
+        * ``retry_of_run_id`` — foreign key reference to the original run that
+          this run is retrying.  ``NULL`` for first-attempt runs.
+        * ``retry_strategy`` — string value of the :class:`RetryStrategy` enum
+          applied when this retry run was launched.  ``NULL`` for first attempts.
+
+        Also creates an index on ``retry_of_run_id`` so that all retries for a
+        given original run can be retrieved efficiently.
+
+        Idempotent: uses ``ALTER TABLE … ADD COLUMN IF NOT EXISTS``-equivalent
+        guard and ``CREATE INDEX IF NOT EXISTS``.
+        Safe to run on both fresh and existing databases.
+        """
+        # SQLite does not support IF NOT EXISTS for ALTER TABLE ADD COLUMN.
+        # We guard each column addition by checking PRAGMA table_info first.
+        existing_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(pipeline_runs)").fetchall()
+        }
+        if "retry_of_run_id" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE pipeline_runs ADD COLUMN retry_of_run_id TEXT DEFAULT NULL"
+            )
+        if "retry_strategy" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE pipeline_runs ADD COLUMN retry_strategy TEXT DEFAULT NULL"
+            )
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pipeline_runs_retry_of
+            ON pipeline_runs (retry_of_run_id)
         """)
 
     # ------------------------------------------------------------------
