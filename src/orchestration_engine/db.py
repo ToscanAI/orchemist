@@ -1383,6 +1383,7 @@ class Database:
         self,
         template_id: Optional[str] = None,
         mode: Optional[str] = None,
+        enabled: Optional[bool] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -1392,6 +1393,8 @@ class Database:
             template_id: Filter by template id.
             mode: Filter by execution mode (``'sync'``, ``'async'``,
                 ``'fire_and_forget'``).
+            enabled: When provided, filters to only enabled (``True``) or
+                disabled (``False``) triggers.
             limit: Maximum rows to return (default 100).
             offset: Rows to skip for pagination (default 0).
 
@@ -1408,6 +1411,10 @@ class Database:
         if mode:
             query += " AND mode = ?"
             params.append(mode)
+
+        if enabled is not None:
+            query += " AND enabled = ?"
+            params.append(int(enabled))
 
         query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
