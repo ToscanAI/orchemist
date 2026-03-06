@@ -108,6 +108,127 @@ class AutoMergeConfig:
             self.review_phase_id = "review"
 
 
+@dataclass
+class OnCompleteEntry:
+    """A single chained pipeline entry within an ``on_complete:`` block.
+
+    When a pipeline run completes, entries in the ``on_complete.success`` or
+    ``on_complete.failed`` lists describe which downstream pipeline templates
+    to launch and how to map the parent run's input to the child's input.
+
+    Attributes:
+        template: Template name or path to launch when the parent pipeline
+                  completes with the associated outcome.
+        input_map: Mapping of input key → value (or expression) used to
+                   construct the child pipeline's input.  Empty dict means
+                   forward the parent's input verbatim.
+    """
+
+    template: str
+    input_map: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.template or not isinstance(self.template, str):
+            raise ValueError("OnCompleteEntry.template must be a non-empty string")
+        if self.input_map is None:
+            self.input_map = {}
+        if not isinstance(self.input_map, dict):
+            raise TypeError(
+                f"OnCompleteEntry.input_map must be a dict, got: {type(self.input_map)}"
+            )
+
+
+@dataclass
+class OnCompleteConfig:
+    """Configuration for pipeline chaining triggered on run completion.
+
+    Declared as the ``on_complete:`` block in a pipeline template YAML.
+    When a pipeline run finishes, the daemon will inspect this config and
+    (in a future issue) launch the appropriate child pipelines.
+
+    This block is **absent by default** — existing templates that do not
+    declare an ``on_complete:`` section are completely unaffected.
+
+    Attributes:
+        success: List of :class:`OnCompleteEntry` to launch when the run
+                 completes successfully.
+        failed: List of :class:`OnCompleteEntry` to launch when the run
+                fails.
+        max_chain_depth: Maximum number of chained hops allowed before the
+                         engine refuses to launch further children.  Prevents
+                         infinite-loop chains.  Default is ``5``.
+    """
+
+    success: List[OnCompleteEntry] = field(default_factory=list)
+    """Pipelines to launch on successful completion."""
+
+    failed: List[OnCompleteEntry] = field(default_factory=list)
+    """Pipelines to launch on failed completion."""
+
+    max_chain_depth: int = 5
+    """Maximum allowed chaining depth (default: 5)."""
+
+    def __post_init__(self) -> None:
+        if self.success is None:
+            self.success = []
+        if self.failed is None:
+            self.failed = []
+        if self.max_chain_depth is None:
+            self.max_chain_depth = 5
+        self.max_chain_depth = max(1, int(self.max_chain_depth))
+
+
+def _parse_on_complete_config(raw: Any) -> Optional["OnCompleteConfig"]:
+    """Parse the ``on_complete:`` section of a pipeline YAML into an :class:`OnCompleteConfig`.
+
+    Args:
+        raw: The value of ``data.get("on_complete")`` — a dict, ``None``, or
+             a non-dict value (treated as absent).
+
+    Returns:
+        An :class:`OnCompleteConfig` instance if ``raw`` is a non-empty dict,
+        else ``None`` (the feature is disabled when the section is absent).
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    known_fields = {"success", "failed", "max_chain_depth"}
+    unknown = set(raw.keys()) - known_fields
+    if unknown:
+        logger.warning(
+            "Template on_complete config has unknown fields (ignored): %s",
+            sorted(unknown),
+        )
+
+    def _parse_entries(raw_list: Any) -> List[OnCompleteEntry]:
+        if not isinstance(raw_list, list):
+            return []
+        entries = []
+        for item in raw_list:
+            if not isinstance(item, dict):
+                logger.warning(
+                    "on_complete entry is not a dict (ignored): %r", item
+                )
+                continue
+            if "template" not in item:
+                raise ValueError(
+                    "Each on_complete entry must have a 'template' key"
+                )
+            entries.append(
+                OnCompleteEntry(
+                    template=str(item["template"]),
+                    input_map=dict(item.get("input_map") or {}),
+                )
+            )
+        return entries
+
+    return OnCompleteConfig(
+        success=_parse_entries(raw.get("success", [])),
+        failed=_parse_entries(raw.get("failed", [])),
+        max_chain_depth=int(raw.get("max_chain_depth", 5)),
+    )
+
+
 def _parse_auto_merge_config(raw: Any) -> Optional[AutoMergeConfig]:
     """Parse the ``auto_merge:`` section of a pipeline YAML into an :class:`AutoMergeConfig`.
 
@@ -309,6 +430,10 @@ class PipelineTemplate:
     auto_merge: Optional[AutoMergeConfig] = None
     """Parsed ``auto_merge:`` section from the template YAML, or ``None`` if absent."""
 
+    # --- Pipeline chaining config (Issue #330.1) ---
+    on_complete: Optional[OnCompleteConfig] = None
+    """Parsed ``on_complete:`` section from the template YAML, or ``None`` if absent."""
+
     def __post_init__(self) -> None:
         if self.phases is None:
             self.phases = []
@@ -346,6 +471,9 @@ class PipelineTemplate:
         # Normalise scenario field: empty string → None
         if not self.scenario:
             self.scenario = None
+        # Normalise on_complete field: non-OnCompleteConfig values → None
+        if self.on_complete is not None and not isinstance(self.on_complete, OnCompleteConfig):
+            self.on_complete = None
 
 
 class TemplateNotFoundError(FileNotFoundError):
@@ -658,6 +786,9 @@ class TemplateEngine:
         # Parse optional auto_merge: section (Issue #350)
         auto_merge_config: Optional[AutoMergeConfig] = _parse_auto_merge_config(data.get("auto_merge"))
 
+        # Parse optional on_complete: section (Issue #330.1)
+        on_complete_config: Optional[OnCompleteConfig] = _parse_on_complete_config(data.get("on_complete"))
+
         # --- Parse parallel-execution control fields (Issue #102) ---
         # Use explicit sentinel check so that `parallel: false` (which is falsy)
         # is correctly distinguished from "field absent" (→ default True).
@@ -715,6 +846,7 @@ class TemplateEngine:
             max_iterations=pipeline_max_iterations,
             scenario=data.get("scenario") or None,  # Issue #172: post-pipeline auto-scoring
             auto_merge=auto_merge_config,            # Issue #350: per-repo auto-merge config
+            on_complete=on_complete_config,          # Issue #330.1: pipeline chaining config
         )
 
     def get_execution_order(self, template: PipelineTemplate) -> List[List[str]]:
@@ -1031,6 +1163,40 @@ class TemplateEngine:
             errors.append(
                 "Coding pipelines require a scenario for quality gating"
             )
+
+        # Issue #330.1: Validate on_complete block structure
+        if template.on_complete is not None:
+            oc = template.on_complete
+            if not isinstance(oc, OnCompleteConfig):
+                errors.append(
+                    "on_complete must be an OnCompleteConfig instance"
+                )
+            else:
+                for list_name, entry_list in (("success", oc.success), ("failed", oc.failed)):
+                    if not isinstance(entry_list, list):
+                        errors.append(
+                            f"on_complete.{list_name} must be a list"
+                        )
+                        continue
+                    for idx, entry in enumerate(entry_list):
+                        if not isinstance(entry, OnCompleteEntry):
+                            errors.append(
+                                f"on_complete.{list_name}[{idx}] must be an OnCompleteEntry"
+                            )
+                            continue
+                        if not entry.template or not isinstance(entry.template, str):
+                            errors.append(
+                                f"on_complete.{list_name}[{idx}]: template must be a non-empty string"
+                            )
+                        if not isinstance(entry.input_map, dict):
+                            errors.append(
+                                f"on_complete.{list_name}[{idx}]: input_map must be a dict"
+                            )
+                if not isinstance(oc.max_chain_depth, int) or oc.max_chain_depth < 1:
+                    errors.append(
+                        f"on_complete.max_chain_depth must be a positive integer, "
+                        f"got: {oc.max_chain_depth!r}"
+                    )
 
         return errors
 

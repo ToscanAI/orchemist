@@ -462,6 +462,7 @@ class Database:
             ("003_add_triggers_table", self._migration_003_add_triggers_table),   # Issue #329.1
             ("004_add_webhook_invocations", self._migration_004_add_webhook_invocations),   # Issue #329.2
             ("005_add_trigger_enabled", self._migration_005_add_trigger_enabled),           # Issue #329.2
+            ("006_add_chain_columns", self._migration_006_add_chain_columns),               # Issue #330.1
         ]
         
         # Apply pending migrations
@@ -571,6 +572,30 @@ class Database:
         try:
             conn.execute(
                 "ALTER TABLE triggers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+    def _migration_006_add_chain_columns(self, conn: sqlite3.Connection) -> None:
+        """Add parent_run_id and chain_depth columns to pipeline_runs (Issue #330.1).
+
+        These columns support pipeline chaining: child runs record their
+        parent run's ID and their depth in the chain (to enforce
+        ``max_chain_depth`` and prevent infinite loops).
+
+        Idempotent: silently ignores OperationalError if the columns already
+        exist (e.g. fresh databases created with the updated DDL).
+        """
+        try:
+            conn.execute(
+                "ALTER TABLE pipeline_runs ADD COLUMN parent_run_id TEXT DEFAULT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+        try:
+            conn.execute(
+                "ALTER TABLE pipeline_runs ADD COLUMN chain_depth INTEGER DEFAULT 0"
             )
         except sqlite3.OperationalError:
             pass  # column already exists
@@ -1023,8 +1048,9 @@ class Database:
             conn.execute("""
                 INSERT INTO pipeline_runs (
                     run_id, template_path, template_id, input_json, mode,
-                    output_dir, status, gateway_url, skip_scoring
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    output_dir, status, gateway_url, skip_scoring,
+                    parent_run_id, chain_depth
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 run_data['run_id'],
                 run_data['template_path'],
@@ -1035,6 +1061,8 @@ class Database:
                 run_data.get('status', 'pending'),
                 run_data.get('gateway_url'),
                 int(run_data.get('skip_scoring', 0)),
+                run_data.get('parent_run_id'),         # Issue #330.1: chaining parent
+                int(run_data.get('chain_depth', 0)),   # Issue #330.1: chaining depth
             ))
         return run_data['run_id']
 
