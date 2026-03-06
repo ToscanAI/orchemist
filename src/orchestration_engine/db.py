@@ -356,7 +356,27 @@ class Database:
                 invoked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-    
+
+        # Diagnosis results for failure-diagnosis subsystem (Issue #3.1.1)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS diagnosis_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                failure_class TEXT NOT NULL,
+                remediation TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                explanation TEXT,
+                model_used TEXT,
+                tokens_consumed INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_diagnosis_results_run_id
+            ON diagnosis_results(run_id)
+        """)
+
     def _create_tables_pipeline_run_events(self, conn: sqlite3.Connection) -> None:
         """Create pipeline_run_events table for SSE live-progress streaming (Issue #258)."""
         conn.execute("""
@@ -504,6 +524,7 @@ class Database:
             ("006_add_chain_columns", self._migration_006_add_chain_columns),               # Issue #330.1
             ("007_add_routing_decisions", self._migration_007_add_routing_decisions),       # Issue #331.3
             ("008_add_review_columns", self._migration_008_add_review_columns),             # Issue #331.4
+            ("009_add_diagnosis_tables", self._migration_009_add_diagnosis_tables),         # Issue #3.1.1
         ]
         
         # Apply pending migrations
@@ -1441,6 +1462,94 @@ class Database:
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    # ------------------------------------------------------------------
+    # Diagnosis Operations (Issue #3.1.1)
+    # ------------------------------------------------------------------
+
+    def insert_diagnosis(self, diagnosis_data: Dict[str, Any]) -> int:
+        """Insert a DiagnosisResult record.
+
+        Args:
+            diagnosis_data: Dict with keys: run_id, failure_class, remediation,
+                confidence, explanation, model_used, tokens_consumed.
+                ``failure_class`` and ``remediation`` should be the .value of
+                their respective enums (strings).
+
+        Returns:
+            The auto-incremented ``id`` of the inserted row.
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute("""
+                INSERT INTO diagnosis_results
+                    (run_id, failure_class, remediation, confidence,
+                     explanation, model_used, tokens_consumed)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                diagnosis_data["run_id"],
+                diagnosis_data["failure_class"],
+                diagnosis_data["remediation"],
+                diagnosis_data["confidence"],
+                diagnosis_data.get("explanation"),
+                diagnosis_data.get("model_used"),
+                diagnosis_data.get("tokens_consumed", 0),
+            ))
+            return cursor.lastrowid
+
+    def get_diagnosis_by_run_id(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Return the most recent diagnosis for a run, or None.
+
+        If multiple diagnoses exist for a run (e.g. re-diagnoses after retry),
+        the most recently created one is returned.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute("""
+                SELECT * FROM diagnosis_results
+                WHERE run_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+            """, (run_id,))
+            row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def list_diagnoses(
+        self,
+        failure_class: Optional[str] = None,
+        remediation: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List diagnosis results with optional filtering and pagination.
+
+        Args:
+            failure_class: Optional string value of FailureClass enum to filter by.
+            remediation:   Optional string value of Remediation enum to filter by.
+            limit:         Max rows to return (default 100).
+            offset:        Rows to skip for pagination (default 0).
+
+        Returns:
+            List of diagnosis dicts ordered by ``id DESC`` (newest first).
+        """
+        query = "SELECT * FROM diagnosis_results WHERE 1=1"
+        params: list = []
+
+        if failure_class:
+            query += " AND failure_class = ?"
+            params.append(failure_class)
+
+        if remediation:
+            query += " AND remediation = ?"
+            params.append(remediation)
+
+        query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(query, params)
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
     # --- Trigger CRUD Operations (Issue #329.1) ---
 
     def create_trigger(self, trigger_data: Dict[str, Any]) -> str:
@@ -1694,6 +1803,30 @@ class Database:
                 conn.execute(f"ALTER TABLE pipeline_runs ADD COLUMN {col[0]} {col[1]}")
             except Exception:
                 pass  # column already exists
+
+    def _migration_009_add_diagnosis_tables(self, conn: sqlite3.Connection) -> None:
+        """Add diagnosis_results table (Issue #3.1.1).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS diagnosis_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                failure_class TEXT NOT NULL,
+                remediation TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                explanation TEXT,
+                model_used TEXT,
+                tokens_consumed INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_diagnosis_results_run_id
+            ON diagnosis_results(run_id)
+        """)
 
     def get_routing_decisions(self, run_id: str) -> List[Dict]:
         """Return all routing decision rows for a given pipeline run.
