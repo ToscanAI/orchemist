@@ -171,6 +171,7 @@ class Database:
             self._create_tables(conn)
             self._create_tables_pipeline_run_events(conn)
             self._create_table_routing_decisions(conn)
+            self._create_table_failure_patterns(conn)
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -418,6 +419,31 @@ class Database:
             ON routing_decisions(run_id)
         """)
 
+    def _create_table_failure_patterns(self, conn: sqlite3.Connection) -> None:
+        """Create failure_patterns table for systemic failure detection (Issue #3.1.3).
+
+        Tracks recurring failure signatures per template and marks patterns as
+        *systemic* when the same error recurs more than ``SYSTEMIC_THRESHOLD``
+        times within ``SYSTEMIC_WINDOW_DAYS`` days.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS failure_patterns (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern_hash     TEXT NOT NULL,
+                template_id      TEXT NOT NULL,
+                failure_class    TEXT NOT NULL,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                is_systemic      INTEGER NOT NULL DEFAULT 0,
+                first_seen_at    TEXT NOT NULL,
+                last_seen_at     TEXT NOT NULL,
+                UNIQUE(pattern_hash, template_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_failure_patterns_template
+            ON failure_patterns (template_id, last_seen_at)
+        """)
+
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """Create performance indexes."""
 
@@ -525,6 +551,7 @@ class Database:
             ("007_add_routing_decisions", self._migration_007_add_routing_decisions),       # Issue #331.3
             ("008_add_review_columns", self._migration_008_add_review_columns),             # Issue #331.4
             ("009_add_diagnosis_tables", self._migration_009_add_diagnosis_tables),         # Issue #3.1.1
+            ("010_add_failure_patterns_table", self._migration_010_add_failure_patterns_table),  # Issue #3.1.3
         ]
         
         # Apply pending migrations
@@ -1827,6 +1854,138 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_diagnosis_results_run_id
             ON diagnosis_results(run_id)
         """)
+
+    def _migration_010_add_failure_patterns_table(self, conn: sqlite3.Connection) -> None:
+        """Add failure_patterns table for systemic failure detection (Issue #3.1.3).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+        Safe to run on both fresh and existing databases.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS failure_patterns (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern_hash     TEXT NOT NULL,
+                template_id      TEXT NOT NULL,
+                failure_class    TEXT NOT NULL,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                is_systemic      INTEGER NOT NULL DEFAULT 0,
+                first_seen_at    TEXT NOT NULL,
+                last_seen_at     TEXT NOT NULL,
+                UNIQUE(pattern_hash, template_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_failure_patterns_template
+            ON failure_patterns (template_id, last_seen_at)
+        """)
+
+    # ------------------------------------------------------------------
+    # Failure pattern CRUD (Issue #3.1.3)
+    # ------------------------------------------------------------------
+
+    def insert_or_update_failure_pattern(
+        self,
+        pattern_hash: str,
+        template_id: str,
+        failure_class: str,
+        now_iso: str,
+        systemic_threshold: int = 3,
+        systemic_window_days: int = 7,
+    ) -> Dict[str, Any]:
+        """Upsert a failure pattern record and mark as systemic when threshold exceeded.
+
+        Inserts a new row on the first occurrence of *pattern_hash* + *template_id*.
+        On subsequent occurrences the ``occurrence_count`` and ``last_seen_at``
+        columns are updated atomically.  The ``is_systemic`` flag is set to
+        ``1`` when ``occurrence_count`` reaches *systemic_threshold* **and** the
+        elapsed time between ``first_seen_at`` and *now_iso* does not exceed
+        *systemic_window_days*.
+
+        Args:
+            pattern_hash:        SHA-256 hex digest of the normalised error message.
+            template_id:         Template identifier the failure belongs to.
+            failure_class:       String value of the :class:`FailureClass` enum.
+            now_iso:             Current timestamp in ISO-8601 format.
+            systemic_threshold:  Minimum occurrences to be considered systemic
+                                 (default ``3``).
+            systemic_window_days: Maximum age (in days) of the first occurrence
+                                  for the pattern to still be considered systemic
+                                  (default ``7``).
+
+        Returns:
+            The upserted row as a ``dict``, including the updated
+            ``occurrence_count`` and ``is_systemic`` flag.
+        """
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO failure_patterns
+                    (pattern_hash, template_id, failure_class, occurrence_count,
+                     is_systemic, first_seen_at, last_seen_at)
+                VALUES (?, ?, ?, 1, 0, ?, ?)
+                ON CONFLICT(pattern_hash, template_id) DO UPDATE SET
+                    occurrence_count = occurrence_count + 1,
+                    last_seen_at = excluded.last_seen_at,
+                    is_systemic = CASE
+                        WHEN (occurrence_count + 1) >= ?
+                             AND (julianday(excluded.last_seen_at)
+                                  - julianday(first_seen_at)) <= ?
+                        THEN 1
+                        ELSE is_systemic
+                    END
+                """,
+                (
+                    pattern_hash, template_id, failure_class, now_iso, now_iso,
+                    systemic_threshold, systemic_window_days,
+                ),
+            )
+            cursor = conn.execute(
+                "SELECT * FROM failure_patterns WHERE pattern_hash = ? AND template_id = ?",
+                (pattern_hash, template_id),
+            )
+            row = cursor.fetchone()
+        return self._row_to_dict(row) if row else {}
+
+    def get_failure_patterns(
+        self,
+        template_id: Optional[str] = None,
+        systemic_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """List failure patterns with optional filtering and pagination.
+
+        Args:
+            template_id:   If set, return only patterns for this template.
+            systemic_only: If ``True``, return only systemic patterns
+                           (``is_systemic = 1``).
+            limit:         Maximum rows to return (default ``100``).
+            offset:        Rows to skip for pagination (default ``0``).
+
+        Returns:
+            List of failure pattern dicts ordered by ``last_seen_at DESC``.
+        """
+        clauses: List[str] = []
+        params: List[Any] = []
+
+        if template_id is not None:
+            clauses.append("template_id = ?")
+            params.append(template_id)
+        if systemic_only:
+            clauses.append("is_systemic = 1")
+
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.extend([limit, offset])
+
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                f"SELECT * FROM failure_patterns {where} "
+                f"ORDER BY last_seen_at DESC LIMIT ? OFFSET ?",
+                params,
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
 
     def get_routing_decisions(self, run_id: str) -> List[Dict]:
         """Return all routing decision rows for a given pipeline run.

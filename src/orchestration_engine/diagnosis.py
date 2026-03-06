@@ -8,14 +8,17 @@ CRUD methods in db.py.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 import os
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 
 class FailureClass(str, Enum):
@@ -296,6 +299,7 @@ class DiagnosisEngine:
         run_id: str,
         error_message: Optional[str] = None,
         output_dir: Optional[str] = None,
+        template_id: Optional[str] = None,
     ) -> DiagnosisResult:
         """Diagnose a failed pipeline run.
 
@@ -305,7 +309,9 @@ class DiagnosisEngine:
         2. Build and send a structured prompt to the LLM via *executor*.
         3. Parse and validate the JSON response.
         4. Persist the :class:`DiagnosisResult` via ``db.insert_diagnosis()``.
-        5. Return the persisted result.
+        5. Track the failure pattern via :class:`FailurePatternTracker` when
+           *template_id* is provided (Issue #3.1.3).
+        6. Return the persisted result.
 
         On any executor or parse failure, a safe fallback
         ``ESCALATE_TO_HUMAN`` result is persisted and returned so callers
@@ -393,4 +399,153 @@ class DiagnosisEngine:
         )
 
         self._db.insert_diagnosis(final.to_db_dict(run_id))
+
+        # Track failure pattern per template for systemic-failure detection (Issue #3.1.3).
+        if template_id:
+            try:
+                tracker = FailurePatternTracker(db=self._db)
+                tracker.track(
+                    template_id=template_id,
+                    failure_class=final.failure_class.value,
+                    error_message=error_message or "",
+                )
+            except Exception as exc:
+                _logger.warning(
+                    "FailurePatternTracker.track failed (non-fatal): %s", exc
+                )
+
         return final
+
+
+# ---------------------------------------------------------------------------
+# Failure pattern tracking (Issue #3.1.3)
+# ---------------------------------------------------------------------------
+
+# Regex patterns used to normalise error messages before hashing.
+# Stripping these volatile tokens ensures that two errors with the same
+# root cause but different paths, IDs, or addresses hash to the same bucket.
+_NORMALISE_PATTERNS: list[tuple[str, str]] = [
+    # UUIDs (e.g. run-abc123-def456)
+    (r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "<uuid>"),
+    # Hex addresses / hashes (8+ hex digits)
+    (r"\b[0-9a-fA-F]{8,}\b", "<hex>"),
+    # File-system paths
+    (r"(/[\w.\-]+)+", "<path>"),
+    # Windows-style paths
+    (r"[A-Za-z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*[^\\/:*?\"<>|\r\n]*", "<path>"),
+    # Bare integers (line numbers, ports, etc.)
+    (r"\b\d{2,}\b", "<int>"),
+]
+
+
+def _normalise_error(error_message: str) -> str:
+    """Return a normalised, lower-cased version of *error_message*.
+
+    Strips volatile tokens (UUIDs, paths, hex addresses, large integers) so
+    that semantically identical errors from different runs hash consistently.
+
+    Args:
+        error_message: Raw error string from a failed pipeline run.
+
+    Returns:
+        Normalised string suitable for stable hashing.
+    """
+    msg = error_message.lower().strip()
+    for pattern, replacement in _NORMALISE_PATTERNS:
+        msg = re.sub(pattern, replacement, msg)
+    # Collapse runs of whitespace for stability
+    return re.sub(r"\s+", " ", msg)
+
+
+class FailurePatternTracker:
+    """Tracks recurring failure signatures per template (Issue #3.1.3).
+
+    Each call to :meth:`track` normalises the error message, derives a
+    stable SHA-256 hash, and upserts a record in the ``failure_patterns``
+    table via :meth:`Database.insert_or_update_failure_pattern`.
+
+    A pattern is flagged as **systemic** when the same (hash, template_id)
+    pair accumulates more than :attr:`SYSTEMIC_THRESHOLD` occurrences within
+    :attr:`SYSTEMIC_WINDOW_DAYS` days.  A warning is logged whenever a
+    pattern crosses into systemic territory.
+
+    Usage::
+
+        tracker = FailurePatternTracker(db=db)
+        record = tracker.track(
+            template_id="coding-pipeline-v1",
+            failure_class="timeout",
+            error_message="Phase 'build' timed out after 600s",
+        )
+        if record.get("is_systemic"):
+            alert_operator(record)
+    """
+
+    #: Minimum occurrence count within the window to flag a pattern as systemic.
+    SYSTEMIC_THRESHOLD: int = 3
+    #: Sliding window (days) within which occurrences must cluster to be systemic.
+    SYSTEMIC_WINDOW_DAYS: int = 7
+
+    def __init__(self, db: Any) -> None:
+        """Initialise the tracker.
+
+        Args:
+            db: A :class:`~orchestration_engine.db.Database` instance used to
+                persist and query failure pattern records.
+        """
+        self._db = db
+        self._logger = logging.getLogger(__name__)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def track(
+        self,
+        template_id: str,
+        failure_class: str,
+        error_message: str,
+    ) -> Dict[str, Any]:
+        """Record an occurrence of a failure pattern and return the upserted row.
+
+        The error message is normalised and hashed before being stored so that
+        minor variations (different paths, run IDs, line numbers) are treated
+        as the same pattern.
+
+        Args:
+            template_id:   Identifier of the pipeline template that failed.
+            failure_class: String value of the :class:`FailureClass` for this
+                           failure (e.g. ``"timeout"``, ``"infra_issue"``).
+            error_message: Raw error message from the failed pipeline run.
+
+        Returns:
+            The upserted ``failure_patterns`` row as a dict.  Key fields:
+
+            * ``pattern_hash`` — SHA-256 of the normalised message.
+            * ``occurrence_count`` — total occurrences so far.
+            * ``is_systemic`` — ``1`` if the pattern is considered systemic.
+        """
+        normalised = _normalise_error(error_message)
+        pattern_hash = hashlib.sha256(normalised.encode("utf-8")).hexdigest()
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        record = self._db.insert_or_update_failure_pattern(
+            pattern_hash=pattern_hash,
+            template_id=template_id,
+            failure_class=failure_class,
+            now_iso=now_iso,
+            systemic_threshold=self.SYSTEMIC_THRESHOLD,
+            systemic_window_days=self.SYSTEMIC_WINDOW_DAYS,
+        )
+
+        if record.get("is_systemic"):
+            self._logger.warning(
+                "Systemic failure detected — template=%s  class=%s  "
+                "occurrences=%s  hash=%s",
+                template_id,
+                failure_class,
+                record.get("occurrence_count"),
+                pattern_hash[:12],
+            )
+
+        return record
