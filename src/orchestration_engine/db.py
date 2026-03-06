@@ -35,6 +35,7 @@ TERMINAL_STATUSES: frozenset = frozenset({
     "scoring_failed",
     "pending_review",
     "rejected",
+    "escalated",   # Issue #396: retry was escalated — original run is terminal
 })
 
 
@@ -1306,6 +1307,28 @@ class Database:
             )
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
+
+    def count_retries_for_run(self, original_run_id: str) -> int:
+        """Return the number of retry runs spawned for *original_run_id*.
+
+        Counts all rows in ``pipeline_runs`` where ``retry_of_run_id`` matches
+        the given *original_run_id*, regardless of their current status.
+
+        Args:
+            original_run_id: The run ID of the first-attempt (original) run.
+
+        Returns:
+            Integer count of retry runs.  Returns ``0`` when no retries have
+            been spawned yet or when *original_run_id* does not exist.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT COUNT(*) FROM pipeline_runs WHERE retry_of_run_id = ?",
+                (original_run_id,),
+            )
+            row = cursor.fetchone()
+        return row[0] if row else 0
 
     def count_pipeline_runs(
         self,

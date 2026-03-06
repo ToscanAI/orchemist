@@ -179,17 +179,28 @@ class AdaptiveRetryEngine:
 
     def __init__(
         self,
+        db: Optional[Any] = None,
+        db_path: Optional[str] = None,
         strategy_map: Optional[Dict[FailureClass, Optional[RetryStrategy]]] = None,
         timeout_multiplier: float = DEFAULT_TIMEOUT_MULTIPLIER,
     ) -> None:
         """Initialise the engine.
 
         Args:
+            db:                 :class:`~orchestration_engine.db.Database` instance.
+                                Required only by :meth:`plan_and_execute`; pass
+                                ``None`` when using lower-level methods (:meth:`plan`,
+                                :meth:`build_retry_input`) without I/O.
+            db_path:            Filesystem path to the SQLite DB file.  Passed to
+                                the retry subprocess so it connects to the same
+                                database.  Required only by :meth:`plan_and_execute`.
             strategy_map:       Custom :class:`FailureClass` → :class:`RetryStrategy`
                                 mapping.  Defaults to :data:`DEFAULT_STRATEGY_MAP`.
             timeout_multiplier: Multiplier applied to the phase timeout when
                                 strategy is ``INCREASE_TIMEOUT``.  Default ``2.0``.
         """
+        self._db = db
+        self._db_path = db_path
         self._strategy_map = strategy_map if strategy_map is not None else DEFAULT_STRATEGY_MAP
         self._timeout_multiplier = timeout_multiplier
 
@@ -302,6 +313,209 @@ class AdaptiveRetryEngine:
             f"[RETRY CONTEXT] The previous run failed with diagnosis: "
             f"{diagnosis.failure_class.value}. "
             f"Details: {explanation}"
+        )
+
+    # ------------------------------------------------------------------
+    # Cost estimation helpers (Issue #396, 3.2.3)
+    # ------------------------------------------------------------------
+
+    #: Heuristic per-run cost estimates for each model tier.
+    #: Used by :meth:`estimate_cost` to decide whether a retry is budget-safe.
+    MODEL_COST_HEURISTIC: Dict[str, float] = {
+        "claude-haiku-4-5-20241022": 0.05,
+        "claude-sonnet-4-6": 0.15,
+        "claude-opus-4-6": 0.50,
+    }
+
+    @staticmethod
+    def estimate_cost(model_override: Optional[str]) -> float:
+        """Return an estimated USD cost for a retry run using *model_override*.
+
+        Uses :attr:`MODEL_COST_HEURISTIC` for known models.  Falls back to the
+        most expensive tier when the model is ``None`` or unrecognised — this is
+        a *safe* default: it errs on the side of caution so unknown models are
+        not accidentally cleared by the budget guard.
+
+        Heuristics:
+            * ``"claude-haiku-4-5-20241022"`` → $0.05
+            * ``"claude-sonnet-4-6"``         → $0.15
+            * ``"claude-opus-4-6"``           → $0.50
+            * ``None`` or unknown             → $0.50 (max / safe default)
+
+        Args:
+            model_override: Model identifier string, or ``None`` when no
+                            escalation is specified.
+
+        Returns:
+            Estimated cost in USD as a float.
+        """
+        heuristics = AdaptiveRetryEngine.MODEL_COST_HEURISTIC
+        if model_override is None:
+            return max(heuristics.values())
+        return heuristics.get(model_override, max(heuristics.values()))
+
+    def count_existing_retries(self, original_run_id: str) -> int:
+        """Return the number of retry runs already spawned for *original_run_id*.
+
+        Delegates to :meth:`~orchestration_engine.db.Database.count_retries_for_run`.
+        Requires ``self._db`` to be set (pass ``db=`` to :meth:`__init__`).
+
+        Args:
+            original_run_id: The run ID of the first-attempt run.
+
+        Returns:
+            Integer count of existing retry runs.
+
+        Raises:
+            RuntimeError: If ``self._db`` is ``None`` (engine initialised without a DB).
+        """
+        if self._db is None:
+            raise RuntimeError(
+                "count_existing_retries() requires db; pass db= to AdaptiveRetryEngine()."
+            )
+        return self._db.count_retries_for_run(original_run_id)
+
+    def plan_and_execute(
+        self,
+        diagnosis: DiagnosisResult,
+        run: Dict[str, Any],
+        run_id: str,
+        max_retries: int = 3,
+    ) -> None:
+        """End-to-end retry orchestration: plan → budget check → cap check → spawn.
+
+        Steps:
+        1. Resolve *original_run_id* (traces chained retries back to the root).
+        2. Derive a :class:`RetryPlan` from *diagnosis* via :meth:`plan`.
+        3. Check the retry cap; escalate if *max_retries* is reached.
+        4. Check remaining budget from ``input_json``; escalate if cost would exceed it.
+        5. Build modified input via :meth:`build_retry_input`.
+        6. Insert a new ``pipeline_runs`` row in the DB.
+        7. Spawn a detached daemon subprocess for the new run.
+
+        Non-retryable failures and budget/cap violations all result in the
+        current run being set to ``status='escalated'`` for human review.
+
+        Args:
+            diagnosis:   :class:`~orchestration_engine.diagnosis.DiagnosisResult`
+                         from :class:`~orchestration_engine.diagnosis.DiagnosisEngine`.
+            run:         The failed ``pipeline_runs`` DB row dict.
+            run_id:      The failed run's ``run_id``.
+            max_retries: Hard cap on total retry attempts per original run.
+                         Default ``3``.
+
+        Raises:
+            RuntimeError: If ``self._db`` or ``self._db_path`` are ``None``.
+        """
+        import subprocess
+        import sys
+        import uuid
+        from pathlib import Path as _Path
+
+        if self._db is None or self._db_path is None:
+            raise RuntimeError(
+                "plan_and_execute() requires db and db_path; "
+                "pass them to AdaptiveRetryEngine()."
+            )
+
+        # 1. Resolve original run ID (handle chained retries correctly).
+        original_run_id: str = run.get("retry_of_run_id") or run_id
+
+        # 2. Derive the current model from input_json for escalation decisions.
+        current_model: Optional[str] = None
+        try:
+            input_data = json.loads(run.get("input_json") or "{}")
+            current_model = input_data.get("model_override")
+        except Exception:
+            input_data = {}
+
+        plan = self.plan(diagnosis, original_run_id=original_run_id, current_model=current_model)
+
+        if plan is None:
+            # Non-retryable failure class (e.g. BUDGET_EXCEEDED).
+            _logger.warning(
+                "Non-retryable failure for run %s (%s) — escalating to human.",
+                run_id,
+                diagnosis.failure_class.value,
+            )
+            self._db.update_pipeline_run(run_id, status="escalated")
+            return
+
+        # 3. Check retry cap.
+        existing_count = self.count_existing_retries(original_run_id)
+        if existing_count >= max_retries:
+            _logger.warning(
+                "Retry cap reached for run %s (%d/%d retries) — escalating to human.",
+                original_run_id,
+                existing_count,
+                max_retries,
+            )
+            self._db.update_pipeline_run(run_id, status="escalated")
+            return
+
+        # 4. Check budget (read from input_json; 0 means no budget guard).
+        try:
+            budget = float(
+                input_data.get("budget_usd") or input_data.get("cost_limit_usd") or 0
+            )
+        except Exception:
+            budget = 0.0
+
+        if budget > 0:
+            estimated_cost = self.estimate_cost(plan.model_override or current_model)
+            if estimated_cost > budget:
+                _logger.warning(
+                    "Retry for run %s would cost ~$%.2f but budget is $%.2f — escalating.",
+                    run_id,
+                    estimated_cost,
+                    budget,
+                )
+                self._db.update_pipeline_run(run_id, status="escalated")
+                return
+
+        # 5. Build modified input JSON.
+        retry_input = self.build_retry_input(plan, run, diagnosis=diagnosis)
+        retry_run_id = f"retry-{uuid.uuid4().hex[:8]}-{run_id[:8]}"
+
+        original_output_dir = run.get("output_dir", "/tmp/orch-out")
+        retry_output_dir = str(_Path(original_output_dir).parent / retry_run_id)
+
+        # 6. Insert new pipeline_runs row.
+        self._db.insert_pipeline_run(
+            {
+                "run_id": retry_run_id,
+                "template_path": run["template_path"],
+                "template_id": run.get("template_id", ""),
+                "input_json": json.dumps(retry_input),
+                "mode": run.get("mode", "openclaw"),
+                "output_dir": retry_output_dir,
+                "status": "pending",
+                "gateway_url": run.get("gateway_url"),
+                "skip_scoring": run.get("skip_scoring", 0),
+                "retry_of_run_id": original_run_id,
+                "retry_strategy": plan.strategy.value,
+            }
+        )
+
+        # 7. Spawn daemon subprocess (non-blocking, fully detached).
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "orchestration_engine.daemon",
+                retry_run_id,
+                str(self._db_path),
+            ],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        _logger.info(
+            "Retry spawned: retry_run_id=%s original=%s strategy=%s pid=%d",
+            retry_run_id,
+            original_run_id,
+            plan.strategy.value,
+            proc.pid,
         )
 
     # ------------------------------------------------------------------

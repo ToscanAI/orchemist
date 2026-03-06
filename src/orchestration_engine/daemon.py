@@ -277,12 +277,13 @@ def run_daemon(run_id: str, db_path: str) -> None:
             error_message=msg,
         )
         # --- Diagnose failure (non-fatal) ---
+        _diagnosis = None
         try:
             from .diagnosis import DiagnosisEngine
             _diag_executor = runner.executors[0] if runner.executors else None
             if _diag_executor is not None:
                 _diag_engine = DiagnosisEngine(executor=_diag_executor, db=db)
-                _diag_engine.diagnose(
+                _diagnosis = _diag_engine.diagnose(
                     run_id,
                     error_message=msg,
                     output_dir=str(output_dir),
@@ -291,6 +292,16 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 logger.info("Diagnosis complete for run %s", run_id)
         except Exception as _diag_exc:
             logger.warning("Diagnosis failed (non-fatal): %s", _diag_exc)
+
+        # --- Adaptive retry (#3.2.3) ---
+        if _diagnosis is not None:
+            try:
+                from .adaptive_retry import AdaptiveRetryEngine
+                _retry_engine = AdaptiveRetryEngine(db=db, db_path=db_path)
+                _retry_engine.plan_and_execute(_diagnosis, run, run_id)
+            except Exception as _retry_exc:
+                logger.warning("Adaptive retry failed (non-fatal): %s", _retry_exc)
+
         _remove_pid_file(pid_path)
         sys.exit(2)
 
