@@ -22,11 +22,12 @@ Typical usage::
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from .diagnosis import DiagnosisResult, FailureClass, Remediation
 
@@ -302,3 +303,187 @@ class AdaptiveRetryEngine:
             f"{diagnosis.failure_class.value}. "
             f"Details: {explanation}"
         )
+
+    # ------------------------------------------------------------------
+    # Strategy executor methods (Issue #395, 3.2.2)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _apply_retry_unchanged(plan: RetryPlan, input_json: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a deep copy of *input_json* with no modifications.
+
+        Used when the failure is transient or flaky and the best action is
+        to rerun with an identical configuration.
+
+        Args:
+            plan:       The :class:`RetryPlan` (unused, kept for interface consistency).
+            input_json: The original pipeline input configuration dict.
+
+        Returns:
+            Deep copy of *input_json*.
+        """
+        return copy.deepcopy(input_json)
+
+    @staticmethod
+    def _apply_escalate_model(plan: RetryPlan, input_json: Dict[str, Any]) -> Dict[str, Any]:
+        """Return *input_json* with the model escalated to ``plan.model_override``.
+
+        Sets the ``model_override`` key so that the daemon integration (#3.2.3)
+        can pass it to the pipeline runner when relaunching the retry run.
+
+        Args:
+            plan:       The :class:`RetryPlan` carrying the target model identifier
+                        in :attr:`~RetryPlan.model_override`.
+            input_json: The original pipeline input configuration dict.
+
+        Returns:
+            Deep copy of *input_json* with ``model_override`` set.
+        """
+        result = copy.deepcopy(input_json)
+        result["model_override"] = plan.model_override
+        return result
+
+    @staticmethod
+    def _apply_increase_timeout(plan: RetryPlan, input_json: Dict[str, Any]) -> Dict[str, Any]:
+        """Return *input_json* with timeout fields scaled by ``plan.timeout_multiplier``.
+
+        Modifies ``timeout_seconds`` (and ``timeout_override`` when present) by
+        multiplying their current value by :attr:`~RetryPlan.timeout_multiplier`.
+        When neither key exists the multiplier is stored under
+        ``timeout_override`` so the runner can apply it on relaunch.
+
+        Args:
+            plan:       The :class:`RetryPlan` carrying the desired multiplier.
+            input_json: The original pipeline input configuration dict.
+
+        Returns:
+            Deep copy of *input_json* with timeout fields scaled.
+        """
+        result = copy.deepcopy(input_json)
+        multiplier = plan.timeout_multiplier
+
+        if "timeout_seconds" in result and isinstance(result["timeout_seconds"], (int, float)):
+            result["timeout_seconds"] = int(result["timeout_seconds"] * multiplier)
+        elif "timeout_override" in result and isinstance(result["timeout_override"], (int, float)):
+            result["timeout_override"] = int(result["timeout_override"] * multiplier)
+        else:
+            # No existing timeout key — record multiplier so downstream can apply it
+            result["timeout_multiplier"] = multiplier
+
+        return result
+
+    @staticmethod
+    def _apply_rephrase_prompt(
+        plan: RetryPlan,
+        input_json: Dict[str, Any],
+        diagnosis: DiagnosisResult,
+    ) -> Dict[str, Any]:
+        """Return *input_json* with failure context injected into prompt fields.
+
+        Appends a structured ``[RETRY CONTEXT]`` block to the ``extra_context``
+        key (creating it when absent).  Downstream phase prompts that include
+        ``{{ extra_context }}`` or ``{{ input.extra_context }}`` will
+        automatically receive the retry hint.
+
+        Args:
+            plan:       The :class:`RetryPlan` (unused, kept for interface
+                        consistency; callers that pre-computed context can pass
+                        it via *input_json* directly).
+            input_json: The original pipeline input configuration dict.
+            diagnosis:  The :class:`DiagnosisResult` for the failed run, used
+                        to explain *why* the prompt was problematic.
+
+        Returns:
+            Deep copy of *input_json* with ``extra_context`` set/appended.
+        """
+        result = copy.deepcopy(input_json)
+
+        explanation = diagnosis.explanation or (
+            "The previous run failed due to a poorly structured prompt. "
+            "Please clarify ambiguous requirements and add concrete examples."
+        )
+        retry_block = (
+            f"\n\n[RETRY CONTEXT] Previous run failed with diagnosis: "
+            f"{diagnosis.failure_class.value}. "
+            f"Details: {explanation}. "
+            f"Please rephrase or clarify your response to address this issue."
+        )
+
+        existing = result.get("extra_context") or ""
+        result["extra_context"] = (existing + retry_block).strip()
+        return result
+
+    # ------------------------------------------------------------------
+    # Public dispatcher (Issue #395, 3.2.2)
+    # ------------------------------------------------------------------
+
+    def build_retry_input(
+        self,
+        plan: RetryPlan,
+        original_run: Dict[str, Any],
+        diagnosis: Optional[DiagnosisResult] = None,
+    ) -> Dict[str, Any]:
+        """Translate a :class:`RetryPlan` into a modified input config dict.
+
+        This is the primary entry point for the daemon integration (#3.2.3).
+        It reads the ``input_json`` field from *original_run* (a DB pipeline-run
+        row), deep-copies it, applies the appropriate executor for
+        ``plan.strategy``, and returns the result ready for
+        :func:`~orchestration_engine.pipeline_runner.run_pipeline`.
+
+        Args:
+            plan:         The :class:`RetryPlan` produced by :meth:`plan`.
+            original_run: DB row dict for the failed run.  Must contain an
+                          ``input_json`` key holding either a JSON string or an
+                          already-parsed dict.
+            diagnosis:    The :class:`DiagnosisResult` for the failed run.
+                          Required when ``plan.strategy`` is
+                          :attr:`RetryStrategy.REPHRASE_PROMPT` or
+                          :attr:`RetryStrategy.ADD_CONTEXT`.  ``None`` is
+                          accepted for other strategies.
+
+        Returns:
+            Modified input configuration dict ready for the pipeline runner.
+
+        Raises:
+            ValueError: If ``original_run`` is missing the ``input_json`` key,
+                        or if *diagnosis* is ``None`` when required by the
+                        chosen strategy.
+        """
+        if "input_json" not in original_run:
+            raise ValueError(
+                "original_run must contain an 'input_json' key; "
+                f"got keys: {list(original_run.keys())}"
+            )
+
+        raw = original_run["input_json"]
+        if isinstance(raw, str):
+            input_json: Dict[str, Any] = json.loads(raw)
+        else:
+            input_json = copy.deepcopy(raw)
+
+        strategy = plan.strategy
+
+        if strategy == RetryStrategy.RETRY_UNCHANGED:
+            return self._apply_retry_unchanged(plan, input_json)
+
+        if strategy == RetryStrategy.ESCALATE_MODEL:
+            return self._apply_escalate_model(plan, input_json)
+
+        if strategy == RetryStrategy.INCREASE_TIMEOUT:
+            return self._apply_increase_timeout(plan, input_json)
+
+        if strategy in (RetryStrategy.REPHRASE_PROMPT, RetryStrategy.ADD_CONTEXT):
+            if diagnosis is None:
+                raise ValueError(
+                    f"strategy={strategy.value!r} requires a DiagnosisResult; "
+                    "pass diagnosis= to build_retry_input()"
+                )
+            return self._apply_rephrase_prompt(plan, input_json, diagnosis)
+
+        # SPLIT_TASK is deferred to a future issue; fall back to unchanged.
+        _logger.warning(
+            "Strategy %s has no executor implementation yet; falling back to RETRY_UNCHANGED.",
+            strategy.value,
+        )
+        return self._apply_retry_unchanged(plan, input_json)
