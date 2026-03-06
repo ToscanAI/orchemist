@@ -124,6 +124,44 @@ def _check_rate_limit(trigger_id: str, rate_limit: int, db: Any) -> bool:
     return count >= rate_limit
 
 
+class SlidingWindowRateLimiter:
+    """A named, unit-testable sliding-window rate limiter for webhook triggers.
+
+    Uses a 60-second sliding window backed by the ``webhook_invocations``
+    table in the DB.  Delegates to the same logic as ``_check_rate_limit()``
+    but wraps it in a proper class so it can be tested and extended
+    independently.
+
+    Example::
+
+        limiter = SlidingWindowRateLimiter(db)
+        if limiter.check(trigger_id, rate_limit):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    """
+
+    def __init__(self, db: Any) -> None:
+        """Initialise with a DB instance.
+
+        Args:
+            db: :class:`~orchestration_engine.db.Database` instance used to
+                query invocation counts and record new invocations.
+        """
+        self._db = db
+
+    def check(self, trigger_id: str, rate_limit: int) -> bool:
+        """Return ``True`` if the rate limit is exceeded, ``False`` otherwise.
+
+        Args:
+            trigger_id: The trigger identifier to check.
+            rate_limit: Maximum allowed invocations per minute (0 = unlimited).
+
+        Returns:
+            ``True`` when the caller should block the request (429).
+            ``False`` when the invocation is allowed.
+        """
+        return _check_rate_limit(trigger_id, rate_limit, self._db)
+
+
 def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (type hint only)
     """Create and return the REST API FastAPI application.
 
@@ -254,6 +292,100 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         created: bool
         """``True`` when a new file was written; ``False`` when an existing file
         was overwritten (update)."""
+
+    # ------------------------------------------------------------------
+    # Pydantic models — Trigger CRUD
+    # ------------------------------------------------------------------
+
+    class TriggerCreateRequest(BaseModel):
+        """Body for POST /api/v1/triggers — create a new webhook trigger."""
+
+        id: Optional[str] = None
+        """Trigger identifier.  When omitted a unique ID is generated
+        automatically (``trig-<12 hex chars>``)."""
+
+        template_id: str
+        """ID of the pipeline template to run when this trigger fires."""
+
+        mode: str = "async"
+        """Execution mode: ``'sync'``, ``'async'``, or ``'fire_and_forget'``."""
+
+        secret: Optional[str] = None
+        """Optional shared HMAC secret for request verification (write-only —
+        never returned in responses)."""
+
+        rate_limit: int = 0
+        """Maximum requests per minute (0 = unlimited)."""
+
+        input_map: Dict[str, Any] = {}
+        """Maps webhook payload fields to pipeline input variables."""
+
+        filters: List[Dict[str, Any]] = []
+        """List of filter conditions evaluated against incoming payloads."""
+
+        enabled: bool = True
+        """Whether this trigger is active.  Disabled triggers silently skip."""
+
+    class TriggerUpdateRequest(BaseModel):
+        """Body for PUT /api/v1/triggers/{id} — update an existing trigger.
+
+        All fields are optional; only provided fields are updated.
+        """
+
+        mode: Optional[str] = None
+        secret: Optional[str] = None
+        rate_limit: Optional[int] = None
+        input_map: Optional[Dict[str, Any]] = None
+        filters: Optional[List[Dict[str, Any]]] = None
+        enabled: Optional[bool] = None
+
+    class TriggerResponse(BaseModel):
+        """Serialised trigger record returned by the API.
+
+        Note:
+            The ``secret`` field is always redacted to ``'***'`` in responses.
+            Secrets are write-only.
+        """
+
+        id: str
+        template_id: str
+        mode: str
+        secret: Optional[str]
+        """Always ``'***'`` when a secret is configured, ``None`` otherwise."""
+        rate_limit: int
+        input_map: Dict[str, Any]
+        filters: List[Dict[str, Any]]
+        enabled: bool
+        created_at: Optional[str]
+
+    # ------------------------------------------------------------------
+    # Helper — redact secret and build TriggerResponse dict from a DB row
+    # ------------------------------------------------------------------
+
+    def _trigger_to_response(row: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert a DB trigger row dict to a TriggerResponse-compatible dict.
+
+        The ``secret`` field is redacted to ``'***'`` when set, to enforce
+        write-only semantics.
+
+        Args:
+            row: A trigger row dict as returned by ``db.get_trigger()`` or
+                 ``db.list_triggers()``.
+
+        Returns:
+            A dict safe to serialise as a ``TriggerResponse``.
+        """
+        return {
+            "id": row["id"],
+            "template_id": row["template_id"],
+            "mode": row.get("mode", "async"),
+            "secret": "***" if row.get("secret") else None,
+            "rate_limit": row.get("rate_limit", 0),
+            "input_map": row.get("input_map") or {},
+            "filters": row.get("filters") or [],
+            "enabled": bool(row.get("enabled", True)),
+            "created_at": row.get("created_at"),
+        }
 
     # ------------------------------------------------------------------
     # Helper — build RunResponse dict from a DB row
@@ -1060,9 +1192,10 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                     detail="Invalid or missing webhook signature",
                 )
 
-        # 5. Rate-limit check
+        # 5. Rate-limit check (sliding-window, 60-second window)
         rate_limit = trigger_row.get("rate_limit", 0)
-        if _check_rate_limit(trigger_id, rate_limit, db):
+        limiter = SlidingWindowRateLimiter(db)
+        if limiter.check(trigger_id, rate_limit):
             raise HTTPException(
                 status_code=429,
                 detail=f"Rate limit of {rate_limit} req/min exceeded for trigger '{trigger_id}'",
@@ -1145,6 +1278,199 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             )
 
         return JSONResponse(run_dict, status_code=201)
+
+    # ------------------------------------------------------------------
+    # Trigger CRUD endpoints
+    # ------------------------------------------------------------------
+
+    @app.post("/api/v1/triggers", status_code=201)
+    async def create_trigger(body: TriggerCreateRequest) -> JSONResponse:
+        """Create a new webhook trigger.
+
+        Args:
+            body: ``TriggerCreateRequest`` JSON body.
+
+        Returns:
+            - **201** with a ``TriggerResponse`` JSON object on success.
+            - **400** when the trigger config fails validation.
+            - **409** when a trigger with the same ``id`` already exists.
+        """
+        from orchestration_engine.webhooks import TriggerConfig, TriggerValidationError
+
+        db = Database(Path(effective_db_path))
+
+        trigger_id = body.id or TriggerConfig.generate_id()
+
+        try:
+            cfg = TriggerConfig(
+                id=trigger_id,
+                template_id=body.template_id,
+                mode=body.mode,
+                secret=body.secret,
+                rate_limit=body.rate_limit,
+                input_map=body.input_map,
+                filters=body.filters,
+                enabled=body.enabled,
+            )
+        except TriggerValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        import sqlite3
+        try:
+            db.create_trigger(cfg.to_dict())
+        except sqlite3.IntegrityError:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Trigger with id '{trigger_id}' already exists",
+            )
+
+        row = db.get_trigger(trigger_id)
+        return JSONResponse(_trigger_to_response(row), status_code=201)
+
+    @app.get("/api/v1/triggers")
+    async def list_triggers_endpoint(
+        template_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        enabled: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> JSONResponse:
+        """List webhook triggers with optional filtering and pagination.
+
+        Query parameters:
+            template_id: Filter by template id.
+            mode: Filter by execution mode.
+            enabled: ``'true'`` / ``'false'`` to filter by enabled state.
+            limit: Maximum number of results (default 100).
+            offset: Number of results to skip (for pagination).
+
+        Returns:
+            JSON object with ``items`` array.
+        """
+        db = Database(Path(effective_db_path))
+
+        # Parse the enabled query param (string) into Optional[bool]
+        enabled_filter: Optional[bool] = None
+        if enabled is not None:
+            if enabled.lower() == "true":
+                enabled_filter = True
+            elif enabled.lower() == "false":
+                enabled_filter = False
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Query param 'enabled' must be 'true' or 'false'",
+                )
+
+        rows = db.list_triggers(
+            template_id=template_id,
+            mode=mode,
+            enabled=enabled_filter,
+            limit=limit,
+            offset=offset,
+        )
+        return JSONResponse({"items": [_trigger_to_response(r) for r in rows]})
+
+    @app.get("/api/v1/triggers/{trigger_id}")
+    async def get_trigger_endpoint(trigger_id: str) -> JSONResponse:
+        """Get a single webhook trigger by id.
+
+        Path parameter:
+            trigger_id: Trigger identifier.
+
+        Returns:
+            - **200** with a ``TriggerResponse`` JSON object.
+            - **404** when the trigger is not found.
+        """
+        db = Database(Path(effective_db_path))
+        row = db.get_trigger(trigger_id)
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Trigger '{trigger_id}' not found",
+            )
+        return JSONResponse(_trigger_to_response(row))
+
+    @app.put("/api/v1/triggers/{trigger_id}")
+    async def update_trigger_endpoint(
+        trigger_id: str, body: TriggerUpdateRequest
+    ) -> JSONResponse:
+        """Update an existing webhook trigger.
+
+        Only fields that are explicitly provided in the request body are
+        updated; omitted fields retain their current values.
+
+        Path parameter:
+            trigger_id: Trigger identifier.
+
+        Args:
+            body: ``TriggerUpdateRequest`` JSON body.
+
+        Returns:
+            - **200** with the updated ``TriggerResponse`` JSON object.
+            - **400** when validation fails.
+            - **404** when the trigger is not found.
+        """
+        from orchestration_engine.webhooks import TriggerValidationError
+
+        db = Database(Path(effective_db_path))
+
+        # Verify the trigger exists
+        existing = db.get_trigger(trigger_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Trigger '{trigger_id}' not found",
+            )
+
+        # Build kwargs with only the fields that were provided
+        update_kwargs: Dict[str, Any] = {}
+        if body.mode is not None:
+            update_kwargs["mode"] = body.mode
+        if body.secret is not None:
+            update_kwargs["secret"] = body.secret
+        if body.rate_limit is not None:
+            update_kwargs["rate_limit"] = body.rate_limit
+        if body.input_map is not None:
+            update_kwargs["input_map"] = body.input_map
+        if body.filters is not None:
+            update_kwargs["filters"] = body.filters
+        if body.enabled is not None:
+            update_kwargs["enabled"] = body.enabled
+
+        if update_kwargs:
+            # Validate the merged result before writing
+            from orchestration_engine.webhooks import TriggerConfig
+            merged = {**existing, **update_kwargs}
+            try:
+                TriggerConfig.from_dict(merged)
+            except TriggerValidationError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+
+            db.update_trigger(trigger_id, **update_kwargs)
+
+        row = db.get_trigger(trigger_id)
+        return JSONResponse(_trigger_to_response(row))
+
+    @app.delete("/api/v1/triggers/{trigger_id}", status_code=204)
+    async def delete_trigger_endpoint(trigger_id: str) -> Response:
+        """Delete a webhook trigger.
+
+        Path parameter:
+            trigger_id: Trigger identifier.
+
+        Returns:
+            - **204** (no content) on success.
+            - **404** when the trigger is not found.
+        """
+        db = Database(Path(effective_db_path))
+        deleted = db.delete_trigger(trigger_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Trigger '{trigger_id}' not found",
+            )
+        return Response(status_code=204)
 
     @app.get("/api/v1/runs")
     async def list_runs(
