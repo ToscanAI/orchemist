@@ -24,6 +24,13 @@ from .queue import TaskQueue
 from .db import Database
 from .sequencer import StateMachineSequencer
 from .webhooks import TriggerConfig, TriggerValidationError, VALID_MODES  # noqa: F401
+from .confidence import (  # noqa: F401  # Issue #331.1
+    ConfidenceCalculator,
+    ConfidenceResult,
+    ConfidenceSignal,
+    ConfidenceLevel as RunConfidenceLevel,
+    DEFAULT_WEIGHTS,
+)
 
 __all__ = [
     "__version__",
@@ -31,7 +38,7 @@ __all__ = [
     "__email__",
     # Schemas
     "TaskSpec",
-    "TaskStatus", 
+    "TaskStatus",
     "TaskResult",
     "TaskSummary",
     "OrchestraSpec",
@@ -48,4 +55,10 @@ __all__ = [
     "TriggerConfig",
     "TriggerValidationError",
     "VALID_MODES",
+    # Confidence scoring (Issue #331.1)
+    "ConfidenceCalculator",
+    "ConfidenceResult",
+    "ConfidenceSignal",
+    "RunConfidenceLevel",
+    "DEFAULT_WEIGHTS",
 ]
