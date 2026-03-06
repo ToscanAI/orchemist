@@ -1,0 +1,345 @@
+"""Composite confidence scoring model for orchestration pipeline runs.
+
+This module provides a 3-tier ConfidenceLevel enum (HIGH/MEDIUM/LOW) and a
+ConfidenceCalculator that aggregates multiple signals from task result JSON
+files in a pipeline output directory into a single composite score.
+
+Signal sources (derived from task result files):
+    llm_judge        – Average confidence of review/judge task types.
+    test_pass_rate   – Ratio of non-review tasks whose state == "success".
+    review_quality   – Average confidence across ALL tasks.
+    change_complexity– Inverse of task count: 1 / (1 + num_task_files).
+
+NOTE: This ConfidenceLevel is distinct from schemas.ConfidenceLevel, which is
+a 5-tier (VERY_LOW->VERY_HIGH) enum scoped to individual task results. This
+module's ConfidenceLevel is scoped to a full pipeline run and maps to three
+coarse bands used for downstream routing and reporting.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Optional
+
+# ---------------------------------------------------------------------------
+# Default signal weights (sum to 1.0)
+# ---------------------------------------------------------------------------
+DEFAULT_WEIGHTS: dict[str, float] = {
+    "llm_judge": 0.4,
+    "test_pass_rate": 0.3,
+    "review_quality": 0.2,
+    "change_complexity": 0.1,
+}
+
+
+# ---------------------------------------------------------------------------
+# Enums & data structures
+# ---------------------------------------------------------------------------
+
+class ConfidenceLevel(str, Enum):
+    """3-tier confidence level for a full pipeline run.
+
+    Distinct from ``schemas.ConfidenceLevel`` (5-tier, task-scoped).
+
+    Thresholds:
+        HIGH   >= 0.90
+        MEDIUM >= 0.75
+        LOW     < 0.75
+    """
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+def _score_to_level(score: float) -> ConfidenceLevel:
+    """Map a composite score in [0, 1] to a coarse ConfidenceLevel.
+
+    Args:
+        score: Composite confidence score in the range [0.0, 1.0].
+
+    Returns:
+        ConfidenceLevel.HIGH   if score >= 0.90
+        ConfidenceLevel.MEDIUM if score >= 0.75
+        ConfidenceLevel.LOW    otherwise
+    """
+    if score >= 0.90:
+        return ConfidenceLevel.HIGH
+    if score >= 0.75:
+        return ConfidenceLevel.MEDIUM
+    return ConfidenceLevel.LOW
+
+
+@dataclass
+class ConfidenceSignal:
+    """A single scored signal contributing to the composite confidence.
+
+    Attributes:
+        name:      Logical name of the signal (e.g. "llm_judge").
+        value:     Normalised score in [0, 1] — clamped automatically.
+        weight:    Non-negative weight used in the weighted average.
+        raw_value: The original, un-normalised value before clamping/mapping.
+        source:    Human-readable origin description.
+    """
+
+    name: str
+    value: float
+    weight: float
+    raw_value: Any
+    source: str
+
+    def __post_init__(self) -> None:
+        if self.weight < 0:
+            raise ValueError(
+                f"Signal '{self.name}' weight must be >= 0, got {self.weight}"
+            )
+        # Clamp value to [0, 1]
+        self.value = max(0.0, min(1.0, float(self.value)))
+
+
+@dataclass
+class ConfidenceResult:
+    """Aggregated confidence result for a pipeline run.
+
+    Attributes:
+        signals:          All signals that were successfully extracted.
+        composite_score:  Weighted average of signal values in [0, 1].
+        confidence_level: Coarse tier mapped from composite_score.
+        explanation:      Human-readable breakdown of contributing signals.
+    """
+
+    signals: list[ConfidenceSignal] = field(default_factory=list)
+    composite_score: float = 0.0
+    confidence_level: ConfidenceLevel = ConfidenceLevel.LOW
+    explanation: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Calculator
+# ---------------------------------------------------------------------------
+
+class ConfidenceCalculator:
+    """Computes composite confidence from task result JSON files in an output dir.
+
+    The calculator reads all non-meta (non-underscore-prefixed) ``*.json`` files
+    from the given directory, parses them as task results, and derives up to
+    four signals (llm_judge, test_pass_rate, review_quality, change_complexity).
+
+    Args:
+        weights: Optional override dict merged with DEFAULT_WEIGHTS.
+                 Unknown keys extend the weight table; known keys override.
+    """
+
+    def __init__(self, weights: Optional[dict[str, float]] = None) -> None:
+        self.weights: dict[str, float] = {**DEFAULT_WEIGHTS}
+        if weights:
+            self.weights.update(weights)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def compute_confidence(self, output_dir: Path) -> ConfidenceResult:
+        """Aggregate signals from task result files in *output_dir*.
+
+        Args:
+            output_dir: Path to the pipeline output directory.
+
+        Returns:
+            A populated ConfidenceResult.
+
+        Raises:
+            ValueError: If *output_dir* does not exist.
+        """
+        if not output_dir.exists():
+            raise ValueError(
+                f"Output directory {output_dir} does not exist"
+            )
+
+        # Collect all non-meta JSON files (skip files starting with "_")
+        task_files = sorted(
+            p for p in output_dir.glob("*.json")
+            if not p.name.startswith("_")
+        )
+
+        # Parse each file as a task result dict
+        tasks: list[tuple[str, dict]] = []
+        for path in task_files:
+            try:
+                data = json.loads(path.read_text())
+                if isinstance(data, dict):
+                    tasks.append((path.name, data))
+            except Exception:
+                pass  # Malformed or unreadable files are silently skipped
+
+        signals: list[ConfidenceSignal] = []
+
+        if not tasks:
+            return ConfidenceResult(
+                signals=[],
+                composite_score=0.0,
+                confidence_level=ConfidenceLevel.LOW,
+                explanation="No signals extracted -- defaulting to LOW.",
+            )
+
+        # Partition into review/judge tasks and regular (non-review) tasks
+        review_tasks = [
+            (f, d) for f, d in tasks if self._is_review_task(f, d)
+        ]
+        non_review_tasks = [
+            (f, d) for f, d in tasks if not self._is_review_task(f, d)
+        ]
+
+        # ------------------------------------------------------------------
+        # Signal: llm_judge
+        # Average confidence of review/judge tasks.
+        # Only emitted when at least one such task is present.
+        # ------------------------------------------------------------------
+        if review_tasks:
+            confidences = [
+                float(d["confidence"])
+                for _, d in review_tasks
+                if "confidence" in d
+            ]
+            if confidences:
+                avg = sum(confidences) / len(confidences)
+                signals.append(ConfidenceSignal(
+                    name="llm_judge",
+                    value=avg,
+                    weight=self.weights.get("llm_judge", DEFAULT_WEIGHTS["llm_judge"]),
+                    raw_value=confidences,
+                    source=(
+                        f"review/judge tasks: "
+                        f"{[f for f, _ in review_tasks]}"
+                    ),
+                ))
+
+        # ------------------------------------------------------------------
+        # Signal: test_pass_rate
+        # Ratio of non-review tasks with state == "success".
+        # Only emitted when at least one non-review task is present.
+        # ------------------------------------------------------------------
+        if non_review_tasks:
+            success_count = sum(
+                1 for _, d in non_review_tasks if d.get("state") == "success"
+            )
+            rate = success_count / len(non_review_tasks)
+            signals.append(ConfidenceSignal(
+                name="test_pass_rate",
+                value=rate,
+                weight=self.weights.get(
+                    "test_pass_rate", DEFAULT_WEIGHTS["test_pass_rate"]
+                ),
+                raw_value={"passed": success_count, "total": len(non_review_tasks)},
+                source=(
+                    f"{success_count}/{len(non_review_tasks)} "
+                    f"non-review tasks succeeded"
+                ),
+            ))
+
+        # ------------------------------------------------------------------
+        # Signal: review_quality
+        # Average confidence across ALL tasks (including review tasks).
+        # Only emitted when at least one task has a confidence field.
+        # ------------------------------------------------------------------
+        all_confidences = [
+            float(d["confidence"])
+            for _, d in tasks
+            if "confidence" in d
+        ]
+        if all_confidences:
+            avg_all = sum(all_confidences) / len(all_confidences)
+            signals.append(ConfidenceSignal(
+                name="review_quality",
+                value=avg_all,
+                weight=self.weights.get(
+                    "review_quality", DEFAULT_WEIGHTS["review_quality"]
+                ),
+                raw_value=all_confidences,
+                source=f"average confidence over {len(all_confidences)} tasks",
+            ))
+
+        # ------------------------------------------------------------------
+        # Signal: change_complexity
+        # Inverse complexity: 1 / (1 + number_of_task_files).
+        # Fewer files → higher score (lower complexity = more confidence).
+        # ------------------------------------------------------------------
+        num_tasks = len(tasks)
+        complexity_score = 1.0 / (1.0 + num_tasks)
+        signals.append(ConfidenceSignal(
+            name="change_complexity",
+            value=complexity_score,
+            weight=self.weights.get(
+                "change_complexity", DEFAULT_WEIGHTS["change_complexity"]
+            ),
+            raw_value=num_tasks,
+            source=f"{num_tasks} task file(s) in output dir",
+        ))
+
+        composite = self._weighted_average(signals)
+        level = _score_to_level(composite)
+        explanation = self._build_explanation(signals, composite, level)
+
+        return ConfidenceResult(
+            signals=signals,
+            composite_score=composite,
+            confidence_level=level,
+            explanation=explanation,
+        )
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_review_task(filename: str, data: dict) -> bool:
+        """Return True if the task is a review/judge task.
+
+        A task is classified as review/judge when:
+        - Its ``task_type`` field is "review" or "judge", OR
+        - The filename contains the substring "review" (case-insensitive).
+        """
+        task_type = data.get("task_type", "")
+        if task_type in ("review", "judge"):
+            return True
+        if "review" in filename.lower():
+            return True
+        return False
+
+    def _weighted_average(self, signals: list[ConfidenceSignal]) -> float:
+        """Compute renormalised weighted average over present signals."""
+        if not signals:
+            return 0.0
+
+        total_weight = sum(
+            self.weights.get(s.name, s.weight) for s in signals
+        )
+        if total_weight == 0.0:
+            return sum(s.value for s in signals) / len(signals)
+
+        score = sum(
+            s.value * self.weights.get(s.name, s.weight) for s in signals
+        )
+        return score / total_weight
+
+    @staticmethod
+    def _build_explanation(
+        signals: list[ConfidenceSignal],
+        composite: float,
+        level: ConfidenceLevel,
+    ) -> str:
+        """Build a human-readable summary of contributing signals."""
+        lines = [f"Composite score: {composite:.4f} -> {level.value.upper()}"]
+        if signals:
+            lines.append("Signals:")
+            for s in signals:
+                lines.append(
+                    f"  [{s.name}] value={s.value:.4f}  "
+                    f"weight={s.weight:.2f}  source={s.source}"
+                )
+        else:
+            lines.append("No signals extracted -- defaulting to LOW.")
+        return "\n".join(lines)
