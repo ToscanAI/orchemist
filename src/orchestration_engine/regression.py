@@ -50,6 +50,9 @@ class RegressionStatus(str, Enum):
     ESCALATED = "escalated"
     """Automated fix failed or was not feasible; escalated to human."""
 
+    NEEDS_REVIEW = "needs_review"
+    """Fix pipeline ran but confidence score is below threshold; awaits human decision."""
+
 
 @dataclass
 class Regression:
@@ -538,6 +541,7 @@ class RegressionFixer:
     """
 
     TEMPLATE_ID = "coding-pipeline-v1"
+    CONFIDENCE_THRESHOLD = 0.95
 
     def __init__(self, repo_path: Path, repo_url: str, repo_slug: str) -> None:
         self._repo_path = repo_path
@@ -605,6 +609,98 @@ class RegressionFixer:
             regression.fix_attempt_count + 1,
         )
         return run_id
+
+    def handle_fix_completion(
+        self,
+        regression_id: str,
+        fix_run: dict,
+        db: Any,
+    ) -> str:
+        """Decide whether to auto-merge or flag for human review after a fix run.
+
+        Reads ``scoring_score`` and ``scoring_status`` from the completed fix
+        pipeline run dict.  If the score meets :attr:`CONFIDENCE_THRESHOLD` and
+        ``scoring_status`` is ``"passed"``, attempts to auto-merge the fix PR
+        via :meth:`_merge_pr` and marks the regression as ``FIXED``.  In all
+        other cases (low score, non-passing status, or merge failure) the
+        regression is marked as ``NEEDS_REVIEW`` for human intervention.
+
+        Args:
+            regression_id: ID of the regression being resolved.
+            fix_run:        Pipeline run dict (e.g. from ``db.get_pipeline_run``)
+                            containing at minimum ``scoring_score`` (float|None)
+                            and ``scoring_status`` (str|None).  Must also contain
+                            ``branch_name`` (str|None) when auto-merge is attempted.
+            db:             Database instance with an ``update_regression`` method.
+
+        Returns:
+            The new regression status value as a string: ``"fixed"`` or
+            ``"needs_review"``.
+        """
+        scoring_score: Optional[float] = fix_run.get("scoring_score")
+        scoring_status: Optional[str] = fix_run.get("scoring_status")
+
+        logger.info(
+            "RegressionFixer: handling fix completion for regression %s "
+            "(scoring_score=%s, scoring_status=%r)",
+            regression_id,
+            scoring_score,
+            scoring_status,
+        )
+
+        # Evaluate the confidence gate.
+        gate_passed = (
+            scoring_score is not None
+            and scoring_score >= self.CONFIDENCE_THRESHOLD
+            and scoring_status == "passed"
+        )
+
+        if gate_passed:
+            # Reconstruct the branch name from the fix_run metadata.
+            branch: Optional[str] = fix_run.get("branch_name")
+            merged = False
+            if branch:
+                merged = self._merge_pr(branch)
+            else:
+                logger.warning(
+                    "RegressionFixer: confidence gate passed but no branch_name "
+                    "in fix_run for regression %s; cannot auto-merge",
+                    regression_id,
+                )
+
+            if merged:
+                new_status = RegressionStatus.FIXED.value
+                logger.info(
+                    "RegressionFixer: PR merged successfully for regression %s → FIXED",
+                    regression_id,
+                )
+            else:
+                new_status = RegressionStatus.NEEDS_REVIEW.value
+                logger.warning(
+                    "RegressionFixer: confidence gate passed but merge failed "
+                    "for regression %s → NEEDS_REVIEW",
+                    regression_id,
+                )
+        else:
+            new_status = RegressionStatus.NEEDS_REVIEW.value
+            logger.info(
+                "RegressionFixer: confidence gate not met for regression %s "
+                "(score=%s, status=%r) → NEEDS_REVIEW",
+                regression_id,
+                scoring_score,
+                scoring_status,
+            )
+
+        try:
+            db.update_regression(regression_id, status=new_status)
+        except Exception:
+            logger.exception(
+                "RegressionFixer: DB update failed setting status=%r for regression %s",
+                new_status,
+                regression_id,
+            )
+
+        return new_status
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -723,6 +819,157 @@ class RegressionFixer:
 
         return self._parse_run_id(result.stdout)
 
+    def _merge_pr(self, branch: str) -> bool:
+        """Merge the PR for the given branch via ``gh pr merge``.
+
+        Runs ``gh pr merge <branch> --squash --repo <slug> --yes`` and returns
+        ``True`` on success (return code 0), ``False`` otherwise.
+
+        Args:
+            branch: The branch name whose PR should be merged.
+
+        Returns:
+            ``True`` if the merge succeeded, ``False`` on any error.
+        """
+        cmd = [
+            "gh", "pr", "merge", branch,
+            "--squash",
+            "--repo", self._repo_slug,
+            "--yes",
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=str(self._repo_path),
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning("RegressionFixer._merge_pr: subprocess error: %s", exc)
+            return False
+        if result.returncode != 0:
+            logger.warning(
+                "RegressionFixer._merge_pr: gh pr merge failed (rc=%d): %s",
+                result.returncode,
+                result.stderr.strip(),
+            )
+            return False
+        logger.info("RegressionFixer._merge_pr: merged PR for branch %r", branch)
+        return True
+
+    def handle_fix_completion(
+        self, regression_id: str, fix_run: dict, db: Any
+    ) -> str:
+        """Evaluate a completed fix run and auto-merge or flag for review.
+
+        Reads ``scoring_score`` and ``scoring_status`` from *fix_run*.  If
+        ``score >= CONFIDENCE_THRESHOLD`` **and** ``scoring_status == "passed"``
+        the PR is merged automatically and the regression is marked ``FIXED``.
+        On merge failure or when the gate does not pass the regression is
+        marked ``NEEDS_REVIEW``.
+
+        Args:
+            regression_id: UUID of the regression record.
+            fix_run:       Dict with at least ``scoring_score`` (float | None)
+                           and ``scoring_status`` (str | None) keys.
+            db:            Database instance (``get_regression`` /
+                           ``update_regression``).
+
+        Returns:
+            The new status string (``"fixed"`` or ``"needs_review"``).
+        """
+        score = fix_run.get("scoring_score")
+        scoring_status = fix_run.get("scoring_status")
+
+        gate_passed = (
+            score is not None
+            and score >= self.CONFIDENCE_THRESHOLD
+            and scoring_status == "passed"
+        )
+
+        logger.info(
+            "RegressionFixer.handle_fix_completion: regression=%s score=%s "
+            "scoring_status=%r gate_passed=%s",
+            regression_id,
+            score,
+            scoring_status,
+            gate_passed,
+        )
+
+        if gate_passed:
+            # Reconstruct branch name from the regression record.
+            try:
+                regression_record = db.get_regression(regression_id)
+            except Exception:
+                logger.exception(
+                    "RegressionFixer.handle_fix_completion: could not fetch "
+                    "regression %s from DB; falling back to needs_review",
+                    regression_id,
+                )
+                self._safe_update_db(db, regression_id, RegressionStatus.NEEDS_REVIEW.value)
+                return RegressionStatus.NEEDS_REVIEW.value
+
+            if not regression_record:
+                logger.warning(
+                    "RegressionFixer.handle_fix_completion: regression %s not "
+                    "found in DB; falling back to needs_review",
+                    regression_id,
+                )
+                self._safe_update_db(db, regression_id, RegressionStatus.NEEDS_REVIEW.value)
+                return RegressionStatus.NEEDS_REVIEW.value
+
+            commit_sha = regression_record.get("commit_sha", "")
+            branch = (
+                f"fix/regression-{commit_sha[:8]}-{regression_id[:8]}"
+            )
+            logger.info(
+                "RegressionFixer.handle_fix_completion: attempting PR merge "
+                "for branch %r (regression %s)",
+                branch,
+                regression_id,
+            )
+            merged = self._merge_pr(branch)
+            if not merged:
+                logger.warning(
+                    "RegressionFixer.handle_fix_completion: PR merge failed "
+                    "for branch %r; marking needs_review",
+                    branch,
+                )
+                gate_passed = False
+
+        new_status = (
+            RegressionStatus.FIXED.value
+            if gate_passed
+            else RegressionStatus.NEEDS_REVIEW.value
+        )
+        logger.info(
+            "RegressionFixer.handle_fix_completion: updating regression %s → %s",
+            regression_id,
+            new_status,
+        )
+        self._safe_update_db(db, regression_id, new_status)
+        return new_status
+
+    @staticmethod
+    def _safe_update_db(db: Any, regression_id: str, status: str) -> None:
+        """Update the regression status in the DB, swallowing any exception.
+
+        Args:
+            db:            Database instance.
+            regression_id: ID of the regression to update.
+            status:        New status string.
+        """
+        try:
+            db.update_regression(regression_id, status=status)
+        except Exception:
+            logger.exception(
+                "RegressionFixer._safe_update_db: DB update failed for "
+                "regression %s (status=%r); ignoring",
+                regression_id,
+                status,
+            )
+
     @staticmethod
     def _parse_run_id(stdout: str) -> Optional[str]:
         """Extract the run_id from ``orch launch`` stdout.
@@ -750,6 +997,53 @@ class RegressionFixer:
             stdout[:200],
         )
         return None
+
+    def _merge_pr(self, branch: str) -> bool:
+        """Merge the fix PR for *branch* via ``gh pr merge --squash``.
+
+        Args:
+            branch: Branch name (e.g. ``fix/regression-abcdef12-12345678``).
+
+        Returns:
+            ``True`` if the merge command succeeded (rc=0), ``False`` otherwise.
+        """
+        cmd = [
+            "gh", "pr", "merge", branch,
+            "--squash",
+            "--repo", self._repo_slug,
+            "--yes",
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=str(self._repo_path),
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "RegressionFixer: gh pr merge failed (rc=%d): %s",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+                return False
+            logger.info(
+                "RegressionFixer: PR merged for branch %r", branch
+            )
+            return True
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "RegressionFixer: gh pr merge timed out for branch %r", branch
+            )
+            return False
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning(
+                "RegressionFixer: could not run gh CLI for branch %r: %s",
+                branch,
+                exc,
+            )
+            return False
 
 
 # ---------------------------------------------------------------------------

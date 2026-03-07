@@ -27,7 +27,8 @@ def db():
 
 class TestRegressionStatusEnum:
     def test_all_five_values_exist(self):
-        assert len(RegressionStatus) == 5
+        # Updated to 6 after adding NEEDS_REVIEW in #3.3b.2
+        assert len(RegressionStatus) == 6
 
     def test_is_str_subclass(self):
         assert isinstance(RegressionStatus.DETECTED, str)
