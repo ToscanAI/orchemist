@@ -916,6 +916,101 @@ class RegressionFixer:
 
 
 # ---------------------------------------------------------------------------
+# SafetyGuard
+# ---------------------------------------------------------------------------
+
+
+class SafetyGuard:
+    """Prevents runaway fix loops and guards against non-actionable failures.
+
+    Checks three rules in order before allowing a fix attempt:
+
+    1. **Max attempts** — abort if ``regression.fix_attempt_count`` already
+       meets the configured ceiling.
+    2. **Excluded failure types** — abort for infrastructure/environmental
+       failures that a code fix cannot resolve.
+    3. **Flaky detection** — abort if keywords in the failure text suggest a
+       non-deterministic test, or if the DB history shows the same commit
+       self-healing (oscillation pattern).
+
+    Class-level constants serve as defaults so callers can customise guards
+    per-instance without changing the shared defaults.
+    """
+
+    MAX_FIX_ATTEMPTS: int = 3
+    EXCLUDED_FAILURE_TYPES: frozenset = frozenset({
+        "dependency_failure", "infra_failure", "infrastructure_failure",
+        "network_timeout", "oom_kill", "out_of_memory",
+        "secret_missing", "env_misconfiguration", "third_party_outage",
+    })
+    FLAKY_KEYWORDS: frozenset = frozenset({
+        "flaky", "flake", "intermittent", "transient", "race condition",
+        "timing", "non-deterministic", "nondeterministic", "randomly fails",
+    })
+
+    def __init__(self, max_attempts=MAX_FIX_ATTEMPTS, excluded_failure_types=None, flaky_keywords=None):
+        self._max_attempts = max_attempts
+        self._excluded_types = excluded_failure_types if excluded_failure_types is not None else self.EXCLUDED_FAILURE_TYPES
+        self._flaky_keywords = flaky_keywords if flaky_keywords is not None else self.FLAKY_KEYWORDS
+
+    def should_attempt_fix(self, regression, db) -> Tuple[bool, str]:
+        """Decide whether a fix attempt should proceed.
+
+        Args:
+            regression: A :class:`Regression` instance to evaluate.
+            db:         Database instance used for oscillation checks; may be
+                        ``None`` to skip the DB-based flaky heuristic.
+
+        Returns:
+            A ``(allowed: bool, reason: str)`` tuple.
+        """
+        # Rule 1: max attempts
+        if regression.fix_attempt_count >= self._max_attempts:
+            return (False, f"max fix attempts reached ({self._max_attempts})")
+        # Rule 2: excluded failure types
+        ft_lower = (regression.failure_type or "").lower()
+        for excluded in self._excluded_types:
+            if excluded.lower() == ft_lower:
+                return (False, f"excluded failure type: {regression.failure_type}")
+        # Rule 3: flaky detection
+        flaky, reason = self._is_flaky(regression, db)
+        if flaky:
+            return (False, reason)
+        return (True, "safe to attempt fix")
+
+    def _is_flaky(self, regression, db) -> Tuple[bool, str]:
+        """Return ``(True, reason)`` if the regression looks like a flaky test.
+
+        Checks keyword presence in ``failure_type`` + ``diagnosis``, then
+        queries the DB for oscillation (same commit, previously self-healed).
+
+        Args:
+            regression: :class:`Regression` to inspect.
+            db:         Database instance; ``None`` disables the DB check.
+
+        Returns:
+            ``(True, reason_str)`` if flaky evidence found, else ``(False, "")``.
+        """
+        haystack = " ".join(filter(None, [regression.failure_type or "", regression.diagnosis or ""])).lower()
+        for kw in self._flaky_keywords:
+            if kw.lower() in haystack:
+                return (True, f"flaky test detected (keyword: '{kw}')")
+        # DB oscillation check
+        if db is not None:
+            try:
+                past = db.list_regressions(limit=50)
+                for rec in past:
+                    if (rec.get("commit_sha") == regression.commit_sha
+                            and rec.get("id") != regression.id
+                            and rec.get("status") == RegressionStatus.FIXED.value
+                            and not rec.get("fix_run_id")):
+                        return (True, "flaky test detected (commit self-healed previously)")
+            except Exception:
+                logger.warning("SafetyGuard._is_flaky: DB query failed", exc_info=True)
+        return (False, "")
+
+
+# ---------------------------------------------------------------------------
 # Module-level helper
 # ---------------------------------------------------------------------------
 
