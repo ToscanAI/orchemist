@@ -78,6 +78,7 @@ def run_scoring(
     template_file: Optional[Path] = None,
     exit_on_failure: bool = True,
     executor: Optional[Any] = None,
+    audit: bool = False,
 ) -> tuple[bool, float]:
     """Run post-pipeline auto-scoring for a completed pipeline run.
 
@@ -107,6 +108,12 @@ def run_scoring(
                   urllib calls.  Pass the same executor used for the pipeline
                   run so that judge scoring shares the same authentication path
                   (e.g. the OpenClaw subscription token in openclaw mode).
+        audit:    When ``True``, run an adversarial :class:`~audit.AuditPhase`
+                  after normal scoring completes.  The audit reads the review
+                  phase output from *output_dir* and logs a
+                  :class:`~audit.AuditResult` summary.  Defaults to ``False``
+                  for backward compatibility.  This is additive — it does not
+                  affect the return value or exit behaviour.
 
     Returns:
         A ``(passed: bool, weighted_score: float)`` tuple.  ``passed`` is
@@ -220,7 +227,132 @@ def run_scoring(
     if not score_result.passed and exit_on_failure:
         sys.exit(1)
 
+    # ── 9. Optional adversarial audit (Issue #4.1.4) ──────────────────
+    if audit:
+        _run_adversarial_audit(output_dir=output_dir, executor=executor, console=console)
+
     return score_result.passed, score_result.weighted_score
+
+
+def _run_adversarial_audit(
+    output_dir: Path,
+    executor: Optional[Any],
+    console: Optional[Any],
+) -> None:
+    """Run the adversarial :class:`~audit.AuditPhase` on a completed pipeline run.
+
+    Reads the review phase output from *output_dir*, builds a minimal
+    ``review_outcome`` dict, and runs :class:`~audit.AuditPhase`.
+    The result is logged and printed to *console* but does NOT affect the
+    pipeline's pass/fail verdict (additive-only).
+
+    Args:
+        output_dir: Path to the pipeline output directory.
+        executor:   Optional executor to use for the audit LLM call.
+        console:    Rich Console for formatted output.
+    """
+    from .audit import AuditPhase
+
+    try:
+        # Reconstruct a minimal review_outcome from the output directory.
+        # Look for a JSON file whose name contains "review".
+        review_outcome: Dict[str, Any] = {"verdict": None, "issues_found": []}
+        run_id = output_dir.name  # Use directory name as run identifier
+
+        for json_file in sorted(output_dir.glob("*.json")):
+            if json_file.name.startswith("_"):
+                continue
+            if "review" in json_file.name.lower():
+                try:
+                    data = json.loads(json_file.read_text())
+                    if isinstance(data, dict):
+                        # Extract verdict and issues_found if present
+                        if "verdict" in data:
+                            review_outcome["verdict"] = data["verdict"]
+                        if "issues_found" in data:
+                            review_outcome["issues_found"] = data["issues_found"]
+                        elif "result" in data and isinstance(data["result"], dict):
+                            text = data["result"].get("text", "")
+                            if text:
+                                from .review_parser import parse_review_output
+                                parsed = parse_review_output(text)
+                                review_outcome["verdict"] = parsed.verdict
+                                review_outcome["issues_found"] = [
+                                    {
+                                        "severity": i.severity.value,
+                                        "category": i.category,
+                                        "description": i.description,
+                                        "raw": i.raw,
+                                    }
+                                    for i in parsed.issues
+                                ]
+                        break
+                except Exception as exc:
+                    logger.debug("Could not read review output %s: %s", json_file.name, exc)
+
+        auditor = AuditPhase(executor=executor, model=getattr(executor, "model", "audit-model"))
+        audit_result = auditor.run(
+            run_id=run_id,
+            review_outcome=review_outcome,
+        )
+
+        # Log the audit result
+        logger.info(
+            "Adversarial audit complete: run_id=%s accuracy=%.2f false_approval=%s "
+            "issues=%d",
+            audit_result.run_id,
+            audit_result.reviewer_accuracy_score,
+            audit_result.false_approval,
+            len(audit_result.caught_issues),
+        )
+
+        if console is not None:
+            _print_audit_summary(console, audit_result)
+
+    except Exception as exc:
+        logger.warning("Adversarial audit failed: %s", exc)
+        if console is not None:
+            console.print(
+                f"[yellow]⚠ Adversarial audit skipped:[/yellow] {exc}",
+                highlight=False,
+            )
+
+
+def _print_audit_summary(console: Any, audit_result: Any) -> None:
+    """Print a concise adversarial audit summary to *console*.
+
+    Args:
+        console:      A :class:`rich.console.Console` instance.
+        audit_result: A :class:`~audit.AuditResult`.
+    """
+    accuracy_pct = audit_result.reviewer_accuracy_score * 100
+    verdict_icon = (
+        "[green]APPROVE[/green]"
+        if audit_result.audit_verdict == "APPROVE"
+        else "[red]REQUEST_CHANGES[/red]"
+        if audit_result.audit_verdict == "REQUEST_CHANGES"
+        else "[dim]unknown[/dim]"
+    )
+    false_approval_tag = (
+        " [bold red](FALSE APPROVAL DETECTED)[/bold red]"
+        if audit_result.false_approval
+        else ""
+    )
+
+    console.print()
+    console.print("[bold]Adversarial Audit:[/bold]")
+    console.print(f"  Audit verdict:        {verdict_icon}{false_approval_tag}")
+    console.print(f"  Reviewer accuracy:    {accuracy_pct:.1f}%")
+    console.print(f"  Issues found:         {len(audit_result.caught_issues)}")
+    missed = [i for i in audit_result.caught_issues if i.missed_by_reviewer]
+    if missed:
+        console.print(f"  Missed by reviewer:   {len(missed)}")
+        for issue in missed:
+            console.print(
+                f"    [yellow]•[/yellow] [{issue.severity}][{issue.category}] "
+                f"{issue.description}"
+            )
+    console.print()
 
 
 def _print_score_report(console: Any, score_result: Any, scenario: dict) -> None:

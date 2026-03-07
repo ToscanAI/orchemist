@@ -13,6 +13,10 @@ Signal sources (derived from task result files):
                          severity-weighted catch rate, false-positive penalty).
                          Only included when review_outcomes are provided.
                          See :mod:`~orchestration_engine.review_catch_value`.
+    audit_catch_rate   – Fraction of audit issues that the original reviewer
+                         also caught (reviewer_accuracy_score from AuditPhase).
+                         Only included when audit_results are provided.
+                         See :mod:`~orchestration_engine.audit`.
 
 Signal sources (derived from ReviewOutcome DB records — Issue #4.1.3):
     review_catch_value – Normalised score reflecting how much real value the
@@ -44,11 +48,12 @@ if TYPE_CHECKING:
 # Default signal weights (sum to 1.0)
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "llm_judge": 0.35,
-    "test_pass_rate": 0.25,
+    "llm_judge": 0.30,         # Updated in Issue #4.1.4: 0.35 → 0.30
+    "test_pass_rate": 0.20,    # Updated in Issue #4.1.4: 0.25 → 0.20
     "review_quality": 0.15,
     "change_complexity": 0.10,
     "review_catch_value": 0.15,  # Issue #4.1.3
+    "audit_catch_rate": 0.10,    # Issue #4.1.4 — adversarial audit accuracy
 }
 
 
