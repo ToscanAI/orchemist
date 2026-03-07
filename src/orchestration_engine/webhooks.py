@@ -250,7 +250,7 @@ class TriggerMatcher:
 
 import re as _re  # noqa: E402 — already imported at top; alias for clarity
 
-_TEMPLATE_RE = _re.compile(r"\{\{payload\.([^}]+)\}\}")
+_TEMPLATE_RE = _re.compile(r"\{\{payload(?:\.([^}]+))?\}\}")
 
 
 class InputMapper:
@@ -314,7 +314,11 @@ class InputMapper:
             if isinstance(value, str):
                 m = _TEMPLATE_RE.fullmatch(value)
                 if m:
-                    result[var_name] = InputMapper._resolve_path(payload, m.group(1))
+                    if m.group(1) is None:
+                        # bare {{payload}} — return the entire payload dict
+                        result[var_name] = payload
+                    else:
+                        result[var_name] = InputMapper._resolve_path(payload, m.group(1))
                 else:
                     result[var_name] = value
             else:

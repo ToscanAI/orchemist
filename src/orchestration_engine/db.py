@@ -8,7 +8,7 @@ import json
 import sqlite3
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from contextlib import contextmanager
@@ -174,6 +174,7 @@ class Database:
             self._create_table_routing_decisions(conn)
             self._create_table_failure_patterns(conn)
             self._create_table_regressions(conn)      # Issue #3.3a.1
+            self._create_table_ci_green_shas(conn)    # Issue #3.3a.3
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -476,6 +477,21 @@ class Database:
             ON regressions(commit_sha)
         """)
 
+    def _create_table_ci_green_shas(self, conn: sqlite3.Connection) -> None:
+        """Create ci_green_shas table for tracking last-known-green CI SHA (Issue #3.3a.3).
+
+        Called from _initialize_database so fresh databases get the table
+        without requiring a migration run.  Idempotent via
+        ``CREATE TABLE IF NOT EXISTS``.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ci_green_shas (
+                repo_slug  TEXT PRIMARY KEY,
+                sha        TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """Create performance indexes."""
 
@@ -586,6 +602,7 @@ class Database:
             ("010_add_failure_patterns_table", self._migration_010_add_failure_patterns_table),  # Issue #3.1.3
             ("011_add_retry_columns", self._migration_011_add_retry_columns),               # Issue #3.2.1
             ("012_add_regressions_table", self._migration_012_add_regressions_table),      # Issue #3.3a.1
+            ("013_add_ci_green_shas_table", self._migration_013_add_ci_green_shas_table),  # Issue #3.3a.3
         ]
         
         # Apply pending migrations
@@ -2005,6 +2022,20 @@ class Database:
             ON regressions(commit_sha)
         """)
 
+    def _migration_013_add_ci_green_shas_table(self, conn: sqlite3.Connection) -> None:
+        """Add ci_green_shas table for last-known-green SHA tracking (Issue #3.3a.3).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS.
+        Safe to run on both fresh and existing databases.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ci_green_shas (
+                repo_slug  TEXT PRIMARY KEY,
+                sha        TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
     # ------------------------------------------------------------------
     # Failure pattern CRUD (Issue #3.1.3)
     # ------------------------------------------------------------------
@@ -2412,6 +2443,51 @@ class Database:
             cursor = conn.execute(query, params)
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # CI Green SHA Tracking (Issue #3.3a.3)
+    # ------------------------------------------------------------------
+
+    def store_green_sha(self, repo_slug: str, sha: str) -> None:
+        """Upsert the last-known-green CI SHA for a repository.
+
+        Uses an INSERT OR REPLACE so this is safe to call on first write
+        (insert) and on every subsequent CI pass (update).
+
+        Args:
+            repo_slug: Repository identifier in ``owner/repo`` format.
+            sha:       The green commit SHA to persist.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO ci_green_shas (repo_slug, sha, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(repo_slug) DO UPDATE SET
+                    sha        = excluded.sha,
+                    updated_at = excluded.updated_at
+                """,
+                (repo_slug, sha, now),
+            )
+
+    def get_last_green_sha(self, repo_slug: str) -> Optional[str]:
+        """Return the most recent green CI SHA for a repository, or None.
+
+        Args:
+            repo_slug: Repository identifier in ``owner/repo`` format.
+
+        Returns:
+            The green SHA string, or ``None`` if no record exists yet.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT sha FROM ci_green_shas WHERE repo_slug = ?",
+                (repo_slug,),
+            )
+            row = cursor.fetchone()
+        return row["sha"] if row else None
 
     def close(self) -> None:
         """Close database connections."""

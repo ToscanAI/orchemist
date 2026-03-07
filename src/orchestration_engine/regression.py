@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import subprocess
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -281,3 +282,287 @@ class RegressionDetector:
                     break  # each file scores at most 1 point
 
         return score
+
+
+# ---------------------------------------------------------------------------
+# RegressionWebhookHandler
+# ---------------------------------------------------------------------------
+
+
+class RegressionWebhookHandler:
+    """Processes GitHub ``check_suite.completed`` webhook events.
+
+    Wires the Sprint 2 webhook trigger framework to :class:`RegressionDetector`
+    and to GitHub issue creation.
+
+    Lifecycle:
+
+    * **failure** conclusion → fetch last-green SHA from DB, run
+      :meth:`RegressionDetector.detect`, open a GitHub issue via
+      ``gh issue create``, return the :class:`Regression` object.
+    * **success** conclusion → update the last-green SHA in the DB (so the
+      next failure has an accurate baseline), return ``None``.
+    * Any other conclusion (``cancelled``, ``neutral``, ``skipped``, …) →
+      no-op, return ``None``.
+
+    Args:
+        db:          Database instance with ``store_green_sha`` /
+                     ``get_last_green_sha`` / ``insert_regression``.
+        git_context: :class:`~orchestration_engine.git_integration.GitContext`
+                     instance (used by the detector).
+        detector:    Pre-built :class:`RegressionDetector` to invoke.
+        repo_path:   Filesystem path to the git repository root.
+        repo_slug:   GitHub repo identifier (``"owner/repo"``) used with
+                     ``gh issue create``.
+    """
+
+    def __init__(
+        self,
+        db: Any,
+        git_context: Any,
+        detector: "RegressionDetector",
+        repo_path: Path,
+        repo_slug: str,
+    ) -> None:
+        self._db = db
+        self._git = git_context
+        self._detector = detector
+        self._repo_path = repo_path
+        self._repo_slug = repo_slug
+
+    # ------------------------------------------------------------------
+    # Public entry point (matches Sprint 2 trigger interface)
+    # ------------------------------------------------------------------
+
+    def handle_ci_failure(self, event_payload: dict) -> Optional["Regression"]:
+        """Process a GitHub ``check_suite.completed`` webhook payload.
+
+        This is the entry point called by the webhook trigger framework.
+
+        Args:
+            event_payload: Parsed JSON body of the ``check_suite.completed``
+                           webhook event.
+
+        Returns:
+            The created :class:`Regression` on a failure conclusion, or
+            ``None`` for success (green-SHA update only), no-op conclusions,
+            and error cases.
+        """
+        try:
+            check_suite = event_payload.get("check_suite", {})
+            conclusion = check_suite.get("conclusion")
+            head_sha = (
+                check_suite.get("head_sha")
+                or check_suite.get("head_commit", {}).get("id")
+            )
+            ci_run_url = check_suite.get("url", "")
+
+            if conclusion == "success":
+                # Update the baseline so next failure has a valid range.
+                if head_sha:
+                    self._db.store_green_sha(self._repo_slug, head_sha)
+                    logger.info(
+                        "RegressionWebhookHandler: CI passed — stored green SHA %s for %s",
+                        head_sha[:8] if head_sha else "?",
+                        self._repo_slug,
+                    )
+                return None
+
+            if conclusion != "failure":
+                # cancelled, neutral, skipped, stale, etc. — ignore.
+                logger.debug(
+                    "RegressionWebhookHandler: ignoring conclusion=%r for %s",
+                    conclusion,
+                    self._repo_slug,
+                )
+                return None
+
+            # --- CI failed ---
+            if not head_sha:
+                logger.warning(
+                    "RegressionWebhookHandler: no head_sha in payload for %s",
+                    self._repo_slug,
+                )
+                return None
+
+            last_green_sha = self._db.get_last_green_sha(self._repo_slug)
+            if not last_green_sha:
+                logger.warning(
+                    "RegressionWebhookHandler: no known-green SHA for %s; "
+                    "skipping detector (no baseline yet)",
+                    self._repo_slug,
+                )
+                return None
+
+            # Extract CI error log from the payload (best-effort).
+            ci_error_log = self._extract_ci_error_log(event_payload)
+
+            regression = self._detector.detect(
+                last_green_sha=last_green_sha,
+                head_sha=head_sha,
+                ci_error_log=ci_error_log,
+                ci_run_url=ci_run_url,
+                failure_type="ci_failure",
+                repo_path=self._repo_path,
+            )
+            if regression is None:
+                return None
+
+            # Open a GitHub issue to surface the regression.
+            issue_url = self._open_github_issue(regression)
+            if issue_url:
+                logger.info(
+                    "RegressionWebhookHandler: opened GitHub issue %s for regression %s",
+                    issue_url,
+                    regression.id,
+                )
+
+            return regression
+
+        except Exception:
+            logger.exception(
+                "RegressionWebhookHandler: unexpected error processing payload for %s",
+                self._repo_slug,
+            )
+            return None
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_ci_error_log(event_payload: dict) -> str:
+        """Best-effort extraction of CI error text from the payload.
+
+        Looks for common fields that carry CI output in GitHub payloads.
+        Returns an empty string when none are present.
+
+        Args:
+            event_payload: The raw webhook event dict.
+
+        Returns:
+            A string that will be used for file-overlap scoring.
+        """
+        check_suite = event_payload.get("check_suite", {})
+        # GitHub populates check_runs when check_suite contains run data.
+        check_runs = check_suite.get("check_runs", []) or []
+        parts: List[str] = []
+        for run in check_runs:
+            output = run.get("output") or {}
+            for key in ("title", "summary", "text"):
+                value = output.get(key) or ""
+                if value:
+                    parts.append(value)
+        # Also include any top-level "body" or "log" field.
+        for key in ("body", "log", "error_log"):
+            value = event_payload.get(key) or ""
+            if value:
+                parts.append(value)
+        return "\n".join(parts)
+
+    def _open_github_issue(self, regression: "Regression") -> Optional[str]:
+        """Open a GitHub issue for a detected regression via ``gh issue create``.
+
+        The issue title and body include the culprit SHA, the CI run URL,
+        and the list of affected files.  The ``regression-auto`` label is
+        applied so issues can be filtered programmatically.
+
+        Args:
+            regression: The :class:`Regression` record to report.
+
+        Returns:
+            The URL of the newly created GitHub issue, or ``None`` on error.
+        """
+        affected = "\n".join(f"- `{f}`" for f in regression.affected_files) or "_unknown_"
+        body = (
+            f"## Regression Detected\n\n"
+            f"**Culprit commit:** `{regression.commit_sha}`\n"
+            f"**CI run:** {regression.ci_run_url}\n"
+            f"**Regression ID:** `{regression.id}`\n\n"
+            f"### Affected files\n\n"
+            f"{affected}\n\n"
+            f"_Opened automatically by the orchestration engine._"
+        )
+        title = f"[regression] CI failure — culprit commit {regression.commit_sha[:8]}"
+        cmd = [
+            "gh", "issue", "create",
+            "--repo", self._repo_slug,
+            "--title", title,
+            "--body", body,
+            "--label", "regression-auto",
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "RegressionWebhookHandler: gh issue create failed (rc=%d): %s",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+                return None
+            # gh prints the issue URL on stdout.
+            return result.stdout.strip() or None
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning(
+                "RegressionWebhookHandler: could not run gh CLI: %s",
+                exc,
+            )
+            return None
+
+
+# ---------------------------------------------------------------------------
+# Module-level helper
+# ---------------------------------------------------------------------------
+
+
+def register_regression_trigger(
+    db: Any,
+    trigger_id: str,
+    template_id: str,
+) -> Any:
+    """Create and persist a TriggerConfig wiring ``check_suite.completed`` events.
+
+    The trigger filters on the ``check_suite.completed`` GitHub event and
+    is set to ``fire_and_forget`` mode so the webhook endpoint responds
+    immediately without waiting for the regression pipeline to finish.
+
+    The ``input_map`` passes the full raw payload through as ``event_payload``
+    so that :meth:`RegressionWebhookHandler.handle_ci_failure` receives it.
+
+    Args:
+        db:         Database instance — the trigger is persisted via
+                    ``db.create_trigger``.
+        trigger_id: Unique trigger identifier (must satisfy TriggerConfig
+                    validation: 3-64 chars, alphanumeric/hyphens/underscores).
+        template_id: Pipeline template ID to associate with the trigger.
+
+    Returns:
+        The created :class:`~orchestration_engine.webhooks.TriggerConfig`
+        instance.
+
+    Raises:
+        TriggerValidationError: If *trigger_id* or *template_id* fails
+            TriggerConfig validation.
+        sqlite3.IntegrityError: If a trigger with *trigger_id* already exists.
+    """
+    from orchestration_engine.webhooks import TriggerConfig  # local import to avoid circular deps
+
+    trigger = TriggerConfig(
+        id=trigger_id,
+        template_id=template_id,
+        mode="fire_and_forget",
+        filters=[{"action": "completed"}],
+        input_map={"event_payload": "{{payload}}"},
+    )
+    db.create_trigger(trigger.to_dict())
+    logger.info(
+        "register_regression_trigger: created trigger %r → template %r",
+        trigger_id,
+        template_id,
+    )
+    return trigger
