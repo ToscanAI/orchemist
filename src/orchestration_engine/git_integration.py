@@ -1145,3 +1145,85 @@ class GitContext:
         # The last line of git diff --stat is the summary line
         lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
         return lines[-1].strip() if lines else "no changes"
+
+    # ------------------------------------------------------------------
+    # Regression detection helpers (used by RegressionDetector)
+    # ------------------------------------------------------------------
+
+    def get_commit_range(
+        self, last_green_sha: str, head_sha: str, repo_path: Path
+    ) -> List[str]:
+        """Return ordered list of commit SHAs between ``last_green_sha`` and ``head_sha``.
+
+        Runs ``git log --oneline {last_green_sha}..{head_sha}`` and returns SHAs
+        newest-first (git log default), capped at 50.
+
+        Uses :func:`subprocess.run` directly (not :meth:`_run_git`) to get soft
+        failure semantics — callers receive an empty list rather than a raised
+        exception.
+
+        Args:
+            last_green_sha: The last known-green commit SHA (exclusive range start).
+            head_sha:       The failing HEAD commit SHA (inclusive range end).
+            repo_path:      Path to the git repository root.
+
+        Returns:
+            List of commit SHAs, newest-first, capped at 50.
+            Returns ``[]`` on empty range or any git failure.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "log", "--oneline", f"{last_green_sha}..{head_sha}"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "RegressionDetector: git log failed (rc=%d): %s",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+                return []
+            lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+            shas = [line.split()[0] for line in lines if line]
+            return shas[:50]  # cap at 50
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning("RegressionDetector: get_commit_range error: %s", exc)
+            return []
+
+    def get_commit_files(self, sha: str, repo_path: Path) -> List[str]:
+        """Return list of file paths changed by a single commit.
+
+        Runs ``git show --stat --name-only --format= {sha}`` and parses the
+        output to extract file paths only (stat summary lines are filtered out).
+
+        Args:
+            sha:       The commit SHA to inspect.
+            repo_path: Path to the git repository root.
+
+        Returns:
+            List of file-path strings changed by the commit.
+            Returns ``[]`` on any git failure.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "show", "--name-only", "--format=", sha],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "RegressionDetector: git show failed (rc=%d): %s",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+                return []
+            files = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+            return files
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning("RegressionDetector: get_commit_files error: %s", exc)
+            return []
