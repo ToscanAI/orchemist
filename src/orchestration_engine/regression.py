@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
+import sys
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -513,6 +516,240 @@ class RegressionWebhookHandler:
                 exc,
             )
             return None
+
+
+# ---------------------------------------------------------------------------
+# RegressionFixer
+# ---------------------------------------------------------------------------
+
+
+class RegressionFixer:
+    """Spawns a coding pipeline run to fix a detected regression.
+
+    Translates a :class:`Regression` record into a ``coding-pipeline-v1``
+    pipeline launch via the ``orch launch`` CLI subprocess, updates the
+    regression status to ``FIXING``, and stores the returned run_id.
+
+    Args:
+        repo_path:  Absolute path to the git repository root.
+        repo_url:   GitHub repo URL (e.g. ``"https://github.com/owner/repo"``).
+        repo_slug:  GitHub repo slug (``"owner/repo"``) used to build branch
+                    names and issue references.
+    """
+
+    TEMPLATE_ID = "coding-pipeline-v1"
+
+    def __init__(self, repo_path: Path, repo_url: str, repo_slug: str) -> None:
+        self._repo_path = repo_path
+        self._repo_url = repo_url
+        self._repo_slug = repo_slug
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def spawn_fix(
+        self,
+        regression: "Regression",
+        db: Any,
+        db_path: Optional[Path],
+    ) -> Optional[str]:
+        """Build a fix input, launch ``coding-pipeline-v1``, and update the regression.
+
+        Steps:
+        1. Build the pipeline input dict via :meth:`_build_fix_input`.
+        2. Launch the pipeline subprocess via :meth:`_launch_pipeline`.
+        3. On success, update the :class:`Regression` DB record:
+           ``status → FIXING``, ``fix_run_id → run_id``,
+           ``fix_attempt_count → previous_count + 1``.
+
+        Args:
+            regression: The :class:`Regression` to fix.
+            db:         Database instance for updating the regression record.
+            db_path:    Filesystem path to the DB file; forwarded to
+                        ``orch launch --db-path`` so the spawned daemon writes
+                        to the same DB.
+
+        Returns:
+            The ``run_id`` string returned by ``orch launch``, or ``None`` on
+            any failure (subprocess error, parse failure, DB update failure).
+        """
+        fix_input = self._build_fix_input(regression)
+        run_id = self._launch_pipeline(fix_input, db_path)
+        if run_id is None:
+            logger.warning(
+                "RegressionFixer: pipeline launch failed for regression %s",
+                regression.id,
+            )
+            return None
+
+        try:
+            db.update_regression(
+                regression.id,
+                status=RegressionStatus.FIXING.value,
+                fix_run_id=run_id,
+                fix_attempt_count=regression.fix_attempt_count + 1,
+            )
+        except Exception:
+            logger.exception(
+                "RegressionFixer: DB update failed for regression %s",
+                regression.id,
+            )
+            return None
+
+        logger.info(
+            "RegressionFixer: spawned fix run %s for regression %s "
+            "(attempt #%d)",
+            run_id,
+            regression.id,
+            regression.fix_attempt_count + 1,
+        )
+        return run_id
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _build_fix_input(self, regression: "Regression") -> dict:
+        """Construct the pipeline input payload for a fix run.
+
+        The branch name follows the convention
+        ``fix/regression-{commit_sha[:8]}-{regression_id[:8]}``.
+
+        Args:
+            regression: The regression to build input for.
+
+        Returns:
+            Dict suitable for JSON-serialisation and passing to ``orch launch``
+            via ``--input-file``.
+        """
+        branch = (
+            f"fix/regression-{regression.commit_sha[:8]}-{regression.id[:8]}"
+        )
+        affected = (
+            "\n".join(f"- {f}" for f in regression.affected_files)
+            or "_unknown_"
+        )
+        task_description = (
+            f"Fix a regression introduced by commit `{regression.commit_sha}`.\n\n"
+            f"**Failure type:** {regression.failure_type}\n"
+            f"**CI run:** {regression.ci_run_url}\n\n"
+            f"**Affected files:**\n{affected}\n"
+        )
+        if regression.diagnosis:
+            task_description += f"\n**Diagnosis:**\n{regression.diagnosis}\n"
+
+        return {
+            "task_description": task_description,
+            "branch_name": branch,
+            "repo_url": self._repo_url,
+            "repo_path": str(self._repo_path),
+            "regression_id": regression.id,
+            "affected_files": regression.affected_files,
+        }
+
+    def _launch_pipeline(
+        self,
+        fix_input: dict,
+        db_path: Optional[Path],
+    ) -> Optional[str]:
+        """Write fix_input to a temp file, invoke ``orch launch``, return run_id.
+
+        The subprocess is invoked as
+        ``python -m orchestration_engine.cli launch coding-pipeline-v1
+        --input-file <tmp> [--db-path <db_path>]``.
+
+        The temp file is always removed after the subprocess returns (even on
+        failure or exception).
+
+        Args:
+            fix_input: Dict to serialise as the pipeline input.
+            db_path:   Optional path forwarded as ``--db-path`` to the CLI.
+
+        Returns:
+            The parsed run_id string, or ``None`` on any error.
+        """
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".json",
+                delete=False,
+                prefix="regression-fix-",
+            ) as tmp:
+                json.dump(fix_input, tmp)
+                tmp_path = tmp.name
+        except OSError:
+            logger.exception("RegressionFixer: could not write temp input file")
+            return None
+
+        cmd = [
+            sys.executable,
+            "-m",
+            "orchestration_engine.cli",
+            "launch",
+            self.TEMPLATE_ID,
+            "--input-file",
+            tmp_path,
+        ]
+        if db_path is not None:
+            cmd.extend(["--db-path", str(db_path)])
+
+        env = os.environ.copy()
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=str(self._repo_path),
+                env=env,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning("RegressionFixer: subprocess error: %s", exc)
+            return None
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        if result.returncode != 0:
+            logger.warning(
+                "RegressionFixer: orch launch failed (rc=%d): %s",
+                result.returncode,
+                result.stderr.strip(),
+            )
+            return None
+
+        return self._parse_run_id(result.stdout)
+
+    @staticmethod
+    def _parse_run_id(stdout: str) -> Optional[str]:
+        """Extract the run_id from ``orch launch`` stdout.
+
+        The ``orch launch`` command prints a line of the form::
+
+            Run ID:  <run_id>
+
+        Args:
+            stdout: The full stdout text from the ``orch launch`` subprocess.
+
+        Returns:
+            The run_id string (stripped), or ``None`` if the expected line is
+            not present.
+        """
+        for line in stdout.splitlines():
+            if "Run ID:" in line:
+                parts = line.split("Run ID:", 1)
+                if len(parts) == 2:
+                    run_id = parts[1].strip()
+                    if run_id:
+                        return run_id
+        logger.warning(
+            "RegressionFixer: could not parse run_id from stdout: %r",
+            stdout[:200],
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
