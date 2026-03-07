@@ -58,6 +58,8 @@ phases:
     transitions:
       success: implement
     prompt_template: |
+      [PIPELINE CONTEXT] You are executing the SPEC phase (1/4) of an automated coding pipeline. Your output feeds the implement phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
+
       You are a senior developer interpreting a GitHub issue into an implementation spec.
 
       ## Issue
@@ -94,6 +96,8 @@ phases:
     transitions:
       success: review
     prompt_template: |
+      [PIPELINE CONTEXT] You are executing the IMPLEMENT phase (2/4) of an automated coding pipeline. Your output feeds the review phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
+
       You are a developer implementing changes based on a spec.
 
       ## Previous Work
@@ -145,6 +149,8 @@ phases:
       abort: fix
       success: test
     prompt_template: |
+      [PIPELINE CONTEXT] You are executing the REVIEW phase (3/4) of an automated coding pipeline. Your verdict determines whether the code proceeds to testing or goes back for fixes. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete review as structured text following the format below. [/PIPELINE CONTEXT]
+
       You are a senior code reviewer (Opus-tier). Your job is to catch bugs, security issues, and design problems.
 
       ## Previous Work
@@ -209,6 +215,8 @@ phases:
     transitions:
       success: review
     prompt_template: |
+      [PIPELINE CONTEXT] You are executing the FIX phase of an automated coding pipeline. Your output feeds a re-review — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
+
       You are a developer addressing code review feedback.
 
       ## Previous Work
