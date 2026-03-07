@@ -34,10 +34,13 @@ coarse bands used for downstream routing and reporting.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     # Imported only for type checking to avoid circular imports at runtime.
@@ -231,15 +234,22 @@ class ConfidenceCalculator:
         # Dynamic weights via ReviewerCalibrator (Issue #4.1.5 / #4.1.6)
         # When calibration_outcomes are provided, adjust llm_judge weight
         # based on the primary reviewer model's longitudinal accuracy.
+        # _eff_weights is a local copy so self.weights is never mutated;
+        # a second call on the same instance always starts from the original
+        # DEFAULT_WEIGHTS-derived weights, not from a previously scaled copy.
         # ------------------------------------------------------------------
+        _eff_weights: dict[str, float] = dict(self.weights)
         if calibration_outcomes:
             try:
                 from .reviewer_calibration import ReviewerCalibrator  # noqa: PLC0415
                 _calibrator = ReviewerCalibrator()
                 _metrics_map = _calibrator.compute(calibration_outcomes)
-                self.weights = self._compute_dynamic_weights(_metrics_map)
-            except Exception:
-                pass  # Fall back to static weights silently
+                _eff_weights = self._compute_dynamic_weights(_metrics_map)
+            except Exception as _cal_exc:
+                logger.warning(
+                    "Dynamic weight calibration failed (falling back to static weights): %s",
+                    _cal_exc,
+                )
 
         # Collect all non-meta JSON files (skip files starting with "_")
         task_files = sorted(
@@ -291,7 +301,7 @@ class ConfidenceCalculator:
                 signals.append(ConfidenceSignal(
                     name="llm_judge",
                     value=avg,
-                    weight=self.weights.get("llm_judge", DEFAULT_WEIGHTS["llm_judge"]),
+                    weight=_eff_weights.get("llm_judge", DEFAULT_WEIGHTS["llm_judge"]),
                     raw_value=confidences,
                     source=(
                         f"review/judge tasks: "
@@ -312,7 +322,7 @@ class ConfidenceCalculator:
             signals.append(ConfidenceSignal(
                 name="test_pass_rate",
                 value=rate,
-                weight=self.weights.get(
+                weight=_eff_weights.get(
                     "test_pass_rate", DEFAULT_WEIGHTS["test_pass_rate"]
                 ),
                 raw_value={"passed": success_count, "total": len(non_review_tasks)},
@@ -337,7 +347,7 @@ class ConfidenceCalculator:
             signals.append(ConfidenceSignal(
                 name="review_quality",
                 value=avg_all,
-                weight=self.weights.get(
+                weight=_eff_weights.get(
                     "review_quality", DEFAULT_WEIGHTS["review_quality"]
                 ),
                 raw_value=all_confidences,
@@ -354,7 +364,7 @@ class ConfidenceCalculator:
         signals.append(ConfidenceSignal(
             name="change_complexity",
             value=complexity_score,
-            weight=self.weights.get(
+            weight=_eff_weights.get(
                 "change_complexity", DEFAULT_WEIGHTS["change_complexity"]
             ),
             raw_value=num_tasks,
@@ -369,7 +379,7 @@ class ConfidenceCalculator:
         # ------------------------------------------------------------------
         if review_outcomes:
             from .review_catch_value import ReviewCatchValueCalculator  # noqa: PLC0415
-            rcv_weight = self.weights.get(
+            rcv_weight = _eff_weights.get(
                 "review_catch_value", DEFAULT_WEIGHTS["review_catch_value"]
             )
             rcv_calc = ReviewCatchValueCalculator(weight=rcv_weight)
@@ -388,7 +398,7 @@ class ConfidenceCalculator:
             ]
             if accuracy_scores:
                 avg_accuracy = sum(accuracy_scores) / len(accuracy_scores)
-                acr_weight = self.weights.get(
+                acr_weight = _eff_weights.get(
                     "audit_catch_rate", DEFAULT_WEIGHTS["audit_catch_rate"]
                 )
                 signals.append(ConfidenceSignal(
@@ -433,20 +443,21 @@ class ConfidenceCalculator:
         return False
 
     def _weighted_average(self, signals: list[ConfidenceSignal]) -> float:
-        """Compute renormalised weighted average over present signals."""
+        """Compute renormalised weighted average over present signals.
+
+        Uses each signal's own ``weight`` attribute, which is set at
+        construction time from the effective (possibly calibration-adjusted)
+        weight table.  This avoids coupling the aggregation step to the
+        mutable ``self.weights`` dict.
+        """
         if not signals:
             return 0.0
 
-        total_weight = sum(
-            self.weights.get(s.name, s.weight) for s in signals
-        )
+        total_weight = sum(s.weight for s in signals)
         if total_weight == 0.0:
             return sum(s.value for s in signals) / len(signals)
 
-        score = sum(
-            s.value * self.weights.get(s.name, s.weight) for s in signals
-        )
-        return score / total_weight
+        return sum(s.value * s.weight for s in signals) / total_weight
 
     def _compute_dynamic_weights(
         self,

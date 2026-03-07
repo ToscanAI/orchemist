@@ -577,6 +577,55 @@ def _strategy_to_action(strategy: str) -> str:
     return "human_review"
 
 
+class _PromptExecutorAdapter:
+    """Adapter bridging the string-prompt executor interface expected by
+    :class:`~audit.AuditPhase` and the :class:`~runner.TaskExecutor` ABC used
+    by :class:`~pipeline_runner.PipelineRunner`.
+
+    ``AuditPhase._call_executor`` calls ``executor.execute(prompt: str) -> str``.
+    ``TaskExecutor.execute`` expects ``(task: TaskSpec, worker_id: str, ...)``.
+    This adapter wraps a ``TaskExecutor`` and exposes the simple string interface
+    by constructing a minimal ``TaskSpec`` (type=REVIEW, payload={"prompt": ...})
+    and extracting the text output from the returned ``TaskResult``.
+
+    Args:
+        task_executor: The underlying :class:`~runner.TaskExecutor` instance.
+        worker_id:     Worker identifier forwarded to ``TaskExecutor.execute``.
+    """
+
+    def __init__(self, task_executor: Any, worker_id: str = "audit-worker") -> None:
+        self._executor = task_executor
+        self._worker_id = worker_id
+        # Expose model for AuditPhase to embed in AuditResult
+        self.model: str = getattr(task_executor, "model", "audit-model")
+
+    def execute(self, prompt: str) -> str:
+        """Execute a plain string prompt and return the text response.
+
+        Wraps the prompt in a :class:`~schemas.TaskSpec` with
+        ``type=TaskType.REVIEW`` and ``payload={"prompt": prompt}``, then
+        extracts and returns the text content from the resulting
+        :class:`~schemas.TaskResult`.
+        """
+        from .schemas import TaskSpec, TaskType, ModelTier  # noqa: PLC0415
+        task = TaskSpec(
+            type=TaskType.REVIEW,
+            payload={"prompt": prompt},
+            preferred_model=ModelTier.OPUS,
+        )
+        result = self._executor.execute(task, self._worker_id)
+        # Extract text from TaskResult.result dict (set by AnthropicExecutor /
+        # OpenClawExecutor as {"text": ...} or {"output": ...}).
+        if hasattr(result, "result") and isinstance(result.result, dict):
+            for key in ("text", "output", "content", "message"):
+                val = result.result.get(key)
+                if val:
+                    return str(val)
+        if hasattr(result, "result"):
+            return str(result.result)
+        return str(result)
+
+
 def _compute_and_dispatch_routing(
     run_id: str,
     output_dir: Path,
@@ -653,15 +702,31 @@ def _compute_and_dispatch_routing(
             )
 
         # 1c. Run AuditPhase on the most recent review outcome (Issue #4.1.4)
+        # The executor is wrapped in _PromptExecutorAdapter so AuditPhase
+        # (which calls executor.execute(prompt: str)) works correctly with the
+        # pipeline's TaskExecutor (whose execute() expects a TaskSpec).
         audit_results: list = []
         if executor is not None and review_outcomes:
             try:
                 from .audit import AuditPhase  # noqa: PLC0415
-                _audit_model = getattr(executor, "model", "audit-model")
-                _auditor = AuditPhase(executor=executor, model=_audit_model)
+                _prompt_executor = _PromptExecutorAdapter(executor)
+                _audit_model = _prompt_executor.model
+                _auditor = AuditPhase(executor=_prompt_executor, model=_audit_model)
+
+                # Provide code_diff from phase outputs when available so the
+                # adversarial auditor can review the actual diff rather than
+                # only the original issue list (improves catch rate).
+                _code_diff: Optional[str] = None
+                for _pid, _pout in phase_outputs.items():
+                    _txt = _extract_output_text(_pout).strip()
+                    if _txt:
+                        _code_diff = _txt
+                        break
+
                 _audit_result = _auditor.run(
                     run_id=run_id,
                     review_outcome=review_outcomes[0],
+                    code_diff=_code_diff,
                 )
                 audit_results = [_audit_result.to_dict()]
                 logger.info(
@@ -677,7 +742,7 @@ def _compute_and_dispatch_routing(
                     run_id, _audit_exc,
                 )
 
-        # 2. Compute composite confidence from output directory, wiring all signals
+        # 3. Compute composite confidence from output directory, wiring all signals
         confidence_result = ConfidenceCalculator().compute_confidence(
             output_dir,
             review_outcomes=review_outcomes or None,
@@ -692,7 +757,7 @@ def _compute_and_dispatch_routing(
             confidence_result.confidence_level.value,
         )
 
-        # 2. Evaluate routing (use template config if provided, else default)
+        # 4. Evaluate routing (use template config if provided, else default)
         _routing_cfg = routing_config or DEFAULT_ROUTING_CONFIG
         decision = RoutingEngine(_routing_cfg).route(confidence_result)
 
@@ -701,10 +766,10 @@ def _compute_and_dispatch_routing(
             run_id, decision.tier, decision.strategy, decision.score,
         )
 
-        # 3. Map strategy → action
+        # 4a. Map strategy → action
         action = _strategy_to_action(decision.strategy)
 
-        # 4. Build signals_json from confidence result signals
+        # 4b. Build signals_json from confidence result signals
         signals_dict: Dict[str, Any] = {
             s.name: {
                 "value": s.value,
