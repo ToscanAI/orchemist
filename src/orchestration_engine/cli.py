@@ -945,6 +945,7 @@ def _print_watch_event(evt: dict, json_mode: bool) -> None:
     else:
         click.echo(f"  [{ts}] {event_type}: {phase or '(run)'}")
 
+@main.command()
 @click.option('--detailed', '-d', is_flag=True, help='Show detailed worker information')
 def workers(detailed: bool) -> None:
     """Show active worker status."""
