@@ -746,103 +746,205 @@ def execute(task_id: str, force: bool, model: Optional[str], timeout: Optional[i
 
 
 @main.command()
-@click.argument('task_id', required=True)
-@click.option('--follow', '-f', is_flag=True, help='Follow progress in real-time')
-@click.option('--refresh', default=2, help='Refresh interval in seconds (with --follow)')
-def watch(task_id: str, follow: bool, refresh: int) -> None:
-    """Watch task progress in real-time."""
+@click.argument('run_id', required=True)
+@click.option('--json-output', '--json', 'json_mode', is_flag=True, help='Machine-readable JSON output')
+@click.option('--refresh', default=3, help='Refresh interval in seconds')
+def watch(run_id: str, json_mode: bool, refresh: int) -> None:
+    """Watch pipeline run progress in real-time (#414).
+
+    Streams phase transitions, scoring results, warnings, and errors
+    as they happen.  Exits when the pipeline reaches a terminal state.
+
+    \b
+    Examples:
+      orch watch a3f8c2d1           # live-follow a running pipeline
+      orch watch a3f8c2d1 --json    # machine-readable event stream
+
+    Also works with legacy task IDs (falls back to old task-queue watch).
+    """
+    import json as _json
+
+    # ── Try pipeline run first ──────────────────────────────────────
     try:
-        # Import here to avoid circular imports
+        _db = Database()
+        run = _db.get_pipeline_run(run_id)
+    except Exception:
+        run = None
+
+    if run is not None:
+        _watch_pipeline_run(run_id, _db, json_mode, refresh)
+        return
+
+    # ── Fallback: legacy task-queue watch ────────────────────────────
+    try:
         from .progress import ProgressTracker
-        from .db import Database
-        
+
         db = Database()
         tracker = ProgressTracker(db)
-        
+
         def display_progress():
-            progress = tracker.get_task_progress(task_id, include_events=True)
+            progress = tracker.get_task_progress(run_id, include_events=True)
             if not progress:
-                click.echo(f"❌ Task {task_id} not found")
+                click.echo(f"❌ Task {run_id} not found")
                 return False
-            
-            # Clear screen for follow mode
-            if follow:
-                click.clear()
-            
-            # Display task header
-            click.echo(f"📊 Task Progress: {task_id}")
+
+            click.clear()
+            click.echo(f"📊 Task Progress: {run_id}")
             click.echo("=" * 60)
-            
-            # Status overview
+
             status_emoji = {
-                "queued": "⏳",
-                "running": "🔄", 
-                "success": "✅",
-                "failed": "❌",
-                "retry": "🔁",
-                "permanently_failed": "💀",
-                "cancelled": "🚫"
+                "queued": "⏳", "running": "🔄", "success": "✅",
+                "failed": "❌", "retry": "🔁", "permanently_failed": "💀",
+                "cancelled": "🚫",
             }
-            
             emoji = status_emoji.get(progress.current_state.value, "❓")
             click.echo(f"Status: {emoji} {progress.current_state.value.upper()}")
-            
+
             if progress.current_message:
                 click.echo(f"Message: {progress.current_message}")
-            
             click.echo(f"Progress: {progress.progress_percentage:.1f}%")
-            
             if progress.execution_time_seconds:
                 click.echo(f"Runtime: {progress.execution_time_seconds:.1f}s")
-            
-            if progress.current_model:
-                click.echo(f"Model: {progress.current_model}")
-            
-            click.echo(f"Attempt: {progress.attempt_number}")
-            
-            if progress.retry_count > 0:
-                click.echo(f"Retries: {progress.retry_count}")
-            
-            # Resource usage
-            if progress.total_tokens > 0 or float(progress.total_cost_usd) > 0:
-                click.echo("\n💰 Resource Usage:")
-                if progress.total_tokens > 0:
-                    click.echo(f"  Tokens: {progress.total_tokens:,}")
-                if float(progress.total_cost_usd) > 0:
-                    click.echo(f"  Cost: ${progress.total_cost_usd}")
-            
-            # Recent events
-            click.echo(f"\n📋 Recent Events ({len(progress.events)}):")
-            for event in progress.events[-5:]:  # Show last 5 events
-                timestamp = event.timestamp.strftime("%H:%M:%S")
-                click.echo(f"  {timestamp} - {event.event_type}: {event.message or 'N/A'}")
-            
-            # Return whether task is still active
+            if progress.events:
+                click.echo(f"\n📋 Recent Events ({len(progress.events)}):")
+                for event in progress.events[-5:]:
+                    timestamp = event.timestamp.strftime("%H:%M:%S")
+                    click.echo(f"  {timestamp} - {event.event_type}: {event.message or 'N/A'}")
             return progress.is_active
-        
-        # Display progress
+
         is_active = display_progress()
-        
-        # Follow mode
-        if follow and is_active:
-            click.echo(f"\n🔄 Following progress (refresh every {refresh}s, Ctrl+C to stop)...")
-            
+        if is_active:
+            click.echo(f"\n🔄 Following (refresh every {refresh}s, Ctrl+C to stop)...")
             try:
                 while is_active:
                     time.sleep(refresh)
                     is_active = display_progress()
-                
-                click.echo("\n✅ Task completed - stopped following")
-            
+                click.echo("\n✅ Task completed")
             except KeyboardInterrupt:
-                click.echo("\n👋 Stopped following progress")
-    
+                click.echo("\n👋 Stopped")
     except Exception as e:
-        click.echo(f"Error watching task: {e}", err=True)
+        click.echo(f"Error: '{run_id}' not found in pipeline runs or task queue.", err=True)
         sys.exit(1)
 
 
-@main.command()
+def _watch_pipeline_run(
+    run_id: str, db: "Database", json_mode: bool, refresh: int
+) -> None:
+    """Stream pipeline run events in real-time (#414).
+
+    Polls the pipeline_run_events table and prints formatted output
+    as phases start, complete, stall, or score.
+    """
+    import json as _json
+
+    terminal_states = {
+        'success', 'failed', 'cancelled', 'crashed',
+        'scoring_failed', 'pending_review', 'rejected',
+    }
+
+    last_event_id = 0
+    last_status = None
+    header_printed = False
+
+    try:
+        while True:
+            run = db.get_pipeline_run(run_id)
+            if run is None:
+                click.echo(f"✗ Run '{run_id}' not found.", err=True)
+                sys.exit(1)
+
+            current_status = run['status']
+
+            # Check PID liveness
+            if current_status == 'running' and run.get('pid'):
+                try:
+                    from .daemon import is_process_alive
+                    if not is_process_alive(run['pid']):
+                        current_status = 'crashed'
+                        db.update_pipeline_run(run_id, status='crashed')
+                except Exception:
+                    pass
+
+            # Print header once
+            if not header_printed:
+                template = run.get('template_id', '?')
+                click.echo(f"🔄 Pipeline {run_id} — {template}")
+                header_printed = True
+
+            # Fetch new events
+            events = db.list_pipeline_run_events(run_id, after_id=last_event_id, limit=100)
+            for evt in events:
+                last_event_id = evt['id']
+                _print_watch_event(evt, json_mode)
+
+            # Status change
+            if current_status != last_status:
+                if current_status in terminal_states:
+                    _scoring = run.get('scoring_status')
+                    _score = run.get('scoring_score')
+                    score_str = f" (score={_score:.3f})" if _score is not None else ""
+                    icon = {'success': '✅', 'pending_review': '📋', 'failed': '❌',
+                            'crashed': '💀', 'scoring_failed': '🔴'}.get(current_status, '❓')
+                    ts = datetime.now().strftime('%H:%M:%S')
+                    if json_mode:
+                        click.echo(_json.dumps({
+                            "time": ts, "type": "run_complete",
+                            "status": current_status,
+                            "scoring_status": _scoring,
+                            "scoring_score": _score,
+                        }))
+                    else:
+                        click.echo(
+                            f"  [{ts}] 🏁 Pipeline complete — "
+                            f"{icon} {current_status}{score_str}"
+                        )
+                    return
+                last_status = current_status
+
+            time.sleep(refresh)
+
+    except KeyboardInterrupt:
+        click.echo("\n👋 Stopped watching")
+
+
+def _print_watch_event(evt: dict, json_mode: bool) -> None:
+    """Format and print a single pipeline run event (#414)."""
+    import json as _json
+
+    event_type = evt.get('event_type', '')
+    phase = evt.get('phase_id') or ''
+    tokens = evt.get('tokens_consumed')
+    state = evt.get('state')
+    ts = datetime.now().strftime('%H:%M:%S')
+
+    try:
+        meta = _json.loads(evt.get('metadata_json', '{}'))
+    except (TypeError, _json.JSONDecodeError):
+        meta = {}
+
+    if json_mode:
+        click.echo(_json.dumps({
+            "time": ts, "type": event_type, "phase": phase,
+            "tokens": tokens, "state": state, "metadata": meta,
+        }))
+        return
+
+    # Human-friendly formatting
+    if event_type == 'phase_started':
+        click.echo(f"  [{ts}] ▶ {phase} started")
+    elif event_type == 'phase_completed':
+        tokens_str = f", {tokens:,} tokens" if tokens else ""
+        state_str = f" — {state}" if state else ""
+        click.echo(f"  [{ts}] ✓ {phase} completed{tokens_str}{state_str}")
+    elif event_type == 'stall_detected':
+        msg = meta.get('message', 'possible rate limit')
+        click.echo(f"  [{ts}] ⚠️  {msg}")
+    elif event_type == 'status_changed':
+        new_status = meta.get('new_status') or state or '?'
+        click.echo(f"  [{ts}] 🔄 status → {new_status}")
+    else:
+        click.echo(f"  [{ts}] {event_type}: {phase or '(run)'}")
+
 @click.option('--detailed', '-d', is_flag=True, help='Show detailed worker information')
 def workers(detailed: bool) -> None:
     """Show active worker status."""
