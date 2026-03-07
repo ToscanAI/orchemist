@@ -432,6 +432,21 @@ class TestRegisterRegressionTrigger:
         )
         assert "event_payload" in trigger.input_map
 
+    def test_input_map_resolves_full_payload(self, db):
+        """InputMapper.apply() resolves {{payload}} to the full payload dict (not a string)."""
+        from orchestration_engine.webhooks import InputMapper
+
+        trigger = register_regression_trigger(
+            db=db,
+            trigger_id="reg-trigger-03b",
+            template_id="my-template",
+        )
+        sample_payload = {"check_suite": {"conclusion": "failure", "head_sha": "abc123"}}
+        resolved = InputMapper.apply(sample_payload, trigger.input_map)
+        # Must be the full dict — not the literal string "{{payload}}"
+        assert resolved["event_payload"] == sample_payload
+        assert isinstance(resolved["event_payload"], dict)
+
     def test_invalid_trigger_id_raises(self, db):
         """Validation error is propagated for an invalid trigger ID."""
         from orchestration_engine.webhooks import TriggerValidationError
