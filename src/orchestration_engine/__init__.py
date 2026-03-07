@@ -35,11 +35,6 @@ from .review_catch_value import (  # noqa: F401  # Issue #4.1.3
     ReviewCatchValueCalculator,
     SEVERITY_WEIGHTS,
 )
-from .audit import (  # noqa: F401  # Issue #4.1.4 / #388
-    AuditPhase,
-    AuditResult,
-    AuditIssue,
-)
 from .audit import (  # noqa: F401  # Issue #4.1.4
     AuditPhase,
     AuditResult,
@@ -85,10 +80,6 @@ __all__ = [
     # Review catch value signal (Issue #4.1.3)
     "ReviewCatchValueCalculator",
     "SEVERITY_WEIGHTS",
-    # Adversarial audit phase (Issue #4.1.4 / #388)
-    "AuditPhase",
-    "AuditResult",
-    "AuditIssue",
     # Adversarial audit phase (Issue #4.1.4)
     "AuditPhase",
     "AuditResult",
