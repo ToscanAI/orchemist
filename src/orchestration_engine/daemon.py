@@ -373,11 +373,14 @@ def run_daemon(run_id: str, db_path: str) -> None:
             except Exception as _ge:
                 logger.warning("Could not update gate file with scoring error: %s", _ge)
 
-    # --- Routing dispatch (Issue #331.3) ---
+    # --- Routing dispatch (Issue #331.3 / #4.1.6) ---
     # Compute confidence, route to action tier, persist decision, and dispatch.
     # Returns (possibly updated) final_status: 'pending_review' or 'rejected'
     # when routing selects those actions on a successful run.
     # Non-fatal: all errors are caught inside _compute_and_dispatch_routing.
+    # Pass the primary executor so AuditPhase and dynamic weight calibration
+    # can run with live LLM access (Issue #4.1.6).
+    _routing_executor = runner.executors[0] if runner.executors else None
     _final_status = _compute_and_dispatch_routing(
         run_id=run_id,
         output_dir=output_dir,
@@ -388,6 +391,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
         scoring_score=_scoring_score_val,
         phase_outputs=phase_outputs,
         final_status=_final_status,
+        executor=_routing_executor,
     )
 
     db.update_pipeline_run(
@@ -573,6 +577,55 @@ def _strategy_to_action(strategy: str) -> str:
     return "human_review"
 
 
+class _PromptExecutorAdapter:
+    """Adapter bridging the string-prompt executor interface expected by
+    :class:`~audit.AuditPhase` and the :class:`~runner.TaskExecutor` ABC used
+    by :class:`~pipeline_runner.PipelineRunner`.
+
+    ``AuditPhase._call_executor`` calls ``executor.execute(prompt: str) -> str``.
+    ``TaskExecutor.execute`` expects ``(task: TaskSpec, worker_id: str, ...)``.
+    This adapter wraps a ``TaskExecutor`` and exposes the simple string interface
+    by constructing a minimal ``TaskSpec`` (type=REVIEW, payload={"prompt": ...})
+    and extracting the text output from the returned ``TaskResult``.
+
+    Args:
+        task_executor: The underlying :class:`~runner.TaskExecutor` instance.
+        worker_id:     Worker identifier forwarded to ``TaskExecutor.execute``.
+    """
+
+    def __init__(self, task_executor: Any, worker_id: str = "audit-worker") -> None:
+        self._executor = task_executor
+        self._worker_id = worker_id
+        # Expose model for AuditPhase to embed in AuditResult
+        self.model: str = getattr(task_executor, "model", "audit-model")
+
+    def execute(self, prompt: str) -> str:
+        """Execute a plain string prompt and return the text response.
+
+        Wraps the prompt in a :class:`~schemas.TaskSpec` with
+        ``type=TaskType.REVIEW`` and ``payload={"prompt": prompt}``, then
+        extracts and returns the text content from the resulting
+        :class:`~schemas.TaskResult`.
+        """
+        from .schemas import TaskSpec, TaskType, ModelTier  # noqa: PLC0415
+        task = TaskSpec(
+            type=TaskType.REVIEW,
+            payload={"prompt": prompt},
+            preferred_model=ModelTier.OPUS,
+        )
+        result = self._executor.execute(task, self._worker_id)
+        # Extract text from TaskResult.result dict (set by AnthropicExecutor /
+        # OpenClawExecutor as {"text": ...} or {"output": ...}).
+        if hasattr(result, "result") and isinstance(result.result, dict):
+            for key in ("text", "output", "content", "message"):
+                val = result.result.get(key)
+                if val:
+                    return str(val)
+        if hasattr(result, "result"):
+            return str(result.result)
+        return str(result)
+
+
 def _compute_and_dispatch_routing(
     run_id: str,
     output_dir: Path,
@@ -583,6 +636,7 @@ def _compute_and_dispatch_routing(
     scoring_score: Optional[float],
     phase_outputs: Dict[str, Any],
     final_status: str,
+    executor: Optional[Any] = None,
 ) -> str:
     """Compute confidence, route to action tier, persist decision, dispatch action.
 
@@ -590,10 +644,14 @@ def _compute_and_dispatch_routing(
     exception is caught, logged, and the pipeline final_status is not changed.
 
     Steps:
-        1. Compute composite confidence from output directory artefacts.
-        2. Evaluate routing config to produce a :class:`~routing.RoutingDecision`.
-        3. Persist the decision to the ``routing_decisions`` DB table.
-        4. If the pipeline succeeded, dispatch the resolved action.
+        1. Fetch review outcomes and calibration history from the DB.
+        2. Optionally run AuditPhase on the most recent review outcome.
+        3. Compute composite confidence from output directory artefacts, wiring
+           in review outcomes, audit results, and calibration data for full
+           signal coverage (Issue #4.1.6).
+        4. Evaluate routing config to produce a :class:`~routing.RoutingDecision`.
+        5. Persist the decision to the ``routing_decisions`` DB table.
+        6. If the pipeline succeeded, dispatch the resolved action.
 
     Args:
         run_id:           Pipeline run identifier.
@@ -605,6 +663,8 @@ def _compute_and_dispatch_routing(
         scoring_score:    Composite scoring score (0–1), or None.
         phase_outputs:    Dict of phase_id → phase result dict.
         final_status:     Current intended final status of the pipeline run.
+        executor:         Optional pipeline executor, used to run AuditPhase.
+                          When ``None``, AuditPhase is skipped (stub mode).
 
     Returns:
         The (possibly modified) final_status string.  Routing may update this
@@ -612,8 +672,83 @@ def _compute_and_dispatch_routing(
         on a successful run.
     """
     try:
-        # 1. Compute composite confidence from output directory
-        confidence_result = ConfidenceCalculator().compute_confidence(output_dir)
+        # 1a. Fetch run-specific review outcomes from DB (Issue #4.1.3)
+        review_outcomes: list = []
+        try:
+            review_outcomes = db.get_review_outcomes_for_run(run_id) or []
+            logger.info(
+                "Confidence: fetched %d review outcome(s) for run '%s'",
+                len(review_outcomes), run_id,
+            )
+        except Exception as _ro_exc:
+            logger.warning(
+                "Confidence: could not fetch review outcomes for run '%s' "
+                "(non-fatal): %s",
+                run_id, _ro_exc,
+            )
+
+        # 1b. Fetch historical calibration outcomes from DB (Issue #4.1.5)
+        calibration_outcomes: list = []
+        try:
+            calibration_outcomes = db.list_review_outcomes(limit=500) or []
+            logger.info(
+                "Confidence: fetched %d calibration outcome(s) for dynamic weights",
+                len(calibration_outcomes),
+            )
+        except Exception as _co_exc:
+            logger.warning(
+                "Confidence: could not fetch calibration outcomes (non-fatal): %s",
+                _co_exc,
+            )
+
+        # 1c. Run AuditPhase on the most recent review outcome (Issue #4.1.4)
+        # The executor is wrapped in _PromptExecutorAdapter so AuditPhase
+        # (which calls executor.execute(prompt: str)) works correctly with the
+        # pipeline's TaskExecutor (whose execute() expects a TaskSpec).
+        audit_results: list = []
+        if executor is not None and review_outcomes:
+            try:
+                from .audit import AuditPhase  # noqa: PLC0415
+                _prompt_executor = _PromptExecutorAdapter(executor)
+                _audit_model = _prompt_executor.model
+                _auditor = AuditPhase(executor=_prompt_executor, model=_audit_model)
+
+                # Provide code_diff from phase outputs when available so the
+                # adversarial auditor can review the actual diff rather than
+                # only the original issue list (improves catch rate).
+                _code_diff: Optional[str] = None
+                for _pid, _pout in phase_outputs.items():
+                    _txt = _extract_output_text(_pout).strip()
+                    if _txt:
+                        _code_diff = _txt
+                        break
+
+                _audit_result = _auditor.run(
+                    run_id=run_id,
+                    review_outcome=review_outcomes[0],
+                    code_diff=_code_diff,
+                )
+                audit_results = [_audit_result.to_dict()]
+                logger.info(
+                    "AuditPhase complete for run '%s': "
+                    "reviewer_accuracy_score=%.4f  false_approval=%s",
+                    run_id,
+                    _audit_result.reviewer_accuracy_score,
+                    _audit_result.false_approval,
+                )
+            except Exception as _audit_exc:
+                logger.warning(
+                    "AuditPhase failed for run '%s' (non-fatal): %s",
+                    run_id, _audit_exc,
+                )
+
+        # 3. Compute composite confidence from output directory, wiring all signals
+        confidence_result = ConfidenceCalculator().compute_confidence(
+            output_dir,
+            review_outcomes=review_outcomes or None,
+            audit_results=audit_results or None,
+            calibration_outcomes=calibration_outcomes or None,
+        )
 
         logger.info(
             "Confidence computed for run '%s': score=%.4f tier=%s",
@@ -622,7 +757,7 @@ def _compute_and_dispatch_routing(
             confidence_result.confidence_level.value,
         )
 
-        # 2. Evaluate routing (use template config if provided, else default)
+        # 4. Evaluate routing (use template config if provided, else default)
         _routing_cfg = routing_config or DEFAULT_ROUTING_CONFIG
         decision = RoutingEngine(_routing_cfg).route(confidence_result)
 
@@ -631,10 +766,10 @@ def _compute_and_dispatch_routing(
             run_id, decision.tier, decision.strategy, decision.score,
         )
 
-        # 3. Map strategy → action
+        # 4a. Map strategy → action
         action = _strategy_to_action(decision.strategy)
 
-        # 4. Build signals_json from confidence result signals
+        # 4b. Build signals_json from confidence result signals
         signals_dict: Dict[str, Any] = {
             s.name: {
                 "value": s.value,

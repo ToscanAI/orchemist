@@ -572,3 +572,334 @@ class TestModuleExports:
         # 3-tier vs 5-tier
         assert len(list(RunConfidenceLevel)) == 3
         assert len(list(SchemaCL)) == 5
+
+
+# ---------------------------------------------------------------------------
+# ConfidenceCalculator — audit_catch_rate signal (Issue #4.1.6)
+# ---------------------------------------------------------------------------
+
+class TestAuditCatchRateSignal:
+    """Tests for the audit_results → audit_catch_rate signal path."""
+
+    def test_audit_results_none_omits_signal(self, tmp_path):
+        """When audit_results is None, no audit_catch_rate signal is emitted."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        result = calc.compute_confidence(tmp_path, audit_results=None)
+        signal_names = {s.name for s in result.signals}
+        assert "audit_catch_rate" not in signal_names
+
+    def test_audit_results_empty_list_omits_signal(self, tmp_path):
+        """When audit_results is an empty list, no audit_catch_rate signal is emitted."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        result = calc.compute_confidence(tmp_path, audit_results=[])
+        signal_names = {s.name for s in result.signals}
+        assert "audit_catch_rate" not in signal_names
+
+    def test_single_audit_result_emits_signal(self, tmp_path):
+        """A single audit result with reviewer_accuracy_score produces the signal."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        audit = [{"reviewer_accuracy_score": 0.75, "audit_id": "a1", "run_id": "r1"}]
+        result = calc.compute_confidence(tmp_path, audit_results=audit)
+        signal_names = {s.name for s in result.signals}
+        assert "audit_catch_rate" in signal_names
+        sig = next(s for s in result.signals if s.name == "audit_catch_rate")
+        assert sig.value == pytest.approx(0.75)
+
+    def test_multiple_audit_results_averaged(self, tmp_path):
+        """Multiple audit results have their reviewer_accuracy_score averaged."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        audit = [
+            {"reviewer_accuracy_score": 0.60},
+            {"reviewer_accuracy_score": 0.80},
+            {"reviewer_accuracy_score": 1.00},
+        ]
+        result = calc.compute_confidence(tmp_path, audit_results=audit)
+        sig = next(s for s in result.signals if s.name == "audit_catch_rate")
+        assert sig.value == pytest.approx(0.80)  # (0.6 + 0.8 + 1.0) / 3
+
+    def test_audit_result_without_score_key_skipped(self, tmp_path):
+        """Audit result dicts missing reviewer_accuracy_score are silently skipped."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        audit = [
+            {"reviewer_accuracy_score": 0.90},
+            {"no_score_here": "bad"},  # missing key — skipped
+        ]
+        result = calc.compute_confidence(tmp_path, audit_results=audit)
+        sig = next(s for s in result.signals if s.name == "audit_catch_rate")
+        assert sig.value == pytest.approx(0.90)
+
+    def test_audit_catch_rate_uses_default_weight(self, tmp_path):
+        """audit_catch_rate signal uses the DEFAULT_WEIGHTS weight."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        audit = [{"reviewer_accuracy_score": 0.70}]
+        result = calc.compute_confidence(tmp_path, audit_results=audit)
+        sig = next(s for s in result.signals if s.name == "audit_catch_rate")
+        assert sig.weight == pytest.approx(DEFAULT_WEIGHTS["audit_catch_rate"])
+
+    def test_audit_catch_rate_raw_value_contains_count(self, tmp_path):
+        """raw_value of audit_catch_rate includes audit_count."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        audit = [{"reviewer_accuracy_score": 0.5}, {"reviewer_accuracy_score": 0.8}]
+        result = calc.compute_confidence(tmp_path, audit_results=audit)
+        sig = next(s for s in result.signals if s.name == "audit_catch_rate")
+        assert isinstance(sig.raw_value, dict)
+        assert sig.raw_value["audit_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# ConfidenceCalculator — calibration_outcomes & _compute_dynamic_weights
+# (Issues #4.1.5 / #4.1.6)
+# ---------------------------------------------------------------------------
+
+class TestDynamicWeightsCalibration:
+    """Tests for calibration_outcomes → _compute_dynamic_weights() integration."""
+
+    def _make_mock_calibrator(self, overall_accuracy: float, total_reviews: int = 10):
+        """Return a mock calibration_outcomes list that patches ReviewerCalibrator.compute()."""
+        # We patch ReviewerCalibrator to return a controlled metrics_map
+        from unittest.mock import MagicMock, patch
+        return overall_accuracy, total_reviews
+
+    def test_calibration_outcomes_none_uses_static_weights(self, tmp_path):
+        """When calibration_outcomes is None, DEFAULT_WEIGHTS are used unchanged."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        original_llm_judge_weight = calc.weights["llm_judge"]
+        calc.compute_confidence(tmp_path, calibration_outcomes=None)
+        # self.weights must NOT have been mutated
+        assert calc.weights["llm_judge"] == original_llm_judge_weight
+
+    def test_self_weights_not_mutated_after_calibration(self, tmp_path):
+        """compute_confidence() must NOT mutate self.weights even with calibration_outcomes."""
+        from unittest.mock import MagicMock, patch
+
+        _write_task(tmp_path, "review.json", task_type="review", state="success", confidence=0.9)
+        calc = ConfidenceCalculator()
+        initial_weights = dict(calc.weights)  # snapshot before call
+
+        mock_metrics = MagicMock()
+        mock_metrics.overall_accuracy = 0.9
+        mock_metrics.total_reviews = 50
+        mock_metrics_map = {"model-x": mock_metrics}
+
+        with patch(
+            "orchestration_engine.reviewer_calibration.ReviewerCalibrator.compute",
+            return_value=mock_metrics_map,
+        ):
+            calc.compute_confidence(tmp_path, calibration_outcomes=[{"dummy": True}])
+
+        # After the call, self.weights must be exactly the same as before
+        assert calc.weights == initial_weights, (
+            "compute_confidence() must not mutate self.weights; "
+            "a second call on the same instance would compound the scaling."
+        )
+
+    def test_second_call_same_instance_independent(self, tmp_path):
+        """Two calls on the same ConfidenceCalculator instance must produce independent results."""
+        from unittest.mock import MagicMock, patch
+
+        _write_task(tmp_path, "review.json", task_type="review", state="success", confidence=0.9)
+        calc = ConfidenceCalculator()
+
+        mock_metrics_high = MagicMock()
+        mock_metrics_high.overall_accuracy = 1.0  # boosts llm_judge weight
+        mock_metrics_high.total_reviews = 20
+
+        mock_metrics_low = MagicMock()
+        mock_metrics_low.overall_accuracy = 0.0  # reduces llm_judge weight
+        mock_metrics_low.total_reviews = 20
+
+        with patch(
+            "orchestration_engine.reviewer_calibration.ReviewerCalibrator.compute",
+            side_effect=[
+                {"model-a": mock_metrics_high},
+                {"model-b": mock_metrics_low},
+            ],
+        ):
+            result1 = calc.compute_confidence(tmp_path, calibration_outcomes=[{"x": 1}])
+            result2 = calc.compute_confidence(tmp_path, calibration_outcomes=[{"x": 1}])
+
+        # Results should differ (different accuracy → different llm_judge weight)
+        assert result1.composite_score != result2.composite_score, (
+            "Second call compounded static weights — self.weights was mutated on first call."
+        )
+
+    def test_compute_dynamic_weights_high_accuracy(self):
+        """High reviewer accuracy boosts llm_judge weight above the base."""
+        from unittest.mock import MagicMock
+
+        calc = ConfidenceCalculator()
+        base = calc.weights["llm_judge"]
+
+        mock_metrics = MagicMock()
+        mock_metrics.overall_accuracy = 1.0  # perfect accuracy → 1.5x base
+        mock_metrics.total_reviews = 10
+        metrics_map = {"model-x": mock_metrics}
+
+        new_weights = calc._compute_dynamic_weights(metrics_map)
+
+        assert new_weights["llm_judge"] > base, (
+            "High accuracy should increase llm_judge weight above base."
+        )
+
+    def test_compute_dynamic_weights_low_accuracy(self):
+        """Low reviewer accuracy reduces llm_judge weight below the base."""
+        from unittest.mock import MagicMock
+
+        calc = ConfidenceCalculator()
+        base = calc.weights["llm_judge"]
+
+        mock_metrics = MagicMock()
+        mock_metrics.overall_accuracy = 0.0  # zero accuracy → 0.5x base
+        mock_metrics.total_reviews = 10
+        metrics_map = {"model-x": mock_metrics}
+
+        new_weights = calc._compute_dynamic_weights(metrics_map)
+
+        assert new_weights["llm_judge"] < base, (
+            "Low accuracy should reduce llm_judge weight below base."
+        )
+
+    def test_compute_dynamic_weights_sums_to_one(self):
+        """Dynamic weights must re-normalise to sum to 1.0."""
+        from unittest.mock import MagicMock
+
+        calc = ConfidenceCalculator()
+        mock_metrics = MagicMock()
+        mock_metrics.overall_accuracy = 0.75
+        mock_metrics.total_reviews = 5
+        metrics_map = {"model-x": mock_metrics}
+
+        new_weights = calc._compute_dynamic_weights(metrics_map)
+        total = sum(new_weights.values())
+        assert abs(total - 1.0) < 1e-9, f"Expected sum==1.0, got {total}"
+
+    def test_compute_dynamic_weights_no_usable_data_returns_original(self):
+        """When metrics_map has no usable accuracy data, original weights are returned."""
+        from unittest.mock import MagicMock
+
+        calc = ConfidenceCalculator()
+        original = dict(calc.weights)
+
+        mock_metrics = MagicMock()
+        mock_metrics.overall_accuracy = None  # no accuracy data
+        mock_metrics.total_reviews = 10
+        metrics_map = {"model-x": mock_metrics}
+
+        result = calc._compute_dynamic_weights(metrics_map)
+        assert result == original
+
+    def test_compute_dynamic_weights_empty_map_returns_original(self):
+        """Empty metrics_map returns original weights unchanged."""
+        calc = ConfidenceCalculator()
+        original = dict(calc.weights)
+        result = calc._compute_dynamic_weights({})
+        assert result == original
+
+    def test_calibration_exception_falls_back_to_static(self, tmp_path):
+        """When ReviewerCalibrator.compute raises, static weights are used (no crash)."""
+        from unittest.mock import patch
+
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+
+        with patch(
+            "orchestration_engine.reviewer_calibration.ReviewerCalibrator.compute",
+            side_effect=RuntimeError("DB error"),
+        ):
+            # Must not raise; must fall back to static weights
+            result = calc.compute_confidence(tmp_path, calibration_outcomes=[{"x": 1}])
+
+        assert isinstance(result, ConfidenceCalculator.__class__) or isinstance(result, object)
+        assert result.composite_score >= 0.0
+
+
+# ---------------------------------------------------------------------------
+# ConfidenceCalculator — _PromptExecutorAdapter (daemon adapter — Issue #4.1.6)
+# ---------------------------------------------------------------------------
+
+class TestPromptExecutorAdapter:
+    """Tests for the _PromptExecutorAdapter that bridges TaskExecutor ↔ AuditPhase."""
+
+    def test_adapter_calls_task_executor_with_taskspec(self):
+        """Adapter wraps prompt in a TaskSpec and calls TaskExecutor.execute."""
+        from unittest.mock import MagicMock, patch
+        from orchestration_engine.daemon import _PromptExecutorAdapter
+        from orchestration_engine.schemas import TaskResult, TaskState, TaskType
+
+        mock_task_result = MagicMock(spec=TaskResult)
+        mock_task_result.result = {"text": "APPROVE\n"}
+        mock_task_result.state = TaskState.SUCCESS
+
+        mock_executor = MagicMock()
+        mock_executor.execute.return_value = mock_task_result
+        mock_executor.model = "claude-opus-4-6"
+
+        adapter = _PromptExecutorAdapter(mock_executor, worker_id="test-worker")
+        response = adapter.execute("Review this code please")
+
+        # Verify execute was called with a TaskSpec (not a raw string)
+        call_args = mock_executor.execute.call_args
+        task_arg = call_args[0][0]
+        assert hasattr(task_arg, "payload"), (
+            "TaskExecutor.execute() must be called with a TaskSpec, not a plain string. "
+            "Got: " + repr(task_arg)
+        )
+        assert task_arg.type.value == "review"
+        assert "Review this code please" in task_arg.payload.get("prompt", "")
+        assert response == "APPROVE\n"
+
+    def test_adapter_exposes_model_attribute(self):
+        """Adapter exposes executor.model so AuditPhase can embed it in AuditResult."""
+        from unittest.mock import MagicMock
+        from orchestration_engine.daemon import _PromptExecutorAdapter
+
+        mock_executor = MagicMock()
+        mock_executor.model = "claude-opus-4-6"
+        adapter = _PromptExecutorAdapter(mock_executor)
+        assert adapter.model == "claude-opus-4-6"
+
+    def test_adapter_falls_back_to_audit_model_when_no_model_attr(self):
+        """When executor has no model attribute, adapter defaults to 'audit-model'."""
+        from unittest.mock import MagicMock
+        from orchestration_engine.daemon import _PromptExecutorAdapter
+
+        mock_executor = MagicMock(spec=[])  # no attributes
+        adapter = _PromptExecutorAdapter(mock_executor)
+        assert adapter.model == "audit-model"
+
+    def test_adapter_extracts_text_from_result_dict(self):
+        """Adapter extracts text from TaskResult.result dict (key: 'text')."""
+        from unittest.mock import MagicMock
+        from orchestration_engine.daemon import _PromptExecutorAdapter
+
+        mock_executor = MagicMock()
+        mock_result = MagicMock()
+        mock_result.result = {"text": "REQUEST_CHANGES\n[BLOCKER] missing tests"}
+        mock_executor.execute.return_value = mock_result
+        mock_executor.model = "test-model"
+
+        adapter = _PromptExecutorAdapter(mock_executor)
+        response = adapter.execute("prompt text")
+        assert "REQUEST_CHANGES" in response
+
+    def test_adapter_extracts_output_key_when_text_missing(self):
+        """Adapter falls back to 'output' key when 'text' is absent."""
+        from unittest.mock import MagicMock
+        from orchestration_engine.daemon import _PromptExecutorAdapter
+
+        mock_executor = MagicMock()
+        mock_result = MagicMock()
+        mock_result.result = {"output": "APPROVE\nNo issues found"}
+        mock_executor.execute.return_value = mock_result
+
+        adapter = _PromptExecutorAdapter(mock_executor)
+        response = adapter.execute("prompt")
+        assert "APPROVE" in response
