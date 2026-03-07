@@ -175,9 +175,30 @@ phases:
       - `APPROVE` — code is ready to merge (no blockers, at most minor issues)
       - `REQUEST_CHANGES` — one or more blockers or major issues found
 
-      Then include:
-      - List of issues found with severity (blocker/major/minor) and file:line
-      - For REQUEST_CHANGES: specific fixes needed
+      ## Structured Output Format
+      Your review.md MUST follow this exact structure:
+
+      Line 1: APPROVE  -or-  REQUEST_CHANGES  (nothing else on this line)
+
+      Then for each issue found, one line per issue using this tag format:
+        [SEVERITY][category] description of the issue
+
+      Where SEVERITY is one of: BLOCKER, MAJOR, MINOR, NITPICK
+      And category is a short label such as: security, correctness, style,
+        performance, test, compatibility, design
+
+      Example:
+        REQUEST_CHANGES
+        [BLOCKER][security] SQL query in db.py:42 uses string concatenation — use parameterized queries
+        [MAJOR][correctness] parse_output() returns None instead of empty list when input is empty
+        [MINOR][style] Missing docstring on helper function _build_query()
+        [NITPICK][style] Trailing whitespace on line 18 of utils.py
+
+      If there are no issues (APPROVE with clean code), write only:
+        APPROVE
+
+      Do NOT use any other tag format. Do NOT add extra headers or sections
+      between the verdict line and the issue lines.
 
   # Phase 4: Fix Review Feedback
   - id: fix
