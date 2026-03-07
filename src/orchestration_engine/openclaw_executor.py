@@ -865,6 +865,42 @@ class OpenClawExecutor(TaskExecutor):
             error_body = exc.read().decode("utf-8", errors="replace")
             raise classify_http_error(exc.code, error_body, exc.headers) from exc
 
+    def _emit_stall_event(
+        self,
+        session_key: str,
+        stall_seconds: float,
+        last_tokens: int,
+    ) -> None:
+        """Emit a stall-detection event to the DB for SSE consumers (#413).
+
+        Best-effort: failures are logged but never propagated to the caller.
+        """
+        try:
+            from .db import Database
+
+            db = Database()
+            # Find the active pipeline run for this session (if any)
+            runs = db.list_pipeline_runs(limit=5)
+            for run in runs:
+                if run.get("status") == "running":
+                    db.insert_pipeline_run_event(
+                        run_id=run["run_id"],
+                        event_type="stall_detected",
+                        phase_id=run.get("current_phase"),
+                        metadata={
+                            "session_key": session_key,
+                            "stall_seconds": round(stall_seconds, 1),
+                            "last_tokens": last_tokens,
+                            "message": (
+                                f"No token progress for {stall_seconds:.0f}s — "
+                                "possible rate limit"
+                            ),
+                        },
+                    )
+                    break
+        except Exception as exc:
+            logger.debug("Could not emit stall event: %s", exc)
+
     def _invoke_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Invoke an OpenClaw tool via the gateway's /tools/invoke endpoint.
 
@@ -999,6 +1035,13 @@ class OpenClawExecutor(TaskExecutor):
         # If True and the current poll returns empty, the session was GC'd.
         had_messages: bool = False
 
+        # ── Rate limit / stall detection (#413) ─────────────────────────
+        # Track token progress to detect stalls (possible rate limiting).
+        _last_token_count: int = 0
+        _last_token_change_time: float = loop_start
+        _stall_warned: bool = False
+        _STALL_THRESHOLD_SECONDS: float = 60.0  # configurable threshold
+
         while True:
             now: float = time.monotonic()
 
@@ -1080,6 +1123,44 @@ class OpenClawExecutor(TaskExecutor):
 
             # Mark that this session has produced at least one message (AC-7).
             had_messages = True
+
+            # ── Stall detection (#413) ───────────────────────────────────
+            # Extract total token count from the last assistant message's
+            # usage data to detect stalls (possible rate limiting).
+            _current_tokens = 0
+            for _msg in reversed(messages):
+                if _msg.get("role") == "assistant":
+                    _usage = _msg.get("usage", {})
+                    _current_tokens = (
+                        _usage.get("totalTokens", 0)
+                        or _usage.get("input", 0) + _usage.get("output", 0)
+                    )
+                    break
+
+            if _current_tokens > _last_token_count:
+                # Progress detected — reset stall timer
+                _last_token_count = _current_tokens
+                _last_token_change_time = time.monotonic()
+                if _stall_warned:
+                    logger.info(
+                        "Session %s: token progress resumed (now %d tokens)",
+                        session_key, _current_tokens,
+                    )
+                    _stall_warned = False
+            else:
+                # No progress — check if stalled
+                stall_seconds = time.monotonic() - _last_token_change_time
+                if stall_seconds >= _STALL_THRESHOLD_SECONDS and not _stall_warned:
+                    logger.warning(
+                        "Session %s: no token progress for %.0fs — "
+                        "possible rate limit (last tokens: %d)",
+                        session_key, stall_seconds, _last_token_count,
+                    )
+                    _stall_warned = True
+                    # Emit stall event for SSE consumers (#413)
+                    self._emit_stall_event(
+                        session_key, stall_seconds, _last_token_count
+                    )
 
             # Find the last assistant message
             last_assistant = None

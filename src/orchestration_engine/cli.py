@@ -432,6 +432,21 @@ def _print_run_detail(run: Dict[str, Any]) -> None:
     click.echo(f"├─ Output:     {run.get('output_dir', '?')}")
     if run.get('error_message'):
         click.echo(f"├─ Error:      {run['error_message']}")
+    # Stall detection (#413) — check for recent stall events
+    if status == 'running':
+        try:
+            _stall_events = _db.list_pipeline_run_events(run_id, after_id=0, limit=100)
+            _recent_stalls = [
+                e for e in _stall_events
+                if e.get('event_type') == 'stall_detected'
+            ]
+            if _recent_stalls:
+                _last_stall = _recent_stalls[-1]
+                _stall_meta = _json.loads(_last_stall.get('metadata_json', '{}'))
+                _stall_msg = _stall_meta.get('message', 'possible rate limit')
+                click.echo(f"├─ Warning:    ⚠️  {_stall_msg}")
+        except Exception:
+            pass
     # Scoring outcome (Issue #287)
     _scoring_status = run.get('scoring_status')
     _scoring_score = run.get('scoring_score')
