@@ -5,10 +5,21 @@ ConfidenceCalculator that aggregates multiple signals from task result JSON
 files in a pipeline output directory into a single composite score.
 
 Signal sources (derived from task result files):
-    llm_judge        – Average confidence of review/judge task types.
-    test_pass_rate   – Ratio of non-review tasks whose state == "success".
-    review_quality   – Average confidence across ALL tasks.
-    change_complexity– Inverse of task count: 1 / (1 + num_task_files).
+    llm_judge          – Average confidence of review/judge task types.
+    test_pass_rate     – Ratio of non-review tasks whose state == "success".
+    review_quality     – Average confidence across ALL tasks.
+    change_complexity  – Inverse of task count: 1 / (1 + num_task_files).
+    review_catch_value – Value delivered by review phase (verified fixes,
+                         severity-weighted catch rate, false-positive penalty).
+                         Only included when review_outcomes are provided.
+                         See :mod:`~orchestration_engine.review_catch_value`.
+
+Signal sources (derived from ReviewOutcome DB records — Issue #4.1.3):
+    review_catch_value – Normalised score reflecting how much real value the
+                         review phase delivered: fix verification rate,
+                         severity-weighted catch rate, and false-positive
+                         penalty.  Only included when ``review_outcomes`` is
+                         supplied to ``compute_confidence``.
 
 NOTE: This ConfidenceLevel is distinct from schemas.ConfidenceLevel, which is
 a 5-tier (VERY_LOW->VERY_HIGH) enum scoped to individual task results. This
@@ -22,16 +33,22 @@ import json
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Imported only for type checking to avoid circular imports at runtime.
+    # ReviewCatchValueCalculator is imported lazily inside compute_confidence.
+    from .review_catch_value import ReviewCatchValueCalculator  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Default signal weights (sum to 1.0)
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "llm_judge": 0.4,
-    "test_pass_rate": 0.3,
-    "review_quality": 0.2,
-    "change_complexity": 0.1,
+    "llm_judge": 0.35,
+    "test_pass_rate": 0.25,
+    "review_quality": 0.15,
+    "change_complexity": 0.10,
+    "review_catch_value": 0.15,  # Issue #4.1.3
 }
 
 
@@ -126,7 +143,15 @@ class ConfidenceCalculator:
 
     The calculator reads all non-meta (non-underscore-prefixed) ``*.json`` files
     from the given directory, parses them as task results, and derives up to
-    four signals (llm_judge, test_pass_rate, review_quality, change_complexity).
+    five signals:
+
+    - ``llm_judge``         — average confidence of review/judge task types.
+    - ``test_pass_rate``    — ratio of non-review tasks with state "success".
+    - ``review_quality``    — average confidence across ALL tasks.
+    - ``change_complexity`` — inverse of task count: 1 / (1 + num_task_files).
+    - ``review_catch_value``— value delivered by the review phase (Issue #4.1.3).
+      Only included when ``review_outcomes`` is supplied to
+      ``compute_confidence``.
 
     Args:
         weights: Optional override dict merged with DEFAULT_WEIGHTS.
@@ -142,11 +167,23 @@ class ConfidenceCalculator:
     # Public API
     # ------------------------------------------------------------------
 
-    def compute_confidence(self, output_dir: Path) -> ConfidenceResult:
+    def compute_confidence(
+        self,
+        output_dir: Path,
+        review_outcomes: Optional[list[dict[str, Any]]] = None,
+    ) -> ConfidenceResult:
         """Aggregate signals from task result files in *output_dir*.
 
+        When *review_outcomes* is a non-empty list of ReviewOutcome dicts (as
+        returned by ``db.get_review_outcomes_for_run()``), a
+        ``review_catch_value`` signal is computed and added to the composite
+        score.  If *review_outcomes* is ``None`` or an empty list the signal is
+        omitted and the remaining signals are re-normalised accordingly.
+
         Args:
-            output_dir: Path to the pipeline output directory.
+            output_dir:       Path to the pipeline output directory.
+            review_outcomes:  Optional list of ReviewOutcome row dicts from the
+                              ``review_outcomes`` DB table (Issue #4.1.3).
 
         Returns:
             A populated ConfidenceResult.
@@ -278,6 +315,20 @@ class ConfidenceCalculator:
             raw_value=num_tasks,
             source=f"{num_tasks} task file(s) in output dir",
         ))
+
+        # ------------------------------------------------------------------
+        # Signal: review_catch_value  (Issue #4.1.3)
+        # Only emitted when review_outcomes is a non-empty list.
+        # Lazy import avoids circular dependency since ReviewCatchValueCalculator
+        # imports ConfidenceSignal from this module.
+        # ------------------------------------------------------------------
+        if review_outcomes:
+            from .review_catch_value import ReviewCatchValueCalculator  # noqa: PLC0415
+            rcv_weight = self.weights.get(
+                "review_catch_value", DEFAULT_WEIGHTS["review_catch_value"]
+            )
+            rcv_calc = ReviewCatchValueCalculator(weight=rcv_weight)
+            signals.append(rcv_calc.compute(review_outcomes))
 
         composite = self._weighted_average(signals)
         level = _score_to_level(composite)

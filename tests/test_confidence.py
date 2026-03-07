@@ -197,7 +197,10 @@ class TestConfidenceResult:
 
 class TestDefaultWeights:
     def test_keys_present(self):
-        for key in ("llm_judge", "test_pass_rate", "review_quality", "change_complexity"):
+        for key in (
+            "llm_judge", "test_pass_rate", "review_quality",
+            "change_complexity", "review_catch_value",  # Issue #4.1.3
+        ):
             assert key in DEFAULT_WEIGHTS
 
     def test_weights_sum_to_one(self):
@@ -205,16 +208,23 @@ class TestDefaultWeights:
         assert abs(total - 1.0) < 1e-9
 
     def test_llm_judge_weight(self):
-        assert DEFAULT_WEIGHTS["llm_judge"] == 0.4
+        # Updated in Issue #4.1.3: 0.4 → 0.35 to accommodate review_catch_value
+        assert DEFAULT_WEIGHTS["llm_judge"] == 0.35
 
     def test_test_pass_rate_weight(self):
-        assert DEFAULT_WEIGHTS["test_pass_rate"] == 0.3
+        # Updated in Issue #4.1.3: 0.3 → 0.25
+        assert DEFAULT_WEIGHTS["test_pass_rate"] == 0.25
 
     def test_review_quality_weight(self):
-        assert DEFAULT_WEIGHTS["review_quality"] == 0.2
+        # Updated in Issue #4.1.3: 0.2 → 0.15
+        assert DEFAULT_WEIGHTS["review_quality"] == 0.15
 
     def test_change_complexity_weight(self):
-        assert DEFAULT_WEIGHTS["change_complexity"] == 0.1
+        assert DEFAULT_WEIGHTS["change_complexity"] == 0.10
+
+    def test_review_catch_value_weight(self):
+        # New signal added in Issue #4.1.3
+        assert DEFAULT_WEIGHTS["review_catch_value"] == 0.15
 
 
 # ---------------------------------------------------------------------------
