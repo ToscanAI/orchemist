@@ -373,11 +373,14 @@ def run_daemon(run_id: str, db_path: str) -> None:
             except Exception as _ge:
                 logger.warning("Could not update gate file with scoring error: %s", _ge)
 
-    # --- Routing dispatch (Issue #331.3) ---
+    # --- Routing dispatch (Issue #331.3 / #4.1.6) ---
     # Compute confidence, route to action tier, persist decision, and dispatch.
     # Returns (possibly updated) final_status: 'pending_review' or 'rejected'
     # when routing selects those actions on a successful run.
     # Non-fatal: all errors are caught inside _compute_and_dispatch_routing.
+    # Pass the primary executor so AuditPhase and dynamic weight calibration
+    # can run with live LLM access (Issue #4.1.6).
+    _routing_executor = runner.executors[0] if runner.executors else None
     _final_status = _compute_and_dispatch_routing(
         run_id=run_id,
         output_dir=output_dir,
@@ -388,6 +391,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
         scoring_score=_scoring_score_val,
         phase_outputs=phase_outputs,
         final_status=_final_status,
+        executor=_routing_executor,
     )
 
     db.update_pipeline_run(
@@ -583,6 +587,7 @@ def _compute_and_dispatch_routing(
     scoring_score: Optional[float],
     phase_outputs: Dict[str, Any],
     final_status: str,
+    executor: Optional[Any] = None,
 ) -> str:
     """Compute confidence, route to action tier, persist decision, dispatch action.
 
@@ -590,10 +595,14 @@ def _compute_and_dispatch_routing(
     exception is caught, logged, and the pipeline final_status is not changed.
 
     Steps:
-        1. Compute composite confidence from output directory artefacts.
-        2. Evaluate routing config to produce a :class:`~routing.RoutingDecision`.
-        3. Persist the decision to the ``routing_decisions`` DB table.
-        4. If the pipeline succeeded, dispatch the resolved action.
+        1. Fetch review outcomes and calibration history from the DB.
+        2. Optionally run AuditPhase on the most recent review outcome.
+        3. Compute composite confidence from output directory artefacts, wiring
+           in review outcomes, audit results, and calibration data for full
+           signal coverage (Issue #4.1.6).
+        4. Evaluate routing config to produce a :class:`~routing.RoutingDecision`.
+        5. Persist the decision to the ``routing_decisions`` DB table.
+        6. If the pipeline succeeded, dispatch the resolved action.
 
     Args:
         run_id:           Pipeline run identifier.
@@ -605,6 +614,8 @@ def _compute_and_dispatch_routing(
         scoring_score:    Composite scoring score (0–1), or None.
         phase_outputs:    Dict of phase_id → phase result dict.
         final_status:     Current intended final status of the pipeline run.
+        executor:         Optional pipeline executor, used to run AuditPhase.
+                          When ``None``, AuditPhase is skipped (stub mode).
 
     Returns:
         The (possibly modified) final_status string.  Routing may update this
@@ -612,8 +623,67 @@ def _compute_and_dispatch_routing(
         on a successful run.
     """
     try:
-        # 1. Compute composite confidence from output directory
-        confidence_result = ConfidenceCalculator().compute_confidence(output_dir)
+        # 1a. Fetch run-specific review outcomes from DB (Issue #4.1.3)
+        review_outcomes: list = []
+        try:
+            review_outcomes = db.get_review_outcomes_for_run(run_id) or []
+            logger.info(
+                "Confidence: fetched %d review outcome(s) for run '%s'",
+                len(review_outcomes), run_id,
+            )
+        except Exception as _ro_exc:
+            logger.warning(
+                "Confidence: could not fetch review outcomes for run '%s' "
+                "(non-fatal): %s",
+                run_id, _ro_exc,
+            )
+
+        # 1b. Fetch historical calibration outcomes from DB (Issue #4.1.5)
+        calibration_outcomes: list = []
+        try:
+            calibration_outcomes = db.list_review_outcomes(limit=500) or []
+            logger.info(
+                "Confidence: fetched %d calibration outcome(s) for dynamic weights",
+                len(calibration_outcomes),
+            )
+        except Exception as _co_exc:
+            logger.warning(
+                "Confidence: could not fetch calibration outcomes (non-fatal): %s",
+                _co_exc,
+            )
+
+        # 1c. Run AuditPhase on the most recent review outcome (Issue #4.1.4)
+        audit_results: list = []
+        if executor is not None and review_outcomes:
+            try:
+                from .audit import AuditPhase  # noqa: PLC0415
+                _audit_model = getattr(executor, "model", "audit-model")
+                _auditor = AuditPhase(executor=executor, model=_audit_model)
+                _audit_result = _auditor.run(
+                    run_id=run_id,
+                    review_outcome=review_outcomes[0],
+                )
+                audit_results = [_audit_result.to_dict()]
+                logger.info(
+                    "AuditPhase complete for run '%s': "
+                    "reviewer_accuracy_score=%.4f  false_approval=%s",
+                    run_id,
+                    _audit_result.reviewer_accuracy_score,
+                    _audit_result.false_approval,
+                )
+            except Exception as _audit_exc:
+                logger.warning(
+                    "AuditPhase failed for run '%s' (non-fatal): %s",
+                    run_id, _audit_exc,
+                )
+
+        # 2. Compute composite confidence from output directory, wiring all signals
+        confidence_result = ConfidenceCalculator().compute_confidence(
+            output_dir,
+            review_outcomes=review_outcomes or None,
+            audit_results=audit_results or None,
+            calibration_outcomes=calibration_outcomes or None,
+        )
 
         logger.info(
             "Confidence computed for run '%s': score=%.4f tier=%s",

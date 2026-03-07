@@ -43,6 +43,9 @@ if TYPE_CHECKING:
     # Imported only for type checking to avoid circular imports at runtime.
     # ReviewCatchValueCalculator is imported lazily inside compute_confidence.
     from .review_catch_value import ReviewCatchValueCalculator  # noqa: F401
+    # ReviewerCalibrator and AuditResult are imported lazily inside compute_confidence.
+    from .reviewer_calibration import ReviewerCalibrator  # noqa: F401
+    from .audit import AuditResult  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Default signal weights (sum to 1.0)
@@ -176,6 +179,8 @@ class ConfidenceCalculator:
         self,
         output_dir: Path,
         review_outcomes: Optional[list[dict[str, Any]]] = None,
+        audit_results: Optional[list[dict[str, Any]]] = None,
+        calibration_outcomes: Optional[list[dict[str, Any]]] = None,
     ) -> ConfidenceResult:
         """Aggregate signals from task result files in *output_dir*.
 
@@ -185,10 +190,31 @@ class ConfidenceCalculator:
         score.  If *review_outcomes* is ``None`` or an empty list the signal is
         omitted and the remaining signals are re-normalised accordingly.
 
+        When *audit_results* is a non-empty list of AuditResult dicts (as
+        returned by ``AuditResult.to_dict()``), an ``audit_catch_rate`` signal
+        is computed from the average ``reviewer_accuracy_score`` across all
+        provided audit results.  If *audit_results* is ``None`` or empty the
+        signal is omitted.
+
+        When *calibration_outcomes* is a non-empty list of ReviewOutcome dicts
+        (typically from ``db.list_review_outcomes(limit=500)``), dynamic per-model
+        accuracy weights are computed via :class:`~reviewer_calibration.ReviewerCalibrator`
+        and the ``llm_judge`` weight is scaled up/down based on the primary
+        reviewer model's ``overall_accuracy``.  Weights are re-normalised to
+        sum to 1.0.  When *calibration_outcomes* is ``None`` or empty, static
+        ``DEFAULT_WEIGHTS`` are used unchanged.
+
         Args:
-            output_dir:       Path to the pipeline output directory.
-            review_outcomes:  Optional list of ReviewOutcome row dicts from the
-                              ``review_outcomes`` DB table (Issue #4.1.3).
+            output_dir:            Path to the pipeline output directory.
+            review_outcomes:       Optional list of ReviewOutcome row dicts from
+                                   the ``review_outcomes`` DB table (Issue #4.1.3).
+            audit_results:         Optional list of AuditResult dicts (as returned
+                                   by ``AuditResult.to_dict()``).  Used to compute
+                                   the ``audit_catch_rate`` signal (Issue #4.1.4).
+            calibration_outcomes:  Optional list of ReviewOutcome dicts used to
+                                   compute dynamic weights via ReviewerCalibrator.
+                                   Typically the last 500 outcomes from the DB
+                                   (Issue #4.1.5).
 
         Returns:
             A populated ConfidenceResult.
@@ -200,6 +226,20 @@ class ConfidenceCalculator:
             raise ValueError(
                 f"Output directory {output_dir} does not exist"
             )
+
+        # ------------------------------------------------------------------
+        # Dynamic weights via ReviewerCalibrator (Issue #4.1.5 / #4.1.6)
+        # When calibration_outcomes are provided, adjust llm_judge weight
+        # based on the primary reviewer model's longitudinal accuracy.
+        # ------------------------------------------------------------------
+        if calibration_outcomes:
+            try:
+                from .reviewer_calibration import ReviewerCalibrator  # noqa: PLC0415
+                _calibrator = ReviewerCalibrator()
+                _metrics_map = _calibrator.compute(calibration_outcomes)
+                self.weights = self._compute_dynamic_weights(_metrics_map)
+            except Exception:
+                pass  # Fall back to static weights silently
 
         # Collect all non-meta JSON files (skip files starting with "_")
         task_files = sorted(
@@ -335,6 +375,33 @@ class ConfidenceCalculator:
             rcv_calc = ReviewCatchValueCalculator(weight=rcv_weight)
             signals.append(rcv_calc.compute(review_outcomes))
 
+        # ------------------------------------------------------------------
+        # Signal: audit_catch_rate  (Issue #4.1.4 / #4.1.6)
+        # Only emitted when audit_results is a non-empty list.
+        # Computes the average reviewer_accuracy_score across all audit results.
+        # ------------------------------------------------------------------
+        if audit_results:
+            accuracy_scores = [
+                float(r["reviewer_accuracy_score"])
+                for r in audit_results
+                if "reviewer_accuracy_score" in r
+            ]
+            if accuracy_scores:
+                avg_accuracy = sum(accuracy_scores) / len(accuracy_scores)
+                acr_weight = self.weights.get(
+                    "audit_catch_rate", DEFAULT_WEIGHTS["audit_catch_rate"]
+                )
+                signals.append(ConfidenceSignal(
+                    name="audit_catch_rate",
+                    value=avg_accuracy,
+                    weight=acr_weight,
+                    raw_value={
+                        "reviewer_accuracy_scores": accuracy_scores,
+                        "audit_count": len(accuracy_scores),
+                    },
+                    source=f"{len(accuracy_scores)} audit result(s)",
+                ))
+
         composite = self._weighted_average(signals)
         level = _score_to_level(composite)
         explanation = self._build_explanation(signals, composite, level)
@@ -380,6 +447,82 @@ class ConfidenceCalculator:
             s.value * self.weights.get(s.name, s.weight) for s in signals
         )
         return score / total_weight
+
+    def _compute_dynamic_weights(
+        self,
+        metrics_map: dict[str, Any],
+    ) -> dict[str, float]:
+        """Compute dynamic signal weights adjusted by reviewer accuracy.
+
+        Takes a ``metrics_map`` from :meth:`~reviewer_calibration.ReviewerCalibrator.compute`
+        and returns an updated weights dict.  The primary reviewer model is
+        determined by the model with the highest ``total_reviews`` count.
+
+        The ``llm_judge`` weight is scaled between:
+        - ``0.5 * base`` when ``overall_accuracy → 0`` (unreliable reviewer)
+        - ``1.5 * base`` when ``overall_accuracy → 1`` (highly accurate reviewer)
+
+        The weight delta (difference from the base weight) is redistributed
+        proportionally across all other signals so the total weight always
+        sums to 1.0.
+
+        When no usable accuracy data is available, the original weights are
+        returned unchanged.
+
+        Args:
+            metrics_map: Dict mapping ``reviewer_model → CalibrationMetrics``
+                         as returned by :meth:`ReviewerCalibrator.compute`.
+
+        Returns:
+            A new weights dict with the same keys as ``self.weights``.
+        """
+        # Find primary model: one with most reviews and non-None overall_accuracy
+        best_model = None
+        best_reviews = 0
+        for model_name, metrics in metrics_map.items():
+            total = getattr(metrics, "total_reviews", 0) or 0
+            accuracy = getattr(metrics, "overall_accuracy", None)
+            if accuracy is not None and total > best_reviews:
+                best_model = model_name
+                best_reviews = total
+
+        if best_model is None:
+            # No usable calibration data — return unchanged weights
+            return dict(self.weights)
+
+        accuracy = metrics_map[best_model].overall_accuracy
+        if accuracy is None:
+            return dict(self.weights)
+
+        # Scale llm_judge weight: 0.5x (accuracy=0) to 1.5x (accuracy=1)
+        base_weight = self.weights.get("llm_judge", DEFAULT_WEIGHTS["llm_judge"])
+        scaled_weight = base_weight * (0.5 + accuracy)  # accuracy in [0,1] → [0.5x, 1.5x]
+        delta = scaled_weight - base_weight
+
+        # Build new weights: start with current, apply delta to llm_judge
+        new_weights = dict(self.weights)
+        new_weights["llm_judge"] = scaled_weight
+
+        # Redistribute the negative delta across all other signals proportionally
+        other_keys = [k for k in new_weights if k != "llm_judge"]
+        if not other_keys:
+            return new_weights
+
+        other_total = sum(new_weights[k] for k in other_keys)
+        if other_total <= 0.0:
+            return new_weights
+
+        for k in other_keys:
+            fraction = new_weights[k] / other_total
+            new_weights[k] = max(0.0, new_weights[k] - delta * fraction)
+
+        # Re-normalise to ensure sum == 1.0 despite floating-point drift
+        total = sum(new_weights.values())
+        if total > 0.0:
+            for k in new_weights:
+                new_weights[k] /= total
+
+        return new_weights
 
     @staticmethod
     def _build_explanation(
