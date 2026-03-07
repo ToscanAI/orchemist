@@ -35,6 +35,11 @@ from .review_catch_value import (  # noqa: F401  # Issue #4.1.3
     ReviewCatchValueCalculator,
     SEVERITY_WEIGHTS,
 )
+from .audit import (  # noqa: F401  # Issue #4.1.4
+    AuditPhase,
+    AuditResult,
+    AuditIssue,
+)
 from .routing import (  # noqa: F401  # Issue #331.2
     RoutingTier,
     RoutingConfig,
@@ -75,6 +80,10 @@ __all__ = [
     # Review catch value signal (Issue #4.1.3)
     "ReviewCatchValueCalculator",
     "SEVERITY_WEIGHTS",
+    # Adversarial audit phase (Issue #4.1.4)
+    "AuditPhase",
+    "AuditResult",
+    "AuditIssue",
     # Confidence-based routing (Issue #331.2)
     "RoutingTier",
     "RoutingConfig",

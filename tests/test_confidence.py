@@ -200,6 +200,7 @@ class TestDefaultWeights:
         for key in (
             "llm_judge", "test_pass_rate", "review_quality",
             "change_complexity", "review_catch_value",  # Issue #4.1.3
+            "audit_catch_rate",                         # Issue #4.1.4
         ):
             assert key in DEFAULT_WEIGHTS
 
@@ -208,12 +209,12 @@ class TestDefaultWeights:
         assert abs(total - 1.0) < 1e-9
 
     def test_llm_judge_weight(self):
-        # Updated in Issue #4.1.3: 0.4 → 0.35 to accommodate review_catch_value
-        assert DEFAULT_WEIGHTS["llm_judge"] == 0.35
+        # Updated in Issue #4.1.4: 0.35 → 0.30 to accommodate audit_catch_rate
+        assert DEFAULT_WEIGHTS["llm_judge"] == 0.30
 
     def test_test_pass_rate_weight(self):
-        # Updated in Issue #4.1.3: 0.3 → 0.25
-        assert DEFAULT_WEIGHTS["test_pass_rate"] == 0.25
+        # Updated in Issue #4.1.4: 0.25 → 0.20 to accommodate audit_catch_rate
+        assert DEFAULT_WEIGHTS["test_pass_rate"] == 0.20
 
     def test_review_quality_weight(self):
         # Updated in Issue #4.1.3: 0.2 → 0.15
@@ -225,6 +226,10 @@ class TestDefaultWeights:
     def test_review_catch_value_weight(self):
         # New signal added in Issue #4.1.3
         assert DEFAULT_WEIGHTS["review_catch_value"] == 0.15
+
+    def test_audit_catch_rate_weight(self):
+        # New signal added in Issue #4.1.4
+        assert DEFAULT_WEIGHTS["audit_catch_rate"] == 0.10
 
 
 # ---------------------------------------------------------------------------
