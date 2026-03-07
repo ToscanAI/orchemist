@@ -108,7 +108,10 @@ phases:
 
       ## Task
       1. Read the spec carefully
-      2. Create the branch if it doesn't exist: `git checkout -b {config[branch_name]}` (or checkout if exists)
+      2. Switch to the feature branch FIRST:
+         - Try `git checkout {config[branch_name]}` (if branch exists)
+         - If it doesn't exist: `git checkout -b {config[branch_name]}`
+         - IMPORTANT: Do NOT write any code on main. Verify you are on the correct branch before making changes.
       3. Implement ALL changes described in the spec
       4. Write clean, documented code following the style guide
       5. Commit with message referencing the issue: `feat/fix(#issue): description`
