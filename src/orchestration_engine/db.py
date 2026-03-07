@@ -175,6 +175,7 @@ class Database:
             self._create_table_failure_patterns(conn)
             self._create_table_regressions(conn)      # Issue #3.3a.1
             self._create_table_ci_green_shas(conn)    # Issue #3.3a.3
+            self._create_table_review_outcomes(conn)  # Issue #4.1.2
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -492,6 +493,41 @@ class Database:
             )
         """)
 
+    def _create_table_review_outcomes(self, conn: sqlite3.Connection) -> None:
+        """Create review_outcomes table for durable review result storage (Issue #4.1.2).
+
+        Stores one row per review phase execution.  Idempotent via
+        ``CREATE TABLE IF NOT EXISTS``.
+
+        Columns:
+            review_id:      UUID primary key.
+            run_id:         Foreign key to ``pipeline_runs.run_id``.
+            phase_id:       Phase identifier within the run (e.g. ``"review"``).
+            reviewer_model: Model tier/name used for the review.
+            verdict:        ``"APPROVE"``, ``"REQUEST_CHANGES"``, or ``NULL``.
+            issues_found:   JSON-encoded list of issue dicts.
+            fix_verified:   Boolean (0/1) — set to 1 when a subsequent fix
+                            run verified the issues were resolved.
+            created_at:     Timestamp (UTC).
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS review_outcomes (
+                review_id      TEXT PRIMARY KEY,
+                run_id         TEXT NOT NULL,
+                phase_id       TEXT NOT NULL,
+                reviewer_model TEXT,
+                verdict        TEXT,
+                issues_found   TEXT NOT NULL DEFAULT '[]',
+                fix_verified   INTEGER NOT NULL DEFAULT 0,
+                created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_review_outcomes_run_id
+            ON review_outcomes(run_id, created_at)
+        """)
+
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """Create performance indexes."""
 
@@ -603,6 +639,7 @@ class Database:
             ("011_add_retry_columns", self._migration_011_add_retry_columns),               # Issue #3.2.1
             ("012_add_regressions_table", self._migration_012_add_regressions_table),      # Issue #3.3a.1
             ("013_add_ci_green_shas_table", self._migration_013_add_ci_green_shas_table),  # Issue #3.3a.3
+            ("014_add_review_outcomes_table", self._migration_014_add_review_outcomes_table),  # Issue #4.1.2
         ]
         
         # Apply pending migrations
@@ -1182,6 +1219,7 @@ class Database:
             'input_map', 'filters',   # trigger fields (Issue #329.1)
             'signals_json',           # routing_decisions (Issue #331.3)
             'affected_files',         # regressions (Issue #3.3a.1)
+            'issues_found',           # review_outcomes (Issue #4.1.2)
         ]
         for field in json_fields:
             if field in data and data[field] is not None:
@@ -2036,6 +2074,30 @@ class Database:
             )
         """)
 
+    def _migration_014_add_review_outcomes_table(self, conn: sqlite3.Connection) -> None:
+        """Add review_outcomes table for durable review result storage (Issue #4.1.2).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+        Safe to run on both fresh and existing databases.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS review_outcomes (
+                review_id      TEXT PRIMARY KEY,
+                run_id         TEXT NOT NULL,
+                phase_id       TEXT NOT NULL,
+                reviewer_model TEXT,
+                verdict        TEXT,
+                issues_found   TEXT NOT NULL DEFAULT '[]',
+                fix_verified   INTEGER NOT NULL DEFAULT 0,
+                created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_review_outcomes_run_id
+            ON review_outcomes(run_id, created_at)
+        """)
+
     # ------------------------------------------------------------------
     # Failure pattern CRUD (Issue #3.1.3)
     # ------------------------------------------------------------------
@@ -2488,6 +2550,109 @@ class Database:
             )
             row = cursor.fetchone()
         return row["sha"] if row else None
+
+    # ------------------------------------------------------------------
+    # Review Outcome Operations (Issue #4.1.2)
+    # ------------------------------------------------------------------
+
+    def insert_review_outcome(self, data: Dict[str, Any]) -> int:
+        """Insert a review outcome record and return the rowid.
+
+        Args:
+            data: Dict with keys matching the ``review_outcomes`` table columns:
+                - ``review_id`` (str): UUID primary key.
+                - ``run_id`` (str): Pipeline run identifier.
+                - ``phase_id`` (str): Phase identifier (e.g. ``"review"``).
+                - ``reviewer_model`` (str, optional): Model tier/name.
+                - ``verdict`` (str, optional): ``"APPROVE"`` or ``"REQUEST_CHANGES"``.
+                - ``issues_found`` (list): List of issue dicts — serialised to
+                  JSON by this method.
+                - ``fix_verified`` (bool, optional): Defaults to ``False``.
+                - ``created_at`` (str, optional): ISO-8601 timestamp; defaults
+                  to the current DB timestamp when omitted.
+
+        Returns:
+            The ``rowid`` of the newly inserted row (integer).
+        """
+        issues_json = json.dumps(data.get("issues_found", []))
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO review_outcomes
+                    (review_id, run_id, phase_id, reviewer_model,
+                     verdict, issues_found, fix_verified, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data["review_id"],
+                    data["run_id"],
+                    data["phase_id"],
+                    data.get("reviewer_model"),
+                    data.get("verdict"),
+                    issues_json,
+                    int(bool(data.get("fix_verified") or False)),
+                    data.get("created_at"),
+                ),
+            )
+            return cursor.lastrowid  # type: ignore[return-value]
+
+    def get_review_outcomes_for_run(self, run_id: str) -> List[Dict[str, Any]]:
+        """Return all review outcome rows for a given pipeline run.
+
+        Rows are ordered by ``created_at ASC`` so the caller sees outcomes
+        in chronological order (relevant when a run has multiple review
+        phases).
+
+        Args:
+            run_id: The pipeline run identifier to look up.
+
+        Returns:
+            List of review outcome dicts (``issues_found`` deserialised to a
+            Python list).  Returns an empty list when no outcomes exist.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                """
+                SELECT * FROM review_outcomes
+                WHERE run_id = ?
+                ORDER BY created_at ASC
+                """,
+                (run_id,),
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def list_review_outcomes(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return a paginated global listing of all review outcomes.
+
+        Rows are ordered by ``created_at DESC`` (newest first).  Use
+        ``limit`` and ``offset`` for cursor-based pagination.
+
+        Args:
+            limit:  Maximum number of rows to return (default ``50``).
+            offset: Number of rows to skip for pagination (default ``0``).
+
+        Returns:
+            List of review outcome dicts ordered by ``created_at DESC``.
+            ``issues_found`` is deserialised to a Python list.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                """
+                SELECT * FROM review_outcomes
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
 
     def close(self) -> None:
         """Close database connections."""

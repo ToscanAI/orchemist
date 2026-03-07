@@ -38,12 +38,15 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
 __all__ = [
     "Severity",
     "ReviewIssue",
     "ReviewResult",
+    "ReviewOutcome",
     "parse_review_output",
 ]
 
@@ -125,6 +128,62 @@ class ReviewResult:
 
     def __post_init__(self) -> None:
         self.has_issues = len(self.issues) > 0
+
+
+@dataclass
+class ReviewOutcome:
+    """Persistent record of a single review phase execution.
+
+    Attributes:
+        review_id:      Unique identifier for this outcome record (UUID).
+        run_id:         The pipeline run that produced this review.
+        phase_id:       The phase within the run (e.g. ``"review"``).
+        reviewer_model: The model tier/name used for reviewing.
+        verdict:        ``"APPROVE"``, ``"REQUEST_CHANGES"``, or ``None``.
+        issues_found:   List of dicts (serialised ReviewIssue fields):
+                        each with ``severity``, ``category``, ``description``,
+                        and ``raw`` keys.
+        fix_verified:   ``True`` when a subsequent fix phase ran and passed,
+                        ``False`` otherwise.  Defaults to ``False`` at
+                        record-creation time; updated post-merge.
+        created_at:     ISO-8601 timestamp string (UTC) of when this record
+                        was created.  Defaults to the current UTC time when
+                        not explicitly supplied.
+    """
+
+    review_id: str
+    run_id: str
+    phase_id: str
+    reviewer_model: Optional[str]
+    verdict: Optional[str]
+    issues_found: List[Dict[str, Any]]
+    fix_verified: bool = False
+    created_at: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.created_at is None:
+            self.created_at = datetime.utcnow().isoformat()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise the outcome to a plain dict suitable for DB insertion.
+
+        ``issues_found`` is serialised to a JSON string via :func:`json.dumps`
+        by the DB layer; this method returns the Python list representation.
+
+        Returns:
+            Dict with all fields.  ``issues_found`` is a Python list (not
+            JSON-encoded) — the DB insert method handles JSON encoding.
+        """
+        return {
+            "review_id": self.review_id,
+            "run_id": self.run_id,
+            "phase_id": self.phase_id,
+            "reviewer_model": self.reviewer_model,
+            "verdict": self.verdict,
+            "issues_found": self.issues_found,
+            "fix_verified": self.fix_verified,
+            "created_at": self.created_at,
+        }
 
 
 # ---------------------------------------------------------------------------
