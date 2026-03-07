@@ -176,6 +176,7 @@ class Database:
             self._create_table_regressions(conn)      # Issue #3.3a.1
             self._create_table_ci_green_shas(conn)    # Issue #3.3a.3
             self._create_table_review_outcomes(conn)  # Issue #4.1.2
+            self._create_table_reviewer_calibration(conn)  # Issue #4.1.5
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -528,6 +529,51 @@ class Database:
             ON review_outcomes(run_id, created_at)
         """)
 
+    def _create_table_reviewer_calibration(self, conn: sqlite3.Connection) -> None:
+        """Create reviewer_calibration table for longitudinal accuracy tracking (Issue #4.1.5).
+
+        Stores one calibration snapshot per ``(reviewer_model, computed_at)``
+        pair.  Idempotent via ``CREATE TABLE IF NOT EXISTS``.
+
+        Columns:
+            id:                          Auto-increment primary key.
+            reviewer_model:              Model tier/name (e.g. ``"opus"``).
+            total_reviews:               Total outcomes observed.
+            approve_count:               Number of APPROVE verdicts.
+            request_changes_count:       Number of REQUEST_CHANGES verdicts.
+            approve_held_up_count:       APPROVEs where no fix was needed.
+            request_changes_valid_count: REQUEST_CHANGES confirmed by a
+                                         verified fix.
+            approve_accuracy:            ``approve_held_up / approve_count``
+                                         (NULL when no APPROVEs observed).
+            request_changes_accuracy:    ``rc_valid / rc_count``
+                                         (NULL when no RC verdicts observed).
+            overall_accuracy:            Combined accuracy (NULL when empty).
+            computed_at:                 UTC timestamp of snapshot creation.
+            aggregation_window:          Optional label for the time window
+                                         (e.g. ``"30d"``, ``"all-time"``).
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reviewer_calibration (
+                id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                reviewer_model              TEXT NOT NULL,
+                total_reviews               INTEGER NOT NULL DEFAULT 0,
+                approve_count               INTEGER NOT NULL DEFAULT 0,
+                request_changes_count       INTEGER NOT NULL DEFAULT 0,
+                approve_held_up_count       INTEGER NOT NULL DEFAULT 0,
+                request_changes_valid_count INTEGER NOT NULL DEFAULT 0,
+                approve_accuracy            REAL,
+                request_changes_accuracy    REAL,
+                overall_accuracy            REAL,
+                computed_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                aggregation_window          TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reviewer_calibration_model
+            ON reviewer_calibration(reviewer_model, computed_at DESC)
+        """)
+
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """Create performance indexes."""
 
@@ -640,6 +686,7 @@ class Database:
             ("012_add_regressions_table", self._migration_012_add_regressions_table),      # Issue #3.3a.1
             ("013_add_ci_green_shas_table", self._migration_013_add_ci_green_shas_table),  # Issue #3.3a.3
             ("014_add_review_outcomes_table", self._migration_014_add_review_outcomes_table),  # Issue #4.1.2
+            ("015_add_reviewer_calibration_table", self._migration_015_add_reviewer_calibration_table),  # Issue #4.1.5
         ]
         
         # Apply pending migrations
@@ -2098,6 +2145,33 @@ class Database:
             ON review_outcomes(run_id, created_at)
         """)
 
+    def _migration_015_add_reviewer_calibration_table(self, conn: sqlite3.Connection) -> None:
+        """Add reviewer_calibration table for longitudinal accuracy tracking (Issue #4.1.5).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+        Safe to run on both fresh and existing databases.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reviewer_calibration (
+                id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                reviewer_model              TEXT NOT NULL,
+                total_reviews               INTEGER NOT NULL DEFAULT 0,
+                approve_count               INTEGER NOT NULL DEFAULT 0,
+                request_changes_count       INTEGER NOT NULL DEFAULT 0,
+                approve_held_up_count       INTEGER NOT NULL DEFAULT 0,
+                request_changes_valid_count INTEGER NOT NULL DEFAULT 0,
+                approve_accuracy            REAL,
+                request_changes_accuracy    REAL,
+                overall_accuracy            REAL,
+                computed_at                 TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                aggregation_window          TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reviewer_calibration_model
+            ON reviewer_calibration(reviewer_model, computed_at DESC)
+        """)
+
     # ------------------------------------------------------------------
     # Failure pattern CRUD (Issue #3.1.3)
     # ------------------------------------------------------------------
@@ -2647,6 +2721,117 @@ class Database:
                 """
                 SELECT * FROM review_outcomes
                 ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Reviewer Calibration Operations (Issue #4.1.5)
+    # ------------------------------------------------------------------
+
+    def insert_calibration_snapshot(self, data: Dict[str, Any]) -> int:
+        """Insert a reviewer calibration snapshot and return the rowid.
+
+        Args:
+            data: Dict with keys matching the ``reviewer_calibration`` table
+                  columns (as produced by
+                  :meth:`~reviewer_calibration.CalibrationMetrics.to_dict`):
+
+                  - ``reviewer_model`` (str): Model tier/name.
+                  - ``total_reviews`` (int): Total outcomes observed.
+                  - ``approve_count`` (int): Number of APPROVE verdicts.
+                  - ``request_changes_count`` (int): Number of RC verdicts.
+                  - ``approve_held_up_count`` (int): APPROVEs with no fix.
+                  - ``request_changes_valid_count`` (int): Verified RCs.
+                  - ``approve_accuracy`` (float | None): APPROVE accuracy.
+                  - ``request_changes_accuracy`` (float | None): RC accuracy.
+                  - ``overall_accuracy`` (float | None): Combined accuracy.
+                  - ``computed_at`` (str, optional): ISO-8601 timestamp.
+                  - ``aggregation_window`` (str, optional): Time window label.
+
+        Returns:
+            The ``rowid`` of the newly inserted row (integer).
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO reviewer_calibration
+                    (reviewer_model, total_reviews, approve_count,
+                     request_changes_count, approve_held_up_count,
+                     request_changes_valid_count, approve_accuracy,
+                     request_changes_accuracy, overall_accuracy,
+                     computed_at, aggregation_window)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data["reviewer_model"],
+                    int(data.get("total_reviews", 0)),
+                    int(data.get("approve_count", 0)),
+                    int(data.get("request_changes_count", 0)),
+                    int(data.get("approve_held_up_count", 0)),
+                    int(data.get("request_changes_valid_count", 0)),
+                    data.get("approve_accuracy"),
+                    data.get("request_changes_accuracy"),
+                    data.get("overall_accuracy"),
+                    data.get("computed_at"),
+                    data.get("aggregation_window"),
+                ),
+            )
+            return cursor.lastrowid  # type: ignore[return-value]
+
+    def get_calibration_for_model(
+        self,
+        reviewer_model: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the most recent calibration snapshot for a given model.
+
+        Args:
+            reviewer_model: The model name/tier to look up (e.g. ``"opus"``).
+
+        Returns:
+            A calibration snapshot dict (most recent by ``computed_at``), or
+            ``None`` when no snapshots exist for the model.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                """
+                SELECT * FROM reviewer_calibration
+                WHERE reviewer_model = ?
+                ORDER BY computed_at DESC
+                LIMIT 1
+                """,
+                (reviewer_model,),
+            )
+            row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def list_calibration_snapshots(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return a paginated global listing of all calibration snapshots.
+
+        Rows are ordered by ``computed_at DESC`` (newest first).  Use
+        ``limit`` and ``offset`` for cursor-based pagination.
+
+        Args:
+            limit:  Maximum number of rows to return (default ``50``).
+            offset: Number of rows to skip for pagination (default ``0``).
+
+        Returns:
+            List of calibration snapshot dicts ordered by ``computed_at DESC``.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                """
+                SELECT * FROM reviewer_calibration
+                ORDER BY computed_at DESC
                 LIMIT ? OFFSET ?
                 """,
                 (limit, offset),

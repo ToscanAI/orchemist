@@ -40,6 +40,10 @@ from .audit import (  # noqa: F401  # Issue #4.1.4
     AuditResult,
     AuditIssue,
 )
+from .reviewer_calibration import (  # noqa: F401  # Issue #4.1.5
+    ReviewerCalibrator,
+    CalibrationMetrics,
+)
 from .routing import (  # noqa: F401  # Issue #331.2
     RoutingTier,
     RoutingConfig,
@@ -84,6 +88,9 @@ __all__ = [
     "AuditPhase",
     "AuditResult",
     "AuditIssue",
+    # Reviewer calibration (Issue #4.1.5)
+    "ReviewerCalibrator",
+    "CalibrationMetrics",
     # Confidence-based routing (Issue #331.2)
     "RoutingTier",
     "RoutingConfig",
