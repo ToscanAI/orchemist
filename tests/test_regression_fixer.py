@@ -361,3 +361,259 @@ class TestSpawnFix:
             result = fixer.spawn_fix(regression, bad_db, None)
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# TestHandleFixCompletion
+# ---------------------------------------------------------------------------
+
+
+class TestHandleFixCompletion:
+    """Tests for RegressionFixer.handle_fix_completion.
+
+    Issue: #3.3b.2 — confidence-gated auto-merge for regression fixes
+    """
+
+    REGRESSION_ID = "aaaabbbb-cccc-dddd-eeee-ffffffffffff"
+    COMMIT_SHA = "deadbeef12345678"
+
+    def _make_db(self, commit_sha: str = COMMIT_SHA, get_raises: bool = False,
+                 get_returns_none: bool = False, update_raises: bool = False):
+        """Return a mock DB with get_regression pre-configured."""
+        db = MagicMock()
+        if get_raises:
+            db.get_regression.side_effect = RuntimeError("DB error")
+        elif get_returns_none:
+            db.get_regression.return_value = None
+        else:
+            db.get_regression.return_value = {"commit_sha": commit_sha, "id": self.REGRESSION_ID}
+        if update_raises:
+            db.update_regression.side_effect = RuntimeError("update failed")
+        return db
+
+    def _merge_ok(self):
+        return _make_completed(stdout="", stderr="", returncode=0)
+
+    def _merge_fail(self):
+        return _make_completed(stdout="", stderr="PR not found", returncode=1)
+
+    # --- Gate passes ---
+
+    def test_gate_passes_returns_fixed(self, fixer):
+        """score=0.95, status='passed', merge succeeds → returns 'fixed'."""
+        db = self._make_db()
+        fix_run = {"scoring_score": 0.95, "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run",
+                   return_value=self._merge_ok()):
+            result = fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        assert result == "fixed"
+
+    def test_gate_passes_updates_db_to_fixed(self, fixer):
+        """When gate passes and merge succeeds, DB is updated to 'fixed'."""
+        db = self._make_db()
+        fix_run = {"scoring_score": 0.95, "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run",
+                   return_value=self._merge_ok()):
+            fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        db.update_regression.assert_called_once_with(self.REGRESSION_ID, status="fixed")
+
+    def test_gate_passes_merges_pr(self, fixer):
+        """When gate passes, _merge_pr is invoked with correct gh args."""
+        db = self._make_db(commit_sha=self.COMMIT_SHA)
+        fix_run = {"scoring_score": 0.95, "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run",
+                   return_value=self._merge_ok()) as mock_run:
+            fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "gh"
+        assert "pr" in cmd
+        assert "merge" in cmd
+        expected_branch = f"fix/regression-{self.COMMIT_SHA[:8]}-{self.REGRESSION_ID[:8]}"
+        assert expected_branch in cmd
+        assert "--squash" in cmd
+        assert "--repo" in cmd
+        assert "org/repo" in cmd
+        assert "--yes" in cmd
+
+    def test_score_above_threshold(self, fixer):
+        """score=0.99 (above threshold) should also pass gate → 'fixed'."""
+        db = self._make_db()
+        fix_run = {"scoring_score": 0.99, "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run",
+                   return_value=self._merge_ok()):
+            result = fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        assert result == "fixed"
+
+    def test_score_exactly_threshold_passes(self, fixer):
+        """score == CONFIDENCE_THRESHOLD should pass the gate."""
+        db = self._make_db()
+        fix_run = {"scoring_score": RegressionFixer.CONFIDENCE_THRESHOLD,
+                   "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run",
+                   return_value=self._merge_ok()):
+            result = fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        assert result == "fixed"
+
+    # --- Gate fails ---
+
+    def test_score_below_threshold_returns_needs_review(self, fixer):
+        """score=0.94 (below threshold) → 'needs_review', no merge."""
+        db = self._make_db()
+        fix_run = {"scoring_score": 0.94, "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run") as mock_run:
+            result = fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        assert result == "needs_review"
+        mock_run.assert_not_called()
+
+    def test_status_not_passed_returns_needs_review(self, fixer):
+        """scoring_status='failed', score above threshold → 'needs_review'."""
+        db = self._make_db()
+        fix_run = {"scoring_score": 0.99, "scoring_status": "failed"}
+        with patch("orchestration_engine.regression.subprocess.run") as mock_run:
+            result = fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        assert result == "needs_review"
+        mock_run.assert_not_called()
+
+    def test_scoring_status_none_returns_needs_review(self, fixer):
+        """scoring_status=None → gate fails → 'needs_review'."""
+        db = self._make_db()
+        fix_run = {"scoring_score": 0.99, "scoring_status": None}
+        with patch("orchestration_engine.regression.subprocess.run") as mock_run:
+            result = fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        assert result == "needs_review"
+        mock_run.assert_not_called()
+
+    def test_score_none_returns_needs_review(self, fixer):
+        """scoring_score=None → gate fails → 'needs_review'."""
+        db = self._make_db()
+        fix_run = {"scoring_score": None, "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run") as mock_run:
+            result = fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        assert result == "needs_review"
+        mock_run.assert_not_called()
+
+    def test_both_none_returns_needs_review(self, fixer):
+        """Both None → gate fails → 'needs_review'."""
+        db = self._make_db()
+        fix_run = {"scoring_score": None, "scoring_status": None}
+        with patch("orchestration_engine.regression.subprocess.run") as mock_run:
+            result = fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        assert result == "needs_review"
+        mock_run.assert_not_called()
+
+    # --- Merge failure ---
+
+    def test_merge_failure_falls_back_to_needs_review(self, fixer):
+        """Gate passes but merge fails → falls back to 'needs_review'."""
+        db = self._make_db()
+        fix_run = {"scoring_score": 0.95, "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run",
+                   return_value=self._merge_fail()):
+            result = fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        assert result == "needs_review"
+
+    def test_merge_failure_updates_db_needs_review(self, fixer):
+        """On merge failure, DB is updated to 'needs_review'."""
+        db = self._make_db()
+        fix_run = {"scoring_score": 0.95, "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run",
+                   return_value=self._merge_fail()):
+            fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        db.update_regression.assert_called_once_with(self.REGRESSION_ID, status="needs_review")
+
+    # --- Branch reconstruction ---
+
+    def test_branch_name_reconstructed_correctly(self, fixer):
+        """Branch name must be fix/regression-{sha[:8]}-{reg_id[:8]}."""
+        db = self._make_db(commit_sha="deadbeef12345678")
+        fix_run = {"scoring_score": 0.95, "scoring_status": "passed"}
+        reg_id = "12345678-aaaa-bbbb-cccc-dddddddddddd"
+        with patch("orchestration_engine.regression.subprocess.run",
+                   return_value=self._merge_ok()) as mock_run:
+            fixer.handle_fix_completion(reg_id, fix_run, db)
+        cmd = mock_run.call_args[0][0]
+        assert "fix/regression-deadbeef-12345678" in cmd
+
+    # --- DB edge cases ---
+
+    def test_regression_not_in_db_graceful(self, fixer):
+        """get_regression returns None → gracefully returns 'needs_review'."""
+        db = self._make_db(get_returns_none=True)
+        fix_run = {"scoring_score": 0.95, "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run") as mock_run:
+            result = fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        assert result == "needs_review"
+        mock_run.assert_not_called()
+
+    def test_db_update_failure_does_not_raise(self, fixer):
+        """DB update_regression raising should not propagate."""
+        db = self._make_db(update_raises=True)
+        fix_run = {"scoring_score": 0.94, "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run"):
+            # Must not raise
+            result = fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        assert result == "needs_review"
+
+    def test_no_merge_called_below_threshold(self, fixer):
+        """Subprocess must not be called when score is below threshold."""
+        db = self._make_db()
+        fix_run = {"scoring_score": 0.50, "scoring_status": "passed"}
+        with patch("orchestration_engine.regression.subprocess.run") as mock_run:
+            fixer.handle_fix_completion(self.REGRESSION_ID, fix_run, db)
+        mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestMergePr
+# ---------------------------------------------------------------------------
+
+
+class TestMergePr:
+    """Tests for RegressionFixer._merge_pr.
+
+    Issue: #3.3b.2 — confidence-gated auto-merge for regression fixes
+
+    Coverage:
+    - TimeoutExpired → returns False (does not raise)
+    - Successful merge (returncode=0) → returns True
+    - Non-zero returncode → returns False
+    - FileNotFoundError (gh not installed) → returns False
+    """
+
+    BRANCH = "fix/regression-deadbeef-12345678"
+
+    def test_timeout_expired_returns_false(self, fixer):
+        """subprocess.TimeoutExpired must be caught and _merge_pr returns False."""
+        with patch(
+            "orchestration_engine.regression.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["gh"], timeout=60),
+        ):
+            result = fixer._merge_pr(self.BRANCH)
+        assert result is False
+
+    def test_success_returns_true(self, fixer):
+        """A zero return code means the PR was merged → True."""
+        with patch(
+            "orchestration_engine.regression.subprocess.run",
+            return_value=_make_completed(returncode=0),
+        ):
+            result = fixer._merge_pr(self.BRANCH)
+        assert result is True
+
+    def test_nonzero_returncode_returns_false(self, fixer):
+        """Non-zero return code from gh → False."""
+        with patch(
+            "orchestration_engine.regression.subprocess.run",
+            return_value=_make_completed(returncode=1, stderr="PR not found"),
+        ):
+            result = fixer._merge_pr(self.BRANCH)
+        assert result is False
+
+    def test_file_not_found_returns_false(self, fixer):
+        """FileNotFoundError (gh binary missing) → False, does not raise."""
+        with patch(
+            "orchestration_engine.regression.subprocess.run",
+            side_effect=FileNotFoundError("gh not found"),
+        ):
+            result = fixer._merge_pr(self.BRANCH)
+        assert result is False
