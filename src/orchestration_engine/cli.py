@@ -1143,6 +1143,19 @@ def run_template(
             click.echo(f"✗ Invalid JSON in --input: {exc}", err=True)
             sys.exit(1)
 
+    # --- 2b. Validate required config fields (#411) ---
+    missing = _validate_required_config(template, initial_input)
+    if missing:
+        click.echo(f"✗ Missing {len(missing)} required config field(s):", err=True)
+        for field in missing:
+            click.echo(f"  • {field}", err=True)
+        click.echo(
+            "\nThese fields are required by the template's config_schema. "
+            "Add them to your --input or --input-file JSON.",
+            err=True,
+        )
+        sys.exit(1)
+
     # --- 3. Build PipelineRunner based on mode -----------------------
     try:
         if mode == 'standalone':
@@ -1657,6 +1670,19 @@ def pipeline_launch(
         except json.JSONDecodeError as exc:
             click.echo(f"✗ Invalid JSON in --input: {exc}", err=True)
             sys.exit(1)
+
+    # --- Validate required config fields (#411) ---
+    missing = _validate_required_config(template, initial_input)
+    if missing:
+        click.echo(f"✗ Missing {len(missing)} required config field(s):", err=True)
+        for field in missing:
+            click.echo(f"  • {field}", err=True)
+        click.echo(
+            "\nThese fields are required by the template's config_schema. "
+            "Add them to your --input or --input-file JSON.",
+            err=True,
+        )
+        sys.exit(1)
 
     # --- Build run_id and output_dir ---
     run_id = str(uuid.uuid4())[:8]
@@ -2382,6 +2408,22 @@ def _scan_templates(resolution_paths: Optional[List[tuple]] = None) -> List[tupl
                 click.echo(f"[warn] Skipping {filepath}: {exc}", err=True)
 
     return found
+
+
+def _validate_required_config(template, initial_input: Dict[str, Any]) -> List[str]:
+    """Validate that all required config fields are present in the input.
+
+    Checks the template's ``config_schema.required`` list against the keys
+    provided in *initial_input*.  Returns a list of missing field names
+    (empty list means all required fields are present).
+    """
+    schema = getattr(template, "config_schema", None)
+    if not schema:
+        return []
+    required = schema.get("required", [])
+    if not required:
+        return []
+    return [field for field in required if field not in initial_input]
 
 
 def _resolve_template_arg(name_or_path: str) -> Path:

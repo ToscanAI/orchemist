@@ -1753,14 +1753,14 @@ class _SafeDict(dict):
     """
 
     def __missing__(self, key: str) -> str:
-        logger.debug(f"Template referenced missing key: '{key}'")
+        logger.warning(f"Template referenced missing key: '{key}' — substituting <MISSING:{key}>")
         return f"<MISSING:{key}>"
 
     def __getattr__(self, key: str) -> Any:
         try:
             return self[key]
         except KeyError:
-            logger.debug(f"Template referenced missing attribute: '{key}'")
+            logger.warning(f"Template referenced missing attribute: '{key}' — substituting <MISSING:{key}>")
             return f"<MISSING:{key}>"
 
 
