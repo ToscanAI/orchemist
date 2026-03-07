@@ -1209,7 +1209,7 @@ class GitContext:
         """
         try:
             result = subprocess.run(
-                ["git", "show", "--stat", "--name-only", "--format=", sha],
+                ["git", "show", "--name-only", "--format=", sha],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
@@ -1222,14 +1222,7 @@ class GitContext:
                     result.stderr.strip(),
                 )
                 return []
-            lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
-            # Filter out the stat summary line (e.g. "2 files changed, 10 insertions(+)")
-            files = [
-                l for l in lines
-                if not re.match(r"^\d+\s+file", l)
-                and "|" not in l
-                and not l.startswith("diff --")
-            ]
+            files = [l.strip() for l in result.stdout.splitlines() if l.strip()]
             return files
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
             logger.warning("RegressionDetector: get_commit_files error: %s", exc)

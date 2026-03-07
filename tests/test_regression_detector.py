@@ -75,7 +75,7 @@ class TestGetCommitRange:
             "def5678 feat: add widget\n"
             "ghi9012 chore: update deps\n"
         )
-        with patch("subprocess.run", return_value=_make_completed(stdout=fake_output)) as mock_run:
+        with patch("orchestration_engine.git_integration.subprocess.run", return_value=_make_completed(stdout=fake_output)) as mock_run:
             result = git_ctx.get_commit_range("oldhash", "newhash", tmp_path)
 
         assert result == ["abc1234", "def5678", "ghi9012"]
@@ -89,14 +89,14 @@ class TestGetCommitRange:
 
     def test_empty_range_returns_empty_list(self, git_ctx, tmp_path):
         """When git log produces no output, return []."""
-        with patch("subprocess.run", return_value=_make_completed(stdout="")):
+        with patch("orchestration_engine.git_integration.subprocess.run", return_value=_make_completed(stdout="")):
             result = git_ctx.get_commit_range("a", "b", tmp_path)
         assert result == []
 
     def test_git_failure_returns_empty_list(self, git_ctx, tmp_path):
         """Non-zero returncode → return [] without raising."""
         with patch(
-            "subprocess.run",
+            "orchestration_engine.git_integration.subprocess.run",
             return_value=_make_completed(stderr="bad object", returncode=128),
         ):
             result = git_ctx.get_commit_range("bad", "sha", tmp_path)
@@ -104,20 +104,20 @@ class TestGetCommitRange:
 
     def test_timeout_returns_empty_list(self, git_ctx, tmp_path):
         """TimeoutExpired → return [] without raising."""
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="git", timeout=30)):
+        with patch("orchestration_engine.git_integration.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="git", timeout=30)):
             result = git_ctx.get_commit_range("a", "b", tmp_path)
         assert result == []
 
     def test_file_not_found_returns_empty_list(self, git_ctx, tmp_path):
         """FileNotFoundError (git not installed) → return []."""
-        with patch("subprocess.run", side_effect=FileNotFoundError):
+        with patch("orchestration_engine.git_integration.subprocess.run", side_effect=FileNotFoundError):
             result = git_ctx.get_commit_range("a", "b", tmp_path)
         assert result == []
 
     def test_capped_at_50(self, git_ctx, tmp_path):
         """More than 50 commits in range → return first 50 only."""
         lines = "\n".join(f"sha{i:04d} commit {i}" for i in range(60))
-        with patch("subprocess.run", return_value=_make_completed(stdout=lines)):
+        with patch("orchestration_engine.git_integration.subprocess.run", return_value=_make_completed(stdout=lines)):
             result = git_ctx.get_commit_range("a", "b", tmp_path)
         assert len(result) == 50
         assert result[0] == "sha0000"
@@ -126,7 +126,7 @@ class TestGetCommitRange:
     def test_whitespace_lines_are_ignored(self, git_ctx, tmp_path):
         """Blank lines in git log output are filtered out."""
         fake_output = "\nabc1234 msg\n\ndef5678 msg2\n\n"
-        with patch("subprocess.run", return_value=_make_completed(stdout=fake_output)):
+        with patch("orchestration_engine.git_integration.subprocess.run", return_value=_make_completed(stdout=fake_output)):
             result = git_ctx.get_commit_range("a", "b", tmp_path)
         assert result == ["abc1234", "def5678"]
 
@@ -140,51 +140,49 @@ class TestGetCommitFiles:
     """Tests for GitContext.get_commit_files."""
 
     def test_returns_file_paths(self, git_ctx, tmp_path):
-        """Normal path: parse file names from git show output."""
+        """Normal path: parse file names from git show --name-only output."""
         fake_output = (
             "src/orchestration_engine/scorer.py\n"
             "tests/test_scorer.py\n"
-            " 2 files changed, 42 insertions(+), 5 deletions(-)\n"
         )
-        with patch("subprocess.run", return_value=_make_completed(stdout=fake_output)):
+        with patch("orchestration_engine.git_integration.subprocess.run", return_value=_make_completed(stdout=fake_output)):
             result = git_ctx.get_commit_files("abc1234", tmp_path)
 
         assert "src/orchestration_engine/scorer.py" in result
         assert "tests/test_scorer.py" in result
 
-    def test_stat_summary_lines_filtered_out(self, git_ctx, tmp_path):
-        """Stat summary line ('N files changed …') is not included in result."""
+    def test_only_file_paths_in_output(self, git_ctx, tmp_path):
+        """git show --name-only --format= produces only file paths; all are returned."""
         fake_output = (
             "README.md\n"
             "setup.py\n"
-            " 2 files changed, 10 insertions(+)\n"
         )
-        with patch("subprocess.run", return_value=_make_completed(stdout=fake_output)):
+        with patch("orchestration_engine.git_integration.subprocess.run", return_value=_make_completed(stdout=fake_output)):
             result = git_ctx.get_commit_files("abc1234", tmp_path)
-        assert "2 files changed, 10 insertions(+)" not in result
         assert "README.md" in result
         assert "setup.py" in result
+        assert len(result) == 2
 
     def test_git_failure_returns_empty_list(self, git_ctx, tmp_path):
         """Non-zero returncode → return []."""
         with patch(
-            "subprocess.run",
+            "orchestration_engine.git_integration.subprocess.run",
             return_value=_make_completed(stderr="bad object abc", returncode=128),
         ):
             result = git_ctx.get_commit_files("bad_sha", tmp_path)
         assert result == []
 
     def test_timeout_returns_empty_list(self, git_ctx, tmp_path):
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="git", timeout=30)):
+        with patch("orchestration_engine.git_integration.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="git", timeout=30)):
             result = git_ctx.get_commit_files("sha", tmp_path)
         assert result == []
 
     def test_correct_git_command(self, git_ctx, tmp_path):
-        """Verify the exact git command used."""
-        with patch("subprocess.run", return_value=_make_completed(stdout="file.py\n")) as mock_run:
+        """Verify the exact git command used (no --stat flag)."""
+        with patch("orchestration_engine.git_integration.subprocess.run", return_value=_make_completed(stdout="file.py\n")) as mock_run:
             git_ctx.get_commit_files("deadbeef", tmp_path)
         mock_run.assert_called_once_with(
-            ["git", "show", "--stat", "--name-only", "--format=", "deadbeef"],
+            ["git", "show", "--name-only", "--format=", "deadbeef"],
             cwd=tmp_path,
             capture_output=True,
             text=True,

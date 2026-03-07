@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import subprocess
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -276,7 +275,8 @@ class RegressionDetector:
         for f in files:
             fname = Path(f).name  # basename only (e.g. "scorer.py")
             for token in log_tokens:
-                if fname in token or f in token or token in f:
+                token_basename = Path(token).name
+                if fname == token_basename or f == token or token == f:
                     score += 1
                     break  # each file scores at most 1 point
 
