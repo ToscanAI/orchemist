@@ -18,6 +18,7 @@ import logging
 import re
 import threading
 import time
+import uuid
 from collections import defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -27,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from .output_parser import extract_and_write, parse_output
+from .review_parser import parse_review_output, ReviewOutcome
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
 from .transitions import PhaseOutcome, determine_outcome, extract_verdict
@@ -83,7 +85,7 @@ class PhaseSequencer:
     def __init__(self, template: PipelineTemplate, runner, config: dict = None,
                  on_phase_complete=None, on_phase_start=None,
                  on_pipeline_start=None, on_pipeline_complete=None,
-                 output_dir=None) -> None:
+                 output_dir=None, run_id: Optional[str] = None, db=None) -> None:
         """Initialise the sequencer.
 
         Args:
@@ -106,6 +108,13 @@ class PhaseSequencer:
                                     result: dict | None) → None.
                                     Called after the last phase (or when the pipeline
                                     aborts).  ``result`` is ``None`` on abort/exception.
+            run_id:                 Optional pipeline run identifier.  When set (together
+                                    with ``db``), review phase outcomes are automatically
+                                    persisted to the ``review_outcomes`` table after each
+                                    review phase completes.
+            db:                     Optional :class:`~.db.Database` instance.  Required for
+                                    automatic review outcome recording.  Ignored when
+                                    ``run_id`` is ``None``.
         """
         self.template = template
         self.runner = runner
@@ -118,6 +127,8 @@ class PhaseSequencer:
         self.on_pipeline_start = on_pipeline_start
         self.on_pipeline_complete = on_pipeline_complete
         self.output_dir = output_dir
+        self.run_id: Optional[str] = run_id   # Issue #4.1.2: review outcome tracking
+        self.db = db                           # Issue #4.1.2: review outcome tracking
 
         # Fast phase lookup by ID (Issue #231) — avoids O(n) linear scan per phase
         self._phase_map: Dict[str, PhaseDefinition] = {
@@ -314,6 +325,9 @@ class PhaseSequencer:
                 with self._phase_outputs_lock:
                     self.phase_outputs[phase_id] = result
 
+            # Record review outcome durably (Issue #4.1.2) — sequential path
+            self._record_review_outcome(phase, result)
+
             # Notify caller (e.g. CLI progress display)
             self._invoke_on_phase_complete(phase_id, result)
 
@@ -474,6 +488,9 @@ class PhaseSequencer:
                 with self._phase_outputs_lock:
                     self.phase_outputs[phase_id] = result
 
+            # Record review outcome durably (Issue #4.1.2) — parallel path
+            self._record_review_outcome(phase, result)
+
             # Notify caller
             self._invoke_on_phase_complete(phase_id, result)
 
@@ -595,6 +612,84 @@ class PhaseSequencer:
                 self.on_phase_complete(phase_id, result)
             except Exception:
                 pass  # Never let a callback crash the pipeline
+
+    def _record_review_outcome(self, phase: PhaseDefinition, result: dict) -> None:
+        """Persist a review outcome to the DB when ``run_id`` and ``db`` are set.
+
+        Only acts on phases whose ``task_type`` is ``"review"``.  All errors
+        are swallowed so a DB failure never crashes the pipeline.
+
+        The method parses the phase output text through
+        :func:`~.review_parser.parse_review_output` to extract the structured
+        verdict and issues, then upserts a ``ReviewOutcome`` row via
+        ``db.insert_review_outcome``.
+
+        Args:
+            phase:  The :class:`~.templates.PhaseDefinition` that just completed.
+            result: The phase result dict (as returned by
+                    :meth:`_execute_and_wait`).
+        """
+        # Guard: only record for review-typed phases, and only when run_id + db are available
+        if not self.run_id or self.db is None:
+            return
+        if getattr(phase, "task_type", None) != "review":
+            return
+
+        try:
+            raw_text = _extract_phase_text(result)
+            parsed = parse_review_output(raw_text)
+
+            # Convert ReviewIssue objects to serialisable dicts
+            issues_list = [
+                {
+                    "severity": issue.severity.value,
+                    "category": issue.category,
+                    "description": issue.description,
+                }
+                for issue in parsed.issues
+            ]
+
+            # Resolve the model used — prefer metadata, fall back to phase definition
+            reviewer_model: str = str(
+                result.get("metadata", {}).get("model")
+                or result.get("model")
+                or getattr(phase, "model_tier", "unknown")
+                or "unknown"
+            )
+
+            outcome = ReviewOutcome(
+                review_id=str(uuid.uuid4()),
+                run_id=self.run_id,
+                phase_id=phase.id,
+                reviewer_model=reviewer_model,
+                verdict=parsed.verdict,
+                issues_found=issues_list,
+                fix_verified=False,
+                created_at=datetime.utcnow().isoformat(),
+            )
+
+            self.db.insert_review_outcome({
+                "review_id": outcome.review_id,
+                "run_id": outcome.run_id,
+                "phase_id": outcome.phase_id,
+                "reviewer_model": outcome.reviewer_model,
+                "verdict": outcome.verdict,
+                "issues_found": outcome.issues_found,
+                "fix_verified": outcome.fix_verified,
+                "created_at": outcome.created_at,
+            })
+
+            logger.info(
+                f"Pipeline {self.template.id}: recorded review outcome "
+                f"(review_id={outcome.review_id}, phase={phase.id}, "
+                f"verdict={outcome.verdict}, issues={len(issues_list)})"
+            )
+        except Exception as exc:
+            # Never let a DB failure crash the pipeline
+            logger.warning(
+                f"Pipeline {self.template.id}: failed to record review outcome "
+                f"for phase '{phase.id}': {exc}"
+            )
 
     # ------------------------------------------------------------------
     # File-write integration (#189)
