@@ -179,6 +179,7 @@ class Database:
             self._create_table_reviewer_calibration(conn)  # Issue #4.1.5
             self._create_table_trust_profiles(conn)        # Issue #4.2.1
             self._create_table_trust_adjustments(conn)     # Issue #4.2.1
+            self._create_table_issue_pipeline_map(conn)    # Issue #5.1.1
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -690,6 +691,7 @@ class Database:
             ("014_add_review_outcomes_table", self._migration_014_add_review_outcomes_table),  # Issue #4.1.2
             ("015_add_reviewer_calibration_table", self._migration_015_add_reviewer_calibration_table),  # Issue #4.1.5
             ("016_add_trust_tables", self._migration_016_add_trust_tables),                              # Issue #4.2.1
+            ("017_add_issue_pipeline_map", self._migration_017_add_issue_pipeline_map),               # Issue #5.1.1
         ]
         
         # Apply pending migrations
@@ -2267,6 +2269,177 @@ class Database:
         """
         self._create_table_trust_profiles(conn)
         self._create_table_trust_adjustments(conn)
+
+    def _create_table_issue_pipeline_map(self, conn: sqlite3.Connection) -> None:
+        """Create issue_pipeline_map table for LLM-based issue classification (Issue #5.1.1).
+
+        Called from ``_initialize_database`` so fresh databases get the table
+        without requiring a migration run.  Idempotent via
+        ``CREATE TABLE IF NOT EXISTS``.
+
+        Columns:
+            id:                     Auto-increment primary key.
+            issue_number:           GitHub issue number.
+            repo:                   Repository slug (e.g. ``"owner/repo"``).
+            classification_type:    One of ``bug``, ``feature``, ``docs``,
+                                    ``refactor``, ``research``, ``content``.
+            confidence:             LLM confidence score in ``[0.0, 1.0]``.
+            template_id:            Recommended pipeline template identifier.
+            run_id:                 Optional pipeline run_id linked after launch.
+            status:                 Lifecycle status (default ``'classified'``).
+            created_at:             UTC timestamp when row was created.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS issue_pipeline_map (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                issue_number      INTEGER NOT NULL,
+                repo              TEXT NOT NULL,
+                classification_type TEXT NOT NULL,
+                confidence        REAL NOT NULL,
+                template_id       TEXT,
+                run_id            TEXT,
+                status            TEXT NOT NULL DEFAULT 'classified',
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_issue_pipeline_map_issue_repo
+            ON issue_pipeline_map(issue_number, repo)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_issue_pipeline_map_repo_created
+            ON issue_pipeline_map(repo, created_at)
+        """)
+
+    def _migration_017_add_issue_pipeline_map(self, conn: sqlite3.Connection) -> None:
+        """Add issue_pipeline_map table for issue classification (Issue #5.1.1).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+        Safe to run on both fresh and existing databases.
+        """
+        self._create_table_issue_pipeline_map(conn)
+
+    # ------------------------------------------------------------------
+    # Issue Pipeline Map CRUD (Issue #5.1.1)
+    # ------------------------------------------------------------------
+
+    def insert_issue_classification(self, data: Dict[str, Any]) -> int:
+        """Insert a new issue classification row and return the primary key.
+
+        Args:
+            data: Dict with keys matching the ``issue_pipeline_map`` table.
+                  Required keys: ``issue_number``, ``repo``,
+                  ``classification_type``, ``confidence``.
+                  Optional: ``template_id``, ``run_id``, ``status``,
+                  ``created_at``.
+
+        Returns:
+            The integer ``id`` (primary key) of the newly inserted row.
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO issue_pipeline_map
+                    (issue_number, repo, classification_type, confidence,
+                     template_id, run_id, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(data["issue_number"]),
+                    data["repo"],
+                    data["classification_type"],
+                    float(data["confidence"]),
+                    data.get("template_id"),
+                    data.get("run_id"),
+                    data.get("status", "classified"),
+                    data.get("created_at"),
+                ),
+            )
+            return cursor.lastrowid  # type: ignore[return-value]
+
+    def get_issue_classification(
+        self,
+        issue_number: int,
+        repo: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the most recent classification for an issue, or None.
+
+        When the same issue has been classified multiple times (e.g. after a
+        re-triage), the most recently inserted row is returned.
+
+        Args:
+            issue_number: GitHub issue number.
+            repo:         Repository slug (e.g. ``"owner/repo"``).
+
+        Returns:
+            Dict with all ``issue_pipeline_map`` columns, or ``None`` when no
+            matching row exists.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                """
+                SELECT * FROM issue_pipeline_map
+                WHERE issue_number = ? AND repo = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (issue_number, repo),
+            )
+            row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def list_issue_classifications(
+        self,
+        repo: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List issue classification rows, newest first.
+
+        Args:
+            repo:  Optional repository slug filter.  When ``None`` all repos
+                   are included.
+            limit: Maximum rows to return (default ``100``).
+
+        Returns:
+            List of classification dicts ordered by ``id DESC``.
+        """
+        query = "SELECT * FROM issue_pipeline_map WHERE 1=1"
+        params: List[Any] = []
+
+        if repo is not None:
+            query += " AND repo = ?"
+            params.append(repo)
+
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(query, params)
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def update_issue_classification_status(
+        self,
+        row_id: int,
+        status: str,
+    ) -> bool:
+        """Update the ``status`` of an issue classification row.
+
+        Args:
+            row_id: Integer primary key of the row to update.
+            status: New status string (e.g. ``"launched"``, ``"skipped"``).
+
+        Returns:
+            ``True`` if a row was found and updated, ``False`` otherwise.
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE issue_pipeline_map SET status = ? WHERE id = ?",
+                (status, row_id),
+            )
+            return cursor.rowcount > 0
 
     # ------------------------------------------------------------------
     # Failure pattern CRUD (Issue #3.1.3)
