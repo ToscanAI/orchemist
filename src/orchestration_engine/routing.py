@@ -22,7 +22,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, List, Optional
 
-from .confidence import ConfidenceLevel
+from .confidence import AUTO_MERGE_THRESHOLD, HUMAN_REVIEW_THRESHOLD, ConfidenceLevel
 
 logger = logging.getLogger(__name__)
 
@@ -166,27 +166,27 @@ DEFAULT_ROUTING_CONFIG: RoutingConfig = RoutingConfig(
     tiers=[
         RoutingTier(
             name="auto_merge",
-            min_score=0.90,
+            min_score=AUTO_MERGE_THRESHOLD,  # 0.90 — calibrated in Issue #429.1
             max_score=1.01,  # exclusive upper bound — captures score == 1.0
             strategy="merge",
         ),
         RoutingTier(
             name="queue_review",
-            min_score=0.75,
-            max_score=0.90,
+            min_score=HUMAN_REVIEW_THRESHOLD,  # 0.70 — lowered from 0.75 in Issue #429.1
+            max_score=AUTO_MERGE_THRESHOLD,
             strategy="queue_review",
         ),
         RoutingTier(
             name="retry",
-            min_score=0.60,
-            max_score=0.75,
+            min_score=0.50,
+            max_score=HUMAN_REVIEW_THRESHOLD,  # 0.70 — updated to match calibrated threshold
             strategy="retry",
             max_retries=2,
         ),
         RoutingTier(
             name="reject",
             min_score=0.00,
-            max_score=0.60,
+            max_score=0.50,
             strategy="reject",
         ),
     ]

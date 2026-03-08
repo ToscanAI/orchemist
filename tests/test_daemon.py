@@ -1340,18 +1340,42 @@ class TestDispatchAutoMerge:
             phase_outputs=phase_outputs or {},
         )
 
-    def test_skip_when_config_is_none(self):
-        """If auto_merge_config is None, merge must be skipped — no merge call."""
-        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge:
-            self._call(auto_merge_config=None)
-        mock_merge.assert_not_called()
+    def test_merge_proceeds_without_config(self):
+        """auto_merge_config=None no longer blocks merge — routing engine is the authority.
 
-    def test_skip_when_not_enabled(self):
-        """If auto_merge_config.enabled=False, merge must be skipped."""
+        When config is None, _dispatch_auto_merge defaults to strategy='squash' and
+        require_approve=False.  The merge proceeds as long as the gate file is present
+        and the branch is not protected.
+        """
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/auto-no-config"}), \
+             patch("orchestration_engine.git_integration.GitContext.update_gate_status"):
+            self._call(auto_merge_config=None)
+        mock_merge.assert_called_once_with(
+            run_id="test-run-001",
+            branch_name="feat/auto-no-config",
+            strategy="squash",
+        )
+
+    def test_merge_proceeds_when_not_enabled(self):
+        """auto_merge_config.enabled=False no longer blocks merge (Issue #429.3).
+
+        The ``enabled`` flag was a legacy guard.  The routing engine is now the
+        authority; if routing selected auto_merge the merge proceeds regardless
+        of the ``enabled`` field.
+        """
         cfg = _make_auto_merge_config(enabled=False, require_approve=False)
-        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge:
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/was-disabled"}), \
+             patch("orchestration_engine.git_integration.GitContext.update_gate_status"):
             self._call(cfg)
-        mock_merge.assert_not_called()
+        mock_merge.assert_called_once_with(
+            run_id="test-run-001",
+            branch_name="feat/was-disabled",
+            strategy="squash",
+        )
 
     def test_merge_triggered_on_approve_verdict(self):
         """APPROVE on first line → merge is called with correct args."""
@@ -1439,6 +1463,110 @@ class TestDispatchAutoMerge:
             import pytest
             with pytest.raises(GitError):
                 self._call(cfg)
+
+    # --- Safety guard tests (Issue #429.3) ---
+
+    def test_allowlist_blocks_unlisted_repo(self):
+        """ORCH_AUTO_MERGE_ALLOWED_REPOS set: unlisted repo is blocked."""
+        cfg = _make_auto_merge_config(require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/x"}), \
+             patch.dict("os.environ", {"ORCH_AUTO_MERGE_ALLOWED_REPOS": "owner/allowed-repo"}):
+            from orchestration_engine.daemon import _dispatch_auto_merge
+            from orchestration_engine.routing import RoutingDecision
+            from orchestration_engine.confidence import ConfidenceLevel
+            _dispatch_auto_merge(
+                run_id="test-run-001",
+                auto_merge_config=cfg,
+                decision=_make_fake_decision(),
+                phase_outputs={},
+                repo="owner/other-repo",  # not in allowlist
+            )
+        mock_merge.assert_not_called()
+
+    def test_allowlist_permits_listed_repo(self):
+        """ORCH_AUTO_MERGE_ALLOWED_REPOS set: listed repo proceeds to merge."""
+        cfg = _make_auto_merge_config(require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/x"}), \
+             patch("orchestration_engine.git_integration.GitContext.update_gate_status"), \
+             patch.dict("os.environ", {"ORCH_AUTO_MERGE_ALLOWED_REPOS": "owner/allowed-repo"}):
+            from orchestration_engine.daemon import _dispatch_auto_merge
+            _dispatch_auto_merge(
+                run_id="test-run-001",
+                auto_merge_config=cfg,
+                decision=_make_fake_decision(),
+                phase_outputs={},
+                repo="owner/allowed-repo",  # in allowlist
+            )
+        mock_merge.assert_called_once()
+
+    def test_protected_branch_blocks_main(self):
+        """Branch named 'main' is blocked by the default protected-branch list."""
+        cfg = _make_auto_merge_config(require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "main"}), \
+             patch.dict("os.environ", {"ORCH_AUTO_MERGE_PROTECTED_BRANCHES": ""}):
+            self._call(cfg)
+        mock_merge.assert_not_called()
+
+    def test_protected_branch_blocks_master(self):
+        """Branch named 'master' is blocked by the default protected-branch list."""
+        cfg = _make_auto_merge_config(require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "master"}):
+            self._call(cfg)
+        mock_merge.assert_not_called()
+
+    def test_protected_branch_custom_env_var(self):
+        """Custom ORCH_AUTO_MERGE_PROTECTED_BRANCHES overrides default list."""
+        cfg = _make_auto_merge_config(require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "release"}), \
+             patch.dict("os.environ", {"ORCH_AUTO_MERGE_PROTECTED_BRANCHES": "release,hotfix"}):
+            self._call(cfg)
+        mock_merge.assert_not_called()
+
+    def test_dry_run_mode_skips_merge(self):
+        """ORCH_AUTO_MERGE_DRY_RUN=1 logs but does not call auto_merge_pr."""
+        cfg = _make_auto_merge_config(require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/dry"}), \
+             patch.dict("os.environ", {"ORCH_AUTO_MERGE_DRY_RUN": "1"}):
+            self._call(cfg)
+        mock_merge.assert_not_called()
+
+    def test_dry_run_false_allows_merge(self):
+        """ORCH_AUTO_MERGE_DRY_RUN=0 (or unset) proceeds with actual merge."""
+        cfg = _make_auto_merge_config(require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr") as mock_merge, \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/real"}), \
+             patch("orchestration_engine.git_integration.GitContext.update_gate_status"), \
+             patch.dict("os.environ", {"ORCH_AUTO_MERGE_DRY_RUN": "0"}):
+            self._call(cfg)
+        mock_merge.assert_called_once()
+
+    def test_notification_dispatched_after_merge(self):
+        """NotificationDispatcher.dispatch is called with event='auto_merge' after merge."""
+        cfg = _make_auto_merge_config(require_approve=False)
+        with patch("orchestration_engine.git_integration.GitContext.auto_merge_pr"), \
+             patch("orchestration_engine.git_integration.GitContext.load_gate",
+                   return_value={"branch": "feat/notify"}), \
+             patch("orchestration_engine.git_integration.GitContext.update_gate_status"), \
+             patch("orchestration_engine.notifications.NotificationDispatcher.from_env") as mock_from_env:
+            mock_dispatcher = mock_from_env.return_value
+            self._call(cfg)
+        mock_from_env.assert_called_once()
+        mock_dispatcher.dispatch.assert_called_once()
+        call_kwargs = mock_dispatcher.dispatch.call_args
+        assert call_kwargs[1]["event"] == "auto_merge" or call_kwargs[0][0] == "auto_merge"
 
 
 # ---------------------------------------------------------------------------

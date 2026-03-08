@@ -1027,6 +1027,7 @@ def _compute_and_dispatch_routing(
             confidence_result=confidence_result,
             auto_merge_config=auto_merge_config,
             phase_outputs=phase_outputs,
+            repo=repo,
         )
 
         return final_status
@@ -1046,6 +1047,7 @@ def _dispatch_routing_action(
     confidence_result: Any,
     auto_merge_config: Any,
     phase_outputs: Dict[str, Any],
+    repo: str = "",
 ) -> None:
     """Execute the routing action determined by RoutingEngine.
 
@@ -1068,6 +1070,8 @@ def _dispatch_routing_action(
         confidence_result: :class:`~confidence.ConfidenceResult` from ConfidenceCalculator.
         auto_merge_config: AutoMergeConfig from template (or None).
         phase_outputs:     Dict of phase_id → phase result dict.
+        repo:              Git repository slug (e.g. ``"owner/repo"``).  Used for
+                           allowlist checks in auto-merge.  Optional.
     """
     try:
         if action == "auto_merge":
@@ -1076,6 +1080,7 @@ def _dispatch_routing_action(
                 auto_merge_config=auto_merge_config,
                 decision=decision,
                 phase_outputs=phase_outputs,
+                repo=repo,
             )
         elif action == "human_review":
             logger.info(
@@ -1127,40 +1132,76 @@ def _dispatch_auto_merge(
     auto_merge_config: Any,
     decision: Any,
     phase_outputs: Dict[str, Any],
+    repo: str = "",
 ) -> None:
     """Attempt PR auto-merge when routing selects the auto_merge action.
 
-    Mirrors the former ``_try_auto_merge()`` logic but is driven by the routing
-    decision rather than a binary score/threshold check (that check is now in
-    :class:`~routing.RoutingEngine`).  The ``auto_merge_config`` is still
-    consulted for ``require_approve`` and ``strategy``.
+    Driven by the routing decision rather than a binary score/threshold check
+    (that check is now in :class:`~routing.RoutingEngine`).  The
+    ``auto_merge_config`` is consulted for ``require_approve`` and ``strategy``
+    but is **no longer required** — when ``None`` or ``enabled=False`` the
+    merge proceeds with sensible defaults (strategy=``"squash"``).
 
-    When ``auto_merge_config`` is ``None`` or ``enabled=False``, logs and returns.
+    Safety guards (evaluated before calling ``gh pr merge``):
+
+    * **Repo allowlist** — when ``ORCH_AUTO_MERGE_ALLOWED_REPOS`` is set to a
+      non-empty comma-separated list, only repos explicitly listed are allowed
+      to auto-merge.  An empty env var (the default) permits all repos.
+    * **Protected branch guard** — branches named ``main``, ``master``,
+      ``develop``, or any name listed in ``ORCH_AUTO_MERGE_PROTECTED_BRANCHES``
+      are never merged automatically.  Override by setting
+      ``ORCH_AUTO_MERGE_PROTECTED_BRANCHES`` to a comma-separated list.
+    * **Dry-run mode** — when ``ORCH_AUTO_MERGE_DRY_RUN=1`` (or ``true``/``yes``)
+      the merge is logged but ``gh pr merge`` is **not** called.
+
+    A Telegram notification is dispatched after a successful merge when
+    ``NOTIFY_TELEGRAM_ENABLED=1``.
 
     Args:
         run_id:            Pipeline run identifier.
-        auto_merge_config: AutoMergeConfig from template (or None).
+        auto_merge_config: AutoMergeConfig from template (or None).  When
+                           ``None``, defaults to strategy ``"squash"`` and
+                           ``require_approve=False``.
         decision:          :class:`~routing.RoutingDecision` from RoutingEngine.
         phase_outputs:     Dict of phase_id → phase result dict.
+        repo:              Git repository slug (e.g. ``"owner/repo"``).  Used
+                           for the allowlist check.  Optional.
     """
-    if auto_merge_config is None or not auto_merge_config.enabled:
-        logger.info(
-            "Routing selected auto_merge for run '%s' but template has no "
-            "auto_merge config (or enabled=false) — skipping PR merge.",
-            run_id,
-        )
-        return
+    import os as _os
 
-    am = auto_merge_config
+    # Derive effective config values; auto_merge_config is no longer required.
+    strategy = auto_merge_config.strategy if auto_merge_config else "squash"
+    require_approve = (
+        auto_merge_config.require_approve
+        if auto_merge_config is not None
+        else False
+    )
+    review_phase_id = (
+        auto_merge_config.review_phase_id
+        if auto_merge_config is not None
+        else "review"
+    )
 
-    # Honour require_approve check (delegated from template config)
-    if am.require_approve:
-        review_out = phase_outputs.get(am.review_phase_id)
+    # --- Safety guard 1: repo allowlist ---
+    _allowed_raw = _os.environ.get("ORCH_AUTO_MERGE_ALLOWED_REPOS", "").strip()
+    if _allowed_raw and repo:
+        allowed_repos = {r.strip() for r in _allowed_raw.split(",") if r.strip()}
+        if allowed_repos and repo not in allowed_repos:
+            logger.info(
+                "Auto-merge BLOCKED for run '%s': repo '%s' is not in "
+                "ORCH_AUTO_MERGE_ALLOWED_REPOS allowlist (%s).",
+                run_id, repo, ", ".join(sorted(allowed_repos)),
+            )
+            return
+
+    # --- Honour require_approve check (delegated from template config) ---
+    if require_approve:
+        review_out = phase_outputs.get(review_phase_id)
         if review_out is None:
             logger.info(
                 "Auto-merge skipped for run '%s': review phase '%s' not found "
                 "(require_approve=True).",
-                run_id, am.review_phase_id,
+                run_id, review_phase_id,
             )
             return
         review_text = _extract_output_text(review_out).strip()
@@ -1169,16 +1210,100 @@ def _dispatch_auto_merge(
             logger.info(
                 "Auto-merge skipped for run '%s': review phase '%s' did not "
                 "return APPROVE on first line (got: %r).",
-                run_id, am.review_phase_id, first_line[:80],
+                run_id, review_phase_id, first_line[:80],
             )
             return
 
-    # Delegate to shared merge execution helper
-    _do_auto_merge(
-        run_id=run_id,
-        auto_merge_config=am,
-        scoring_score=decision.score,
+    # Load gate file to resolve branch name (required for safety checks and merge).
+    from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+
+    gate_data = _GitContext.load_gate(run_id)
+    if gate_data is None:
+        logger.warning(
+            "Auto-merge: no gate file found for run '%s' — "
+            "cannot determine branch name.  Is git.enabled=true in the template?",
+            run_id,
+        )
+        return
+
+    branch_name = gate_data.get("branch", "")
+    if not branch_name:
+        logger.warning(
+            "Auto-merge: gate file for run '%s' has no 'branch' field — skipping.",
+            run_id,
+        )
+        return
+
+    # --- Safety guard 2: protected branch ---
+    _default_protected = {"main", "master", "develop"}
+    _protected_raw = _os.environ.get("ORCH_AUTO_MERGE_PROTECTED_BRANCHES", "").strip()
+    protected_branches: set[str]
+    if _protected_raw:
+        protected_branches = {b.strip() for b in _protected_raw.split(",") if b.strip()}
+    else:
+        protected_branches = _default_protected
+
+    if branch_name in protected_branches:
+        logger.warning(
+            "Auto-merge BLOCKED for run '%s': branch '%s' is in the protected "
+            "branches list — refusing to auto-merge.  "
+            "Override via ORCH_AUTO_MERGE_PROTECTED_BRANCHES env var.",
+            run_id, branch_name,
+        )
+        return
+
+    # --- Safety guard 3: dry-run mode ---
+    def _is_truthy(val: str) -> bool:
+        return val.strip().lower() in ("1", "true", "yes")
+
+    if _is_truthy(_os.environ.get("ORCH_AUTO_MERGE_DRY_RUN", "")):
+        logger.info(
+            "Auto-merge DRY-RUN for run '%s': would merge branch '%s' "
+            "with strategy='%s' (set ORCH_AUTO_MERGE_DRY_RUN=0 to activate).",
+            run_id, branch_name, strategy,
+        )
+        return
+
+    # --- Execute merge ---
+    logger.info(
+        "Auto-merge TRIGGERED for run '%s': score=%.4f, branch='%s', strategy='%s'.",
+        run_id, decision.score, branch_name, strategy,
     )
+
+    _GitContext.auto_merge_pr(
+        run_id=run_id,
+        branch_name=branch_name,
+        strategy=strategy,
+    )
+
+    # Update gate status to merged
+    try:
+        _GitContext.update_gate_status(
+            run_id,
+            status="merged",
+            message=f"Auto-merged by orchestrator (score={decision.score:.4f})",
+        )
+    except Exception as _ge:
+        logger.warning("Auto-merge: could not update gate status: %s", _ge)
+
+    # --- Dispatch notification after successful merge ---
+    try:
+        from .notifications import NotificationDispatcher  # noqa: PLC0415
+        _notifier = NotificationDispatcher.from_env()
+        _notifier.dispatch(
+            event="auto_merge",
+            run_id=run_id,
+            tier=decision.tier,
+            score=decision.score,
+            branch=branch_name,
+            repo=repo or "unknown",
+            strategy=strategy,
+        )
+    except Exception as _ne:
+        logger.warning(
+            "Auto-merge notification dispatch failed for run '%s' (non-fatal): %s",
+            run_id, _ne,
+        )
 
 
 def _post_reject_comment(
