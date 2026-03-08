@@ -65,6 +65,12 @@ from .routing import (  # noqa: F401  # Issue #331.2
     RoutingEngine,
     DEFAULT_ROUTING_CONFIG,
 )
+from .issue_automation import (  # noqa: F401  # Issue #5.1.1
+    IssueClassifier,
+    IssueClassification,
+    VALID_CLASSIFICATION_TYPES,
+    CLASSIFICATION_TEMPLATE_MAP,
+)
 
 __all__ = [
     "__version__",
@@ -124,4 +130,9 @@ __all__ = [
     "RoutingDecision",
     "RoutingEngine",
     "DEFAULT_ROUTING_CONFIG",
+    # LLM-based issue classification (Issue #5.1.1)
+    "IssueClassifier",
+    "IssueClassification",
+    "VALID_CLASSIFICATION_TYPES",
+    "CLASSIFICATION_TEMPLATE_MAP",
 ]
