@@ -71,12 +71,70 @@ class WebhookNotifier(BaseNotifier):
             _ = resp.read()
 
 
+class TelegramNotifier(BaseNotifier):
+    """Notifier that sends a message to a Telegram chat via the Bot API.
+
+    Requires a bot token (``NOTIFY_TELEGRAM_BOT_TOKEN``) and a chat ID
+    (``NOTIFY_TELEGRAM_CHAT_ID``).  Messages are sent as plain-text via the
+    ``sendMessage`` endpoint.
+
+    Args:
+        bot_token: Telegram Bot API token (``123456:ABC-DEF...``).
+        chat_id:   Target chat or channel ID (negative for groups/channels).
+        timeout:   HTTP request timeout in seconds.  Default ``10``.
+    """
+
+    BASE_URL = "https://api.telegram.org/bot{token}/sendMessage"
+
+    def __init__(self, bot_token: str, chat_id: str, timeout: int = 10) -> None:
+        self.bot_token = bot_token
+        self.chat_id = chat_id
+        self.timeout = timeout
+
+    def dispatch(self, event: str, run_id: str, **kwargs: Any) -> None:
+        """Send a Telegram message for the given *event*.
+
+        The message body is formatted as a readable summary of the event,
+        run ID, and any extra keyword arguments.
+
+        Args:
+            event:   Pipeline lifecycle event name (e.g. ``"auto_merge"``).
+            run_id:  Pipeline run identifier.
+            **kwargs: Additional context fields (score, tier, branch, …).
+        """
+        extra_lines = "\n".join(f"  {k}: {v}" for k, v in kwargs.items())
+        event_emoji = {
+            "auto_merge": "✅",
+            "human_review": "👀",
+            "reject": "❌",
+        }.get(event, "🔔")
+        text = (
+            f"{event_emoji} *Orchestration Engine* — `{event}`\n"
+            f"run\\_id: `{run_id}`"
+        )
+        if extra_lines:
+            text += f"\n{extra_lines}"
+
+        url = self.BASE_URL.format(token=self.bot_token)
+        payload = json.dumps(
+            {"chat_id": self.chat_id, "text": text, "parse_mode": "Markdown"}
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            _ = resp.read()
+
+
 class NotificationDispatcher:
     """Dispatches pipeline lifecycle events to configured backends.
 
-    Supports two optional backends (openclaw, webhook) controlled via a
-    ``_config`` dict.  Always emits a WARNING-level log entry regardless of
-    which backends are enabled.
+    Supports three optional backends (openclaw, webhook, telegram) controlled
+    via a ``_config`` dict.  Always emits a WARNING-level log entry regardless
+    of which backends are enabled.
 
     Usage::
 
@@ -97,6 +155,9 @@ class NotificationDispatcher:
             "webhook_enabled": False,
             "webhook_url": "",
             "webhook_secret": "",
+            "telegram_enabled": False,
+            "telegram_bot_token": "",
+            "telegram_chat_id": "",
         }
         if config:
             self._config.update(config)
@@ -130,6 +191,12 @@ class NotificationDispatcher:
                 self._dispatch_webhook(event=event, run_id=run_id, **kwargs)
             except Exception as exc:
                 logger.warning("Webhook notification failed (swallowed): %s", exc)
+
+        if self._config.get("telegram_enabled"):
+            try:
+                self._dispatch_telegram(event=event, run_id=run_id, **kwargs)
+            except Exception as exc:
+                logger.warning("Telegram notification failed (swallowed): %s", exc)
 
     # ------------------------------------------------------------------
     # Backend implementations
@@ -180,6 +247,18 @@ class NotificationDispatcher:
         with urllib.request.urlopen(req, timeout=10) as resp:
             _ = resp.read()
 
+    def _dispatch_telegram(self, event: str, run_id: str, **kwargs: Any) -> None:
+        """Send a message to Telegram via the configured bot token and chat ID."""
+        bot_token = self._config.get("telegram_bot_token", "")
+        chat_id = self._config.get("telegram_chat_id", "")
+        if not bot_token or not chat_id:
+            logger.warning(
+                "Telegram notification skipped: missing bot_token or chat_id."
+            )
+            return
+        notifier = TelegramNotifier(bot_token=bot_token, chat_id=chat_id)
+        notifier.dispatch(event=event, run_id=run_id, **kwargs)
+
     # ------------------------------------------------------------------
     # Factory
     # ------------------------------------------------------------------
@@ -196,6 +275,9 @@ class NotificationDispatcher:
             NOTIFY_WEBHOOK_ENABLED        — "1", "true", "yes" to enable
             NOTIFY_WEBHOOK_URL            — https://… webhook endpoint
             NOTIFY_WEBHOOK_SECRET         — HMAC signing secret
+            NOTIFY_TELEGRAM_ENABLED       — "1", "true", "yes" to enable
+            NOTIFY_TELEGRAM_BOT_TOKEN     — Telegram Bot API token
+            NOTIFY_TELEGRAM_CHAT_ID       — Target chat/channel ID
         """
 
         def _bool(val: str | None) -> bool:
@@ -222,5 +304,8 @@ class NotificationDispatcher:
             "webhook_enabled": _bool(os.environ.get("NOTIFY_WEBHOOK_ENABLED")),
             "webhook_url": webhook_url,
             "webhook_secret": os.environ.get("NOTIFY_WEBHOOK_SECRET", ""),
+            "telegram_enabled": _bool(os.environ.get("NOTIFY_TELEGRAM_ENABLED")),
+            "telegram_bot_token": os.environ.get("NOTIFY_TELEGRAM_BOT_TOKEN", ""),
+            "telegram_chat_id": os.environ.get("NOTIFY_TELEGRAM_CHAT_ID", ""),
         }
         return cls(config)

@@ -255,22 +255,27 @@ class TestDefaultRoutingConfig:
         assert tier.strategy == "merge"
 
     def test_queue_review_tier(self):
+        # Issue #429.3: min_score updated from 0.75 → HUMAN_REVIEW_THRESHOLD (0.70)
+        from orchestration_engine.confidence import HUMAN_REVIEW_THRESHOLD, AUTO_MERGE_THRESHOLD
         tier = next(t for t in DEFAULT_ROUTING_CONFIG.tiers if t.name == "queue_review")
-        assert tier.min_score == 0.75
-        assert tier.max_score == 0.90
+        assert tier.min_score == HUMAN_REVIEW_THRESHOLD  # 0.70
+        assert tier.max_score == AUTO_MERGE_THRESHOLD     # 0.90
         assert tier.strategy == "queue_review"
 
     def test_retry_tier(self):
+        # Issue #429.3: min_score updated 0.60 → 0.50, max_score updated 0.75 → HUMAN_REVIEW_THRESHOLD (0.70)
+        from orchestration_engine.confidence import HUMAN_REVIEW_THRESHOLD
         tier = next(t for t in DEFAULT_ROUTING_CONFIG.tiers if t.name == "retry")
-        assert tier.min_score == 0.60
-        assert tier.max_score == 0.75
+        assert tier.min_score == 0.50
+        assert tier.max_score == HUMAN_REVIEW_THRESHOLD  # 0.70
         assert tier.strategy == "retry"
         assert tier.max_retries == 2
 
     def test_reject_tier(self):
+        # Issue #429.3: max_score updated from 0.60 → 0.50 (keeps contiguous coverage)
         tier = next(t for t in DEFAULT_ROUTING_CONFIG.tiers if t.name == "reject")
         assert tier.min_score == 0.00
-        assert tier.max_score == 0.60
+        assert tier.max_score == 0.50
         assert tier.strategy == "reject"
 
     def test_default_config_has_no_threshold_errors(self):
@@ -331,10 +336,11 @@ class TestRoutingEngineRoute:
         decision = engine.route(_make_result(0.67))
         assert decision.tier == "retry"
 
-    def test_route_retry_just_below_queue_review(self):
+    def test_route_queue_review_just_above_human_review_threshold(self):
+        # Issue #429.3: 0.7499 is now above HUMAN_REVIEW_THRESHOLD (0.70) → queue_review
         engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
         decision = engine.route(_make_result(0.7499))
-        assert decision.tier == "retry"
+        assert decision.tier == "queue_review"
 
     def test_route_reject_at_zero(self):
         engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
@@ -347,10 +353,11 @@ class TestRoutingEngineRoute:
         decision = engine.route(_make_result(0.30))
         assert decision.tier == "reject"
 
-    def test_route_reject_just_below_retry(self):
+    def test_route_retry_just_above_reject(self):
+        # Issue #429.3: retry now starts at 0.50; 0.5999 → retry (was reject before)
         engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)
         decision = engine.route(_make_result(0.5999))
-        assert decision.tier == "reject"
+        assert decision.tier == "retry"
 
     def test_route_preserves_score(self):
         engine = RoutingEngine(DEFAULT_ROUTING_CONFIG)

@@ -79,28 +79,34 @@ def routing_output_dir_high_confidence(tmp_path: Path) -> Path:
     """Create task JSON files that produce composite confidence >= 0.90.
 
     Exactly 2 tasks: 1 review + 1 non-review, both with state=success and
-    confidence=0.95.  This produces all 4 signals with a composite score of
-    ~0.903 (HIGH tier, >= 0.90).
+    confidence=1.0.  With DEFAULT_WEIGHTS (v1) renormalized over the 4 active
+    signals (llm_judge, test_pass_rate, review_quality, change_complexity
+    sum to 0.75 of the total weight), this produces composite ≈ 0.911 (HIGH).
 
-    Breakdown:
-        llm_judge (w=0.40):          0.95
-        test_pass_rate (w=0.30):     1.00 (1/1 succeeded)
-        review_quality (w=0.20):     0.95
-        change_complexity (w=0.10):  1/(1+2) ≈ 0.333
-        composite ≈ 0.903 → HIGH
+    Breakdown (DEFAULT_WEIGHTS v1, renormalized to 4 present signals):
+        effective weights: llm_judge=0.40, test_pass_rate=0.267,
+                           review_quality=0.20, change_complexity=0.133
+        llm_judge:          1.00 × 0.40  = 0.400
+        test_pass_rate:     1.00 × 0.267 = 0.267
+        review_quality:     1.00 × 0.20  = 0.200
+        change_complexity:  0.333 × 0.133 = 0.044
+        composite ≈ 0.911 → HIGH (>= 0.90)
+
+    Note: Confidence 0.95 was insufficient with renormalized weights (yields
+    ~0.881); raised to 1.0 to reliably clear the 0.90 AUTO_MERGE_THRESHOLD.
     """
     out = tmp_path / "output"
     out.mkdir()
     # 1 non-review task (content type) — triggers test_pass_rate signal
     (out / "phase_0.json").write_text(json.dumps({
         "state": "success",
-        "confidence": 0.95,
+        "confidence": 1.0,
         "task_type": "content",
     }))
     # 1 review task — triggers llm_judge signal
     (out / "review_phase.json").write_text(json.dumps({
         "state": "success",
-        "confidence": 0.95,
+        "confidence": 1.0,
         "task_type": "review",
     }))
     return out
