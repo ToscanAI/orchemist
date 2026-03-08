@@ -269,8 +269,76 @@ class RoutingEngine:
             matched=False,
         )
 
-    def evaluate(self, confidence_result: Any) -> RoutingDecision:
-        """Alias for :meth:`route` (kept for backward compatibility)."""
+    def evaluate(
+        self,
+        confidence_result: Any,
+        *,
+        repo: str = "",
+        template_id: str = "",
+        task_type: str = "",
+        db: Optional[Any] = None,
+        bootstrap_threshold: int = 10,
+    ) -> RoutingDecision:
+        """Route *confidence_result*, optionally consulting a trust profile.
+
+        When *repo*, *template_id*, *task_type*, and *db* are all provided the
+        method queries the trust profile for that triplet.  If the profile has
+        accumulated at least *bootstrap_threshold* successful merges the routing
+        thresholds are derived dynamically from the profile's calibrated
+        ``auto_merge_threshold`` and ``human_review_threshold`` via
+        :func:`_build_trust_routing_config`.  This ensures that well-established
+        pipelines can auto-merge more aggressively while risky or new ones stay
+        conservative.
+
+        When any of the four trust-routing parameters is absent (or the profile
+        does not yet exist / has not passed bootstrap) the method falls back to
+        the standard :meth:`route` path.
+
+        Args:
+            confidence_result: A
+                :class:`~orchestration_engine.confidence.ConfidenceResult`
+                instance (or any object with ``composite_score`` and
+                ``confidence_level`` attributes).
+            repo:               Git repository slug (e.g. ``"owner/repo"``).
+                                Required (together with the other three) to
+                                enable trust-based routing.
+            template_id:        Pipeline template identifier.
+            task_type:          Task type string (e.g. ``"bugfix"``).
+            db:                 :class:`~orchestration_engine.db.Database`
+                                instance used to look up the trust profile.
+            bootstrap_threshold: Minimum number of successful merges before the
+                                 dynamic thresholds are used.  Default ``10``.
+
+        Returns:
+            A :class:`RoutingDecision` describing the matched tier and action.
+        """
+        # Attempt trust-profile-based dynamic routing when all params provided
+        if repo and template_id and task_type and db is not None:
+            try:
+                profile = db.get_trust_profile(repo, template_id, task_type)
+                if profile is not None:
+                    successful_merges = int(profile.get("successful_merges", 0))
+                    if successful_merges >= bootstrap_threshold:
+                        auto_merge_thr = float(profile["auto_merge_threshold"])
+                        human_review_thr = float(profile["human_review_threshold"])
+                        trust_config = _build_trust_routing_config(
+                            auto_merge_threshold=auto_merge_thr,
+                            human_review_threshold=human_review_thr,
+                        )
+                        logger.debug(
+                            "evaluate: using trust-profile thresholds for %s/%s/%s "
+                            "(auto_merge=%.4f, human_review=%.4f, merges=%d)",
+                            repo, template_id, task_type,
+                            auto_merge_thr, human_review_thr, successful_merges,
+                        )
+                        return RoutingEngine(trust_config).route(confidence_result)
+            except Exception as exc:
+                logger.warning(
+                    "evaluate: trust profile lookup failed for %s/%s/%s "
+                    "(falling back to default routing): %s",
+                    repo, template_id, task_type, exc,
+                )
+
         return self.route(confidence_result)
 
     def validate_thresholds(self) -> List[str]:
@@ -339,6 +407,98 @@ class RoutingEngine:
                 )
 
         return errors
+
+
+# ---------------------------------------------------------------------------
+# Trust-profile routing config builder
+# ---------------------------------------------------------------------------
+
+
+def _build_trust_routing_config(
+    auto_merge_threshold: float,
+    human_review_threshold: float,
+) -> RoutingConfig:
+    """Construct a 4-tier :class:`RoutingConfig` from calibrated trust thresholds.
+
+    Uses the trust profile's dynamic ``auto_merge_threshold`` and
+    ``human_review_threshold`` for the top two tiers.  The lower two tiers
+    (retry / reject) retain fixed bounds that do not move with trust.
+
+    Tier layout (boundaries computed from the two profile thresholds):
+
+    +-----------------+-----------------------------------+------------+
+    | Name            | Score range                       | Strategy   |
+    +=================+===================================+============+
+    | auto_merge      | [auto_merge_threshold, 1.01)      | merge      |
+    +-----------------+-----------------------------------+------------+
+    | queue_review    | [human_review_threshold,          | queue_review|
+    |                 |  auto_merge_threshold)            |            |
+    +-----------------+-----------------------------------+------------+
+    | retry           | [0.50, human_review_threshold)    | retry      |
+    +-----------------+-----------------------------------+------------+
+    | reject          | [0.00, 0.50)                      | reject     |
+    +-----------------+-----------------------------------+------------+
+
+    The ``retry`` tier's lower bound is fixed at ``0.50``.  When
+    ``human_review_threshold`` is at or below ``0.50`` the retry tier is
+    collapsed (zero width) and scores in that range fall to ``reject``.
+
+    Args:
+        auto_merge_threshold:   Minimum score for auto-merge, in ``[0, 1]``.
+        human_review_threshold: Minimum score for human-review queue, in
+                                ``[0, auto_merge_threshold)``.
+
+    Returns:
+        A :class:`RoutingConfig` with four tiers.
+    """
+    _RETRY_FLOOR = 0.50
+
+    tiers: List[RoutingTier] = [
+        RoutingTier(
+            name="auto_merge",
+            min_score=auto_merge_threshold,
+            max_score=1.01,
+            strategy="merge",
+        ),
+        RoutingTier(
+            name="queue_review",
+            min_score=human_review_threshold,
+            max_score=auto_merge_threshold,
+            strategy="queue_review",
+        ),
+    ]
+
+    # Retry tier only exists when human_review_threshold > RETRY_FLOOR
+    if human_review_threshold > _RETRY_FLOOR:
+        tiers.append(
+            RoutingTier(
+                name="retry",
+                min_score=_RETRY_FLOOR,
+                max_score=human_review_threshold,
+                strategy="retry",
+                max_retries=2,
+            )
+        )
+        tiers.append(
+            RoutingTier(
+                name="reject",
+                min_score=0.00,
+                max_score=_RETRY_FLOOR,
+                strategy="reject",
+            )
+        )
+    else:
+        # Collapse retry: everything below human_review_threshold is rejected
+        tiers.append(
+            RoutingTier(
+                name="reject",
+                min_score=0.00,
+                max_score=human_review_threshold,
+                strategy="reject",
+            )
+        )
+
+    return RoutingConfig(tiers=tiers)
 
 
 # ---------------------------------------------------------------------------

@@ -414,6 +414,36 @@ class RegressionWebhookHandler:
             if regression is None:
                 return None
 
+            # Apply trust penalty for the detected regression (Issue #4.2.3).
+            # Uses the regression id as the run_id so the adjustment audit trail
+            # references the specific regression event.  All failures are caught
+            # and logged — a trust update error never blocks regression handling.
+            try:
+                from .trust import TrustCalibrator  # noqa: PLC0415
+                _calibrator = TrustCalibrator(
+                    repo=self._repo_slug,
+                    template_id="ci",
+                    task_type=regression.failure_type or "ci_failure",
+                )
+                _calibrator.update_after_run(
+                    run_id=regression.id,
+                    outcome="regression",
+                    db=self._db,
+                )
+                logger.info(
+                    "RegressionWebhookHandler: trust penalty applied for "
+                    "regression %s in repo %s",
+                    regression.id,
+                    self._repo_slug,
+                )
+            except Exception as _trust_exc:
+                logger.warning(
+                    "RegressionWebhookHandler: trust penalty failed for "
+                    "regression %s (non-fatal): %s",
+                    regression.id,
+                    _trust_exc,
+                )
+
             # Open a GitHub issue to surface the regression.
             issue_url = self._open_github_issue(regression)
             if issue_url:
