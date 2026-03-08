@@ -177,6 +177,8 @@ class Database:
             self._create_table_ci_green_shas(conn)    # Issue #3.3a.3
             self._create_table_review_outcomes(conn)  # Issue #4.1.2
             self._create_table_reviewer_calibration(conn)  # Issue #4.1.5
+            self._create_table_trust_profiles(conn)        # Issue #4.2.1
+            self._create_table_trust_adjustments(conn)     # Issue #4.2.1
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -687,6 +689,7 @@ class Database:
             ("013_add_ci_green_shas_table", self._migration_013_add_ci_green_shas_table),  # Issue #3.3a.3
             ("014_add_review_outcomes_table", self._migration_014_add_review_outcomes_table),  # Issue #4.1.2
             ("015_add_reviewer_calibration_table", self._migration_015_add_reviewer_calibration_table),  # Issue #4.1.5
+            ("016_add_trust_tables", self._migration_016_add_trust_tables),                              # Issue #4.2.1
         ]
         
         # Apply pending migrations
@@ -2172,6 +2175,99 @@ class Database:
             ON reviewer_calibration(reviewer_model, computed_at DESC)
         """)
 
+    def _create_table_trust_profiles(self, conn: sqlite3.Connection) -> None:
+        """Create trust_profiles table for per-(repo, template, task_type) trust state (Issue #4.2.1).
+
+        Called from _initialize_database so fresh databases get the table
+        without requiring a migration run.  Idempotent via
+        ``CREATE TABLE IF NOT EXISTS``.
+
+        Columns:
+            id:                     Auto-increment primary key.
+            repo:                   Git repository slug (e.g. "owner/repo").
+            template_id:            Pipeline template identifier.
+            task_type:              Task type string (e.g. "bugfix", "feature").
+            auto_merge_threshold:   Confidence score required for auto-merge.
+            human_review_threshold: Confidence score required to skip human review.
+            trust_score:            Current trust score in [0.0, 1.0].
+            total_runs:             Total pipeline runs attributed to this profile.
+            successful_merges:      Runs auto-merged without revert.
+            regressions:            Regressions detected after auto-merge.
+            reverted_prs:           PRs reverted after auto-merge.
+            last_run_at:            UTC ISO-8601 timestamp of the most-recent run.
+            created_at:             Row creation timestamp.
+            updated_at:             Last-update timestamp.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trust_profiles (
+                id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo                   TEXT    NOT NULL,
+                template_id            TEXT    NOT NULL,
+                task_type              TEXT    NOT NULL,
+                auto_merge_threshold   REAL    NOT NULL DEFAULT 0.85,
+                human_review_threshold REAL    NOT NULL DEFAULT 0.70,
+                trust_score            REAL    NOT NULL DEFAULT 0.5,
+                total_runs             INTEGER NOT NULL DEFAULT 0,
+                successful_merges      INTEGER NOT NULL DEFAULT 0,
+                regressions            INTEGER NOT NULL DEFAULT 0,
+                reverted_prs           INTEGER NOT NULL DEFAULT 0,
+                last_run_at            TEXT,
+                created_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(repo, template_id, task_type)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_trust_profiles_repo_template
+            ON trust_profiles(repo, template_id)
+        """)
+
+    def _create_table_trust_adjustments(self, conn: sqlite3.Connection) -> None:
+        """Create trust_adjustments table for trust-score history (Issue #4.2.1).
+
+        Called from _initialize_database so fresh databases get the table
+        without requiring a migration run.  Idempotent via
+        ``CREATE TABLE IF NOT EXISTS``.
+
+        Columns:
+            id:             Auto-increment primary key.
+            profile_id:     Foreign key to trust_profiles.id.
+            delta:          Score change applied (positive = increase,
+                            negative = decrease).
+            reason:         Human-readable reason string (e.g. "successful_merge",
+                            "regression_detected", "pr_reverted").
+            run_id:         Optional pipeline run_id that triggered this adjustment.
+            score_before:   Trust score before the adjustment.
+            score_after:    Trust score after the adjustment.
+            created_at:     UTC timestamp of this event.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS trust_adjustments (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id   INTEGER NOT NULL,
+                delta        REAL    NOT NULL,
+                reason       TEXT    NOT NULL,
+                run_id       TEXT,
+                score_before REAL    NOT NULL,
+                score_after  REAL    NOT NULL,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(profile_id) REFERENCES trust_profiles(id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_trust_adjustments_profile_id
+            ON trust_adjustments(profile_id, created_at DESC)
+        """)
+
+    def _migration_016_add_trust_tables(self, conn: sqlite3.Connection) -> None:
+        """Add trust_profiles and trust_adjustments tables (Issue #4.2.1).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+        Safe to run on both fresh and existing databases.
+        """
+        self._create_table_trust_profiles(conn)
+        self._create_table_trust_adjustments(conn)
+
     # ------------------------------------------------------------------
     # Failure pattern CRUD (Issue #3.1.3)
     # ------------------------------------------------------------------
@@ -2835,6 +2931,169 @@ class Database:
                 LIMIT ? OFFSET ?
                 """,
                 (limit, offset),
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Trust Profile CRUD (Issue #4.2.1)
+    # ------------------------------------------------------------------
+
+    def upsert_trust_profile(self, profile_data: Dict[str, Any]) -> int:
+        """Insert or update a trust profile row and return the row id.
+
+        Uses an ``INSERT … ON CONFLICT(repo, template_id, task_type) DO UPDATE``
+        strategy so this is safe to call on both first write (insert) and
+        subsequent updates.
+
+        On conflict all mutable columns are overwritten with the supplied
+        values; ``created_at`` is left unchanged (set only at initial insert).
+
+        Args:
+            profile_data: Dict matching the ``TrustProfile`` dataclass fields.
+                          Required keys: ``repo``, ``template_id``,
+                          ``task_type``.  Optional keys default to their DB
+                          column defaults when omitted.
+
+        Returns:
+            The integer ``id`` (primary key) of the inserted or updated row.
+        """
+        now = profile_data.get("updated_at") or datetime.now(timezone.utc).isoformat()
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO trust_profiles
+                    (repo, template_id, task_type,
+                     auto_merge_threshold, human_review_threshold,
+                     trust_score, total_runs, successful_merges,
+                     regressions, reverted_prs, last_run_at,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(repo, template_id, task_type) DO UPDATE SET
+                    auto_merge_threshold   = excluded.auto_merge_threshold,
+                    human_review_threshold = excluded.human_review_threshold,
+                    trust_score            = excluded.trust_score,
+                    total_runs             = excluded.total_runs,
+                    successful_merges      = excluded.successful_merges,
+                    regressions            = excluded.regressions,
+                    reverted_prs           = excluded.reverted_prs,
+                    last_run_at            = excluded.last_run_at,
+                    updated_at             = excluded.updated_at
+                """,
+                (
+                    profile_data["repo"],
+                    profile_data["template_id"],
+                    profile_data["task_type"],
+                    float(profile_data.get("auto_merge_threshold", 0.85)),
+                    float(profile_data.get("human_review_threshold", 0.70)),
+                    float(profile_data.get("trust_score", 0.5)),
+                    int(profile_data.get("total_runs", 0)),
+                    int(profile_data.get("successful_merges", 0)),
+                    int(profile_data.get("regressions", 0)),
+                    int(profile_data.get("reverted_prs", 0)),
+                    profile_data.get("last_run_at"),
+                    profile_data.get("created_at") or now,
+                    now,
+                ),
+            )
+            # lastrowid works for both INSERT and the DO UPDATE path in SQLite ≥ 3.35
+            rowid = cursor.lastrowid
+            if rowid is None:
+                # Fallback: fetch the id via the unique composite key
+                row = conn.execute(
+                    "SELECT id FROM trust_profiles WHERE repo=? AND template_id=? AND task_type=?",
+                    (profile_data["repo"], profile_data["template_id"], profile_data["task_type"]),
+                ).fetchone()
+                rowid = row[0] if row else None
+        return rowid  # type: ignore[return-value]
+
+    def get_trust_profile(
+        self,
+        repo: str,
+        template_id: str,
+        task_type: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the trust profile for a (repo, template_id, task_type) triplet.
+
+        Args:
+            repo:        Git repository slug (e.g. ``"owner/repo"``).
+            template_id: Pipeline template identifier.
+            task_type:   Task type string (e.g. ``"bugfix"``).
+
+        Returns:
+            Dict with all ``trust_profiles`` columns, or ``None`` when no
+            matching row exists.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                """
+                SELECT * FROM trust_profiles
+                WHERE repo = ? AND template_id = ? AND task_type = ?
+                """,
+                (repo, template_id, task_type),
+            )
+            row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def insert_trust_adjustment(self, adjustment_data: Dict[str, Any]) -> int:
+        """Insert a trust adjustment event and return the new row id.
+
+        Args:
+            adjustment_data: Dict matching the ``trust_adjustments`` table
+                             columns.  Required keys: ``profile_id``,
+                             ``delta``, ``reason``, ``score_before``,
+                             ``score_after``.  Optional: ``run_id``,
+                             ``created_at``.
+
+        Returns:
+            The ``id`` (integer primary key) of the newly inserted row.
+        """
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO trust_adjustments
+                    (profile_id, delta, reason, run_id, score_before, score_after, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(adjustment_data["profile_id"]),
+                    float(adjustment_data["delta"]),
+                    adjustment_data["reason"],
+                    adjustment_data.get("run_id"),
+                    float(adjustment_data["score_before"]),
+                    float(adjustment_data["score_after"]),
+                    adjustment_data.get("created_at") or datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            return cursor.lastrowid  # type: ignore[return-value]
+
+    def list_trust_adjustments(
+        self,
+        profile_id: int,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Return trust adjustment events for a profile, newest first.
+
+        Args:
+            profile_id: Primary key of the parent ``trust_profiles`` row.
+            limit:      Maximum rows to return (default ``100``).
+            offset:     Rows to skip for pagination (default ``0``).
+
+        Returns:
+            List of adjustment dicts ordered by ``created_at DESC``.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                """
+                SELECT * FROM trust_adjustments
+                WHERE profile_id = ?
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (profile_id, limit, offset),
             )
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]

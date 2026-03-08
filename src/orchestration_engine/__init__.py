@@ -44,6 +44,10 @@ from .reviewer_calibration import (  # noqa: F401  # Issue #4.1.5
     ReviewerCalibrator,
     CalibrationMetrics,
 )
+from .trust import (  # noqa: F401  # Issue #4.2.1
+    TrustProfile,
+    TrustConfig,
+)
 from .routing import (  # noqa: F401  # Issue #331.2
     RoutingTier,
     RoutingConfig,
@@ -91,6 +95,9 @@ __all__ = [
     # Reviewer calibration (Issue #4.1.5)
     "ReviewerCalibrator",
     "CalibrationMetrics",
+    # Trust profile data model (Issue #4.2.1)
+    "TrustProfile",
+    "TrustConfig",
     # Confidence-based routing (Issue #331.2)
     "RoutingTier",
     "RoutingConfig",
