@@ -3098,6 +3098,40 @@ class Database:
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def list_trust_profiles(self) -> List[Dict[str, Any]]:
+        """Return all trust profile rows, ordered by id ASC.
+
+        Returns:
+            List of dicts, one per ``trust_profiles`` row.  Empty list when no
+            profiles have been created yet.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT * FROM trust_profiles ORDER BY id ASC"
+            )
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def get_trust_profile_by_id(self, profile_id: int) -> Optional[Dict[str, Any]]:
+        """Return a single trust profile row by its integer primary key.
+
+        Args:
+            profile_id: Integer primary key of the ``trust_profiles`` row.
+
+        Returns:
+            Dict with all ``trust_profiles`` columns, or ``None`` when no row
+            matches the given ``profile_id``.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                "SELECT * FROM trust_profiles WHERE id = ?",
+                (profile_id,),
+            )
+            row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
     def close(self) -> None:
         """Close database connections."""
         if hasattr(self._local, 'connection'):

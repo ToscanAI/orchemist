@@ -44,12 +44,16 @@ from .reviewer_calibration import (  # noqa: F401  # Issue #4.1.5
     ReviewerCalibrator,
     CalibrationMetrics,
 )
-from .trust import (  # noqa: F401  # Issue #4.2.1 / #4.2.2
+from .trust import (  # noqa: F401  # Issue #4.2.1 / #4.2.2 / #4.2.4
     TrustProfile,
     TrustConfig,
     TrustCalibrator,
     OUTCOME_SCORES,
     VALID_OUTCOMES,
+    decay_idle_profiles,
+    DEFAULT_DECAY_RATE,
+    DECAY_FLOOR,
+    DECAY_THRESHOLD_DAYS,
 )
 from .routing import (  # noqa: F401  # Issue #331.2
     RoutingTier,
@@ -98,12 +102,16 @@ __all__ = [
     # Reviewer calibration (Issue #4.1.5)
     "ReviewerCalibrator",
     "CalibrationMetrics",
-    # Trust profile data model + calibrator (Issue #4.2.1 / #4.2.2)
+    # Trust profile data model + calibrator + decay (Issue #4.2.1 / #4.2.2 / #4.2.4)
     "TrustProfile",
     "TrustConfig",
     "TrustCalibrator",
     "OUTCOME_SCORES",
     "VALID_OUTCOMES",
+    "decay_idle_profiles",
+    "DEFAULT_DECAY_RATE",
+    "DECAY_FLOOR",
+    "DECAY_THRESHOLD_DAYS",
     # Confidence-based routing (Issue #331.2)
     "RoutingTier",
     "RoutingConfig",
