@@ -1496,6 +1496,84 @@ def _write_summary(
 
 
 # ---------------------------------------------------------------------------
+# Self-healing regression fix dispatch (Issue #429.4)
+# ---------------------------------------------------------------------------
+
+
+def dispatch_regression_fix_safely(
+    regression: Any,
+    db: Any,
+    db_path: Any,
+    fixer: Any,
+) -> Optional[str]:
+    """Gate a regression fix attempt through SafetyGuard then spawn via RegressionFixer.
+
+    This is the authoritative fix-dispatch path for the self-healing chain.
+    It must be called instead of calling :meth:`~regression.RegressionFixer.spawn_fix`
+    directly so that SafetyGuard loop-prevention and exclusion checks are always
+    enforced.
+
+    Steps:
+
+    1. Instantiate :class:`~regression.SafetyGuard` and call
+       :meth:`~regression.SafetyGuard.should_attempt_fix`.
+    2. If the guard blocks the attempt, update the regression status to
+       ``ESCALATED`` and return ``None``.
+    3. If the guard allows the attempt, delegate to
+       :meth:`~regression.RegressionFixer.spawn_fix` and return the run_id.
+
+    All DB failures inside the guard status update are caught and logged so
+    that a DB error never prevents the method from returning cleanly.
+
+    Args:
+        regression: A :class:`~regression.Regression` instance describing the
+                    detected failure.
+        db:         Database instance (used by SafetyGuard for oscillation
+                    checks and by the fixer for regression status updates).
+        db_path:    Filesystem path to the DB file forwarded to the spawned
+                    daemon process via ``--db-path``.  May be ``None`` when
+                    running in-memory.
+        fixer:      A :class:`~regression.RegressionFixer` instance used to
+                    launch the fix pipeline subprocess.
+
+    Returns:
+        The ``run_id`` string of the spawned fix pipeline, or ``None`` when
+        the SafetyGuard blocked the attempt or when the pipeline launch failed.
+    """
+    from .regression import SafetyGuard, RegressionStatus  # noqa: PLC0415
+
+    guard = SafetyGuard()
+    allowed, reason = guard.should_attempt_fix(regression, db)
+    if not allowed:
+        logger.warning(
+            "dispatch_regression_fix_safely: SafetyGuard blocked fix attempt "
+            "for regression %s: %s",
+            regression.id,
+            reason,
+        )
+        try:
+            db.update_regression(
+                regression.id,
+                status=RegressionStatus.ESCALATED.value,
+            )
+        except Exception as _ue:
+            logger.warning(
+                "dispatch_regression_fix_safely: could not update regression %s "
+                "to ESCALATED (non-fatal): %s",
+                regression.id,
+                _ue,
+            )
+        return None
+
+    logger.info(
+        "dispatch_regression_fix_safely: SafetyGuard approved fix attempt "
+        "for regression %s — spawning fix pipeline",
+        regression.id,
+    )
+    return fixer.spawn_fix(regression, db, db_path)
+
+
+# ---------------------------------------------------------------------------
 # __main__ entry point
 # ---------------------------------------------------------------------------
 
