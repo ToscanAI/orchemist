@@ -815,9 +815,18 @@ def _compute_and_dispatch_routing(
             confidence_result.confidence_level.value,
         )
 
-        # 4. Evaluate routing (use template config if provided, else default)
+        # 4. Evaluate routing (use template config if provided, else default).
+        # Call .evaluate() instead of .route() so that trust-profile-based
+        # dynamic thresholds are consulted when a post-bootstrap profile exists
+        # for this (repo, template_id, task_type) triplet (Issue #4.2.3).
         _routing_cfg = routing_config or DEFAULT_ROUTING_CONFIG
-        decision = RoutingEngine(_routing_cfg).route(confidence_result)
+        decision = RoutingEngine(_routing_cfg).evaluate(
+            confidence_result,
+            repo=repo,
+            template_id=template_id,
+            task_type=task_type,
+            db=db,
+        )
 
         logger.info(
             "Routing decision for run '%s': tier='%s' strategy='%s' score=%.4f",
@@ -873,10 +882,10 @@ def _compute_and_dispatch_routing(
                 )
                 logger.info(
                     "Trust calibration updated for run '%s': repo=%r template=%r "
-                    "task_type=%r new_score=%.4f threshold=%.4f",
+                    "task_type=%r new_score=%s threshold=%s",
                     run_id, repo, template_id, task_type or "general",
-                    _trust_result["new_score"],
-                    _trust_result["threshold"],
+                    _trust_result.get("new_score"),
+                    _trust_result.get("threshold"),
                 )
             except Exception as _trust_exc:
                 logger.warning(

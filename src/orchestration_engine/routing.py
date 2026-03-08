@@ -312,10 +312,17 @@ class RoutingEngine:
         Returns:
             A :class:`RoutingDecision` describing the matched tier and action.
         """
+        # Normalize empty task_type to "general" so it matches the convention
+        # used in daemon.py (which defaults empty task_type to "general" when
+        # storing trust profiles). Without this, an empty task_type would fail
+        # the truthiness check and prevent trust profile lookup even when a
+        # "general" profile has been accumulated.
+        _effective_task_type = task_type or "general"
+
         # Attempt trust-profile-based dynamic routing when all params provided
-        if repo and template_id and task_type and db is not None:
+        if repo and template_id and db is not None:
             try:
-                profile = db.get_trust_profile(repo, template_id, task_type)
+                profile = db.get_trust_profile(repo, template_id, _effective_task_type)
                 if profile is not None:
                     successful_merges = int(profile.get("successful_merges", 0))
                     if successful_merges >= bootstrap_threshold:
@@ -328,7 +335,7 @@ class RoutingEngine:
                         logger.debug(
                             "evaluate: using trust-profile thresholds for %s/%s/%s "
                             "(auto_merge=%.4f, human_review=%.4f, merges=%d)",
-                            repo, template_id, task_type,
+                            repo, template_id, _effective_task_type,
                             auto_merge_thr, human_review_thr, successful_merges,
                         )
                         return RoutingEngine(trust_config).route(confidence_result)
@@ -336,7 +343,7 @@ class RoutingEngine:
                 logger.warning(
                     "evaluate: trust profile lookup failed for %s/%s/%s "
                     "(falling back to default routing): %s",
-                    repo, template_id, task_type, exc,
+                    repo, template_id, _effective_task_type, exc,
                 )
 
         return self.route(confidence_result)
@@ -451,6 +458,25 @@ def _build_trust_routing_config(
     Returns:
         A :class:`RoutingConfig` with four tiers.
     """
+    # Validate inputs explicitly so callers (including the try/except in
+    # evaluate()) receive a descriptive ValueError rather than a confusing
+    # downstream RoutingTier construction error.
+    if not (0.0 <= auto_merge_threshold <= 1.0):
+        raise ValueError(
+            f"_build_trust_routing_config: auto_merge_threshold must be in [0, 1], "
+            f"got {auto_merge_threshold}"
+        )
+    if not (0.0 <= human_review_threshold <= 1.0):
+        raise ValueError(
+            f"_build_trust_routing_config: human_review_threshold must be in [0, 1], "
+            f"got {human_review_threshold}"
+        )
+    if auto_merge_threshold <= human_review_threshold:
+        raise ValueError(
+            f"_build_trust_routing_config: auto_merge_threshold ({auto_merge_threshold}) "
+            f"must be strictly greater than human_review_threshold ({human_review_threshold})"
+        )
+
     _RETRY_FLOOR = 0.50
 
     tiers: List[RoutingTier] = [

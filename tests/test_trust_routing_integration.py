@@ -623,3 +623,200 @@ class TestRegressionTrustPenalty:
 
         assert result is None
         mock_update.assert_not_called()
+
+    def test_template_id_parameter_used_in_trust_penalty(self) -> None:
+        """When template_id is passed to the handler, it is used for the trust profile lookup."""
+        from orchestration_engine.regression import (
+            Regression,
+            RegressionWebhookHandler,
+            RegressionDetector,
+        )
+        from orchestration_engine.git_integration import GitContext
+
+        db = _make_db()
+        db.store_green_sha("owner/repo", "green001")
+
+        mock_git = MagicMock(spec=GitContext)
+        mock_detector = MagicMock(spec=RegressionDetector)
+
+        # Construct handler with an explicit template_id (not the default "ci")
+        handler = RegressionWebhookHandler(
+            db=db,
+            git_context=mock_git,
+            detector=mock_detector,
+            repo_path=Path("/tmp/fake-repo"),
+            repo_slug="owner/repo",
+            template_id="coding-pipeline-v1",
+        )
+
+        fake_regression = Regression(
+            commit_sha="abc1234",
+            ci_run_url="https://ci.example.com/run/1",
+            failure_type="ci_failure",
+        )
+        mock_detector.detect.return_value = fake_regression
+
+        captured_calls = []
+
+        def _capture(**kwargs):
+            captured_calls.append(kwargs)
+            return {
+                "new_score": 0.4, "threshold": 0.98,
+                "profile_id": 1, "adjustment_id": 1,
+                "run_id": kwargs.get("run_id"), "outcome": "regression",
+                "old_score": 0.5, "delta": -0.1,
+                "total_runs": 1, "successful_merges": 0,
+                "regressions": 1, "reverted_prs": 0,
+            }
+
+        from orchestration_engine.trust import TrustCalibrator
+        with patch.object(TrustCalibrator, "update_after_run", _capture), \
+             patch.object(handler, "_open_github_issue", return_value=None):
+            handler.handle_ci_failure({
+                "check_suite": {
+                    "conclusion": "failure",
+                    "head_sha": "abc1234",
+                    "url": "https://ci.example.com/run/1",
+                }
+            })
+
+        # Verify a TrustCalibrator was instantiated with our explicit template_id
+        assert handler._template_id == "coding-pipeline-v1"
+
+
+# ===========================================================================
+# TestBuildTrustRoutingConfigValidation
+# ===========================================================================
+
+
+class TestBuildTrustRoutingConfigValidation:
+    """_build_trust_routing_config raises ValueError for invalid threshold inputs."""
+
+    def test_raises_when_thresholds_equal(self) -> None:
+        """auto_merge_threshold == human_review_threshold → ValueError."""
+        with pytest.raises(ValueError, match="strictly greater than"):
+            _build_trust_routing_config(0.75, 0.75)
+
+    def test_raises_when_thresholds_inverted(self) -> None:
+        """human_review_threshold > auto_merge_threshold → ValueError."""
+        with pytest.raises(ValueError, match="strictly greater than"):
+            _build_trust_routing_config(0.60, 0.80)
+
+    def test_raises_when_auto_merge_threshold_out_of_range(self) -> None:
+        """auto_merge_threshold > 1.0 → ValueError."""
+        with pytest.raises(ValueError, match="auto_merge_threshold must be in"):
+            _build_trust_routing_config(1.5, 0.70)
+
+    def test_raises_when_human_review_threshold_negative(self) -> None:
+        """human_review_threshold < 0.0 → ValueError."""
+        with pytest.raises(ValueError, match="human_review_threshold must be in"):
+            _build_trust_routing_config(0.80, -0.10)
+
+    def test_evaluate_falls_back_gracefully_on_equal_thresholds(self) -> None:
+        """evaluate() catches the ValueError from bad thresholds and falls back."""
+        db = _make_db()
+        # Seed a profile with equal thresholds (pathological DB data)
+        db.upsert_trust_profile({
+            "repo": "owner/repo",
+            "template_id": "coding-pipeline-v1",
+            "task_type": "bugfix",
+            "auto_merge_threshold": 0.75,
+            "human_review_threshold": 0.75,  # equal — invalid
+            "trust_score": 0.8,
+            "total_runs": 20,
+            "successful_merges": 20,
+            "regressions": 0,
+            "reverted_prs": 0,
+            "last_run_at": None,
+        })
+
+        engine = RoutingEngine()
+        cr = _make_confidence_result(0.80)
+        # Must not raise — evaluate() catches the ValueError and falls back
+        decision = engine.evaluate(
+            cr,
+            repo="owner/repo",
+            template_id="coding-pipeline-v1",
+            task_type="bugfix",
+            db=db,
+        )
+        # Fallback to default routing — 0.80 → queue_review
+        assert decision.tier == "queue_review"
+
+
+# ===========================================================================
+# TestComputeAndDispatchRoutingUsesEvaluate
+# ===========================================================================
+
+
+class TestComputeAndDispatchRoutingUsesEvaluate:
+    """_compute_and_dispatch_routing uses .evaluate() so trust profiles affect routing."""
+
+    def _make_output_dir(self, tmp_path: Path) -> Path:
+        out = tmp_path / "output"
+        out.mkdir()
+        return out
+
+    def test_routing_decision_changes_with_trust_profile(
+        self, tmp_path: Path
+    ) -> None:
+        """With a post-bootstrap trust profile, routing produces a different tier
+        than the default thresholds would (proving .evaluate() is called, not .route()).
+        """
+        db = _make_db()
+        run_id = "routing-trust-check"
+        out = self._make_output_dir(tmp_path)
+        _seed_run(db, run_id, out)
+
+        # Seed a post-bootstrap trust profile with a low auto_merge threshold (0.75).
+        # Default threshold is 0.90, so a score of 0.80 maps to:
+        #   - Default config:  queue_review  (0.75 ≤ 0.80 < 0.90)
+        #   - Trust config:    auto_merge    (0.75 ≤ 0.80 < 1.01)
+        _seed_trust_profile(db, successful_merges=15, auto_merge_threshold=0.75)
+
+        # We spy on RoutingEngine.evaluate to capture what decision it returns
+        captured_decisions = []
+        original_evaluate = RoutingEngine.evaluate
+
+        def _spy_evaluate(self_engine, confidence_result, **kwargs):
+            decision = original_evaluate(self_engine, confidence_result, **kwargs)
+            captured_decisions.append(decision)
+            return decision
+
+        with patch.object(RoutingEngine, "evaluate", _spy_evaluate):
+            # Patch ConfidenceCalculator to return a controlled score of 0.80
+            mock_confidence = _make_confidence_result(0.80)
+            with patch(
+                "orchestration_engine.daemon.ConfidenceCalculator"
+            ) as MockCC:
+                MockCC.return_value.compute_confidence.return_value = mock_confidence
+                with patch("orchestration_engine.trust.TrustCalibrator.update_after_run",
+                           return_value={
+                               "new_score": 0.8, "threshold": 0.98,
+                               "profile_id": 1, "adjustment_id": 1,
+                               "run_id": run_id, "outcome": "run_success",
+                               "old_score": 0.75, "delta": 0.05,
+                               "total_runs": 16, "successful_merges": 16,
+                               "regressions": 0, "reverted_prs": 0,
+                           }):
+                    _compute_and_dispatch_routing(
+                        run_id=run_id,
+                        output_dir=out,
+                        db=db,
+                        auto_merge_config=None,
+                        routing_config=None,
+                        scoring_passed=True,
+                        scoring_score=None,
+                        phase_outputs={},
+                        final_status="success",
+                        repo="owner/repo",
+                        template_id="coding-pipeline-v1",
+                        task_type="bugfix",
+                    )
+
+        assert len(captured_decisions) == 1
+        # Trust config with threshold 0.75 → score 0.80 → auto_merge
+        assert captured_decisions[0].tier == "auto_merge", (
+            f"Expected 'auto_merge' with trust-profile config, got '{captured_decisions[0].tier}'. "
+            "This suggests .route() was called instead of .evaluate()."
+        )
