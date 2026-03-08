@@ -65,11 +65,14 @@ from .routing import (  # noqa: F401  # Issue #331.2
     RoutingEngine,
     DEFAULT_ROUTING_CONFIG,
 )
-from .issue_automation import (  # noqa: F401  # Issue #5.1.1
+from .issue_automation import (  # noqa: F401  # Issue #5.1.1 / #5.1.2
     IssueClassifier,
     IssueClassification,
     VALID_CLASSIFICATION_TYPES,
     CLASSIFICATION_TEMPLATE_MAP,
+    DEFAULT_TEMPLATE_MAPPING,
+    TemplateSelector,
+    InputExtractor,
 )
 
 __all__ = [
@@ -135,4 +138,8 @@ __all__ = [
     "IssueClassification",
     "VALID_CLASSIFICATION_TYPES",
     "CLASSIFICATION_TEMPLATE_MAP",
+    # Template selector + input extractor (Issue #5.1.2)
+    "DEFAULT_TEMPLATE_MAPPING",
+    "TemplateSelector",
+    "InputExtractor",
 ]
