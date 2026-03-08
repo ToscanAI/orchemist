@@ -1090,6 +1090,34 @@ def _dispatch_routing_action(
             )
             try:
                 from .notifications import NotificationDispatcher
+                from .git_integration import GitContext as _GitContextHR
+
+                # Enrich notification with issue context from the gate file
+                _gate_data = _GitContextHR.load_gate(run_id) or {}
+                _issue_number = _gate_data.get("issue_number")
+                _pr_url = _gate_data.get("pr_url", "")
+
+                # Extract a one-line summary from the last completed phase output
+                _summary = ""
+                for _pid, _pout in reversed(list(phase_outputs.items())):
+                    _raw = _extract_output_text(_pout).strip()
+                    if _raw:
+                        # Take first non-empty line, truncate to 120 chars
+                        for _line in _raw.splitlines():
+                            _line = _line.strip()
+                            if _line:
+                                _summary = _line[:120]
+                                break
+                    if _summary:
+                        break
+
+                # Confidence level string (e.g. "medium")
+                _confidence = ""
+                try:
+                    _confidence = confidence_result.confidence_level.value
+                except AttributeError:
+                    pass
+
                 dispatcher = NotificationDispatcher.from_env()
                 dispatcher.dispatch(
                     event="human_review",
@@ -1097,6 +1125,10 @@ def _dispatch_routing_action(
                     tier=decision.tier,
                     score=decision.score,
                     justification=getattr(confidence_result, "explanation", ""),
+                    issue_number=_issue_number,
+                    summary=_summary,
+                    confidence=_confidence,
+                    pr_url=_pr_url,
                 )
             except Exception as _ne:
                 logger.warning(
