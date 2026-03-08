@@ -2293,4 +2293,172 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             )
         return JSONResponse(result)
 
+    # ------------------------------------------------------------------
+    # GitHub Issues Webhook (Issue #5.1.3)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/v1/github/issues", status_code=202)
+    async def handle_github_issues(request: Request) -> JSONResponse:
+        """Receive GitHub ``issues`` webhook events and launch pipelines automatically.
+
+        Triggered when a GitHub issue is **opened** or **labeled** with the
+        ``orchemist`` trigger label (configurable via the ``ISSUE_TRIGGER_LABEL``
+        environment variable, default ``"orchemist"``).
+
+        Flow:
+
+        1. Validate that the ``X-GitHub-Event`` header is ``"issues"``.
+        2. Filter for ``action == "opened"`` or ``action == "labeled"``.
+        3. Check that the orchemist trigger label is present/applied.
+        4. **Deduplication** — call
+           :meth:`~orchestration_engine.db.Database.get_active_issue_run`;
+           skip if an active pipeline run already exists for this issue.
+        5. Classify, select template, extract inputs, and launch via
+           :class:`~orchestration_engine.issue_automation.IssueAutomation`.
+        6. Post a GitHub comment summarising the launched run via
+           :func:`~orchestration_engine.issue_automation.post_github_comment`.
+
+        Request headers:
+            X-GitHub-Event (str): Must be ``"issues"`` (other values are ignored).
+
+        Returns:
+            - **200** when the event was ignored (wrong event type, wrong
+              action, missing label, or duplicate run already active).
+            - **202** when the pipeline was accepted and launched (or attempted).
+            - **400** when the request body is not valid JSON or required
+              payload fields are missing.
+        """
+        from orchestration_engine.issue_automation import (
+            IssueAutomation,
+            IssueClassifier,
+            TemplateSelector,
+            InputExtractor,
+            post_github_comment,
+        )
+
+        # 1. Validate event type header
+        event_type = request.headers.get("X-GitHub-Event", "")
+        if event_type != "issues":
+            return JSONResponse(
+                {"status": "ignored", "reason": "not_issues_event"},
+                status_code=200,
+            )
+
+        # 2. Parse JSON body
+        try:
+            body_bytes = await request.body()
+            payload: Dict[str, Any] = json.loads(body_bytes) if body_bytes else {}
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid JSON in request body: {exc}",
+            )
+
+        action = payload.get("action", "")
+
+        # 3. Filter for relevant actions
+        if action not in ("opened", "labeled"):
+            return JSONResponse(
+                {"status": "ignored", "reason": f"action_{action}_not_relevant"},
+                status_code=200,
+            )
+
+        # 4. Extract issue and repo from payload
+        issue = payload.get("issue", {}) or {}
+        issue_number = issue.get("number")
+        if not issue_number:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing issue.number in webhook payload",
+            )
+
+        repo_data = payload.get("repository", {}) or {}
+        repo = repo_data.get("full_name", "")
+        if not repo:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing repository.full_name in webhook payload",
+            )
+
+        # 5. Check for orchemist trigger label
+        trigger_label = os.environ.get("ISSUE_TRIGGER_LABEL", "orchemist")
+
+        if action == "labeled":
+            # For "labeled" action, the label that was just applied is in payload["label"]
+            applied_label = (payload.get("label") or {}).get("name", "")
+            if applied_label != trigger_label:
+                return JSONResponse(
+                    {"status": "ignored", "reason": "label_not_trigger"},
+                    status_code=200,
+                )
+        elif action == "opened":
+            # For "opened" action, check the issue already carries the trigger label
+            issue_labels = [
+                lbl.get("name", "") for lbl in (issue.get("labels") or [])
+            ]
+            if trigger_label not in issue_labels:
+                return JSONResponse(
+                    {"status": "ignored", "reason": "trigger_label_absent"},
+                    status_code=200,
+                )
+
+        # 6. Deduplication — skip if there is already an active pipeline for this issue
+        db = Database(Path(effective_db_path))
+        active_run = db.get_active_issue_run(issue_number, repo)
+        if active_run is not None:
+            return JSONResponse(
+                {
+                    "status": "skipped",
+                    "reason": "active_run_exists",
+                    "run_id": active_run.get("run_id"),
+                },
+                status_code=200,
+            )
+
+        # 7. Build automation and process
+        classifier = IssueClassifier()   # stub mode; replace executor via subclass/config
+        selector = TemplateSelector()
+        extractor = InputExtractor()
+        automation = IssueAutomation(
+            classifier=classifier,
+            selector=selector,
+            extractor=extractor,
+        )
+
+        title = issue.get("title", "") or ""
+        body_text = issue.get("body", "") or ""
+        issue_label_names = [
+            lbl.get("name", "") for lbl in (issue.get("labels") or [])
+        ]
+
+        engine_instance = TemplateEngine()
+        gw_url = os.environ.get("OPENCLAW_GATEWAY_URL")
+
+        result = automation.process(
+            issue_number=issue_number,
+            repo=repo,
+            title=title,
+            body=body_text,
+            labels=issue_label_names,
+            db=db,
+            launcher=_launch_pipeline_from_trigger,
+            template_resolver=_resolve_template,
+            template_engine=engine_instance,
+            mode="standalone",
+            gateway_url=gw_url,
+        )
+
+        # 8. Post GitHub comment (best-effort — errors are logged, not raised)
+        comment_body = result.get("comment_body", "")
+        comment_url: Optional[str] = None
+        if comment_body:
+            comment_url = post_github_comment(
+                repo=repo,
+                issue_number=issue_number,
+                body=comment_body,
+            )
+        result["comment_url"] = comment_url
+
+        return JSONResponse(result, status_code=202)
+
     return app
