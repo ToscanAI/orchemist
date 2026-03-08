@@ -65,7 +65,7 @@ from .routing import (  # noqa: F401  # Issue #331.2
     RoutingEngine,
     DEFAULT_ROUTING_CONFIG,
 )
-from .issue_automation import (  # noqa: F401  # Issue #5.1.1 / #5.1.2
+from .issue_automation import (  # noqa: F401  # Issue #5.1.1 / #5.1.2 / #5.1.3
     IssueClassifier,
     IssueClassification,
     VALID_CLASSIFICATION_TYPES,
@@ -73,6 +73,8 @@ from .issue_automation import (  # noqa: F401  # Issue #5.1.1 / #5.1.2
     DEFAULT_TEMPLATE_MAPPING,
     TemplateSelector,
     InputExtractor,
+    IssueAutomation,
+    post_github_comment,
 )
 
 __all__ = [
@@ -142,4 +144,7 @@ __all__ = [
     "DEFAULT_TEMPLATE_MAPPING",
     "TemplateSelector",
     "InputExtractor",
+    # Issue automation orchestrator + GitHub comment utility (Issue #5.1.3)
+    "IssueAutomation",
+    "post_github_comment",
 ]

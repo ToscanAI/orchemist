@@ -2441,6 +2441,49 @@ class Database:
             )
             return cursor.rowcount > 0
 
+    def get_active_issue_run(
+        self,
+        issue_number: int,
+        repo: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the first active ``issue_pipeline_map`` row for *(issue_number, repo)*.
+
+        An "active" row is one whose linked ``pipeline_run.status`` is **not**
+        in :data:`TERMINAL_STATUSES`.  Rows with ``run_id IS NULL`` (classified
+        but not yet launched) are excluded — they do not constitute an active
+        run and should not block deduplication.
+
+        This is used by the GitHub issues webhook handler to prevent launching
+        a duplicate pipeline when one is already running for the same issue.
+
+        Args:
+            issue_number: GitHub issue number.
+            repo:         Repository slug (e.g. ``"owner/repo"``).
+
+        Returns:
+            Dict with all ``issue_pipeline_map`` columns for the first matching
+            row, or ``None`` when no active run exists.
+        """
+        terminal_list = list(TERMINAL_STATUSES)
+        placeholders = ",".join("?" * len(terminal_list))
+        sql = f"""
+            SELECT ipm.*
+            FROM issue_pipeline_map ipm
+            INNER JOIN pipeline_runs pr ON ipm.run_id = pr.run_id
+            WHERE ipm.issue_number = ?
+              AND ipm.repo = ?
+              AND pr.status NOT IN ({placeholders})
+            LIMIT 1
+        """
+        params: List[Any] = [issue_number, repo] + terminal_list
+
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(sql, params)
+            row = cursor.fetchone()
+
+        return self._row_to_dict(row) if row else None
+
     # ------------------------------------------------------------------
     # Failure pattern CRUD (Issue #3.1.3)
     # ------------------------------------------------------------------
