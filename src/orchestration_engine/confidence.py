@@ -5,18 +5,34 @@ ConfidenceCalculator that aggregates multiple signals from task result JSON
 files in a pipeline output directory into a single composite score.
 
 Signal sources (derived from task result files):
-    llm_judge          – Average confidence of review/judge task types.
-    test_pass_rate     – Ratio of non-review tasks whose state == "success".
-    review_quality     – Average confidence across ALL tasks.
-    change_complexity  – Inverse of task count: 1 / (1 + num_task_files).
-    review_catch_value – Value delivered by review phase (verified fixes,
-                         severity-weighted catch rate, false-positive penalty).
-                         Only included when review_outcomes are provided.
-                         See :mod:`~orchestration_engine.review_catch_value`.
-    audit_catch_rate   – Fraction of audit issues that the original reviewer
-                         also caught (reviewer_accuracy_score from AuditPhase).
-                         Only included when audit_results are provided.
-                         See :mod:`~orchestration_engine.audit`.
+    llm_judge              – Average confidence of review/judge task types.
+    test_pass_rate         – Ratio of non-review tasks whose state == "success".
+    review_quality         – Average confidence across ALL tasks.
+    change_complexity      – Inverse of task count: 1 / (1 + num_task_files).
+    review_catch_value     – Value delivered by review phase (verified fixes,
+                             severity-weighted catch rate, false-positive
+                             penalty).  Only included when review_outcomes are
+                             provided.  See :mod:`~orchestration_engine.review_catch_value`.
+    adversarial_audit      – Fraction of audit issues that the original reviewer
+                             also caught (reviewer_accuracy_score from
+                             AuditPhase).  Only included when audit_results are
+                             provided.  See :mod:`~orchestration_engine.audit`.
+    historical_calibration – Longitudinal reviewer accuracy from
+                             ReviewerCalibrator.  Only included when passed via
+                             the ``extra_signals`` parameter.
+
+Two weight tables are provided:
+    DEFAULT_WEIGHTS    – v1 weights for backward compatibility.
+    DEFAULT_WEIGHTS_V2 – v2 weights that give equal prominence to
+                         ``llm_judge`` and ``test_pass_rate``, and introduce
+                         the ``historical_calibration`` signal.
+
+Extra signals:
+    Callers may inject pre-computed :class:`ConfidenceSignal` instances (e.g.
+    a ``historical_calibration`` signal produced by
+    :class:`~reviewer_calibration.ReviewerCalibrator`) via the ``extra_signals``
+    parameter of :meth:`ConfidenceCalculator.compute_confidence`.  These are
+    appended to the standard signals before the weighted average is computed.
 
 Signal sources (derived from ReviewOutcome DB records — Issue #4.1.3):
     review_catch_value – Normalised score reflecting how much real value the
@@ -51,15 +67,32 @@ if TYPE_CHECKING:
     from .audit import AuditResult  # noqa: F401
 
 # ---------------------------------------------------------------------------
-# Default signal weights (sum to 1.0)
+# Default signal weights (v1 — sum to 1.0 for the six standard signals)
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "llm_judge": 0.30,         # Updated in Issue #4.1.4: 0.35 → 0.30
-    "test_pass_rate": 0.20,    # Updated in Issue #4.1.4: 0.25 → 0.20
+    "llm_judge": 0.30,              # Updated in Issue #4.1.4: 0.35 → 0.30
+    "test_pass_rate": 0.20,         # Updated in Issue #4.1.4: 0.25 → 0.20
     "review_quality": 0.15,
     "change_complexity": 0.10,
-    "review_catch_value": 0.15,  # Issue #4.1.3
-    "audit_catch_rate": 0.10,    # Issue #4.1.4 — adversarial audit accuracy
+    "review_catch_value": 0.15,     # Issue #4.1.3
+    "adversarial_audit": 0.10,      # Issue #4.1.4 — renamed from audit_catch_rate
+    "historical_calibration": 0.05, # Issue #4.1.6 — only active via extra_signals
+}
+
+# ---------------------------------------------------------------------------
+# v2 signal weights (Issue #4.1.6)
+# Equal llm_judge / test_pass_rate split; adds historical_calibration signal.
+# Weights are renormalised during aggregation based on which signals are present,
+# so it is safe for the table to sum to 1.0 across all *possible* signals even
+# though not all are always emitted.
+# ---------------------------------------------------------------------------
+DEFAULT_WEIGHTS_V2: dict[str, float] = {
+    "llm_judge": 0.25,              # Issue #4.1.6: equal weight with test_pass_rate
+    "test_pass_rate": 0.25,         # Issue #4.1.6: raised from 0.20
+    "review_catch_value": 0.20,     # Issue #4.1.6: raised from 0.15
+    "adversarial_audit": 0.15,      # Issue #4.1.6: raised from 0.10
+    "change_complexity": 0.10,      # Issue #4.1.6: unchanged
+    "historical_calibration": 0.05, # Issue #4.1.6: new signal via extra_signals
 }
 
 
@@ -184,6 +217,7 @@ class ConfidenceCalculator:
         review_outcomes: Optional[list[dict[str, Any]]] = None,
         audit_results: Optional[list[dict[str, Any]]] = None,
         calibration_outcomes: Optional[list[dict[str, Any]]] = None,
+        extra_signals: Optional[list["ConfidenceSignal"]] = None,
     ) -> ConfidenceResult:
         """Aggregate signals from task result files in *output_dir*.
 
@@ -194,7 +228,7 @@ class ConfidenceCalculator:
         omitted and the remaining signals are re-normalised accordingly.
 
         When *audit_results* is a non-empty list of AuditResult dicts (as
-        returned by ``AuditResult.to_dict()``), an ``audit_catch_rate`` signal
+        returned by ``AuditResult.to_dict()``), an ``adversarial_audit`` signal
         is computed from the average ``reviewer_accuracy_score`` across all
         provided audit results.  If *audit_results* is ``None`` or empty the
         signal is omitted.
@@ -207,17 +241,29 @@ class ConfidenceCalculator:
         sum to 1.0.  When *calibration_outcomes* is ``None`` or empty, static
         ``DEFAULT_WEIGHTS`` are used unchanged.
 
+        When *extra_signals* is a non-empty list of pre-computed
+        :class:`ConfidenceSignal` instances, they are appended to the standard
+        signal list before the weighted average is computed.  This allows
+        callers to inject additional signals (e.g. a ``historical_calibration``
+        signal produced by :class:`~reviewer_calibration.ReviewerCalibrator`)
+        without modifying this method.  Each extra signal's ``weight`` is used
+        as-is; the aggregation step re-normalises across all present signals.
+
         Args:
             output_dir:            Path to the pipeline output directory.
             review_outcomes:       Optional list of ReviewOutcome row dicts from
                                    the ``review_outcomes`` DB table (Issue #4.1.3).
             audit_results:         Optional list of AuditResult dicts (as returned
                                    by ``AuditResult.to_dict()``).  Used to compute
-                                   the ``audit_catch_rate`` signal (Issue #4.1.4).
+                                   the ``adversarial_audit`` signal (Issue #4.1.4).
             calibration_outcomes:  Optional list of ReviewOutcome dicts used to
                                    compute dynamic weights via ReviewerCalibrator.
                                    Typically the last 500 outcomes from the DB
                                    (Issue #4.1.5).
+            extra_signals:         Optional list of pre-computed
+                                   :class:`ConfidenceSignal` instances to append
+                                   before computing the weighted average
+                                   (Issue #4.1.6).
 
         Returns:
             A populated ConfidenceResult.
@@ -386,9 +432,10 @@ class ConfidenceCalculator:
             signals.append(rcv_calc.compute(review_outcomes))
 
         # ------------------------------------------------------------------
-        # Signal: audit_catch_rate  (Issue #4.1.4 / #4.1.6)
-        # Only emitted when audit_results is a non-empty list.
-        # Computes the average reviewer_accuracy_score across all audit results.
+        # Signal: adversarial_audit  (Issue #4.1.4 / #4.1.6)
+        # Renamed from audit_catch_rate.  Only emitted when audit_results is
+        # a non-empty list.  Computes the average reviewer_accuracy_score
+        # across all audit results.
         # ------------------------------------------------------------------
         if audit_results:
             accuracy_scores = [
@@ -399,10 +446,10 @@ class ConfidenceCalculator:
             if accuracy_scores:
                 avg_accuracy = sum(accuracy_scores) / len(accuracy_scores)
                 acr_weight = _eff_weights.get(
-                    "audit_catch_rate", DEFAULT_WEIGHTS["audit_catch_rate"]
+                    "adversarial_audit", DEFAULT_WEIGHTS["adversarial_audit"]
                 )
                 signals.append(ConfidenceSignal(
-                    name="audit_catch_rate",
+                    name="adversarial_audit",
                     value=avg_accuracy,
                     weight=acr_weight,
                     raw_value={
@@ -411,6 +458,20 @@ class ConfidenceCalculator:
                     },
                     source=f"{len(accuracy_scores)} audit result(s)",
                 ))
+
+        # ------------------------------------------------------------------
+        # Extra signals  (Issue #4.1.6)
+        # Caller-provided pre-computed signals (e.g. historical_calibration).
+        # Appended after all standard signals so they participate in the same
+        # re-normalised weighted average without special-casing.
+        # ------------------------------------------------------------------
+        if extra_signals:
+            signals.extend(extra_signals)
+            logger.debug(
+                "compute_confidence: appended %d extra signal(s): %s",
+                len(extra_signals),
+                [s.name for s in extra_signals],
+            )
 
         composite = self._weighted_average(signals)
         level = _score_to_level(composite)

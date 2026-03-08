@@ -15,7 +15,7 @@ Covers:
 - Empty review outcome (no issues, no verdict)
 - parse_review_output reuse (via real parser, no mock needed)
 - Module exports via __init__.py
-- DEFAULT_WEIGHTS includes audit_catch_rate
+- DEFAULT_WEIGHTS includes adversarial_audit (renamed from audit_catch_rate in Issue #4.1.6)
 
 All tests are independent — no shared mutable state, no real LLM calls.
 """
@@ -680,15 +680,28 @@ class TestAuditResultPropagation:
 
 
 class TestDefaultWeightsAuditCatchRate:
-    def test_audit_catch_rate_in_default_weights(self):
-        assert "audit_catch_rate" in DEFAULT_WEIGHTS
+    """Issue #4.1.6: audit_catch_rate renamed to adversarial_audit in DEFAULT_WEIGHTS."""
 
-    def test_audit_catch_rate_value(self):
-        assert DEFAULT_WEIGHTS["audit_catch_rate"] == pytest.approx(0.10)
+    def test_adversarial_audit_in_default_weights(self):
+        assert "adversarial_audit" in DEFAULT_WEIGHTS
 
-    def test_weights_sum_to_one(self):
+    def test_adversarial_audit_value(self):
+        assert DEFAULT_WEIGHTS["adversarial_audit"] == pytest.approx(0.10)
+
+    def test_audit_catch_rate_not_in_default_weights(self):
+        """Old key must be absent — renamed to adversarial_audit in Issue #4.1.6."""
+        assert "audit_catch_rate" not in DEFAULT_WEIGHTS
+
+    def test_historical_calibration_in_default_weights(self):
+        """Issue #4.1.6: historical_calibration weight entry added to DEFAULT_WEIGHTS."""
+        assert "historical_calibration" in DEFAULT_WEIGHTS
+        assert DEFAULT_WEIGHTS["historical_calibration"] == pytest.approx(0.05)
+
+    def test_weights_sum_within_expected_range(self):
+        # DEFAULT_WEIGHTS now includes historical_calibration (0.05) which is
+        # only emitted via extra_signals; weights sum slightly above 1.0.
         total = sum(DEFAULT_WEIGHTS.values())
-        assert total == pytest.approx(1.0, abs=1e-9)
+        assert 1.0 <= total <= 1.1
 
     def test_all_expected_keys_present(self):
         expected_keys = {
@@ -697,7 +710,8 @@ class TestDefaultWeightsAuditCatchRate:
             "review_quality",
             "change_complexity",
             "review_catch_value",
-            "audit_catch_rate",
+            "adversarial_audit",       # renamed from audit_catch_rate in Issue #4.1.6
+            "historical_calibration",  # added in Issue #4.1.6
         }
         assert expected_keys.issubset(set(DEFAULT_WEIGHTS.keys()))
 
