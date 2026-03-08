@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
+from orchestration_engine.notifications import NotificationDispatcher
+
 if TYPE_CHECKING:
     from .db import Database
 
@@ -1008,10 +1010,14 @@ class IssueAutomation:
         classifier: "IssueClassifier",
         selector: "TemplateSelector",
         extractor: "InputExtractor",
+        confidence_threshold: float = 0.70,
+        notification_dispatcher: Optional[NotificationDispatcher] = None,
     ) -> None:
         self.classifier = classifier
         self.selector = selector
         self.extractor = extractor
+        self._confidence_threshold = confidence_threshold
+        self._dispatcher = notification_dispatcher
 
     # ------------------------------------------------------------------
     # Public API
@@ -1090,6 +1096,55 @@ class IssueAutomation:
             db=db,
         )
 
+        # Confidence threshold gate — escalate to human review when confidence
+        # is too low to trust automatic pipeline selection.
+        run_id: Optional[str] = None
+        escalated: bool = False
+
+        if classification.confidence < self._confidence_threshold:
+            logger.warning(
+                "IssueAutomation: confidence %.2f below threshold %.2f for issue #%d "
+                "in %r — escalating to human review",
+                classification.confidence,
+                self._confidence_threshold,
+                issue_number,
+                repo,
+            )
+            if self._dispatcher is not None:
+                self._dispatcher.dispatch(
+                    event="human_review",
+                    run_id=f"issue-{issue_number}",
+                    issue_number=issue_number,
+                    confidence=f"{classification.confidence:.0%}",
+                    summary=(
+                        f"Low-confidence classification: "
+                        f"{classification.classification_type} "
+                        f"({classification.confidence:.0%}). Manual review needed."
+                    ),
+                    tier="escalation",
+                )
+            escalated = True
+            template_name = self.selector.select(classification.classification_type)
+
+            comment_body = self._build_comment(
+                issue_number=issue_number,
+                classification=classification,
+                template_name=template_name,
+                run_id=None,
+                escalated=True,
+            )
+
+            return {
+                "issue_number": issue_number,
+                "repo": repo,
+                "classification_type": classification.classification_type,
+                "confidence": classification.confidence,
+                "template": template_name,
+                "run_id": None,
+                "comment_body": comment_body,
+                "escalated": True,
+            }
+
         # Step 2: Select template
         template_name = self.selector.select(classification.classification_type)
 
@@ -1120,8 +1175,6 @@ class IssueAutomation:
         pipeline_inputs.setdefault("repo", repo)
 
         # Step 4: Launch pipeline
-        run_id: Optional[str] = None
-
         if launcher is not None and template_path_obj is not None and template_obj is not None:
             try:
                 run_dict = launcher(
@@ -1155,6 +1208,7 @@ class IssueAutomation:
             classification=classification,
             template_name=template_name,
             run_id=run_id,
+            escalated=False,
         )
 
         return {
@@ -1165,6 +1219,7 @@ class IssueAutomation:
             "template": template_name,
             "run_id": run_id,
             "comment_body": comment_body,
+            "escalated": False,
         }
 
     # ------------------------------------------------------------------
@@ -1177,6 +1232,7 @@ class IssueAutomation:
         classification: "IssueClassification",
         template_name: str,
         run_id: Optional[str],
+        escalated: bool = False,
     ) -> str:
         """Build the GitHub comment body for an issue automation result.
 
@@ -1185,6 +1241,8 @@ class IssueAutomation:
             classification:  The populated :class:`IssueClassification` instance.
             template_name:   Selected pipeline template name.
             run_id:          Pipeline run ID, or ``None`` when no run was launched.
+            escalated:       When ``True``, the comment reflects that the issue
+                             was escalated to human review due to low confidence.
 
         Returns:
             Markdown-formatted comment text suitable for posting as a GitHub issue comment.
@@ -1194,12 +1252,21 @@ class IssueAutomation:
             "",
             f"**Classification:** `{classification.classification_type}` "
             f"(confidence: {classification.confidence:.0%})",
-            f"**Pipeline:** `{template_name}`",
         ]
-        if run_id:
-            lines.append(f"**Run ID:** `{run_id}`")
+        if escalated:
+            lines.append(
+                f"⚠️ **Confidence too low for automatic launch** "
+                f"(`{classification.confidence:.0%}` < threshold)"
+            )
+            lines.append(
+                "This issue has been escalated to human review via Telegram."
+            )
         else:
-            lines.append("**Run ID:** *(not launched — template unavailable or no launcher)*")
+            lines.append(f"**Pipeline:** `{template_name}`")
+            if run_id:
+                lines.append(f"**Run ID:** `{run_id}`")
+            else:
+                lines.append("**Run ID:** *(not launched — template unavailable or no launcher)*")
         if classification.reasoning:
             lines.append(f"**Reasoning:** {classification.reasoning}")
         return "\n".join(lines)
