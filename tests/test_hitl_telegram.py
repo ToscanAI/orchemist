@@ -47,35 +47,31 @@ class TestIsQuietHours:
     def test_quiet_at_23(self):
         with patch("orchestration_engine.notifications.datetime") as mock_datetime:
             mock_datetime.now.return_value = self._make_mock_dt(23)
-            # Can't easily mock ZoneInfo — test the logic directly
-        # Direct arithmetic check (no TZ required)
-        hour = 23
-        quiet_start, quiet_end = 23, 8
-        result = hour >= quiet_start or hour < quiet_end
+            result = _is_quiet_hours(tz="Europe/Vienna")
         assert result is True
 
     def test_quiet_at_3(self):
-        hour = 3
-        quiet_start, quiet_end = 23, 8
-        result = hour >= quiet_start or hour < quiet_end
+        with patch("orchestration_engine.notifications.datetime") as mock_datetime:
+            mock_datetime.now.return_value = self._make_mock_dt(3)
+            result = _is_quiet_hours(tz="Europe/Vienna")
         assert result is True
 
     def test_not_quiet_at_12(self):
-        hour = 12
-        quiet_start, quiet_end = 23, 8
-        result = hour >= quiet_start or hour < quiet_end
+        with patch("orchestration_engine.notifications.datetime") as mock_datetime:
+            mock_datetime.now.return_value = self._make_mock_dt(12)
+            result = _is_quiet_hours(tz="Europe/Vienna")
         assert result is False
 
     def test_not_quiet_at_8(self):
-        hour = 8
-        quiet_start, quiet_end = 23, 8
-        result = hour >= quiet_start or hour < quiet_end
+        with patch("orchestration_engine.notifications.datetime") as mock_datetime:
+            mock_datetime.now.return_value = self._make_mock_dt(8)
+            result = _is_quiet_hours(tz="Europe/Vienna")
         assert result is False
 
     def test_not_quiet_at_22(self):
-        hour = 22
-        quiet_start, quiet_end = 23, 8
-        result = hour >= quiet_start or hour < quiet_end
+        with patch("orchestration_engine.notifications.datetime") as mock_datetime:
+            mock_datetime.now.return_value = self._make_mock_dt(22)
+            result = _is_quiet_hours(tz="Europe/Vienna")
         assert result is False
 
     def test_quiet_hours_fallback_no_tz_lib(self):

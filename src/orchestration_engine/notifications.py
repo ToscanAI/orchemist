@@ -180,10 +180,22 @@ class TelegramNotifier(BaseNotifier):
             if confidence:
                 lines.append(f"confidence: `{confidence}`")
             if summary:
-                safe_summary = summary.replace("`", "'")[:120]
+                safe_summary = (
+                    summary.replace("\\", "\\\\")
+                    .replace("_", "\\_")
+                    .replace("*", "\\*")
+                    .replace("[", "\\[")
+                    .replace("`", "'")
+                )[:120]
                 lines.append(f"summary: _{safe_summary}_")
             if justification:
-                safe_just = justification.replace("`", "'")[:200]
+                safe_just = (
+                    justification.replace("\\", "\\\\")
+                    .replace("_", "\\_")
+                    .replace("*", "\\*")
+                    .replace("[", "\\[")
+                    .replace("`", "'")
+                )[:200]
                 lines.append(f"justification: {safe_just}")
             # Remaining extra kwargs
             for k, v in kwargs.items():
@@ -272,11 +284,13 @@ class TelegramCallbackHandler:
         if not callback_query:
             return {"ok": False, "error": "No callback_query in update"}
 
+        callback_query_id: str = callback_query.get("id", "")
         callback_data: str = callback_query.get("data", "")
         from_user = callback_query.get("from", {})
         reviewer = from_user.get("username") or from_user.get("first_name") or "telegram"
 
         if not callback_data or ":" not in callback_data:
+            self._answer_callback_query(callback_query_id, text="Invalid callback data")
             return {"ok": False, "error": f"Unrecognised callback_data: {callback_data!r}"}
 
         action, _, run_id = callback_data.partition(":")
@@ -284,6 +298,7 @@ class TelegramCallbackHandler:
         run_id = run_id.strip()
 
         if not run_id:
+            self._answer_callback_query(callback_query_id, text="Invalid run ID")
             return {"ok": False, "error": "Empty run_id in callback_data"}
 
         from pathlib import Path
@@ -306,7 +321,12 @@ class TelegramCallbackHandler:
             )
             verb = "Rejected"
         else:
+            self._answer_callback_query(callback_query_id, text="Unknown action")
             return {"ok": False, "error": f"Unknown action: {action!r}"}
+
+        # Answer the callback query immediately so Telegram clears the loading
+        # spinner on the pressed button (mandatory per Telegram Bot API docs).
+        self._answer_callback_query(callback_query_id)
 
         if ok:
             conf_text = f"✅ {verb} run `{run_id}` by @{reviewer}"
@@ -324,6 +344,39 @@ class TelegramCallbackHandler:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
+        """Acknowledge a Telegram callback query to dismiss the loading spinner.
+
+        Per Telegram Bot API docs this call is mandatory after every
+        ``callback_query`` update; without it the button shows a loading
+        indicator for ~30 s before timing out on the client.
+
+        Args:
+            callback_query_id: The ``id`` field from the received
+                               ``callback_query`` update object.
+            text:              Optional short notification text shown to the
+                               user (max 200 chars).  Defaults to empty string.
+        """
+        if not callback_query_id:
+            return
+        url = f"https://api.telegram.org/bot{self.bot_token}/answerCallbackQuery"
+        payload_dict: dict = {"callback_query_id": callback_query_id}
+        if text:
+            payload_dict["text"] = text[:200]
+        payload = json.dumps(payload_dict).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout):
+                pass
+        except Exception as exc:
+            logger.warning(
+                "TelegramCallbackHandler: answerCallbackQuery failed: %s", exc
+            )
 
     def _send_telegram_message(self, text: str) -> None:
         """Send a plain text message to the configured Telegram chat."""
@@ -599,6 +652,7 @@ class NotificationDispatcher:
             NOTIFY_QUIET_HOURS_ENABLED         — "1", "true", "yes" to enable (default: enabled)
             NOTIFY_QUIET_HOURS_START           — Start of quiet window, 0–23 (default: 23)
             NOTIFY_QUIET_HOURS_END             — End of quiet window, 0–23 (default: 8)
+            NOTIFY_QUIET_HOURS_TZ              — IANA timezone for quiet hours (default: Europe/Vienna)
             NOTIFY_TELEGRAM_CALLBACK_DB_PATH   — Path to SQLite DB for callback handler
         """
 

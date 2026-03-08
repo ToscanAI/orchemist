@@ -2246,6 +2246,12 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                     status_code=403,
                     detail="Invalid or missing X-Telegram-Bot-Api-Secret-Token header",
                 )
+        else:
+            logger.warning(
+                "NOTIFY_TELEGRAM_WEBHOOK_SECRET is not set — "
+                "/api/v1/telegram/callback is accepting unauthenticated requests. "
+                "Set the env var to enable webhook signature verification."
+            )
 
         try:
             body_bytes = await request.body()
