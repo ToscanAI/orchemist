@@ -329,12 +329,19 @@ class RegressionWebhookHandler:
         detector: "RegressionDetector",
         repo_path: Path,
         repo_slug: str,
+        template_id: str = "ci",
     ) -> None:
         self._db = db
         self._git = git_context
         self._detector = detector
         self._repo_path = repo_path
         self._repo_slug = repo_slug
+        # template_id is used when recording the trust penalty so callers that
+        # know the actual pipeline template can wire the regression feedback into
+        # the correct trust profile (e.g. "coding-pipeline-v1").  Defaults to
+        # "ci" for backward compatibility with tests and callers that don't have
+        # per-template context.
+        self._template_id = template_id
 
     # ------------------------------------------------------------------
     # Public entry point (matches Sprint 2 trigger interface)
@@ -413,6 +420,36 @@ class RegressionWebhookHandler:
             )
             if regression is None:
                 return None
+
+            # Apply trust penalty for the detected regression (Issue #4.2.3).
+            # Uses the regression id as the run_id so the adjustment audit trail
+            # references the specific regression event.  All failures are caught
+            # and logged — a trust update error never blocks regression handling.
+            try:
+                from .trust import TrustCalibrator  # noqa: PLC0415
+                _calibrator = TrustCalibrator(
+                    repo=self._repo_slug,
+                    template_id=self._template_id,
+                    task_type=regression.failure_type or "ci_failure",
+                )
+                _calibrator.update_after_run(
+                    run_id=regression.id,
+                    outcome="regression",
+                    db=self._db,
+                )
+                logger.info(
+                    "RegressionWebhookHandler: trust penalty applied for "
+                    "regression %s in repo %s",
+                    regression.id,
+                    self._repo_slug,
+                )
+            except Exception as _trust_exc:
+                logger.warning(
+                    "RegressionWebhookHandler: trust penalty failed for "
+                    "regression %s (non-fatal): %s",
+                    regression.id,
+                    _trust_exc,
+                )
 
             # Open a GitHub issue to surface the regression.
             issue_url = self._open_github_issue(regression)

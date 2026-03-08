@@ -165,6 +165,15 @@ def run_daemon(run_id: str, db_path: str) -> None:
         _fail(db, run_id, pid_path, f"Input JSON parse error: {exc}")
         return
 
+    # --- Extract trust routing context (Issue #4.2.3) ---
+    # template_id comes from the run record; repo and task_type from initial_input.
+    # repo_url like "https://github.com/owner/repo" is converted to "owner/repo".
+    _trust_template_id: str = run.get('template_id', '')
+    _trust_repo: str = _extract_repo_slug(
+        initial_input.get('repo_url', '') or initial_input.get('repo', '')
+    )
+    _trust_task_type: str = initial_input.get('task_type', '')
+
     # --- Build callbacks ---
     completed_phases: list = []
     phase_outputs: Dict[str, Any] = {}
@@ -392,6 +401,9 @@ def run_daemon(run_id: str, db_path: str) -> None:
         phase_outputs=phase_outputs,
         final_status=_final_status,
         executor=_routing_executor,
+        repo=_trust_repo,
+        template_id=_trust_template_id,
+        task_type=_trust_task_type,
     )
 
     db.update_pipeline_run(
@@ -435,6 +447,42 @@ def run_daemon(run_id: str, db_path: str) -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _extract_repo_slug(repo_url: str) -> str:
+    """Extract an ``owner/repo`` slug from a full GitHub URL or pass-through.
+
+    Converts common GitHub URL formats to a plain ``owner/repo`` slug:
+
+    * ``https://github.com/owner/repo``  →  ``owner/repo``
+    * ``https://github.com/owner/repo.git``  →  ``owner/repo``
+    * ``git@github.com:owner/repo.git``  →  ``owner/repo``
+    * ``owner/repo``  →  ``owner/repo``  (passed through unchanged)
+
+    An empty or unrecognised string is returned as-is so callers can treat an
+    empty string as "no repo context available".
+
+    Args:
+        repo_url: Raw repository URL or slug from the pipeline input.
+
+    Returns:
+        An ``owner/repo`` slug string, or the original value if it could not
+        be parsed.
+    """
+    if not repo_url:
+        return ""
+    url = repo_url.strip()
+    # HTTPS GitHub URL
+    if "github.com/" in url:
+        idx = url.index("github.com/") + len("github.com/")
+        slug = url[idx:].rstrip("/").removesuffix(".git")
+        return slug
+    # SSH GitHub URL: git@github.com:owner/repo.git
+    if url.startswith("git@github.com:"):
+        slug = url[len("git@github.com:"):].rstrip("/").removesuffix(".git")
+        return slug
+    # Already a slug or something else — return as-is
+    return url
 
 
 def _write_phase_event(
@@ -637,6 +685,9 @@ def _compute_and_dispatch_routing(
     phase_outputs: Dict[str, Any],
     final_status: str,
     executor: Optional[Any] = None,
+    repo: str = "",
+    template_id: str = "",
+    task_type: str = "",
 ) -> str:
     """Compute confidence, route to action tier, persist decision, dispatch action.
 
@@ -665,6 +716,13 @@ def _compute_and_dispatch_routing(
         final_status:     Current intended final status of the pipeline run.
         executor:         Optional pipeline executor, used to run AuditPhase.
                           When ``None``, AuditPhase is skipped (stub mode).
+        repo:             Git repository slug (e.g. ``"owner/repo"``).  Used to
+                          update the trust profile via :class:`~trust.TrustCalibrator`
+                          after the routing decision is persisted.  When empty, the
+                          trust update is skipped (non-fatal).
+        template_id:      Pipeline template identifier for trust profile lookup.
+        task_type:        Task type string (e.g. ``"bugfix"``) for trust profile
+                          lookup.  Defaults to ``""`` (empty).
 
     Returns:
         The (possibly modified) final_status string.  Routing may update this
@@ -757,9 +815,18 @@ def _compute_and_dispatch_routing(
             confidence_result.confidence_level.value,
         )
 
-        # 4. Evaluate routing (use template config if provided, else default)
+        # 4. Evaluate routing (use template config if provided, else default).
+        # Call .evaluate() instead of .route() so that trust-profile-based
+        # dynamic thresholds are consulted when a post-bootstrap profile exists
+        # for this (repo, template_id, task_type) triplet (Issue #4.2.3).
         _routing_cfg = routing_config or DEFAULT_ROUTING_CONFIG
-        decision = RoutingEngine(_routing_cfg).route(confidence_result)
+        decision = RoutingEngine(_routing_cfg).evaluate(
+            confidence_result,
+            repo=repo,
+            template_id=template_id,
+            task_type=task_type,
+            db=db,
+        )
 
         logger.info(
             "Routing decision for run '%s': tier='%s' strategy='%s' score=%.4f",
@@ -795,6 +862,36 @@ def _compute_and_dispatch_routing(
             "Routing decision persisted for run '%s': action='%s'",
             run_id, action,
         )
+
+        # 5b. Update trust profile after routing decision is persisted (Issue #4.2.3).
+        # The outcome is always 'run_success' here — this function is called only on
+        # successful pipeline execution.  Failures are logged and swallowed so that
+        # a trust DB error never blocks the pipeline.
+        if repo and template_id:
+            try:
+                from .trust import TrustCalibrator  # noqa: PLC0415
+                _calibrator = TrustCalibrator(
+                    repo=repo,
+                    template_id=template_id,
+                    task_type=task_type or "general",
+                )
+                _trust_result = _calibrator.update_after_run(
+                    run_id=run_id,
+                    outcome="run_success",
+                    db=db,
+                )
+                logger.info(
+                    "Trust calibration updated for run '%s': repo=%r template=%r "
+                    "task_type=%r new_score=%s threshold=%s",
+                    run_id, repo, template_id, task_type or "general",
+                    _trust_result.get("new_score"),
+                    _trust_result.get("threshold"),
+                )
+            except Exception as _trust_exc:
+                logger.warning(
+                    "Trust calibration failed for run '%s' (non-fatal): %s",
+                    run_id, _trust_exc,
+                )
 
         # 6. Only dispatch action if pipeline succeeded (don't auto-merge a failing run)
         if final_status not in ('success',):
