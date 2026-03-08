@@ -264,22 +264,28 @@ class TestDefaultWeightsV2:
         assert abs(total - 1.0) < 1e-9
 
     def test_v2_llm_judge_weight(self):
-        assert DEFAULT_WEIGHTS_V2["llm_judge"] == pytest.approx(0.25)
+        # Issue #429.1: recalibrated from 0.25 → 0.40 (primary quality discriminator)
+        assert DEFAULT_WEIGHTS_V2["llm_judge"] == pytest.approx(0.40)
 
     def test_v2_test_pass_rate_weight(self):
-        assert DEFAULT_WEIGHTS_V2["test_pass_rate"] == pytest.approx(0.25)
+        # Issue #429.1: recalibrated from 0.25 → 0.30 (raised, very trustworthy signal)
+        assert DEFAULT_WEIGHTS_V2["test_pass_rate"] == pytest.approx(0.30)
 
     def test_v2_review_catch_value_weight(self):
-        assert DEFAULT_WEIGHTS_V2["review_catch_value"] == pytest.approx(0.20)
+        # Issue #429.1: recalibrated from 0.20 → 0.12 (often absent in coding pipelines)
+        assert DEFAULT_WEIGHTS_V2["review_catch_value"] == pytest.approx(0.12)
 
     def test_v2_adversarial_audit_weight(self):
-        assert DEFAULT_WEIGHTS_V2["adversarial_audit"] == pytest.approx(0.15)
+        # Issue #429.1: recalibrated from 0.15 → 0.08 (rarely present in Sprint 1-4)
+        assert DEFAULT_WEIGHTS_V2["adversarial_audit"] == pytest.approx(0.08)
 
     def test_v2_change_complexity_weight(self):
-        assert DEFAULT_WEIGHTS_V2["change_complexity"] == pytest.approx(0.10)
+        # Issue #429.1: recalibrated from 0.10 → 0.02 (task count ≠ quality indicator)
+        assert DEFAULT_WEIGHTS_V2["change_complexity"] == pytest.approx(0.02)
 
     def test_v2_historical_calibration_weight(self):
-        assert DEFAULT_WEIGHTS_V2["historical_calibration"] == pytest.approx(0.05)
+        # Issue #429.1: recalibrated from 0.05 → 0.02 (extra_signals only, low impact)
+        assert DEFAULT_WEIGHTS_V2["historical_calibration"] == pytest.approx(0.02)
 
 
 # ---------------------------------------------------------------------------

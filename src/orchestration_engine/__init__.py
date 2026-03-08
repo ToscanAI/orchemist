@@ -24,12 +24,15 @@ from .queue import TaskQueue
 from .db import Database
 from .sequencer import StateMachineSequencer
 from .webhooks import TriggerConfig, TriggerValidationError, VALID_MODES  # noqa: F401
-from .confidence import (  # noqa: F401  # Issue #331.1
+from .confidence import (  # noqa: F401  # Issue #331.1 / #429.1
     ConfidenceCalculator,
     ConfidenceResult,
     ConfidenceSignal,
     ConfidenceLevel as RunConfidenceLevel,
     DEFAULT_WEIGHTS,
+    DEFAULT_WEIGHTS_V2,
+    AUTO_MERGE_THRESHOLD,
+    HUMAN_REVIEW_THRESHOLD,
 )
 from .review_catch_value import (  # noqa: F401  # Issue #4.1.3
     ReviewCatchValueCalculator,
@@ -86,12 +89,15 @@ __all__ = [
     "TriggerConfig",
     "TriggerValidationError",
     "VALID_MODES",
-    # Confidence scoring (Issue #331.1)
+    # Confidence scoring (Issue #331.1 / #429.1)
     "ConfidenceCalculator",
     "ConfidenceResult",
     "ConfidenceSignal",
     "RunConfidenceLevel",
     "DEFAULT_WEIGHTS",
+    "DEFAULT_WEIGHTS_V2",
+    "AUTO_MERGE_THRESHOLD",
+    "HUMAN_REVIEW_THRESHOLD",
     # Review catch value signal (Issue #4.1.3)
     "ReviewCatchValueCalculator",
     "SEVERITY_WEIGHTS",
