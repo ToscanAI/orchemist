@@ -76,6 +76,11 @@ from .issue_automation import (  # noqa: F401  # Issue #5.1.1 / #5.1.2 / #5.1.3
     IssueAutomation,
     post_github_comment,
 )
+from .cost_tracker import (  # noqa: F401  # Issue #5.2.1
+    PricingTable,
+    CostTracker,
+    BudgetExceededError,
+)
 
 __all__ = [
     "__version__",
@@ -147,4 +152,8 @@ __all__ = [
     # Issue automation orchestrator + GitHub comment utility (Issue #5.1.3)
     "IssueAutomation",
     "post_github_comment",
+    # Cost tracking + pricing table (Issue #5.2.1)
+    "PricingTable",
+    "CostTracker",
+    "BudgetExceededError",
 ]
