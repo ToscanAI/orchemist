@@ -2389,6 +2389,38 @@ class Database:
             row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
 
+    def get_issue_classification_by_run_id(
+        self,
+        run_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the issue_pipeline_map row associated with *run_id*, or ``None``.
+
+        Queries ``issue_pipeline_map`` by ``run_id`` and returns the most
+        recently inserted matching row.  Used by the daemon's result-posting
+        hook to resolve the triggering issue context when only the run ID is
+        known.
+
+        Args:
+            run_id: Pipeline run ID (UUID string).
+
+        Returns:
+            Dict with all ``issue_pipeline_map`` columns, or ``None`` when no
+            matching row exists.
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(
+                """
+                SELECT * FROM issue_pipeline_map
+                WHERE run_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (run_id,),
+            )
+            row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
     def list_issue_classifications(
         self,
         repo: Optional[str] = None,
