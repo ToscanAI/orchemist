@@ -67,6 +67,13 @@ if TYPE_CHECKING:
     from .audit import AuditResult  # noqa: F401
 
 # ---------------------------------------------------------------------------
+# Routing thresholds (authoritative source — referenced by routing.py)
+# Issue #429.1: centralised here to avoid duplication with routing.py hardcodes.
+# ---------------------------------------------------------------------------
+AUTO_MERGE_THRESHOLD: float = 0.90    # ConfidenceLevel.HIGH boundary
+HUMAN_REVIEW_THRESHOLD: float = 0.70  # Lowered from 0.75 post-calibration (Issue #429.1)
+
+# ---------------------------------------------------------------------------
 # Default signal weights (v1 — sum to 1.0 for the six standard signals)
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS: dict[str, float] = {
@@ -80,20 +87,44 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
-# v2 signal weights (Issue #4.1.6)
-# Equal llm_judge / test_pass_rate split; adds historical_calibration signal.
-# Weights are renormalised during aggregation based on which signals are present,
-# so it is safe for the table to sum to 1.0 across all *possible* signals even
-# though not all are always emitted.
+# v2 signal weights — calibrated with Sprint 1-4 data (Issue #429.1)
+#
+# Rationale for each weight:
+#   llm_judge (0.40):           ↑ Primary quality discriminator. Rubric scores
+#                                 from LLMJudgeGrader are the most accurate
+#                                 measure of output quality (0.97+ on good runs).
+#                                 Raised from 0.25 (Issue #4.1.6).
+#   test_pass_rate (0.30):      ↑ Binary reliability signal — very trustworthy
+#                                 and deterministic. Raised from 0.25.
+#   review_catch_value (0.12):  ↓ Often absent in coding pipeline runs (no
+#                                 ReviewOutcome records). Lowered from 0.20.
+#   adversarial_audit (0.08):   ↓ Rarely present in Sprint 1-4 pipeline data.
+#                                 Lowered from 0.15.
+#   review_quality (0.06):      ↑ Restored: was dropped from v2 but still emits,
+#                                 causing undocumented fallback to v1 weight 0.15.
+#                                 Explicitly re-added at reduced weight.
+#   change_complexity (0.02):   ↓ Sprint 1-4 analysis shows task count is
+#                                 anti-correlated with quality: larger pipelines
+#                                 with more tasks still produce high-quality output.
+#                                 1/(1+N) for N=5–10 tasks gives 0.09–0.17, which
+#                                 dragged the composite ~0.06–0.08 points below
+#                                 the true quality. Drastically reduced.
+#   historical_calibration (0.02): Unchanged: extra_signals only.
+#
+# Weights sum to 1.00; _weighted_average renormalises over present signals.
+# Routing thresholds (AUTO_MERGE_THRESHOLD / HUMAN_REVIEW_THRESHOLD) are
+# defined above and should be updated in lock-step when this table changes.
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS_V2: dict[str, float] = {
-    "llm_judge": 0.25,              # Issue #4.1.6: equal weight with test_pass_rate
-    "test_pass_rate": 0.25,         # Issue #4.1.6: raised from 0.20
-    "review_catch_value": 0.20,     # Issue #4.1.6: raised from 0.15
-    "adversarial_audit": 0.15,      # Issue #4.1.6: raised from 0.10
-    "change_complexity": 0.10,      # Issue #4.1.6: unchanged
-    "historical_calibration": 0.05, # Issue #4.1.6: new signal via extra_signals
+    "llm_judge": 0.40,              # ↑ Primary signal: rubric/review scores most discriminative
+    "test_pass_rate": 0.30,         # ↑ Binary reliability signal — very trustworthy
+    "review_catch_value": 0.12,     # ↓ Reduced: often absent in coding pipeline runs
+    "adversarial_audit": 0.08,      # ↓ Reduced: rarely present in Sprint 1-4
+    "review_quality": 0.06,         # ↑ Restored: documents v2 fallback behaviour
+    "change_complexity": 0.02,      # ↓ Heavily reduced: task count ≠ quality indicator
+    "historical_calibration": 0.02, # Unchanged: extra_signals only
 }
+# Note: weights sum to 1.00; renormalisation in _weighted_average handles absent signals.
 
 
 # ---------------------------------------------------------------------------
