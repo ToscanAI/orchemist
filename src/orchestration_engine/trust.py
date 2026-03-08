@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .db import Database
@@ -484,3 +484,173 @@ class TrustCalibrator:
             "regressions":       regressions,
             "reverted_prs":      reverted_prs,
         }
+
+
+# ---------------------------------------------------------------------------
+# Idle-profile trust decay                                     Issue #4.2.4
+# ---------------------------------------------------------------------------
+
+#: Default decay rate applied to trust scores per week of inactivity.
+DEFAULT_DECAY_RATE: float = 0.05
+
+#: Minimum trust score after decay; scores are never reduced below this floor.
+DECAY_FLOOR: float = 0.3
+
+#: Number of days without a pipeline run before decay begins.
+DECAY_THRESHOLD_DAYS: int = 7
+
+
+def decay_idle_profiles(
+    db: "Database",
+    decay_rate: float = DEFAULT_DECAY_RATE,
+    threshold_days: int = DECAY_THRESHOLD_DAYS,
+    floor: float = DECAY_FLOOR,
+    now: Optional[datetime] = None,
+) -> List[Dict[str, Any]]:
+    """Apply weekly trust-score decay to profiles idle for *threshold_days* or more.
+
+    For each trust profile whose ``last_run_at`` is older than *threshold_days*
+    (or has never been set), the score is decremented by *decay_rate* for every
+    full week of inactivity, subject to a minimum of *floor*.
+
+    After each score update the ``auto_merge_threshold`` is re-derived from the
+    new score using a default :class:`TrustCalibrator` instance for the profile.
+    A ``trust_adjustments`` row is written for every profile that is actually
+    modified (i.e. where the computed delta is non-zero after the floor clamp).
+
+    Args:
+        db:             :class:`~db.Database` instance to read and write.
+        decay_rate:     Score reduction applied per full idle week.
+                        Default ``0.05``.
+        threshold_days: Minimum idle days before decay starts.
+                        Default ``7``.
+        floor:          Minimum score value; decay never pushes below this.
+                        Default ``0.3``.
+        now:            Reference timestamp for computing idle duration.
+                        Defaults to ``datetime.now(timezone.utc)``.  Intended
+                        for use in tests to pin time.
+
+    Returns:
+        List of dicts describing each profile that was modified::
+
+            [
+                {
+                    "profile_id":   int,
+                    "adjustment_id": int,
+                    "old_score":    float,
+                    "new_score":    float,
+                    "delta":        float,
+                    "weeks_idle":   int,
+                    "threshold":    float,
+                },
+                ...
+            ]
+
+        Profiles that are within the idle threshold (or already at the floor)
+        are not included in the returned list.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    cutoff = now - timedelta(days=threshold_days)
+
+    profiles = db.list_trust_profiles()
+    results: List[Dict[str, Any]] = []
+
+    for profile in profiles:
+        last_run_at_str: Optional[str] = profile.get("last_run_at")
+
+        if last_run_at_str is None:
+            # Profile has never had a run — treat as infinitely idle (1 week)
+            weeks_idle = 1
+        else:
+            last_run_at = datetime.fromisoformat(last_run_at_str)
+            # Ensure timezone-aware for comparison
+            if last_run_at.tzinfo is None:
+                last_run_at = last_run_at.replace(tzinfo=timezone.utc)
+
+            if last_run_at >= cutoff:
+                # Active recently — no decay needed
+                continue
+
+            idle_duration = now - last_run_at
+            weeks_idle = max(1, int(idle_duration.total_seconds() // (7 * 24 * 3600)))
+
+        old_score: float = float(profile["trust_score"])
+        if old_score <= floor:
+            # Already at or below the floor — nothing to do
+            continue
+
+        raw_new_score = old_score - decay_rate * weeks_idle
+        new_score = max(floor, raw_new_score)
+        delta = new_score - old_score
+
+        if delta == 0.0:
+            # No change (e.g. decay_rate is 0)
+            continue
+
+        # Re-derive auto_merge_threshold using default calibrator settings
+        calibrator = TrustCalibrator(
+            repo=profile["repo"],
+            template_id=profile["template_id"],
+            task_type=profile["task_type"],
+        )
+        successful_merges = int(profile.get("successful_merges", 0))
+        new_threshold = calibrator.compute_threshold(new_score, successful_merges)
+
+        # Persist updated profile
+        now_iso = now.isoformat()
+        updated: Dict[str, Any] = {
+            "repo":                   profile["repo"],
+            "template_id":            profile["template_id"],
+            "task_type":              profile["task_type"],
+            "auto_merge_threshold":   new_threshold,
+            "human_review_threshold": float(profile["human_review_threshold"]),
+            "trust_score":            new_score,
+            "total_runs":             int(profile["total_runs"]),
+            "successful_merges":      successful_merges,
+            "regressions":            int(profile["regressions"]),
+            "reverted_prs":           int(profile["reverted_prs"]),
+            "last_run_at":            last_run_at_str,
+            "created_at":             profile["created_at"],
+            "updated_at":             now_iso,
+        }
+        db.upsert_trust_profile(updated)
+
+        # Log the adjustment
+        profile_id = int(profile["id"])
+        adjustment_id = db.insert_trust_adjustment({
+            "profile_id":   profile_id,
+            "delta":        delta,
+            "reason":       "idle_decay",
+            "run_id":       None,
+            "score_before": old_score,
+            "score_after":  new_score,
+            "created_at":   now_iso,
+        })
+
+        logger.debug(
+            "decay_idle_profiles: profile_id=%d %s/%s/%s weeks_idle=%d "
+            "old=%.4f new=%.4f delta=%.4f threshold=%.4f",
+            profile_id,
+            profile["repo"],
+            profile["template_id"],
+            profile["task_type"],
+            weeks_idle,
+            old_score,
+            new_score,
+            delta,
+            new_threshold,
+        )
+
+        results.append({
+            "profile_id":    profile_id,
+            "adjustment_id": adjustment_id,
+            "old_score":     old_score,
+            "new_score":     new_score,
+            "delta":         delta,
+            "weeks_idle":    weeks_idle,
+            "threshold":     new_threshold,
+        })
+
+    return results
