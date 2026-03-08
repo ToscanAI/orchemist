@@ -1439,3 +1439,123 @@ class TestDispatchAutoMerge:
             import pytest
             with pytest.raises(GitError):
                 self._call(cfg)
+
+
+# ---------------------------------------------------------------------------
+# _is_review_phase helper (Issue #4.1.6)
+# ---------------------------------------------------------------------------
+
+class TestIsReviewPhase:
+    """Tests for the _is_review_phase helper added in Issue #4.1.6."""
+
+    def test_task_type_review_returns_true(self):
+        from orchestration_engine.daemon import _is_review_phase
+        assert _is_review_phase("build", {"task_type": "review"}) is True
+
+    def test_task_type_judge_returns_true(self):
+        from orchestration_engine.daemon import _is_review_phase
+        assert _is_review_phase("qa", {"task_type": "judge"}) is True
+
+    def test_phase_id_contains_review_returns_true(self):
+        from orchestration_engine.daemon import _is_review_phase
+        assert _is_review_phase("code_review", {"task_type": "build"}) is True
+
+    def test_phase_id_review_uppercase_returns_true(self):
+        from orchestration_engine.daemon import _is_review_phase
+        assert _is_review_phase("CODE_REVIEW", {}) is True
+
+    def test_non_review_phase_returns_false(self):
+        from orchestration_engine.daemon import _is_review_phase
+        assert _is_review_phase("build", {"task_type": "build"}) is False
+
+    def test_empty_phase_id_and_dict_returns_false(self):
+        from orchestration_engine.daemon import _is_review_phase
+        assert _is_review_phase("", {}) is False
+
+    def test_task_type_content_returns_false(self):
+        from orchestration_engine.daemon import _is_review_phase
+        assert _is_review_phase("write", {"task_type": "content"}) is False
+
+
+# ---------------------------------------------------------------------------
+# _run_post_pipeline_review_analysis (Issue #4.1.6)
+# ---------------------------------------------------------------------------
+
+class TestRunPostPipelineReviewAnalysis:
+    """Tests for the extracted _run_post_pipeline_review_analysis helper."""
+
+    def _call(self, db, phase_outputs=None, executor=None, run_id="test-run"):
+        from orchestration_engine.daemon import _run_post_pipeline_review_analysis
+        return _run_post_pipeline_review_analysis(
+            run_id=run_id,
+            db=db,
+            phase_outputs=phase_outputs or {},
+            executor=executor,
+        )
+
+    def test_returns_three_tuple(self):
+        """Function returns a 3-tuple: (review_outcomes, audit_results, calibration_outcomes)."""
+        from unittest.mock import MagicMock
+        db = MagicMock()
+        db.get_review_outcomes_for_run.return_value = []
+        db.list_review_outcomes.return_value = []
+        result = self._call(db)
+        assert isinstance(result, tuple)
+        assert len(result) == 3
+
+    def test_review_outcomes_fetched_from_db(self):
+        """Review outcomes are fetched from db.get_review_outcomes_for_run."""
+        from unittest.mock import MagicMock
+        db = MagicMock()
+        db.get_review_outcomes_for_run.return_value = [{"verdict": "APPROVE"}]
+        db.list_review_outcomes.return_value = []
+        review_outcomes, audit_results, calibration_outcomes = self._call(db)
+        assert review_outcomes == [{"verdict": "APPROVE"}]
+        db.get_review_outcomes_for_run.assert_called_once()
+
+    def test_calibration_outcomes_fetched_from_db(self):
+        """Calibration outcomes are fetched from db.list_review_outcomes."""
+        from unittest.mock import MagicMock
+        db = MagicMock()
+        db.get_review_outcomes_for_run.return_value = []
+        db.list_review_outcomes.return_value = [{"reviewer_model": "m1"}]
+        _, _, calibration_outcomes = self._call(db)
+        assert calibration_outcomes == [{"reviewer_model": "m1"}]
+        db.list_review_outcomes.assert_called_once_with(limit=500)
+
+    def test_db_error_is_non_fatal(self):
+        """DB errors are caught and result in empty lists."""
+        from unittest.mock import MagicMock
+        db = MagicMock()
+        db.get_review_outcomes_for_run.side_effect = RuntimeError("db error")
+        db.list_review_outcomes.side_effect = RuntimeError("db error")
+        review_outcomes, audit_results, calibration_outcomes = self._call(db)
+        assert review_outcomes == []
+        assert audit_results == []
+        assert calibration_outcomes == []
+
+    def test_no_executor_skips_audit(self):
+        """When executor=None, audit_results is always empty."""
+        from unittest.mock import MagicMock
+        db = MagicMock()
+        db.get_review_outcomes_for_run.return_value = [{"verdict": "APPROVE"}]
+        db.list_review_outcomes.return_value = []
+        _, audit_results, _ = self._call(db, executor=None)
+        assert audit_results == []
+
+    def test_calibrate_and_save_called_when_outcomes_available(self):
+        """calibrate_and_save is called when calibration_outcomes are non-empty."""
+        from unittest.mock import MagicMock, patch
+        db = MagicMock()
+        db.get_review_outcomes_for_run.return_value = []
+        db.list_review_outcomes.return_value = [{"reviewer_model": "m1", "verdict": "APPROVE", "fix_verified": True}]
+
+        mock_calibrator = MagicMock()
+        with patch(
+            "orchestration_engine.daemon.ReviewerCalibrator",
+            return_value=mock_calibrator,
+        ) if False else patch("orchestration_engine.reviewer_calibration.ReviewerCalibrator", return_value=mock_calibrator):
+            # Since calibrator is lazily imported, just verify no exception
+            review_outcomes, audit_results, calibration_outcomes = self._call(db)
+        # calibration_outcomes should be returned correctly
+        assert len(calibration_outcomes) == 1

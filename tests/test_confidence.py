@@ -20,6 +20,7 @@ import pytest
 
 from orchestration_engine.confidence import (
     DEFAULT_WEIGHTS,
+    DEFAULT_WEIGHTS_V2,
     ConfidenceCalculator,
     ConfidenceLevel,
     ConfidenceResult,
@@ -200,20 +201,28 @@ class TestDefaultWeights:
         for key in (
             "llm_judge", "test_pass_rate", "review_quality",
             "change_complexity", "review_catch_value",  # Issue #4.1.3
-            "audit_catch_rate",                         # Issue #4.1.4
+            "adversarial_audit",                        # Issue #4.1.4/4.1.6 — renamed from audit_catch_rate
+            "historical_calibration",                   # Issue #4.1.6 — extra_signals entry
         ):
             assert key in DEFAULT_WEIGHTS
 
-    def test_weights_sum_to_one(self):
+    def test_audit_catch_rate_key_removed(self):
+        """Old audit_catch_rate key must be absent; renamed to adversarial_audit."""
+        assert "audit_catch_rate" not in DEFAULT_WEIGHTS
+
+    def test_weights_sum_within_expected_range(self):
+        # DEFAULT_WEIGHTS now includes historical_calibration (0.05) which is
+        # only emitted via extra_signals; weights sum to slightly above 1.0
+        # because _weighted_average() renormalises across present signals.
         total = sum(DEFAULT_WEIGHTS.values())
-        assert abs(total - 1.0) < 1e-9
+        assert 1.0 <= total <= 1.1
 
     def test_llm_judge_weight(self):
-        # Updated in Issue #4.1.4: 0.35 → 0.30 to accommodate audit_catch_rate
+        # Updated in Issue #4.1.4: 0.35 → 0.30 to accommodate adversarial_audit
         assert DEFAULT_WEIGHTS["llm_judge"] == 0.30
 
     def test_test_pass_rate_weight(self):
-        # Updated in Issue #4.1.4: 0.25 → 0.20 to accommodate audit_catch_rate
+        # Updated in Issue #4.1.4: 0.25 → 0.20 to accommodate adversarial_audit
         assert DEFAULT_WEIGHTS["test_pass_rate"] == 0.20
 
     def test_review_quality_weight(self):
@@ -227,9 +236,117 @@ class TestDefaultWeights:
         # New signal added in Issue #4.1.3
         assert DEFAULT_WEIGHTS["review_catch_value"] == 0.15
 
-    def test_audit_catch_rate_weight(self):
-        # New signal added in Issue #4.1.4
-        assert DEFAULT_WEIGHTS["audit_catch_rate"] == 0.10
+    def test_adversarial_audit_weight(self):
+        # Renamed from audit_catch_rate in Issue #4.1.6
+        assert DEFAULT_WEIGHTS["adversarial_audit"] == 0.10
+
+    def test_historical_calibration_weight(self):
+        # New signal added in Issue #4.1.6; only emitted via extra_signals
+        assert DEFAULT_WEIGHTS["historical_calibration"] == 0.05
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_WEIGHTS_V2 (Issue #4.1.6)
+# ---------------------------------------------------------------------------
+
+class TestDefaultWeightsV2:
+    """Tests for the v2 weight table introduced in Issue #4.1.6."""
+
+    def test_v2_keys_present(self):
+        for key in (
+            "llm_judge", "test_pass_rate", "review_catch_value",
+            "adversarial_audit", "change_complexity", "historical_calibration",
+        ):
+            assert key in DEFAULT_WEIGHTS_V2
+
+    def test_v2_weights_sum_to_one(self):
+        total = sum(DEFAULT_WEIGHTS_V2.values())
+        assert abs(total - 1.0) < 1e-9
+
+    def test_v2_llm_judge_weight(self):
+        assert DEFAULT_WEIGHTS_V2["llm_judge"] == pytest.approx(0.25)
+
+    def test_v2_test_pass_rate_weight(self):
+        assert DEFAULT_WEIGHTS_V2["test_pass_rate"] == pytest.approx(0.25)
+
+    def test_v2_review_catch_value_weight(self):
+        assert DEFAULT_WEIGHTS_V2["review_catch_value"] == pytest.approx(0.20)
+
+    def test_v2_adversarial_audit_weight(self):
+        assert DEFAULT_WEIGHTS_V2["adversarial_audit"] == pytest.approx(0.15)
+
+    def test_v2_change_complexity_weight(self):
+        assert DEFAULT_WEIGHTS_V2["change_complexity"] == pytest.approx(0.10)
+
+    def test_v2_historical_calibration_weight(self):
+        assert DEFAULT_WEIGHTS_V2["historical_calibration"] == pytest.approx(0.05)
+
+
+# ---------------------------------------------------------------------------
+# ConfidenceCalculator — extra_signals parameter (Issue #4.1.6)
+# ---------------------------------------------------------------------------
+
+class TestExtraSignals:
+    """Tests for the extra_signals parameter of compute_confidence."""
+
+    def test_extra_signals_none_is_noop(self, tmp_path):
+        """Passing extra_signals=None has no effect."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        result_without = calc.compute_confidence(tmp_path)
+        result_with_none = calc.compute_confidence(tmp_path, extra_signals=None)
+        assert result_without.composite_score == pytest.approx(result_with_none.composite_score)
+
+    def test_extra_signals_empty_list_is_noop(self, tmp_path):
+        """Passing extra_signals=[] has no effect."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        result_without = calc.compute_confidence(tmp_path)
+        result_with_empty = calc.compute_confidence(tmp_path, extra_signals=[])
+        assert result_without.composite_score == pytest.approx(result_with_empty.composite_score)
+
+    def test_extra_signal_included_in_result(self, tmp_path):
+        """Extra signals appear in result.signals."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        extra = [ConfidenceSignal(
+            name="historical_calibration",
+            value=0.90,
+            weight=0.05,
+            raw_value=0.90,
+            source="test",
+        )]
+        result = calc.compute_confidence(tmp_path, extra_signals=extra)
+        signal_names = {s.name for s in result.signals}
+        assert "historical_calibration" in signal_names
+
+    def test_extra_signal_affects_composite_score(self, tmp_path):
+        """Adding a high-value extra signal with positive weight increases score."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.3)
+        calc = ConfidenceCalculator()
+        result_base = calc.compute_confidence(tmp_path)
+        extra = [ConfidenceSignal(
+            name="historical_calibration",
+            value=1.0,
+            weight=0.50,
+            raw_value=1.0,
+            source="test",
+        )]
+        result_extra = calc.compute_confidence(tmp_path, extra_signals=extra)
+        assert result_extra.composite_score > result_base.composite_score
+
+    def test_multiple_extra_signals_all_included(self, tmp_path):
+        """Multiple extra signals are all appended to result.signals."""
+        _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
+        calc = ConfidenceCalculator()
+        extras = [
+            ConfidenceSignal(name="sig_a", value=0.7, weight=0.05, raw_value=0.7, source="test"),
+            ConfidenceSignal(name="sig_b", value=0.8, weight=0.05, raw_value=0.8, source="test"),
+        ]
+        result = calc.compute_confidence(tmp_path, extra_signals=extras)
+        signal_names = {s.name for s in result.signals}
+        assert "sig_a" in signal_names
+        assert "sig_b" in signal_names
 
 
 # ---------------------------------------------------------------------------
@@ -575,27 +692,28 @@ class TestModuleExports:
 
 
 # ---------------------------------------------------------------------------
-# ConfidenceCalculator — audit_catch_rate signal (Issue #4.1.6)
+# ConfidenceCalculator — adversarial_audit signal (Issue #4.1.4 / #4.1.6)
+# (formerly audit_catch_rate; renamed to adversarial_audit in Issue #4.1.6)
 # ---------------------------------------------------------------------------
 
-class TestAuditCatchRateSignal:
-    """Tests for the audit_results → audit_catch_rate signal path."""
+class TestAdversarialAuditSignal:
+    """Tests for the audit_results → adversarial_audit signal path."""
 
     def test_audit_results_none_omits_signal(self, tmp_path):
-        """When audit_results is None, no audit_catch_rate signal is emitted."""
+        """When audit_results is None, no adversarial_audit signal is emitted."""
         _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
         calc = ConfidenceCalculator()
         result = calc.compute_confidence(tmp_path, audit_results=None)
         signal_names = {s.name for s in result.signals}
-        assert "audit_catch_rate" not in signal_names
+        assert "adversarial_audit" not in signal_names
 
     def test_audit_results_empty_list_omits_signal(self, tmp_path):
-        """When audit_results is an empty list, no audit_catch_rate signal is emitted."""
+        """When audit_results is an empty list, no adversarial_audit signal is emitted."""
         _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
         calc = ConfidenceCalculator()
         result = calc.compute_confidence(tmp_path, audit_results=[])
         signal_names = {s.name for s in result.signals}
-        assert "audit_catch_rate" not in signal_names
+        assert "adversarial_audit" not in signal_names
 
     def test_single_audit_result_emits_signal(self, tmp_path):
         """A single audit result with reviewer_accuracy_score produces the signal."""
@@ -604,8 +722,8 @@ class TestAuditCatchRateSignal:
         audit = [{"reviewer_accuracy_score": 0.75, "audit_id": "a1", "run_id": "r1"}]
         result = calc.compute_confidence(tmp_path, audit_results=audit)
         signal_names = {s.name for s in result.signals}
-        assert "audit_catch_rate" in signal_names
-        sig = next(s for s in result.signals if s.name == "audit_catch_rate")
+        assert "adversarial_audit" in signal_names
+        sig = next(s for s in result.signals if s.name == "adversarial_audit")
         assert sig.value == pytest.approx(0.75)
 
     def test_multiple_audit_results_averaged(self, tmp_path):
@@ -618,7 +736,7 @@ class TestAuditCatchRateSignal:
             {"reviewer_accuracy_score": 1.00},
         ]
         result = calc.compute_confidence(tmp_path, audit_results=audit)
-        sig = next(s for s in result.signals if s.name == "audit_catch_rate")
+        sig = next(s for s in result.signals if s.name == "adversarial_audit")
         assert sig.value == pytest.approx(0.80)  # (0.6 + 0.8 + 1.0) / 3
 
     def test_audit_result_without_score_key_skipped(self, tmp_path):
@@ -630,25 +748,25 @@ class TestAuditCatchRateSignal:
             {"no_score_here": "bad"},  # missing key — skipped
         ]
         result = calc.compute_confidence(tmp_path, audit_results=audit)
-        sig = next(s for s in result.signals if s.name == "audit_catch_rate")
+        sig = next(s for s in result.signals if s.name == "adversarial_audit")
         assert sig.value == pytest.approx(0.90)
 
-    def test_audit_catch_rate_uses_default_weight(self, tmp_path):
-        """audit_catch_rate signal uses the DEFAULT_WEIGHTS weight."""
+    def test_adversarial_audit_uses_default_weight(self, tmp_path):
+        """adversarial_audit signal uses the DEFAULT_WEIGHTS weight."""
         _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
         calc = ConfidenceCalculator()
         audit = [{"reviewer_accuracy_score": 0.70}]
         result = calc.compute_confidence(tmp_path, audit_results=audit)
-        sig = next(s for s in result.signals if s.name == "audit_catch_rate")
-        assert sig.weight == pytest.approx(DEFAULT_WEIGHTS["audit_catch_rate"])
+        sig = next(s for s in result.signals if s.name == "adversarial_audit")
+        assert sig.weight == pytest.approx(DEFAULT_WEIGHTS["adversarial_audit"])
 
-    def test_audit_catch_rate_raw_value_contains_count(self, tmp_path):
-        """raw_value of audit_catch_rate includes audit_count."""
+    def test_adversarial_audit_raw_value_contains_count(self, tmp_path):
+        """raw_value of adversarial_audit includes audit_count."""
         _write_task(tmp_path, "phase1.json", task_type="content", state="success", confidence=0.8)
         calc = ConfidenceCalculator()
         audit = [{"reviewer_accuracy_score": 0.5}, {"reviewer_accuracy_score": 0.8}]
         result = calc.compute_confidence(tmp_path, audit_results=audit)
-        sig = next(s for s in result.signals if s.name == "audit_catch_rate")
+        sig = next(s for s in result.signals if s.name == "adversarial_audit")
         assert isinstance(sig.raw_value, dict)
         assert sig.raw_value["audit_count"] == 2
 

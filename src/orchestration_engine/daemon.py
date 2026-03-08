@@ -231,6 +231,19 @@ def run_daemon(run_id: str, db_path: str) -> None:
             state=state_val,
         )
 
+        # Issue #4.1.6: structured summary for review phases.
+        # The sequencer's _record_review_outcome hook fires automatically
+        # (because run_id + db are now passed at construction); this block
+        # only adds a structured log line for observability.
+        if _is_review_phase(phase_id, phase_result):
+            _verdict = phase_result.get("verdict", phase_result.get("decision", ""))
+            _confidence = phase_result.get("confidence", "")
+            logger.info(
+                "Review phase '%s' complete: state=%s verdict=%r confidence=%s  "
+                "(outcome recorded by sequencer hook)",
+                phase_id, state_val, _verdict, _confidence,
+            )
+
     # --- Execute pipeline ---
     from .sequencer import PhaseSequencer, StateMachineSequencer
 
@@ -254,6 +267,8 @@ def run_daemon(run_id: str, db_path: str) -> None:
             on_phase_complete=_on_phase_complete,
             on_phase_start=_on_phase_start,
             output_dir=output_dir,
+            run_id=run_id,  # Issue #4.1.6: enables _record_review_outcome hook
+            db=db,          # Issue #4.1.6: required alongside run_id for DB writes
         )
 
         try:
@@ -604,6 +619,32 @@ def _do_auto_merge(
         logger.warning("Auto-merge: could not update gate status: %s", _ge)
 
 
+def _is_review_phase(phase_id: str, phase_result: dict) -> bool:
+    """Return True if *phase_id* / *phase_result* represents a review phase.
+
+    Mirrors :meth:`~confidence.ConfidenceCalculator._is_review_task` but
+    operates on daemon-level phase identifiers and result dicts instead of
+    task-file names.
+
+    A phase is classified as a review phase when:
+    - Its ``task_type`` field is ``"review"`` or ``"judge"``, OR
+    - The phase_id contains the substring ``"review"`` (case-insensitive).
+
+    Args:
+        phase_id:     Identifier of the phase (e.g. ``"review"``, ``"qa"``).
+        phase_result: Phase result dict as stored in phase_outputs.
+
+    Returns:
+        ``True`` if the phase is a review/judge phase, ``False`` otherwise.
+    """
+    task_type = phase_result.get("task_type", "")
+    if task_type in ("review", "judge"):
+        return True
+    if "review" in phase_id.lower():
+        return True
+    return False
+
+
 def _strategy_to_action(strategy: str) -> str:
     """Map a RoutingTier strategy string to a dispatch action.
 
@@ -674,6 +715,135 @@ class _PromptExecutorAdapter:
         return str(result)
 
 
+def _run_post_pipeline_review_analysis(
+    run_id: str,
+    db: Any,
+    phase_outputs: Dict[str, Any],
+    executor: Optional[Any] = None,
+) -> tuple:
+    """Fetch review data, run AuditPhase, and persist calibration snapshots.
+
+    Extracted from :func:`_compute_and_dispatch_routing` so that the review
+    analysis logic is independently testable and separated from routing
+    concerns (Issue #4.1.6).
+
+    Steps:
+        1. Fetch run-specific review outcomes from the DB.
+        2. Fetch historical calibration outcomes (last 500) from the DB.
+        3. Run AuditPhase on the most recent review outcome (if executor is
+           available and review outcomes exist).
+        4. Call :meth:`~reviewer_calibration.ReviewerCalibrator.calibrate_and_save`
+           on all calibration outcomes to persist per-model accuracy snapshots.
+
+    All steps are non-fatal: exceptions are caught and logged, and the
+    corresponding result defaults to an empty list.
+
+    Args:
+        run_id:       Pipeline run identifier.
+        db:           Database instance.
+        phase_outputs: Dict of phase_id -> phase result dict; used to extract
+                       a code diff for the AuditPhase.
+        executor:     Optional pipeline executor for AuditPhase.  When
+                      ``None``, AuditPhase is skipped.
+
+    Returns:
+        A 3-tuple ``(review_outcomes, audit_results, calibration_outcomes)``
+        where each element is a list (possibly empty).
+    """
+    # 1. Fetch run-specific review outcomes from DB (Issue #4.1.3)
+    review_outcomes: list = []
+    try:
+        review_outcomes = db.get_review_outcomes_for_run(run_id) or []
+        logger.info(
+            "PostReviewAnalysis: fetched %d review outcome(s) for run '%s'",
+            len(review_outcomes), run_id,
+        )
+    except Exception as _ro_exc:
+        logger.warning(
+            "PostReviewAnalysis: could not fetch review outcomes for run '%s' "
+            "(non-fatal): %s",
+            run_id, _ro_exc,
+        )
+
+    # 2. Fetch historical calibration outcomes from DB (Issue #4.1.5)
+    calibration_outcomes: list = []
+    try:
+        calibration_outcomes = db.list_review_outcomes(limit=500) or []
+        logger.info(
+            "PostReviewAnalysis: fetched %d calibration outcome(s) for dynamic weights",
+            len(calibration_outcomes),
+        )
+    except Exception as _co_exc:
+        logger.warning(
+            "PostReviewAnalysis: could not fetch calibration outcomes (non-fatal): %s",
+            _co_exc,
+        )
+
+    # 3. Run AuditPhase on the most recent review outcome (Issue #4.1.4)
+    # The executor is wrapped in _PromptExecutorAdapter so AuditPhase
+    # (which calls executor.execute(prompt: str)) works correctly with the
+    # pipeline's TaskExecutor (whose execute() expects a TaskSpec).
+    audit_results: list = []
+    if executor is not None and review_outcomes:
+        try:
+            from .audit import AuditPhase  # noqa: PLC0415
+            _prompt_executor = _PromptExecutorAdapter(executor)
+            _audit_model = _prompt_executor.model
+            _auditor = AuditPhase(executor=_prompt_executor, model=_audit_model)
+
+            # Provide code_diff from phase outputs when available so the
+            # adversarial auditor can review the actual diff rather than
+            # only the original issue list (improves catch rate).
+            _code_diff: Optional[str] = None
+            for _pid, _pout in phase_outputs.items():
+                _txt = _extract_output_text(_pout).strip()
+                if _txt:
+                    _code_diff = _txt
+                    break
+
+            _audit_result = _auditor.run(
+                run_id=run_id,
+                review_outcome=review_outcomes[0],
+                code_diff=_code_diff,
+            )
+            audit_results = [_audit_result.to_dict()]
+            logger.info(
+                "PostReviewAnalysis: AuditPhase complete for run '%s': "
+                "reviewer_accuracy_score=%.4f  false_approval=%s",
+                run_id,
+                _audit_result.reviewer_accuracy_score,
+                _audit_result.false_approval,
+            )
+        except Exception as _audit_exc:
+            logger.warning(
+                "PostReviewAnalysis: AuditPhase failed for run '%s' (non-fatal): %s",
+                run_id, _audit_exc,
+            )
+
+    # 4. Persist calibration snapshots post-audit (Issue #4.1.6)
+    # calibrate_and_save() writes per-model CalibrationMetrics rows to the DB.
+    # Uses all available calibration outcomes so the snapshot reflects the
+    # updated longitudinal accuracy.
+    if calibration_outcomes:
+        try:
+            from .reviewer_calibration import ReviewerCalibrator  # noqa: PLC0415
+            _calibrator = ReviewerCalibrator(db=db)
+            _calibrator.calibrate_and_save(calibration_outcomes)
+            logger.info(
+                "PostReviewAnalysis: calibration snapshot persisted for run '%s' "
+                "(%d outcome(s))",
+                run_id, len(calibration_outcomes),
+            )
+        except Exception as _cal_exc:
+            logger.warning(
+                "PostReviewAnalysis: calibrate_and_save failed for run '%s' "
+                "(non-fatal): %s",
+                run_id, _cal_exc,
+            )
+
+    return review_outcomes, audit_results, calibration_outcomes
+
+
 def _compute_and_dispatch_routing(
     run_id: str,
     output_dir: Path,
@@ -695,24 +865,25 @@ def _compute_and_dispatch_routing(
     exception is caught, logged, and the pipeline final_status is not changed.
 
     Steps:
-        1. Fetch review outcomes and calibration history from the DB.
-        2. Optionally run AuditPhase on the most recent review outcome.
-        3. Compute composite confidence from output directory artefacts, wiring
+        1. Run post-pipeline review analysis (fetch review outcomes, run
+           AuditPhase, persist calibration snapshots) via
+           :func:`_run_post_pipeline_review_analysis`.
+        2. Compute composite confidence from output directory artefacts, wiring
            in review outcomes, audit results, and calibration data for full
            signal coverage (Issue #4.1.6).
-        4. Evaluate routing config to produce a :class:`~routing.RoutingDecision`.
-        5. Persist the decision to the ``routing_decisions`` DB table.
-        6. If the pipeline succeeded, dispatch the resolved action.
+        3. Evaluate routing config to produce a :class:`~routing.RoutingDecision`.
+        4. Persist the decision to the ``routing_decisions`` DB table.
+        5. If the pipeline succeeded, dispatch the resolved action.
 
     Args:
         run_id:           Pipeline run identifier.
         output_dir:       Path to output directory containing phase JSON files.
         db:               Database instance.
         auto_merge_config: AutoMergeConfig from template (or None).
-        routing_config:   Custom RoutingConfig from template (or None → default).
+        routing_config:   Custom RoutingConfig from template (or None -> default).
         scoring_passed:   Whether auto-scoring passed.
-        scoring_score:    Composite scoring score (0–1), or None.
-        phase_outputs:    Dict of phase_id → phase result dict.
+        scoring_score:    Composite scoring score (0-1), or None.
+        phase_outputs:    Dict of phase_id -> phase result dict.
         final_status:     Current intended final status of the pipeline run.
         executor:         Optional pipeline executor, used to run AuditPhase.
                           When ``None``, AuditPhase is skipped (stub mode).
@@ -730,77 +901,17 @@ def _compute_and_dispatch_routing(
         on a successful run.
     """
     try:
-        # 1a. Fetch run-specific review outcomes from DB (Issue #4.1.3)
-        review_outcomes: list = []
-        try:
-            review_outcomes = db.get_review_outcomes_for_run(run_id) or []
-            logger.info(
-                "Confidence: fetched %d review outcome(s) for run '%s'",
-                len(review_outcomes), run_id,
+        # 1. Run post-pipeline review analysis (audit + calibration update).
+        review_outcomes, audit_results, calibration_outcomes = (
+            _run_post_pipeline_review_analysis(
+                run_id=run_id,
+                db=db,
+                phase_outputs=phase_outputs,
+                executor=executor,
             )
-        except Exception as _ro_exc:
-            logger.warning(
-                "Confidence: could not fetch review outcomes for run '%s' "
-                "(non-fatal): %s",
-                run_id, _ro_exc,
-            )
+        )
 
-        # 1b. Fetch historical calibration outcomes from DB (Issue #4.1.5)
-        calibration_outcomes: list = []
-        try:
-            calibration_outcomes = db.list_review_outcomes(limit=500) or []
-            logger.info(
-                "Confidence: fetched %d calibration outcome(s) for dynamic weights",
-                len(calibration_outcomes),
-            )
-        except Exception as _co_exc:
-            logger.warning(
-                "Confidence: could not fetch calibration outcomes (non-fatal): %s",
-                _co_exc,
-            )
-
-        # 1c. Run AuditPhase on the most recent review outcome (Issue #4.1.4)
-        # The executor is wrapped in _PromptExecutorAdapter so AuditPhase
-        # (which calls executor.execute(prompt: str)) works correctly with the
-        # pipeline's TaskExecutor (whose execute() expects a TaskSpec).
-        audit_results: list = []
-        if executor is not None and review_outcomes:
-            try:
-                from .audit import AuditPhase  # noqa: PLC0415
-                _prompt_executor = _PromptExecutorAdapter(executor)
-                _audit_model = _prompt_executor.model
-                _auditor = AuditPhase(executor=_prompt_executor, model=_audit_model)
-
-                # Provide code_diff from phase outputs when available so the
-                # adversarial auditor can review the actual diff rather than
-                # only the original issue list (improves catch rate).
-                _code_diff: Optional[str] = None
-                for _pid, _pout in phase_outputs.items():
-                    _txt = _extract_output_text(_pout).strip()
-                    if _txt:
-                        _code_diff = _txt
-                        break
-
-                _audit_result = _auditor.run(
-                    run_id=run_id,
-                    review_outcome=review_outcomes[0],
-                    code_diff=_code_diff,
-                )
-                audit_results = [_audit_result.to_dict()]
-                logger.info(
-                    "AuditPhase complete for run '%s': "
-                    "reviewer_accuracy_score=%.4f  false_approval=%s",
-                    run_id,
-                    _audit_result.reviewer_accuracy_score,
-                    _audit_result.false_approval,
-                )
-            except Exception as _audit_exc:
-                logger.warning(
-                    "AuditPhase failed for run '%s' (non-fatal): %s",
-                    run_id, _audit_exc,
-                )
-
-        # 3. Compute composite confidence from output directory, wiring all signals
+        # 2. Compute composite confidence from output directory, wiring all signals
         confidence_result = ConfidenceCalculator().compute_confidence(
             output_dir,
             review_outcomes=review_outcomes or None,
@@ -833,10 +944,10 @@ def _compute_and_dispatch_routing(
             run_id, decision.tier, decision.strategy, decision.score,
         )
 
-        # 4a. Map strategy → action
+        # 3a. Map strategy → action
         action = _strategy_to_action(decision.strategy)
 
-        # 4b. Build signals_json from confidence result signals
+        # 3b. Build signals_json from confidence result signals
         signals_dict: Dict[str, Any] = {
             s.name: {
                 "value": s.value,
@@ -848,7 +959,7 @@ def _compute_and_dispatch_routing(
         }
         signals_json = json.dumps(signals_dict, default=str)
 
-        # 5. Persist routing decision to DB (audit trail)
+        # 4. Persist routing decision to DB (audit trail)
         db.insert_routing_decision({
             "run_id": run_id,
             "confidence_score": confidence_result.composite_score,
@@ -902,13 +1013,13 @@ def _compute_and_dispatch_routing(
             )
             return final_status
 
-        # 7. Determine updated final_status from routing action before dispatch
+        # 6. Determine updated final_status from routing action before dispatch
         if action == "human_review":
             final_status = 'pending_review'
         elif action == "reject":
             final_status = 'rejected'
 
-        # 8. Dispatch action (status already updated above; dispatch does I/O only)
+        # 7. Dispatch action (status already updated above; dispatch does I/O only)
         _dispatch_routing_action(
             run_id=run_id,
             action=action,
