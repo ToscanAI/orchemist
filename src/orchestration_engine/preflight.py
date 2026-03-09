@@ -74,6 +74,12 @@ class PreflightChecker:
         Database instance for dedup checks.
     required_fields : list[str] | None
         Override default required fields. Pass empty list to skip field check.
+    budget_config : BudgetConfig | None
+        Optional budget configuration from the pipeline template.  When
+        provided along with ``cost_tracker``, a daily-cap check is added
+        (Issue #5.2.2).
+    cost_tracker : CostTracker | None
+        Optional cost tracker instance used for the daily-budget check.
     """
 
     def __init__(
@@ -81,6 +87,8 @@ class PreflightChecker:
         input_data: Dict[str, Any],
         db: Any = None,
         required_fields: Optional[List[str]] = None,
+        budget_config: Optional[Any] = None,
+        cost_tracker: Optional[Any] = None,
     ):
         self.input_data = input_data
         self.db = db
@@ -88,6 +96,8 @@ class PreflightChecker:
             required_fields if required_fields is not None
             else REQUIRED_INPUT_FIELDS
         )
+        self.budget_config = budget_config
+        self.cost_tracker = cost_tracker
 
     def run_all(self) -> PreflightResult:
         """Execute all preflight checks and return aggregated result."""
@@ -98,6 +108,7 @@ class PreflightChecker:
         self._check_git_readiness(result)
         self._check_dedup(result)
         self._check_dependencies(result)
+        self._check_daily_budget(result)
 
         return result
 
@@ -357,4 +368,54 @@ class PreflightChecker:
                 name="dependencies",
                 passed=True,
                 message=f"All dependencies resolved: {', '.join('#'+d for d in deps)}",
+            ))
+
+    def _check_daily_budget(self, result: PreflightResult) -> None:
+        """Reject launch if today's aggregate cost already exceeds the daily cap.
+
+        Only runs when both ``self.budget_config`` and ``self.cost_tracker``
+        are provided and ``budget_config.max_cost_per_day`` is set.  When
+        either is absent the check is silently skipped (opt-in).
+
+        Issue #5.2.2.
+        """
+        # Skip if not configured
+        if self.budget_config is None or self.cost_tracker is None:
+            return
+
+        daily_cap = getattr(self.budget_config, "max_cost_per_day", None)
+        if daily_cap is None:
+            return
+
+        try:
+            today_cost = self.cost_tracker.get_daily_cost()
+        except Exception as exc:
+            result.add_check(CheckItem(
+                name="daily_budget",
+                passed=True,
+                message=f"Daily budget check failed (non-fatal): {exc}",
+                severity="warning",
+            ))
+            return
+
+        if today_cost >= daily_cap:
+            result.add_check(CheckItem(
+                name="daily_budget",
+                passed=False,
+                message=(
+                    f"Daily cost cap of ${daily_cap:.4f} USD reached "
+                    f"(today's spend: ${today_cost:.4f} USD). "
+                    f"Launch rejected."
+                ),
+                severity="error",
+            ))
+        else:
+            remaining = daily_cap - today_cost
+            result.add_check(CheckItem(
+                name="daily_budget",
+                passed=True,
+                message=(
+                    f"Daily budget OK: ${today_cost:.4f} / ${daily_cap:.4f} USD "
+                    f"(${remaining:.4f} remaining)"
+                ),
             ))

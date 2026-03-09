@@ -230,6 +230,86 @@ def _parse_on_complete_config(raw: Any) -> Optional["OnCompleteConfig"]:
     )
 
 
+@dataclass
+class BudgetConfig:
+    """Optional budget enforcement for pipeline runs (Issue #5.2.2).
+
+    When present in a template's ``budget:`` block, the daemon enforces
+    cost limits per-run and per-day.  Absent = no enforcement (fully
+    backward-compatible).
+
+    Attributes:
+        max_cost_per_run: Maximum USD cost per single pipeline run.  The
+            daemon aborts the run with ``budget_exceeded`` status if the
+            cumulative phase cost exceeds this value.  ``None`` = disabled.
+        max_cost_per_day: Maximum USD cost across *all* runs started on the
+            current UTC calendar day.  Preflight rejects new launches when
+            this cap is reached.  ``None`` = disabled.
+        warn_at_percentage: When the per-run cost reaches this percentage of
+            ``max_cost_per_run``, a ``budget_warning`` notification is
+            dispatched but execution continues.  Default: 80.0.
+    """
+
+    max_cost_per_run: Optional[float] = None   # USD — abort if exceeded
+    max_cost_per_day: Optional[float] = None   # USD — reject new launches
+    warn_at_percentage: float = 80.0           # % of per-run cap to warn at
+
+    def __post_init__(self) -> None:
+        if self.max_cost_per_run is not None:
+            self.max_cost_per_run = float(self.max_cost_per_run)
+            if self.max_cost_per_run < 0:
+                raise ValueError(
+                    f"BudgetConfig.max_cost_per_run must be >= 0, "
+                    f"got {self.max_cost_per_run}"
+                )
+        if self.max_cost_per_day is not None:
+            self.max_cost_per_day = float(self.max_cost_per_day)
+            if self.max_cost_per_day < 0:
+                raise ValueError(
+                    f"BudgetConfig.max_cost_per_day must be >= 0, "
+                    f"got {self.max_cost_per_day}"
+                )
+        self.warn_at_percentage = float(self.warn_at_percentage)
+        if not (0.0 <= self.warn_at_percentage <= 100.0):
+            raise ValueError(
+                f"BudgetConfig.warn_at_percentage must be in [0, 100], "
+                f"got {self.warn_at_percentage}"
+            )
+
+
+def _parse_budget_config(raw: Any) -> Optional["BudgetConfig"]:
+    """Parse the ``budget:`` section of a pipeline YAML into a :class:`BudgetConfig`.
+
+    Args:
+        raw: The value of ``data.get("budget")`` — a dict, ``None``, or a
+             non-dict value (treated as absent).
+
+    Returns:
+        A :class:`BudgetConfig` instance if ``raw`` is a non-empty dict,
+        else ``None`` (no budget enforcement when the section is absent).
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    known_fields = {"max_cost_per_run", "max_cost_per_day", "warn_at_percentage"}
+    unknown = set(raw.keys()) - known_fields
+    if unknown:
+        logger.warning(
+            "Template budget config has unknown fields (ignored): %s",
+            sorted(unknown),
+        )
+
+    kwargs: Dict[str, Any] = {}
+    if "max_cost_per_run" in raw and raw["max_cost_per_run"] is not None:
+        kwargs["max_cost_per_run"] = float(raw["max_cost_per_run"])
+    if "max_cost_per_day" in raw and raw["max_cost_per_day"] is not None:
+        kwargs["max_cost_per_day"] = float(raw["max_cost_per_day"])
+    if "warn_at_percentage" in raw and raw["warn_at_percentage"] is not None:
+        kwargs["warn_at_percentage"] = float(raw["warn_at_percentage"])
+
+    return BudgetConfig(**kwargs)
+
+
 def _parse_auto_merge_config(raw: Any) -> Optional[AutoMergeConfig]:
     """Parse the ``auto_merge:`` section of a pipeline YAML into an :class:`AutoMergeConfig`.
 
@@ -440,6 +520,11 @@ class PipelineTemplate:
     """Parsed ``routing_config:`` section from the template YAML, or ``None`` if absent.
     When ``None``, callers should fall back to :data:`~routing.DEFAULT_ROUTING_CONFIG`."""
 
+    # --- Budget enforcement config (Issue #5.2.2) ---
+    budget: Optional["BudgetConfig"] = None
+    """Parsed ``budget:`` section from the template YAML, or ``None`` if absent.
+    When ``None``, no budget enforcement is applied (fully opt-in)."""
+
     def __post_init__(self) -> None:
         if self.phases is None:
             self.phases = []
@@ -483,6 +568,9 @@ class PipelineTemplate:
         # Normalise routing_config field: non-RoutingConfig values → None
         if self.routing_config is not None and not isinstance(self.routing_config, RoutingConfig):
             self.routing_config = None
+        # Normalise budget field: non-BudgetConfig values → None
+        if self.budget is not None and not isinstance(self.budget, BudgetConfig):
+            self.budget = None
 
 
 class TemplateNotFoundError(FileNotFoundError):
@@ -838,6 +926,11 @@ class TemplateEngine:
             data.get("routing_config")
         )
 
+        # Parse optional budget: section (Issue #5.2.2)
+        budget_config_parsed: Optional[BudgetConfig] = _parse_budget_config(
+            data.get("budget")
+        )
+
         return PipelineTemplate(
             id=data["id"],
             name=data["name"],
@@ -862,6 +955,7 @@ class TemplateEngine:
             auto_merge=auto_merge_config,            # Issue #350: per-repo auto-merge config
             on_complete=on_complete_config,          # Issue #330.1: pipeline chaining config
             routing_config=routing_config_parsed,    # Issue #331.2: confidence-based routing
+            budget=budget_config_parsed,              # Issue #5.2.2: budget enforcement
         )
 
     def get_execution_order(self, template: PipelineTemplate) -> List[List[str]]:
