@@ -249,20 +249,33 @@ def parse_review_output(text: str) -> ReviewResult:
 
     lines = text.splitlines()
 
-    # ── Extract verdict from first non-blank line ─────────────────────────────
+    # ── Extract verdict from first 5 non-blank lines ──────────────────────────
+    # Scan up to 5 non-blank lines so that brief LLM preamble (e.g. a "running
+    # tests" notice) does not permanently hide the verdict.  We match on the
+    # *first word* of each line so that trailing commentary on the verdict line
+    # (e.g. "APPROVE — looks good") is tolerated.
     verdict: str | None = None
+    _max_verdict_scan = 5
+    _first_nonblank: str | None = None
 
     for line in lines:
         stripped = line.strip()
-        if stripped:
-            if stripped in _VALID_VERDICTS:
-                verdict = stripped
-            else:
-                logger.warning(
-                    "review_parser: unrecognised verdict on first non-blank line: %r",
-                    stripped,
-                )
-            break  # verdict position is always the first non-blank line only
+        if not stripped:
+            continue
+        if _first_nonblank is None:
+            _first_nonblank = stripped
+        first_word = stripped.split()[0].upper()
+        if first_word in _VALID_VERDICTS:
+            verdict = first_word
+            break
+        _max_verdict_scan -= 1
+        if _max_verdict_scan <= 0:
+            logger.warning(
+                "review_parser: no verdict found in first 5 non-blank lines; "
+                "first non-blank line was: %r",
+                (_first_nonblank or "")[:80],
+            )
+            break
 
     # ── Parse tagged issue lines (all lines scanned) ──────────────────────────
     issues: list[ReviewIssue] = []

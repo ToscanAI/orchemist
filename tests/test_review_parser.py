@@ -227,6 +227,53 @@ class TestVerdictParsing(unittest.TestCase):
         self.assertIsNone(result.verdict)
         self.assertEqual(result.issues, [])
 
+    # ── Preamble resilience (Issue #486) ──────────────────────────────────────
+
+    def test_verdict_after_one_preamble_line(self) -> None:
+        """Verdict on line 2 after a single preamble line is found (within 5-line scan)."""
+        text = "Now let me run the tests first...\nAPPROVE\n"
+        result = parse_review_output(text)
+        self.assertEqual(result.verdict, "APPROVE")
+
+    def test_verdict_after_multiple_preamble_lines(self) -> None:
+        """Verdict found when preceded by up to 4 non-blank preamble lines."""
+        text = (
+            "Analysing implementation...\n"
+            "Running through the diff...\n"
+            "Checking test coverage...\n"
+            "All looks good.\n"
+            "REQUEST_CHANGES\n"
+            "[MINOR][style] Trailing whitespace\n"
+        )
+        result = parse_review_output(text)
+        self.assertEqual(result.verdict, "REQUEST_CHANGES")
+        self.assertEqual(len(result.issues), 1)
+
+    def test_verdict_not_found_after_five_preamble_lines(self) -> None:
+        """When 5 non-blank lines precede the verdict, verdict is NOT extracted."""
+        text = (
+            "Preamble line one\n"
+            "Preamble line two\n"
+            "Preamble line three\n"
+            "Preamble line four\n"
+            "Preamble line five\n"
+            "APPROVE\n"
+        )
+        result = parse_review_output(text)
+        self.assertIsNone(result.verdict)
+
+    def test_verdict_with_trailing_comment_on_same_line(self) -> None:
+        """APPROVE followed by trailing text on the same line is still extracted."""
+        result = parse_review_output("APPROVE — code looks clean\n")
+        self.assertEqual(result.verdict, "APPROVE")
+
+    def test_request_changes_with_trailing_comment_on_same_line(self) -> None:
+        """REQUEST_CHANGES followed by trailing text is still extracted."""
+        text = "REQUEST_CHANGES — see issues below\n[BLOCKER][security] Bad thing\n"
+        result = parse_review_output(text)
+        self.assertEqual(result.verdict, "REQUEST_CHANGES")
+        self.assertEqual(len(result.issues), 1)
+
 
 # ===========================================================================
 # TestIssueLineParsing

@@ -1285,12 +1285,14 @@ def _dispatch_auto_merge(
             )
             return
         review_text = _extract_output_text(review_out).strip()
-        first_line = review_text.split('\n')[0].strip().upper()
-        if first_line != "APPROVE":
+        from .review_parser import parse_review_output as _parse_review  # noqa: PLC0415
+        _review_result = _parse_review(review_text)
+        if _review_result.verdict != "APPROVE":
             logger.info(
                 "Auto-merge skipped for run '%s': review phase '%s' did not "
-                "return APPROVE on first line (got: %r).",
-                run_id, review_phase_id, first_line[:80],
+                "return APPROVE verdict (got: %r).",
+                run_id, review_phase_id,
+                _review_result.verdict,
             )
             return
 
