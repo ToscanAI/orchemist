@@ -2335,6 +2335,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             InputExtractor,
             post_github_comment,
         )
+        from orchestration_engine.notifications import NotificationDispatcher
 
         # 1. Validate event type header
         event_type = request.headers.get("X-GitHub-Event", "")
@@ -2419,10 +2420,16 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         classifier = IssueClassifier()   # stub mode; replace executor via subclass/config
         selector = TemplateSelector()
         extractor = InputExtractor()
+        confidence_threshold = float(
+            os.environ.get("ISSUE_CLASSIFY_CONFIDENCE_THRESHOLD", "0.70")
+        )
+        dispatcher = NotificationDispatcher.from_env()
         automation = IssueAutomation(
             classifier=classifier,
             selector=selector,
             extractor=extractor,
+            confidence_threshold=confidence_threshold,
+            notification_dispatcher=dispatcher,
         )
 
         title = issue.get("title", "") or ""

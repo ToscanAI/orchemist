@@ -1213,6 +1213,11 @@ class IssueAutomation:
                     tier="escalation",
                 )
             escalated = True
+
+            # Update DB status to 'escalated' so the row reflects the outcome.
+            if db is not None and classification.id is not None:
+                db.update_issue_classification_status(classification.id, "escalated")
+
             template_name = self.selector.select(classification.classification_type)
 
             comment_body = self._build_comment(

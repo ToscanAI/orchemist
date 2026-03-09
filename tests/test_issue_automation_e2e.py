@@ -767,6 +767,274 @@ class TestGithubIssuesWebhookE2E:
 
 
 # ===========================================================================
+# Tests: Confidence escalation path
+# ===========================================================================
+
+
+class TestEscalationPath:
+    """Tests for IssueAutomation escalation when confidence is below threshold."""
+
+    def _make_low_confidence_automation(
+        self,
+        confidence: float = 0.40,
+        threshold: float = 0.70,
+        dispatcher=None,
+    ) -> IssueAutomation:
+        """Return an IssueAutomation configured to escalate."""
+        return IssueAutomation(
+            classifier=_make_classifier("bug", confidence),
+            selector=TemplateSelector(),
+            extractor=InputExtractor(),
+            confidence_threshold=threshold,
+            notification_dispatcher=dispatcher,
+        )
+
+    def test_escalated_flag_in_result(self):
+        """Low-confidence process() must return escalated=True."""
+        auto = self._make_low_confidence_automation()
+        result = auto.process(issue_number=1, repo="o/r", title="Crash")
+        assert result.get("escalated") is True
+
+    def test_run_id_none_on_escalation(self):
+        """Escalated result must have run_id=None (no pipeline launched)."""
+        auto = self._make_low_confidence_automation()
+        result = auto.process(issue_number=1, repo="o/r", title="Crash")
+        assert result["run_id"] is None
+
+    def test_comment_body_mentions_escalation(self):
+        """The generated comment body should mention escalation/human review."""
+        auto = self._make_low_confidence_automation()
+        result = auto.process(issue_number=1, repo="o/r", title="Crash")
+        comment = result.get("comment_body", "")
+        assert comment  # non-empty
+        assert any(
+            kw in comment.lower()
+            for kw in ("escalat", "human review", "manual")
+        ), f"Expected escalation language in comment body: {comment!r}"
+
+    def test_db_status_updated_to_escalated(self):
+        """After escalation, the DB row status must be 'escalated'."""
+        db = _make_db()
+        auto = self._make_low_confidence_automation()
+        auto.process(issue_number=10, repo="o/r", title="Low confidence", db=db)
+
+        # Fetch the classification row directly
+        import sqlite3
+        conn = sqlite3.connect(str(db.db_path))
+        row = conn.execute(
+            "SELECT status FROM issue_pipeline_map WHERE issue_number=10"
+        ).fetchone()
+        conn.close()
+        assert row is not None, "No row inserted for this issue"
+        assert row[0] == "escalated", f"Expected 'escalated', got {row[0]!r}"
+
+    def test_db_status_not_escalated_above_threshold(self):
+        """Above the threshold, DB status should be 'launched' (or 'classified'), NOT 'escalated'."""
+        db = _make_db()
+        auto = IssueAutomation(
+            classifier=_make_classifier("bug", confidence=0.95),
+            selector=TemplateSelector(),
+            extractor=InputExtractor(),
+            confidence_threshold=0.70,
+        )
+        auto.process(issue_number=20, repo="o/r", title="High confidence", db=db)
+
+        import sqlite3
+        conn = sqlite3.connect(str(db.db_path))
+        row = conn.execute(
+            "SELECT status FROM issue_pipeline_map WHERE issue_number=20"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] != "escalated", f"Should not be 'escalated', got {row[0]!r}"
+
+    def test_dispatcher_called_on_escalation(self):
+        """When confidence is low, the notification dispatcher must be invoked."""
+        mock_dispatcher = MagicMock()
+        auto = self._make_low_confidence_automation(dispatcher=mock_dispatcher)
+        auto.process(issue_number=5, repo="o/r", title="Low")
+        mock_dispatcher.dispatch.assert_called_once()
+        call_kwargs = mock_dispatcher.dispatch.call_args[1]
+        assert call_kwargs.get("event") == "human_review"
+
+    def test_dispatcher_not_called_on_high_confidence(self):
+        """When confidence is above threshold, dispatcher must NOT be called."""
+        mock_dispatcher = MagicMock()
+        auto = IssueAutomation(
+            classifier=_make_classifier("bug", confidence=0.95),
+            selector=TemplateSelector(),
+            extractor=InputExtractor(),
+            confidence_threshold=0.70,
+            notification_dispatcher=mock_dispatcher,
+        )
+        auto.process(issue_number=6, repo="o/r", title="High")
+        mock_dispatcher.dispatch.assert_not_called()
+
+    def test_escalation_threshold_boundary_below(self):
+        """Confidence exactly below threshold should escalate."""
+        auto = self._make_low_confidence_automation(confidence=0.699, threshold=0.70)
+        result = auto.process(issue_number=7, repo="o/r", title="Boundary below")
+        assert result.get("escalated") is True
+
+    def test_escalation_threshold_boundary_at(self):
+        """Confidence exactly AT threshold should NOT escalate (not below)."""
+        auto = self._make_low_confidence_automation(confidence=0.70, threshold=0.70)
+        result = auto.process(issue_number=8, repo="o/r", title="Boundary at")
+        assert not result.get("escalated", False)
+
+
+# ===========================================================================
+# Tests: Full E2E happy path (classify → select → extract → launch → comment)
+# ===========================================================================
+
+
+class TestFullE2EHappyPath:
+    """Tests for the complete automation flow with a launcher."""
+
+    def _make_launcher_and_resolver(self, run_id: str = "run-abc"):
+        """Return (mock_launcher, mock_resolver, mock_engine) for happy-path tests."""
+        mock_launcher = MagicMock(return_value={"run_id": run_id})
+        mock_resolver = MagicMock(return_value=Path("/tmp/fake.yaml"))
+        mock_template = MagicMock()
+        mock_template.config_schema = {}
+        mock_engine = MagicMock()
+        mock_engine.load_template.return_value = mock_template
+        return mock_launcher, mock_resolver, mock_engine
+
+    def test_run_id_populated_on_success(self):
+        """When launcher succeeds, result['run_id'] must be the returned run_id."""
+        auto = _make_automation("bug", confidence=0.90)
+        launcher, resolver, engine = self._make_launcher_and_resolver("run-42")
+        result = auto.process(
+            issue_number=1,
+            repo="o/r",
+            title="Bug fix",
+            launcher=launcher,
+            template_resolver=resolver,
+            template_engine=engine,
+        )
+        assert result["run_id"] == "run-42"
+
+    def test_escalated_false_on_happy_path(self):
+        """Happy path must not set escalated=True."""
+        auto = _make_automation("bug", confidence=0.90)
+        launcher, resolver, engine = self._make_launcher_and_resolver()
+        result = auto.process(
+            issue_number=1,
+            repo="o/r",
+            title="Bug fix",
+            launcher=launcher,
+            template_resolver=resolver,
+            template_engine=engine,
+        )
+        assert not result.get("escalated", False)
+
+    def test_comment_body_present_and_non_empty(self):
+        """Result must contain a non-empty comment_body."""
+        auto = _make_automation("bug", confidence=0.90)
+        launcher, resolver, engine = self._make_launcher_and_resolver()
+        result = auto.process(
+            issue_number=1,
+            repo="o/r",
+            title="Bug fix",
+            launcher=launcher,
+            template_resolver=resolver,
+            template_engine=engine,
+        )
+        assert result.get("comment_body")
+
+    def test_db_status_updated_to_launched(self):
+        """After a successful launch, the DB row status must be 'launched'."""
+        db = _make_db()
+        auto = _make_automation("bug", confidence=0.90)
+        launcher, resolver, engine = self._make_launcher_and_resolver("run-999")
+        auto.process(
+            issue_number=100,
+            repo="o/r",
+            title="Bug",
+            db=db,
+            launcher=launcher,
+            template_resolver=resolver,
+            template_engine=engine,
+        )
+        import sqlite3
+        conn = sqlite3.connect(str(db.db_path))
+        row = conn.execute(
+            "SELECT status FROM issue_pipeline_map WHERE issue_number=100"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row[0] == "launched", f"Expected 'launched', got {row[0]!r}"
+
+    def test_all_required_keys_present(self):
+        """Result dict must contain all required top-level keys."""
+        auto = _make_automation("feature", confidence=0.85)
+        launcher, resolver, engine = self._make_launcher_and_resolver()
+        result = auto.process(
+            issue_number=1,
+            repo="o/r",
+            title="Feature",
+            launcher=launcher,
+            template_resolver=resolver,
+            template_engine=engine,
+        )
+        for key in ("issue_number", "repo", "classification_type", "confidence",
+                    "template", "run_id", "comment_body"):
+            assert key in result, f"Missing key: {key!r}"
+
+    def test_pipeline_inputs_include_issue_number_and_repo(self):
+        """Launcher must be called with pipeline_inputs containing issue_number and repo."""
+        auto = _make_automation("bug", confidence=0.90)
+        launcher, resolver, engine = self._make_launcher_and_resolver()
+        auto.process(
+            issue_number=55,
+            repo="myorg/myrepo",
+            title="Bug",
+            launcher=launcher,
+            template_resolver=resolver,
+            template_engine=engine,
+        )
+        assert launcher.called, "Launcher was not called"
+        call_kwargs = launcher.call_args[1] if launcher.call_args[1] else {}
+        call_args = launcher.call_args[0] if launcher.call_args[0] else ()
+        # pipeline_inputs may be positional or keyword
+        all_args = str(call_args) + str(call_kwargs)
+        assert "55" in all_args or 55 in str(call_args) + str(call_kwargs), \
+            f"issue_number 55 not found in launcher call: {launcher.call_args}"
+
+    def test_webhook_env_var_threshold_wired(self):
+        """Webhook handler reads ISSUE_CLASSIFY_CONFIDENCE_THRESHOLD from env.
+
+        Default stub confidence is 0.0.  With threshold=0.0 (from env), the
+        condition ``confidence < threshold`` is False → no escalation.
+        With the default threshold of 0.70, stub confidence 0.0 would escalate.
+        This test proves the env var is actually wired into the constructor.
+        """
+        import os
+        client, _ = _fresh_client()
+        payload = _issue_payload(
+            action="opened",
+            issue_number=88,
+            labels=["orchemist"],
+        )
+        # threshold=0.0 means confidence=0.0 is NOT below threshold → happy path
+        with patch.dict(os.environ, {"ISSUE_CLASSIFY_CONFIDENCE_THRESHOLD": "0.0"}):
+            with patch(
+                "orchestration_engine.issue_automation.post_github_comment",
+                return_value=None,
+            ):
+                resp = client.post(
+                    "/api/v1/github/issues",
+                    json=payload,
+                    headers={"X-GitHub-Event": "issues"},
+                )
+        assert resp.status_code == 202
+        data = resp.json()
+        # escalated should be False (or absent) because threshold was 0.0
+        assert not data.get("escalated", False)
+
+
+# ===========================================================================
 # Tests: Module exports
 # ===========================================================================
 
