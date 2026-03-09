@@ -588,7 +588,11 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # Pass the primary executor so AuditPhase and dynamic weight calibration
     # can run with live LLM access (Issue #4.1.6).
     _routing_executor = runner.executors[0] if runner.executors else None
-    _final_status = _compute_and_dispatch_routing(
+    # _compute_and_dispatch_routing returns (final_status, merge_intent).
+    # merge_intent is non-None when routing selected auto_merge — execution is
+    # deferred until after _post_github_result_hook so the PR exists first
+    # (Issue #499).
+    _final_status, _merge_intent = _compute_and_dispatch_routing(
         run_id=run_id,
         output_dir=output_dir,
         db=db,
@@ -613,6 +617,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
     )
 
     # --- Post success result to GitHub (Issue #5.1.4) ---
+    # Must run BEFORE deferred auto-merge so the PR exists when gh pr merge fires.
     _post_github_result_hook(
         run_id=run_id,
         db=db,
@@ -623,6 +628,23 @@ def run_daemon(run_id: str, db_path: str) -> None:
         diagnosis=None,
         output_dir=output_dir,
     )
+
+    # --- Deferred auto-merge (Issue #499) ---
+    # Execute after _post_github_result_hook so the PR has been created.
+    if _merge_intent is not None:
+        try:
+            _dispatch_auto_merge(
+                run_id=_merge_intent["run_id"],
+                auto_merge_config=_merge_intent["auto_merge_config"],
+                decision=_merge_intent["decision"],
+                phase_outputs=_merge_intent["phase_outputs"],
+                repo=_merge_intent["repo"],
+            )
+        except Exception as _merge_exc:
+            logger.warning(
+                "Deferred auto-merge failed for run '%s' (non-fatal): %s",
+                run_id, _merge_exc,
+            )
 
     # --- Chain execution (Issue #330.2) ---
     # After the run's terminal status is persisted, evaluate on_complete entries
@@ -1054,7 +1076,7 @@ def _compute_and_dispatch_routing(
     repo: str = "",
     template_id: str = "",
     task_type: str = "",
-) -> str:
+) -> "tuple[str, Optional[Dict[str, Any]]]":
     """Compute confidence, route to action tier, persist decision, dispatch action.
 
     Called after pipeline execution and scoring complete.  Non-fatal: any
@@ -1069,7 +1091,10 @@ def _compute_and_dispatch_routing(
            signal coverage (Issue #4.1.6).
         3. Evaluate routing config to produce a :class:`~routing.RoutingDecision`.
         4. Persist the decision to the ``routing_decisions`` DB table.
-        5. If the pipeline succeeded, dispatch the resolved action.
+        5. If the pipeline succeeded, dispatch the resolved action.  For the
+           ``auto_merge`` action the merge is **deferred** — a merge intent dict
+           is returned instead of executing immediately, so the caller can first
+           create the PR via :func:`_post_github_result_hook` (Issue #499).
 
     Args:
         run_id:           Pipeline run identifier.
@@ -1092,9 +1117,12 @@ def _compute_and_dispatch_routing(
                           lookup.  Defaults to ``""`` (empty).
 
     Returns:
-        The (possibly modified) final_status string.  Routing may update this
-        to ``'pending_review'`` or ``'rejected'`` when dispatching those actions
-        on a successful run.
+        A ``(final_status, merge_intent)`` tuple.  *final_status* is the
+        (possibly modified) status string — routing may update it to
+        ``'pending_review'`` or ``'rejected'``.  *merge_intent* is a dict
+        containing the arguments for :func:`_dispatch_auto_merge` when routing
+        selected ``auto_merge``, or ``None`` otherwise.  The caller is
+        responsible for executing the deferred merge after PR creation.
     """
     try:
         # 1. Run post-pipeline review analysis (audit + calibration update).
@@ -1174,7 +1202,7 @@ def _compute_and_dispatch_routing(
                 "(only dispatching on success)",
                 run_id, final_status,
             )
-            return final_status
+            return final_status, None
 
         # 6. Determine updated final_status from routing action before dispatch
         if action == "human_review":
@@ -1182,25 +1210,37 @@ def _compute_and_dispatch_routing(
         elif action == "reject":
             final_status = 'rejected'
 
-        # 7. Dispatch action (status already updated above; dispatch does I/O only)
-        _dispatch_routing_action(
-            run_id=run_id,
-            action=action,
-            decision=decision,
-            confidence_result=confidence_result,
-            auto_merge_config=auto_merge_config,
-            phase_outputs=phase_outputs,
-            repo=repo,
-        )
+        # 7. Dispatch action (status already updated above; dispatch does I/O only).
+        #    For auto_merge, defer execution until after _post_github_result_hook so
+        #    that the PR is created before the merge is attempted (Issue #499).
+        if action == "auto_merge":
+            merge_intent: Optional[Dict[str, Any]] = {
+                "run_id": run_id,
+                "auto_merge_config": auto_merge_config,
+                "decision": decision,
+                "phase_outputs": phase_outputs,
+                "repo": repo,
+            }
+        else:
+            merge_intent = None
+            _dispatch_routing_action(
+                run_id=run_id,
+                action=action,
+                decision=decision,
+                confidence_result=confidence_result,
+                auto_merge_config=auto_merge_config,
+                phase_outputs=phase_outputs,
+                repo=repo,
+            )
 
-        return final_status
+        return final_status, merge_intent
 
     except Exception as exc:
         logger.warning(
             "Confidence/routing integration failed for run '%s' (non-fatal): %s",
             run_id, exc,
         )
-        return final_status
+        return final_status, None
 
 
 def _dispatch_routing_action(
