@@ -39,12 +39,41 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _shutdown_requested = False
 
+# Module-level executor reference (Issue #488).
+# Set by run_daemon() after the PipelineRunner is built so the SIGTERM handler
+# can propagate the shutdown signal into the executor's polling loop without
+# waiting for the current sub-agent session to complete naturally.
+# Accessed only from the SIGTERM handler and the post-SIGTERM cleanup block;
+# no locking required because Python's GIL serialises the signal delivery and
+# the post-signal read occurs in the main thread after sequencer.execute()
+# returns.
+_active_executor: Any = None
+
 
 def _sigterm_handler(signum: int, frame: Any) -> None:
-    """Handle SIGTERM: request graceful shutdown."""
+    """Handle SIGTERM: request graceful shutdown.
+
+    Sets the module-level ``_shutdown_requested`` flag and, when an executor
+    is active, calls its ``request_shutdown()`` method so the polling loop
+    in ``_run_session()`` exits on the next iteration instead of blocking
+    until the sub-agent session completes or times out (Issue #488).
+    """
     global _shutdown_requested
     _shutdown_requested = True
     logger.warning("SIGTERM received — requesting graceful shutdown")
+
+    # Signal the active executor (if any) to break out of its polling loop.
+    if _active_executor is not None:
+        _session = getattr(_active_executor, "_active_session_key", None)
+        logger.warning(
+            "SIGTERM: signalling executor to stop polling "
+            "(active session: %s)",
+            _session or "none",
+        )
+        try:
+            _active_executor.request_shutdown()
+        except Exception as exc:
+            logger.warning("SIGTERM: executor request_shutdown failed (non-fatal): %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +187,18 @@ def run_daemon(run_id: str, db_path: str) -> None:
     except Exception as exc:
         _fail(db, run_id, pid_path, f"PipelineRunner init error: {exc}")
         return
+
+    # --- Store executor reference for SIGTERM handler (Issue #488) ---
+    # The SIGTERM handler reads this module-level variable to call
+    # request_shutdown() on the active executor, breaking the polling loop
+    # in _run_session() immediately rather than waiting for timeout.
+    global _active_executor
+    _active_executor = runner.executors[0] if runner.executors else None
+    if _active_executor is not None:
+        logger.debug(
+            "Active executor registered for graceful shutdown: %s",
+            type(_active_executor).__name__,
+        )
 
     # --- Parse input ---
     try:
@@ -407,6 +448,27 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # Check for SIGTERM shutdown
     if _shutdown_requested:
         logger.info("Graceful shutdown: marking run as cancelled")
+
+        # Best-effort cancellation of any orphaned sub-agent session (Issue #488).
+        # cancel_active_session() logs the orphaned session key and attempts
+        # sessions_stop via the gateway API.  Failures are swallowed so the
+        # daemon always exits cleanly after SIGTERM.
+        if _active_executor is not None:
+            _orphaned = getattr(_active_executor, "_active_session_key", None)
+            if _orphaned:
+                logger.warning(
+                    "Graceful shutdown: orphaned session key = %s "
+                    "(attempting cancellation)",
+                    _orphaned,
+                )
+            try:
+                _active_executor.cancel_active_session()
+            except Exception as exc:
+                logger.warning(
+                    "Graceful shutdown: cancel_active_session failed (non-fatal): %s",
+                    exc,
+                )
+
         db.update_pipeline_run(
             run_id,
             status='cancelled',

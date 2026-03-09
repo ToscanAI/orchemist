@@ -1995,3 +1995,198 @@ class TestSessionsHistoryLimit:
             f"Unexpected limit warning for a short session: "
             f"{[r.getMessage() for r in limit_warnings]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #488 — Executor graceful shutdown tests
+# ---------------------------------------------------------------------------
+
+
+class TestOpenClawExecutorShutdown:
+    """Tests for executor-level graceful shutdown support (Issue #488)."""
+
+    def test_request_shutdown_sets_event(self):
+        """request_shutdown() must set _shutdown_event."""
+        executor = OpenClawExecutor(dry_run=True)
+        assert not executor._shutdown_event.is_set()
+        executor.request_shutdown()
+        assert executor._shutdown_event.is_set()
+
+    def test_request_shutdown_logs_active_session(self, caplog):
+        """request_shutdown() must log the orphaned session key when active."""
+        import logging
+        executor = OpenClawExecutor(dry_run=True)
+        executor._active_session_key = "sess-orphan-999"
+
+        with caplog.at_level(logging.WARNING, logger="orchestration_engine.openclaw_executor"):
+            executor.request_shutdown()
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("sess-orphan-999" in m for m in messages), (
+            f"Expected orphaned session key in warning. Got: {messages}"
+        )
+
+    def test_cancel_active_session_noop_without_session(self):
+        """cancel_active_session() must be a no-op when no session is active."""
+        executor = OpenClawExecutor(dry_run=True)
+        executor._active_session_key = None
+
+        # Should not raise
+        executor.cancel_active_session()
+        assert executor._active_session_key is None
+
+    def test_cancel_active_session_calls_sessions_stop(self):
+        """cancel_active_session() must invoke sessions_stop via gateway."""
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789",
+            gateway_token="test-token",
+        )
+        executor._active_session_key = "sess-to-cancel"
+
+        with patch.object(executor, "_invoke_tool") as mock_invoke:
+            mock_invoke.return_value = {"content": []}
+            executor.cancel_active_session()
+
+        mock_invoke.assert_called_once_with(
+            "sessions_stop", {"sessionKey": "sess-to-cancel"}
+        )
+        assert executor._active_session_key is None
+
+    def test_cancel_active_session_clears_key_even_on_error(self):
+        """cancel_active_session() must clear _active_session_key even when sessions_stop fails."""
+        executor = OpenClawExecutor(dry_run=True)
+        executor._active_session_key = "sess-fail-stop"
+
+        with patch.object(
+            executor,
+            "_invoke_tool",
+            side_effect=RuntimeError("sessions_stop not supported"),
+        ):
+            # Must not raise
+            executor.cancel_active_session()
+
+        assert executor._active_session_key is None
+
+    def test_shutdown_event_interrupts_poll_loop(self, sample_task):
+        """Setting _shutdown_event must cause _run_session() to raise RuntimeError."""
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789",
+            gateway_token="test-token",
+        )
+
+        spawn_response = {
+            "ok": True,
+            "result": {
+                "details": {"childSessionKey": "sess-interrupt-001"},
+                "content": [],
+            },
+        }
+
+        call_count = [0]
+
+        def mock_post(url, body):
+            call_count[0] += 1
+            if "sessions_spawn" in str(body):
+                # Set the shutdown event just after spawn — simulates SIGTERM
+                executor._shutdown_event.set()
+                return spawn_response
+            # sessions_history call (should never reach here)
+            return {"ok": True, "result": {"content": []}}
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            with pytest.raises(RuntimeError, match="shutdown request"):
+                executor._run_session(
+                    "test prompt", "anthropic/claude-haiku-4-5-20251001", None
+                )
+
+        # Session key must be set during spawn (before the shutdown check)
+        # and then the error is raised; the key is NOT cleared on error path
+        # since we raise before normal completion.
+
+    def test_active_session_key_set_after_spawn(self, sample_task):
+        """_active_session_key must be set immediately after sessions_spawn succeeds."""
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789",
+            gateway_token="test-token",
+        )
+
+        spawn_response = {
+            "ok": True,
+            "result": {
+                "details": {"childSessionKey": "sess-track-001"},
+                "content": [],
+            },
+        }
+
+        captured_key = []
+
+        def mock_post(url, body):
+            if "sessions_spawn" in str(body):
+                return spawn_response
+            # On first poll check we capture _active_session_key then trigger shutdown
+            captured_key.append(executor._active_session_key)
+            executor._shutdown_event.set()
+            return {"ok": True, "result": {"content": []}}
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            with pytest.raises(RuntimeError):
+                executor._run_session(
+                    "test prompt", "anthropic/claude-haiku-4-5-20251001", None
+                )
+
+        assert "sess-track-001" in captured_key, (
+            f"Expected _active_session_key to be set after spawn. Got: {captured_key}"
+        )
+
+    def test_active_session_key_cleared_after_successful_completion(self):
+        """_active_session_key must be cleared to None after a successful session."""
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789",
+            gateway_token="test-token",
+        )
+
+        completed_message = {
+            "role": "assistant",
+            "content": "Pipeline complete output.",
+            "stopReason": "end_turn",
+            "usage": {"totalTokens": 100},
+        }
+        history_response = {
+            "ok": True,
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps({"messages": [completed_message]}),
+                    }
+                ]
+            },
+        }
+
+        def mock_post(url, body):
+            if "sessions_spawn" in str(body):
+                return {
+                    "ok": True,
+                    "result": {
+                        "details": {"childSessionKey": "sess-complete-001"},
+                        "content": [],
+                    },
+                }
+            if "sessions_history" in str(body):
+                return history_response
+            # sessions_list for token count
+            return {
+                "ok": True,
+                "result": {"content": [{"type": "text", "text": "[]"}]},
+            }
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            output, tokens = executor._run_session(
+                "test prompt", "anthropic/claude-haiku-4-5-20251001", None
+            )
+
+        assert executor._active_session_key is None
+        assert "Pipeline complete output." in output
