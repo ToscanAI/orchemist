@@ -963,6 +963,95 @@ def post_failure_summary_comment(
 
 
 # ---------------------------------------------------------------------------
+# post_result_to_issue — unified dispatch facade (Issue #5.1.4)
+# ---------------------------------------------------------------------------
+
+_RESULT_TEXT_MAX_CHARS = 65_000
+
+
+def post_result_to_issue(
+    repo: str,
+    issue_number: int,
+    run_id: str,
+    final_status: str,
+    classification_type: str,
+    result_text: str,
+    branch_name: Optional[str] = None,
+    pr_title: Optional[str] = None,
+    error_message: Optional[str] = None,
+    diagnosis: Optional[object] = None,
+) -> Optional[str]:
+    """Unified entry point: post a pipeline result back to the triggering issue.
+
+    Selects the correct posting path based on *final_status* and
+    *classification_type*:
+
+    - ``final_status == 'failed'`` → :func:`post_failure_summary_comment`
+    - ``classification_type`` in ``{'bug', 'feature', 'refactor'}`` →
+      :func:`create_pr_for_issue`
+    - ``classification_type`` in ``{'content', 'docs', 'research'}`` →
+      :func:`post_pipeline_result_comment` (result_text truncated to 65 000 chars)
+    - Any other type → returns ``None``
+
+    Args:
+        repo:                Repository slug (e.g. ``"owner/repo"``).
+        issue_number:        GitHub issue number.
+        run_id:              Pipeline run ID for traceability.
+        final_status:        Terminal status string (e.g. ``"success"``, ``"failed"``).
+        classification_type: Classification type (e.g. ``"feature"``, ``"research"``).
+        result_text:         Main pipeline output text; truncated to 65 000 chars for
+                             content/docs/research paths.
+        branch_name:         Branch name for PR creation (code pipelines).
+        pr_title:            PR title (code pipelines).
+        error_message:       Error message (failed pipelines).
+        diagnosis:           Optional diagnosis object/dict (failed pipelines).
+
+    Returns:
+        URL string of the created PR or comment, or ``None`` on failure/no-op.
+
+    Example::
+
+        url = post_result_to_issue(
+            repo="owner/repo",
+            issue_number=42,
+            run_id="abc-123",
+            final_status="success",
+            classification_type="research",
+            result_text="Here are the findings...",
+        )
+    """
+    if final_status == 'failed':
+        return post_failure_summary_comment(
+            repo=repo,
+            issue_number=issue_number,
+            error_message=error_message or 'Unknown error',
+            run_id=run_id,
+            diagnosis=diagnosis,
+        )
+
+    if classification_type in ('bug', 'feature', 'refactor'):
+        return create_pr_for_issue(
+            repo=repo,
+            issue_number=issue_number,
+            branch_name=branch_name or f"feat/issue-{issue_number}",
+            title=pr_title or f"Pipeline result for #{issue_number}",
+            body=result_text,
+        )
+
+    if classification_type in ('content', 'docs', 'research'):
+        truncated = result_text[:_RESULT_TEXT_MAX_CHARS]
+        return post_pipeline_result_comment(
+            repo=repo,
+            issue_number=issue_number,
+            classification_type=classification_type,
+            result_text=truncated,
+            run_id=run_id,
+        )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # IssueAutomation — orchestrates classify → select → extract → launch
 # ---------------------------------------------------------------------------
 
