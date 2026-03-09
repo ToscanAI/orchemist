@@ -1687,3 +1687,123 @@ class TestRunPostPipelineReviewAnalysis:
             review_outcomes, audit_results, calibration_outcomes = self._call(db)
         # calibration_outcomes should be returned correctly
         assert len(calibration_outcomes) == 1
+
+
+# ===========================================================================
+# Tests for gate file creation during daemon startup (Issue #495)
+# ===========================================================================
+
+
+class TestDaemonGateFileCreation:
+    """Verify that run_daemon() calls GitContext.create_gate when initial_input
+    contains a branch_name, and skips it when no branch is provided."""
+
+    def _make_run_record(self, tmp_path, input_json: str, run_id: str = "gate-run-01") -> tuple:
+        """Helper: create a minimal DB + run record and return (run_id, db_path, out_dir)."""
+        from orchestration_engine.db import Database
+
+        template_yaml = tmp_path / "gate-template.yaml"
+        template_yaml.write_text("""\
+id: gate-test-pipeline
+name: Gate Test
+version: "1.0.0"
+description: Used for gate file creation tests
+phases:
+  - id: build
+    name: Build
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Do something with {input[topic]}
+""")
+
+        out_dir = tmp_path / f"out-{run_id}"
+        out_dir.mkdir()
+        db_path = tmp_path / f"{run_id}.db"
+        db = Database(db_path)
+        db.insert_pipeline_run({
+            "run_id": run_id,
+            "template_path": str(template_yaml),
+            "template_id": "gate-test-pipeline",
+            "input_json": input_json,
+            "mode": "dry-run",
+            "output_dir": str(out_dir),
+        })
+        return run_id, str(db_path), out_dir
+
+    def _preflight_pass_patch(self):
+        """Return a context manager that makes preflight always pass."""
+        from unittest.mock import MagicMock
+
+        mock_result = MagicMock()
+        mock_result.passed = True
+        mock_result.warnings = []
+        mock_result.summary.return_value = "all checks passed"
+
+        mock_checker = MagicMock()
+        mock_checker.run_all.return_value = mock_result
+
+        return patch(
+            "orchestration_engine.preflight.PreflightChecker",
+            return_value=mock_checker,
+        )
+
+    def test_create_gate_called_when_branch_name_present(self, tmp_path):
+        """When initial_input has branch_name, create_gate is called with correct args."""
+        from orchestration_engine.daemon import run_daemon
+
+        input_data = {
+            "topic": "AI testing",
+            "branch_name": "fix/gate-issue-495",
+            "repo_path": str(tmp_path),  # valid path so preflight doesn't reject it
+            "issue_number": 495,
+        }
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path, json.dumps(input_data), run_id="gate-run-branch"
+        )
+
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.git_integration.GitContext.create_gate") as mock_create_gate:
+            run_daemon(run_id, db_path)
+
+        mock_create_gate.assert_called_once()
+        call_kwargs = mock_create_gate.call_args
+        assert call_kwargs.kwargs["run_id"] == "gate-run-branch"
+        assert call_kwargs.kwargs["branch_name"] == "fix/gate-issue-495"
+        assert call_kwargs.kwargs["issue_number"] == 495
+
+    def test_create_gate_called_with_branch_key(self, tmp_path):
+        """Branch name is also picked up from the 'branch' key in initial_input."""
+        from orchestration_engine.daemon import run_daemon
+
+        input_data = {
+            "topic": "AI testing",
+            "branch": "feat/alt-key",
+        }
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path, json.dumps(input_data), run_id="gate-run-alt"
+        )
+
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.git_integration.GitContext.create_gate") as mock_create_gate:
+            run_daemon(run_id, db_path)
+
+        mock_create_gate.assert_called_once()
+        call_kwargs = mock_create_gate.call_args
+        assert call_kwargs.kwargs["branch_name"] == "feat/alt-key"
+
+    def test_create_gate_skipped_when_no_branch(self, tmp_path):
+        """When initial_input has no branch key, create_gate is NOT called."""
+        from orchestration_engine.daemon import run_daemon
+
+        input_data = {"topic": "no branch here"}
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path, json.dumps(input_data), run_id="gate-run-nobranch"
+        )
+
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.git_integration.GitContext.create_gate") as mock_create_gate:
+            run_daemon(run_id, db_path)
+
+        mock_create_gate.assert_not_called()

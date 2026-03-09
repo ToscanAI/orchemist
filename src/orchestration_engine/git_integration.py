@@ -486,6 +486,87 @@ class GitContext:
         return gate_data
 
     @classmethod
+    def create_gate(
+        cls,
+        run_id: str,
+        branch_name: str,
+        repo_path: Optional[str] = None,
+        pipeline_id: str = "",
+        base_branch: str = "main",
+        issue_number: Optional[int] = None,
+        output_dir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a minimal gate file without requiring a full GitContext lifecycle.
+
+        This classmethod is intended for use by the daemon, which does not
+        instantiate a GitContext or call lifecycle methods.  It persists a
+        minimal gate record so that subsequent classmethod calls such as
+        :meth:`load_gate`, :meth:`update_gate_scoring`, and
+        :meth:`approve_gate` can locate the run.
+
+        Files are written to:
+
+        - ``~/.orch/gates/<run_id>.json`` (central registry, always)
+        - ``<output_dir>/_gate.json`` (output-dir copy, when *output_dir* is given)
+
+        Args:
+            run_id: Unique pipeline run identifier.
+            branch_name: Feature branch name for the PR.
+            repo_path: Local filesystem path to the git repository, or ``None``.
+            pipeline_id: Template/pipeline identifier string.
+            base_branch: Target branch for the eventual PR (default ``"main"``).
+            issue_number: GitHub issue number linked to this run, or ``None``.
+            output_dir: Path to the run output directory, or ``None``.
+
+        Returns:
+            The gate data dict that was written to disk.
+        """
+        gate_data: Dict[str, Any] = {
+            "run_id": run_id,
+            "pipeline_id": pipeline_id,
+            "status": "awaiting_approval",
+            "branch": branch_name,
+            "base_branch": base_branch,
+            "diff_stats": "",
+            "commits": [],
+            "output_dir": str(output_dir) if output_dir else "",
+            "repo_path": str(repo_path) if repo_path else "",
+            "created_at": datetime.now(tz=timezone.utc).isoformat(),
+            "approve_command": f"orch gate approve {run_id}",
+            "reject_command": f"orch gate reject {run_id}",
+            "create_pr": True,
+            "issue_number": issue_number,
+            "scoring_status": None,
+            "scoring_score": None,
+        }
+
+        gate_json = json.dumps(gate_data, indent=2)
+
+        # Write to output dir copy when available
+        if output_dir:
+            try:
+                out_path = Path(output_dir)
+                out_path.mkdir(parents=True, exist_ok=True)
+                (out_path / "_gate.json").write_text(gate_json)
+            except OSError as exc:
+                logger.warning("Git: create_gate — could not write to output_dir: %s", exc)
+
+        # Write to central gates registry
+        try:
+            cls.GATES_DIR.mkdir(parents=True, exist_ok=True)
+            (cls.GATES_DIR / f"{run_id}.json").write_text(gate_json)
+        except OSError as exc:
+            logger.warning("Git: create_gate — could not write to ~/.orch/gates/: %s", exc)
+
+        logger.info(
+            "Git: create_gate — gate file created for run_id=%s branch=%s",
+            run_id,
+            branch_name,
+        )
+
+        return gate_data
+
+    @classmethod
     def load_gate(cls, run_id: str) -> Optional[Dict[str, Any]]:
         """Load a gate file by run_id from the central registry.
 

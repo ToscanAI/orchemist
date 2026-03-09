@@ -204,6 +204,36 @@ def run_daemon(run_id: str, db_path: str) -> None:
         _fail(db, run_id, pid_path, f"Preflight error (fail-safe): {exc}")
         return
 
+    # --- Create gate file for git-enabled pipelines (Issue #495) ---
+    # The daemon never instantiates a full GitContext, so it must explicitly
+    # create the gate file here — before sequencer.execute() — so that the
+    # auto-merge path (load_gate / update_gate_scoring) can find the run.
+    _gate_branch: str = (
+        initial_input.get('branch_name') or initial_input.get('branch') or ''
+    )
+    if _gate_branch:
+        try:
+            from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+            _gate_repo_path: Optional[str] = (
+                initial_input.get('repo_path') or initial_input.get('repo') or None
+            )
+            _gate_issue_raw = initial_input.get('issue_number')
+            _gate_issue: Optional[int] = int(_gate_issue_raw) if _gate_issue_raw is not None else None
+            _gate_pipeline_id: str = run.get('template_id', '')
+            _GitContext.create_gate(
+                run_id=run_id,
+                branch_name=_gate_branch,
+                repo_path=_gate_repo_path,
+                pipeline_id=_gate_pipeline_id,
+                output_dir=str(output_dir),
+                issue_number=_gate_issue,
+            )
+            logger.info("Gate file created for run_id=%s branch=%s", run_id, _gate_branch)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Gate file creation failed (non-fatal): %s", exc)
+    else:
+        logger.debug("No branch_name in initial_input — skipping gate file creation")
+
     # --- Extract trust routing context (Issue #4.2.3) ---
     # template_id comes from the run record; repo and task_type from initial_input.
     # repo_url like "https://github.com/owner/repo" is converted to "owner/repo".
