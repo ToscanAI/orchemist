@@ -180,6 +180,7 @@ class Database:
             self._create_table_trust_profiles(conn)        # Issue #4.2.1
             self._create_table_trust_adjustments(conn)     # Issue #4.2.1
             self._create_table_issue_pipeline_map(conn)    # Issue #5.1.1
+            self._create_table_cost_tracking(conn)         # Issue #5.2.1
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -692,6 +693,7 @@ class Database:
             ("015_add_reviewer_calibration_table", self._migration_015_add_reviewer_calibration_table),  # Issue #4.1.5
             ("016_add_trust_tables", self._migration_016_add_trust_tables),                              # Issue #4.2.1
             ("017_add_issue_pipeline_map", self._migration_017_add_issue_pipeline_map),               # Issue #5.1.1
+            ("018_add_cost_tracking_table", self._migration_018_add_cost_tracking_table),             # Issue #5.2.1
         ]
         
         # Apply pending migrations
@@ -2318,6 +2320,49 @@ class Database:
         Safe to run on both fresh and existing databases.
         """
         self._create_table_issue_pipeline_map(conn)
+
+    def _create_table_cost_tracking(self, conn: sqlite3.Connection) -> None:
+        """Create cost_tracking table for per-phase cost recording (Issue #5.2.1).
+
+        Called from ``_initialize_database`` so fresh databases get the table
+        without requiring a migration run.  Idempotent via
+        ``CREATE TABLE IF NOT EXISTS``.
+
+        Columns:
+            id:            Auto-increment primary key.
+            run_id:        Foreign key to ``pipeline_runs.run_id``.
+            phase_id:      Phase identifier within the run (e.g. ``"spec"``).
+            model:         Model identifier used for the phase.
+            input_tokens:  Number of input/prompt tokens consumed.
+            output_tokens: Number of output/completion tokens generated.
+            cost_usd:      Computed USD cost for this phase execution.
+            created_at:    UTC timestamp when the record was inserted.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS cost_tracking (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id        TEXT NOT NULL,
+                phase_id      TEXT NOT NULL,
+                model         TEXT NOT NULL,
+                input_tokens  INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd      REAL NOT NULL DEFAULT 0.0,
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(run_id) REFERENCES pipeline_runs(run_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_cost_tracking_run_id
+            ON cost_tracking(run_id, created_at)
+        """)
+
+    def _migration_018_add_cost_tracking_table(self, conn: sqlite3.Connection) -> None:
+        """Add cost_tracking table for per-phase cost recording (Issue #5.2.1).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+        Safe to run on both fresh and existing databases.
+        """
+        self._create_table_cost_tracking(conn)
 
     # ------------------------------------------------------------------
     # Issue Pipeline Map CRUD (Issue #5.1.1)

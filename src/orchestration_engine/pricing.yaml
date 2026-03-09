@@ -1,0 +1,58 @@
+# pricing.yaml — LLM model pricing table (Issue #5.2.1)
+#
+# Prices are in USD per million tokens (standard Anthropic pricing as of 2025).
+# Includes both bare model names and "anthropic/" prefixed names (as used in
+# config.py tier_mappings and OpenClaw session spawning).
+#
+# A "default" fallback entry is used for any model not explicitly listed.
+
+models:
+  # -------------------------------------------------------------------------
+  # Claude Haiku 4.5 — cheapest / fastest
+  # -------------------------------------------------------------------------
+  claude-haiku-4-5-20241022:
+    input_per_million: 0.25
+    output_per_million: 1.25
+
+  anthropic/claude-haiku-4-5-20241022:
+    input_per_million: 0.25
+    output_per_million: 1.25
+
+  # -------------------------------------------------------------------------
+  # Claude Sonnet 4 — mid-range
+  # -------------------------------------------------------------------------
+  claude-sonnet-4-20250514:
+    input_per_million: 3.0
+    output_per_million: 15.0
+
+  anthropic/claude-sonnet-4-20250514:
+    input_per_million: 3.0
+    output_per_million: 15.0
+
+  # claude-sonnet-4-6 alias (used in TOOLS.md tier system)
+  claude-sonnet-4-6:
+    input_per_million: 3.0
+    output_per_million: 15.0
+
+  anthropic/claude-sonnet-4-6:
+    input_per_million: 3.0
+    output_per_million: 15.0
+
+  # -------------------------------------------------------------------------
+  # Claude Opus 4.6 — most capable / most expensive
+  # -------------------------------------------------------------------------
+  claude-opus-4-6:
+    input_per_million: 15.0
+    output_per_million: 75.0
+
+  anthropic/claude-opus-4-6:
+    input_per_million: 15.0
+    output_per_million: 75.0
+
+  # -------------------------------------------------------------------------
+  # Fallback — used when the requested model is not in this table.
+  # Defaults to Sonnet-class pricing as a conservative estimate.
+  # -------------------------------------------------------------------------
+  default:
+    input_per_million: 3.0
+    output_per_million: 15.0
