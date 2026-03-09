@@ -1898,6 +1898,139 @@ class TestErrorPaths:
 
 
 # ===========================================================================
+# Gateway-Retryable Error Tests (Issue #482)
+# ===========================================================================
+
+
+class TestGatewayRetryableErrors:
+    """Executor should continue polling on gateway-retryable errors (overloaded, rate limit)."""
+
+    def test_overloaded_error_continues_polling(self, executor, sample_task):
+        """stopReason='error' with overloaded_error → keep polling, not terminal."""
+        session_key = "sess-overloaded-retry"
+        call_count = {"n": 0}
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return _spawn_resp(session_key)
+            if body.get("tool") == "sessions_list":
+                return _list_resp_empty()
+            call_count["n"] += 1
+            if call_count["n"] <= 2:
+                # First 2 polls: overloaded error (gateway retrying)
+                return {
+                    "ok": True,
+                    "result": {"content": [{"type": "text", "text": json.dumps({
+                        "sessionKey": session_key,
+                        "messages": [
+                            {"role": "assistant", "content": [],
+                             "stopReason": "error",
+                             "errorMessage": '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'},
+                        ],
+                    })}]},
+                }
+            # Third poll: gateway succeeded
+            return _done_resp(session_key, "overloaded then succeeded")
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), patch(
+            "orchestration_engine.openclaw_executor.time.sleep"
+        ):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.SUCCESS
+        assert "overloaded then succeeded" in result.result.get("text", "")
+        assert call_count["n"] >= 3, "Should have polled past the overloaded errors"
+
+    def test_rate_limit_error_continues_polling(self, executor, sample_task):
+        """stopReason='error' with rate_limit_error → keep polling."""
+        session_key = "sess-ratelimit-retry"
+        call_count = {"n": 0}
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return _spawn_resp(session_key)
+            if body.get("tool") == "sessions_list":
+                return _list_resp_empty()
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return {
+                    "ok": True,
+                    "result": {"content": [{"type": "text", "text": json.dumps({
+                        "sessionKey": session_key,
+                        "messages": [
+                            {"role": "assistant", "content": [],
+                             "stopReason": "error",
+                             "errorMessage": '{"type":"error","error":{"type":"rate_limit_error","message":"Rate limited"}}'},
+                        ],
+                    })}]},
+                }
+            return _done_resp(session_key, "rate limited then succeeded")
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), patch(
+            "orchestration_engine.openclaw_executor.time.sleep"
+        ):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.SUCCESS
+        assert call_count["n"] >= 2
+
+    def test_permanent_error_still_terminal(self, executor, sample_task):
+        """stopReason='error' WITHOUT retryable error type → still terminal (FAILED)."""
+        session_key = "sess-permanent-error"
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return _spawn_resp(session_key)
+            if body.get("tool") == "sessions_list":
+                return _list_resp_empty()
+            return {
+                "ok": True,
+                "result": {"content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": [
+                        {"role": "assistant", "content": [],
+                         "stopReason": "error",
+                         "errorMessage": '{"type":"error","error":{"type":"invalid_request_error","message":"Bad request"}}'},
+                    ],
+                })}]},
+            }
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), patch(
+            "orchestration_engine.openclaw_executor.time.sleep"
+        ):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.FAILED
+
+    def test_error_without_message_still_terminal(self, executor, sample_task):
+        """stopReason='error' with no errorMessage → terminal (backward compat)."""
+        session_key = "sess-no-errmsg"
+
+        def mock_post(url, body):
+            if body.get("tool") == "sessions_spawn":
+                return _spawn_resp(session_key)
+            if body.get("tool") == "sessions_list":
+                return _list_resp_empty()
+            return {
+                "ok": True,
+                "result": {"content": [{"type": "text", "text": json.dumps({
+                    "sessionKey": session_key,
+                    "messages": [
+                        {"role": "assistant", "content": [],
+                         "stopReason": "error"},
+                    ],
+                })}]},
+            }
+
+        with patch.object(executor, "_http_post", side_effect=mock_post), patch(
+            "orchestration_engine.openclaw_executor.time.sleep"
+        ):
+            result = executor.execute(sample_task)
+
+        assert result.state == TaskState.FAILED
+
+
+# ===========================================================================
 # Constant value guard tests
 # ===========================================================================
 

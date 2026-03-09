@@ -1180,6 +1180,26 @@ class OpenClawExecutor(TaskExecutor):
                 logger.debug(f"Session {session_key}: stopReason='{stop}', still running...")
                 continue
 
+            # Issue #482: Don't treat gateway-retryable API errors as terminal.
+            # The gateway retries overloaded/rate-limit errors internally,
+            # producing new assistant messages on success. Continue polling
+            # to capture them. The executor's timeout acts as safety net.
+            if stop == "error":
+                error_msg = last_assistant.get("errorMessage", "")
+                _GATEWAY_RETRYABLE_ERRORS = {
+                    "overloaded_error",
+                    "rate_limit_error",
+                    "api_error",
+                }
+                if any(err_type in error_msg for err_type in _GATEWAY_RETRYABLE_ERRORS):
+                    logger.debug(
+                        "Session %s: stopReason='error' with gateway-retryable "
+                        "error (%s), continuing to poll...",
+                        session_key,
+                        error_msg[:120],
+                    )
+                    continue
+
             is_error = stop in ("error", "max_tokens")
             if is_error:
                 logger.warning(
