@@ -234,6 +234,107 @@ class TestRunAll:
 # TestEnsureBranchPushed — Issue #487
 # ---------------------------------------------------------------------------
 
+class TestCheckBranchPushed:
+    """Tests for PostflightChecker._check_branch_pushed() — Issue #487."""
+
+    def _make_checker(self, input_overrides=None):
+        data = _valid_input()
+        if input_overrides:
+            data.update(input_overrides)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            return PostflightChecker(
+                input_data=data,
+                run_id="test-push",
+                output_dir=Path(tmpdir),
+            )
+
+    def test_branch_on_remote_passes(self):
+        """ensure_branch_pushed returns True → check passes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=_valid_input(),
+                run_id="test-push",
+                output_dir=Path(tmpdir),
+            )
+            result = PostflightResult()
+            with patch(
+                "orchestration_engine.postflight.ensure_branch_pushed",
+                return_value=True,
+            ) as mock_ebp:
+                checker._check_branch_pushed(result)
+            mock_ebp.assert_called_once_with("/tmp/fake-repo", "feat/test")
+            checks = [c for c in result.checks if c.name == "branch_pushed"]
+            assert len(checks) == 1
+            assert checks[0].passed is True
+            assert "feat/test" in checks[0].message
+
+    def test_push_failure_adds_warning(self):
+        """ensure_branch_pushed returns False → check fails (advisory)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=_valid_input(),
+                run_id="test-push",
+                output_dir=Path(tmpdir),
+            )
+            result = PostflightResult()
+            with patch(
+                "orchestration_engine.postflight.ensure_branch_pushed",
+                return_value=False,
+            ):
+                checker._check_branch_pushed(result)
+            checks = [c for c in result.checks if c.name == "branch_pushed"]
+            assert len(checks) == 1
+            assert checks[0].passed is False
+            assert len(result.warnings) == 1
+
+    def test_missing_repo_path_adds_warning(self):
+        """Missing repo_path in input → check item added, no subprocess."""
+        data = _valid_input()
+        data['repo_path'] = ''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=data,
+                run_id="test-push",
+                output_dir=Path(tmpdir),
+            )
+            result = PostflightResult()
+            with patch(
+                "orchestration_engine.postflight.ensure_branch_pushed"
+            ) as mock_ebp:
+                checker._check_branch_pushed(result)
+            mock_ebp.assert_not_called()
+            checks = [c for c in result.checks if c.name == "branch_pushed"]
+            assert len(checks) == 1
+            assert checks[0].passed is False
+
+    def test_run_all_includes_branch_pushed_check(self):
+        """run_all() must call _check_branch_pushed() before _build_github_comment()."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=_valid_input(),
+                run_id="test-run-all",
+                output_dir=Path(tmpdir),
+                completed_phases=["spec", "implement", "review", "test"],
+                scoring_passed=True,
+                scoring_score=0.90,
+            )
+            with patch("subprocess.run") as mock_run:
+                # ls-remote: branch exists; gh comment: success
+                mock_run.return_value = MagicMock(
+                    returncode=0,
+                    stdout="feat/test\n",
+                    stderr="",
+                )
+                result = checker.run_all()
+            check_names = [c.name for c in result.checks]
+            assert "branch_pushed" in check_names
+            # branch_pushed must appear before github_comment in the check list
+            bp_idx = check_names.index("branch_pushed")
+            if "github_comment" in check_names:
+                gc_idx = check_names.index("github_comment")
+                assert bp_idx < gc_idx
+
+
 class TestEnsureBranchPushed:
     """Unit tests for ensure_branch_pushed()."""
 

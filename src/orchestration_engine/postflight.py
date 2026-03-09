@@ -156,6 +156,7 @@ class PostflightChecker:
 
         self._check_test_regression(result)
         self._check_phase_completeness(result)
+        self._check_branch_pushed(result)
         self._build_github_comment(result)
 
         return result
@@ -227,6 +228,41 @@ class PostflightChecker:
                 name="phase_completeness",
                 passed=True,
                 message=f"All {len(expected_phases)} core phases completed",
+            ))
+
+    def _check_branch_pushed(self, result: PostflightResult) -> None:
+        """Verify the feature branch exists on the remote; auto-push if missing.
+
+        Calls :func:`ensure_branch_pushed` with ``repo_path`` and
+        ``branch_name`` from the pipeline input.  Records a
+        :class:`PostflightCheckItem` regardless of outcome so the result is
+        always visible in the GitHub comment.
+
+        Issue #487.
+        """
+        repo_path = self.input_data.get('repo_path', '')
+        branch_name = self.input_data.get('branch_name', '')
+
+        if not repo_path or not branch_name:
+            result.add_check(PostflightCheckItem(
+                name="branch_pushed",
+                passed=False,
+                message="Cannot verify remote branch: repo_path or branch_name missing from input",
+            ))
+            return
+
+        pushed = ensure_branch_pushed(repo_path, branch_name)
+        if pushed:
+            result.add_check(PostflightCheckItem(
+                name="branch_pushed",
+                passed=True,
+                message=f"Branch '{branch_name}' is on the remote",
+            ))
+        else:
+            result.add_check(PostflightCheckItem(
+                name="branch_pushed",
+                passed=False,
+                message=f"Branch '{branch_name}' could not be pushed to remote — PR creation may fail",
             ))
 
     def _build_github_comment(self, result: PostflightResult) -> None:
