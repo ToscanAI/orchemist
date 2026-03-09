@@ -188,6 +188,17 @@ class OpenClawExecutor(TaskExecutor):
         self.timeout_seconds = timeout_seconds if timeout_seconds else DEFAULT_TIMEOUT_SECONDS
         self.dry_run = dry_run
 
+        # ── Graceful shutdown support (Issue #488) ───────────────────────────
+        # Tracks the session key of the currently running sub-agent session.
+        # Set immediately after spawn; cleared on completion or error.
+        self._active_session_key: Optional[str] = None
+
+        # Event set by request_shutdown() to interrupt the polling loop.
+        # The SIGTERM handler in daemon.py calls request_shutdown() to propagate
+        # the shutdown signal into the executor without waiting for the session
+        # to complete naturally.
+        self._shutdown_event: threading.Event = threading.Event()
+
     @staticmethod
     def _read_token_from_config() -> Optional[str]:
         """Try to read gateway token from ~/.openclaw/openclaw.json."""
@@ -203,6 +214,66 @@ class OpenClawExecutor(TaskExecutor):
         except (json.JSONDecodeError, OSError, KeyError) as exc:
             logger.debug("Could not read token from openclaw.json: %s", exc)
         return None
+
+    # ------------------------------------------------------------------
+    # Graceful shutdown API (Issue #488)
+    # ------------------------------------------------------------------
+
+    def request_shutdown(self) -> None:
+        """Signal the executor to exit its polling loop on the next iteration.
+
+        Safe to call from a signal handler or another thread.  Sets
+        ``_shutdown_event`` so ``_run_session()`` breaks out of the polling
+        loop on the next ``time.sleep`` wakeup instead of blocking until the
+        sub-agent session completes or times out.
+
+        Logs the active session key (if any) so the orphaned session is
+        traceable in the daemon log.
+        """
+        self._shutdown_event.set()
+        if self._active_session_key:
+            logger.warning(
+                "Shutdown requested — active session %s will be abandoned",
+                self._active_session_key,
+            )
+        else:
+            logger.warning("Shutdown requested — no active session to abandon")
+
+    def cancel_active_session(self) -> None:
+        """Best-effort cancellation of the currently active sub-agent session.
+
+        1. Logs the orphaned session key for post-mortem debugging.
+        2. Attempts to invoke ``sessions_stop`` via the gateway API.  If the
+           gateway does not support this tool (or returns an error), the
+           failure is logged as a warning and silently swallowed — the daemon
+           must still exit cleanly.
+        3. Clears ``_active_session_key`` regardless of whether the stop
+           call succeeded.
+
+        This method is **idempotent**: calling it when no session is active is
+        a no-op.
+        """
+        session_key = self._active_session_key
+        if not session_key:
+            logger.debug("cancel_active_session: no active session to cancel")
+            return
+
+        logger.warning(
+            "Cancelling orphaned session: %s "
+            "(best-effort — session may continue running on gateway)",
+            session_key,
+        )
+        try:
+            self._invoke_tool("sessions_stop", {"sessionKey": session_key})
+            logger.info("sessions_stop succeeded for session %s", session_key)
+        except Exception as exc:
+            logger.warning(
+                "sessions_stop not supported or failed for session %s (non-fatal): %s",
+                session_key,
+                exc,
+            )
+        finally:
+            self._active_session_key = None
 
     # ------------------------------------------------------------------
     # TaskExecutor interface
@@ -1015,6 +1086,10 @@ class OpenClawExecutor(TaskExecutor):
 
         logger.info(f"Session spawned: {session_key}")
 
+        # Track the active session key so SIGTERM handler can identify and
+        # cancel orphaned sessions (Issue #488).
+        self._active_session_key = session_key
+
         # ── 2. Poll via /tools/invoke → sessions_history ─────────────
         loop_start: float = time.monotonic()
         deadline: float = loop_start + effective_timeout
@@ -1044,6 +1119,20 @@ class OpenClawExecutor(TaskExecutor):
 
         while True:
             now: float = time.monotonic()
+
+            # ── Shutdown check (Issue #488) ───────────────────────────────
+            # Checked before the deadline so SIGTERM immediately breaks the
+            # loop without waiting for the next poll cycle.  The caller's
+            # exception handler records the session key as orphaned.
+            if self._shutdown_event.is_set():
+                logger.warning(
+                    "Shutdown event set — exiting poll loop for session %s "
+                    "(session may still be running on gateway)",
+                    session_key,
+                )
+                raise RuntimeError(
+                    f"Session {session_key} polling interrupted by shutdown request"
+                )
 
             # ── Deadline check (AC-3, AC-5) ──────────────────────────────
             # Evaluated on every iteration, including after successful but
@@ -1322,8 +1411,12 @@ class OpenClawExecutor(TaskExecutor):
                 )
                 err.partial_output = output  # type: ignore[attr-defined]
                 err.partial_tokens = total_tokens  # type: ignore[attr-defined]
+                self._active_session_key = None
                 raise err
 
+            # Session completed successfully — clear the tracked session key
+            # so cancel_active_session() becomes a no-op (Issue #488).
+            self._active_session_key = None
             return output, total_tokens
 
     @staticmethod
