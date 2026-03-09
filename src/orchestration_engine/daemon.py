@@ -1716,10 +1716,12 @@ def _post_github_result_hook(
 
         # --- Look up classification_type via DB (more authoritative than input) ---
         classification_type: Optional[str] = None
+        ipm_row_id: Optional[int] = None
         try:
             ipm_row = db.get_issue_classification_by_run_id(run_id)
             if ipm_row:
                 classification_type = ipm_row.get('classification_type')
+                ipm_row_id = ipm_row.get('id')
         except Exception as _db_exc:
             logger.warning(
                 "_post_github_result_hook: DB lookup failed (non-fatal): %s", _db_exc
@@ -1742,6 +1744,8 @@ def _post_github_result_hook(
                 logger.info(
                     "_post_github_result_hook: failure comment posted → %s", url
                 )
+                if ipm_row_id is not None:
+                    db.update_issue_classification_status(ipm_row_id, 'completed')
             else:
                 logger.warning(
                     "_post_github_result_hook: failure comment post returned None"
@@ -1776,13 +1780,15 @@ def _post_github_result_hook(
                 logger.info(
                     "_post_github_result_hook: PR created → %s", url
                 )
+                if ipm_row_id is not None:
+                    db.update_issue_classification_status(ipm_row_id, 'completed')
             else:
                 logger.warning(
                     "_post_github_result_hook: PR creation returned None"
                 )
 
         elif classification_type in ('content', 'docs', 'research'):
-            # Non-code pipeline — post output as comment.
+            # Non-code pipeline — post output as comment (truncated to 65k chars).
             _result_text = ""
             if phase_outputs:
                 _last_phase = list(phase_outputs.values())[-1]
@@ -1791,17 +1797,20 @@ def _post_github_result_hook(
                     or _last_phase.get('text', '')
                     or ''
                 )
+            _result_text = (_result_text or "*(No output text captured.)*")[:65_000]
             url = post_pipeline_result_comment(
                 repo=repo,
                 issue_number=issue_number,
                 classification_type=classification_type,
-                result_text=_result_text or "*(No output text captured.)*",
+                result_text=_result_text,
                 run_id=run_id,
             )
             if url:
                 logger.info(
                     "_post_github_result_hook: result comment posted → %s", url
                 )
+                if ipm_row_id is not None:
+                    db.update_issue_classification_status(ipm_row_id, 'completed')
             else:
                 logger.warning(
                     "_post_github_result_hook: result comment post returned None"

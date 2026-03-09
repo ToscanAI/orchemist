@@ -2421,6 +2421,24 @@ class Database:
             row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
 
+    def get_issue_pipeline_map_by_run_id(
+        self,
+        run_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the issue_pipeline_map row for *run_id* (Issue #5.1.4 public API).
+
+        Thin wrapper around :meth:`get_issue_classification_by_run_id` providing
+        the canonical name mandated by the spec.
+
+        Args:
+            run_id: Pipeline run ID (UUID string).
+
+        Returns:
+            Dict with all ``issue_pipeline_map`` columns, or ``None`` when no
+            matching row exists.
+        """
+        return self.get_issue_classification_by_run_id(run_id)
+
     def list_issue_classifications(
         self,
         repo: Optional[str] = None,
