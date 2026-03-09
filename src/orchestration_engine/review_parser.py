@@ -65,8 +65,11 @@ _ISSUE_RE = re.compile(
     r"^\s*\[([A-Za-z]+)\]\[([^\]]+)\]\s+(.+)$"
 )
 
-# Valid verdict tokens (exactly as they must appear on line 1)
-_VALID_VERDICTS = frozenset({"APPROVE", "REQUEST_CHANGES"})
+# Valid verdict tokens in explicit priority order — REQUEST_CHANGES first because
+# it is the safer default when a single line contains both tokens as substrings.
+# A tuple (not a frozenset) avoids non-deterministic iteration across Python
+# invocations (hash randomization), so precedence is always well-defined.
+_VALID_VERDICTS: tuple[str, ...] = ("REQUEST_CHANGES", "APPROVE")
 
 # Matches the opening (or closing) fence of a fenced code block.
 _CODE_BLOCK_RE = re.compile(r"^```")
@@ -89,6 +92,25 @@ _NEGATIVE_PREFIXES: tuple[str, ...] = (
     "isn't ",
     "is not ",
 )
+
+
+def _has_negative_prefix(prefix_region: str) -> bool:
+    """Return True if *prefix_region* ends with a negative qualifier.
+
+    Used to detect lines like "would not APPROVE" or "don't REQUEST_CHANGES"
+    that cite a verdict in the negative rather than asserting it.
+
+    Args:
+        prefix_region: The lowercased portion of the line *before* the verdict
+                       token (may include trailing spaces).
+
+    Returns:
+        ``True`` if the region ends with any entry in ``_NEGATIVE_PREFIXES``.
+    """
+    return any(
+        prefix_region.endswith(neg) or prefix_region.endswith(neg.rstrip())
+        for neg in _NEGATIVE_PREFIXES
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -237,13 +259,15 @@ def _smart_full_text_scan(lines: list[str]) -> Optional[str]:
         lower = stripped.lower()
         for verdict in _VALID_VERDICTS:
             verdict_lower = verdict.lower()
-            pos = lower.find(verdict_lower)
-            if pos == -1:
+            # Use word-boundary regex so that "disapprove", "unapproved",
+            # "preapprove", etc. do NOT falsely match as APPROVE.
+            m = re.search(r"\b" + re.escape(verdict_lower) + r"\b", lower)
+            if m is None:
                 continue
             # Check if any negative prefix appears immediately before the verdict
             # token (allowing spaces between prefix and token).
-            prefix_region = lower[:pos]
-            if any(prefix_region.endswith(neg) or prefix_region.endswith(neg.rstrip()) for neg in _NEGATIVE_PREFIXES):
+            prefix_region = lower[: m.start()]
+            if _has_negative_prefix(prefix_region):
                 logger.debug(
                     "review_parser: skipping negative-context verdict %r on line %r",
                     verdict,
@@ -255,26 +279,42 @@ def _smart_full_text_scan(lines: list[str]) -> Optional[str]:
 
 
 def _tail_weighted_scan(lines: list[str]) -> Optional[str]:
-    """Layer 2 — Scan the *last 20 non-blank lines* for a verdict token.
+    """Layer 2 — Scan the *last 20 non-blank, non-code-block lines* for a verdict.
 
     LLM reviewers often conclude with the verdict in the final paragraph.
-    This layer re-scans only the tail of the document (ignoring code blocks
-    and negative-prefix lines) to surface those late verdicts quickly.
+    This layer re-scans only the tail of the document (skipping fenced code
+    blocks and negative-prefix lines, matching the behaviour of Layer 1) to
+    surface those late verdicts quickly.
 
     Returns the first verdict found scanning from the *end*, or ``None``.
     """
-    non_blank = [ln.strip() for ln in lines if ln.strip()]
-    tail = non_blank[-20:] if len(non_blank) > 20 else non_blank
+    # Pre-filter: remove lines that live inside fenced code blocks so that a
+    # verdict token appearing only inside a ``` block is not falsely returned.
+    filtered: list[str] = []
+    in_code_block = False
+    for line in lines:
+        stripped = line.strip()
+        if _CODE_BLOCK_RE.match(stripped):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        if stripped:
+            filtered.append(stripped)
+
+    tail = filtered[-20:] if len(filtered) > 20 else filtered
     # Scan tail in reverse (bottom-up) to find the most-final verdict first.
     for stripped in reversed(tail):
         lower = stripped.lower()
         for verdict in _VALID_VERDICTS:
             verdict_lower = verdict.lower()
-            pos = lower.find(verdict_lower)
-            if pos == -1:
+            # Use word-boundary regex to prevent "disapprove" / "unapproved"
+            # from matching as APPROVE (same fix as Layer 1).
+            m = re.search(r"\b" + re.escape(verdict_lower) + r"\b", lower)
+            if m is None:
                 continue
-            prefix_region = lower[:pos]
-            if any(prefix_region.endswith(neg) or prefix_region.endswith(neg.rstrip()) for neg in _NEGATIVE_PREFIXES):
+            prefix_region = lower[: m.start()]
+            if _has_negative_prefix(prefix_region):
                 continue
             return verdict
     return None
