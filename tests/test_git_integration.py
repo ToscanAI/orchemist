@@ -668,6 +668,118 @@ def test_list_gates_empty(tmp_path: Path) -> None:
 
 
 # ===========================================================================
+# Tests for GitContext.create_gate (Issue #495)
+# ===========================================================================
+
+
+def test_create_gate_minimal(tmp_path: Path) -> None:
+    """create_gate with only run_id + branch_name writes a valid gate file."""
+    import json
+
+    original_gates_dir = GitContext.GATES_DIR
+    GitContext.GATES_DIR = tmp_path / "gates"
+    try:
+        gate = GitContext.create_gate(run_id="run-minimal", branch_name="feat/minimal")
+
+        assert gate["run_id"] == "run-minimal"
+        assert gate["branch"] == "feat/minimal"
+        assert gate["status"] == "awaiting_approval"
+        assert gate["base_branch"] == "main"
+        assert gate["scoring_status"] is None
+        assert gate["scoring_score"] is None
+        assert gate["commits"] == []
+        assert gate["diff_stats"] == ""
+
+        gate_file = GitContext.GATES_DIR / "run-minimal.json"
+        assert gate_file.exists()
+        on_disk = json.loads(gate_file.read_text())
+        assert on_disk["branch"] == "feat/minimal"
+    finally:
+        GitContext.GATES_DIR = original_gates_dir
+
+
+def test_create_gate_all_args(tmp_path: Path) -> None:
+    """create_gate with all optional args writes correct gate file content."""
+    import json
+
+    original_gates_dir = GitContext.GATES_DIR
+    GitContext.GATES_DIR = tmp_path / "gates"
+    out_dir = tmp_path / "output"
+    out_dir.mkdir()
+
+    try:
+        gate = GitContext.create_gate(
+            run_id="run-full",
+            branch_name="fix/issue-42",
+            repo_path="/home/user/myrepo",
+            pipeline_id="coding-pipeline-v1",
+            base_branch="develop",
+            issue_number=42,
+            output_dir=str(out_dir),
+        )
+
+        assert gate["run_id"] == "run-full"
+        assert gate["branch"] == "fix/issue-42"
+        assert gate["base_branch"] == "develop"
+        assert gate["pipeline_id"] == "coding-pipeline-v1"
+        assert gate["issue_number"] == 42
+        assert gate["repo_path"] == "/home/user/myrepo"
+        assert gate["output_dir"] == str(out_dir)
+
+        # Central registry file
+        registry_file = GitContext.GATES_DIR / "run-full.json"
+        assert registry_file.exists()
+        on_disk = json.loads(registry_file.read_text())
+        assert on_disk["issue_number"] == 42
+
+        # Output-dir copy
+        out_gate = out_dir / "_gate.json"
+        assert out_gate.exists()
+        out_data = json.loads(out_gate.read_text())
+        assert out_data["branch"] == "fix/issue-42"
+    finally:
+        GitContext.GATES_DIR = original_gates_dir
+
+
+def test_create_gate_no_output_dir(tmp_path: Path) -> None:
+    """create_gate without output_dir does not create an output-dir _gate.json."""
+    original_gates_dir = GitContext.GATES_DIR
+    GitContext.GATES_DIR = tmp_path / "gates"
+    try:
+        GitContext.create_gate(run_id="run-noop", branch_name="feat/no-out")
+
+        gate_file = GitContext.GATES_DIR / "run-noop.json"
+        assert gate_file.exists()
+
+        # No spurious _gate.json elsewhere
+        spurious = tmp_path / "_gate.json"
+        assert not spurious.exists()
+    finally:
+        GitContext.GATES_DIR = original_gates_dir
+
+
+def test_create_gate_then_load_gate(tmp_path: Path) -> None:
+    """load_gate can read back what create_gate wrote."""
+    original_gates_dir = GitContext.GATES_DIR
+    GitContext.GATES_DIR = tmp_path / "gates"
+    try:
+        GitContext.create_gate(
+            run_id="run-roundtrip",
+            branch_name="feat/roundtrip",
+            issue_number=99,
+        )
+
+        loaded = GitContext.load_gate("run-roundtrip")
+        assert loaded is not None
+        assert loaded["run_id"] == "run-roundtrip"
+        assert loaded["branch"] == "feat/roundtrip"
+        assert loaded["issue_number"] == 99
+        assert loaded["status"] == "awaiting_approval"
+    finally:
+        GitContext.GATES_DIR = original_gates_dir
+
+
+# ===========================================================================
 # Tests for GitContext.auto_merge_pr (Issue #350)
 # ===========================================================================
 
