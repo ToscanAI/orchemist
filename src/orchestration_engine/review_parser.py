@@ -48,6 +48,7 @@ __all__ = [
     "ReviewResult",
     "ReviewOutcome",
     "parse_review_output",
+    "extract_verdict",
 ]
 
 logger = logging.getLogger(__name__)
@@ -64,8 +65,52 @@ _ISSUE_RE = re.compile(
     r"^\s*\[([A-Za-z]+)\]\[([^\]]+)\]\s+(.+)$"
 )
 
-# Valid verdict tokens (exactly as they must appear on line 1)
-_VALID_VERDICTS = frozenset({"APPROVE", "REQUEST_CHANGES"})
+# Valid verdict tokens in explicit priority order — REQUEST_CHANGES first because
+# it is the safer default when a single line contains both tokens as substrings.
+# A tuple (not a frozenset) avoids non-deterministic iteration across Python
+# invocations (hash randomization), so precedence is always well-defined.
+_VALID_VERDICTS: tuple[str, ...] = ("REQUEST_CHANGES", "APPROVE")
+
+# Matches the opening (or closing) fence of a fenced code block.
+_CODE_BLOCK_RE = re.compile(r"^```")
+
+# Lowercase prefixes that indicate a verdict token is being cited in the
+# *negative* (e.g. "would not APPROVE", "don't REQUEST_CHANGES").
+# When any of these appear immediately before the verdict token (in the
+# lowercased line), the line is skipped to avoid false positives.
+_NEGATIVE_PREFIXES: tuple[str, ...] = (
+    "not ",
+    "don't ",
+    "do not ",
+    "would not ",
+    "wouldn't ",
+    "no need for ",
+    "rather than ",
+    "instead of ",
+    "avoid ",
+    "without ",
+    "isn't ",
+    "is not ",
+)
+
+
+def _has_negative_prefix(prefix_region: str) -> bool:
+    """Return True if *prefix_region* ends with a negative qualifier.
+
+    Used to detect lines like "would not APPROVE" or "don't REQUEST_CHANGES"
+    that cite a verdict in the negative rather than asserting it.
+
+    Args:
+        prefix_region: The lowercased portion of the line *before* the verdict
+                       token (may include trailing spaces).
+
+    Returns:
+        ``True`` if the region ends with any entry in ``_NEGATIVE_PREFIXES``.
+    """
+    return any(
+        prefix_region.endswith(neg) or prefix_region.endswith(neg.rstrip())
+        for neg in _NEGATIVE_PREFIXES
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +232,202 @@ class ReviewOutcome:
 
 
 # ---------------------------------------------------------------------------
+# Cascade helpers (private)
+# ---------------------------------------------------------------------------
+
+
+def _smart_full_text_scan(lines: list[str]) -> Optional[str]:
+    """Layer 1 — Scan *all* lines for a verdict token.
+
+    Skips:
+    - Lines inside fenced code blocks (toggled by ````` `` ` `` ``` `` fence lines).
+    - Lines where the verdict token is preceded by a negative prefix (to avoid
+      false positives like "would not APPROVE" or "don't REQUEST_CHANGES").
+
+    Returns the first unambiguous verdict found, or ``None`` if none is found.
+    """
+    in_code_block = False
+    for line in lines:
+        stripped = line.strip()
+        if _CODE_BLOCK_RE.match(stripped):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        for verdict in _VALID_VERDICTS:
+            verdict_lower = verdict.lower()
+            # Use word-boundary regex so that "disapprove", "unapproved",
+            # "preapprove", etc. do NOT falsely match as APPROVE.
+            m = re.search(r"\b" + re.escape(verdict_lower) + r"\b", lower)
+            if m is None:
+                continue
+            # Check if any negative prefix appears immediately before the verdict
+            # token (allowing spaces between prefix and token).
+            prefix_region = lower[: m.start()]
+            if _has_negative_prefix(prefix_region):
+                logger.debug(
+                    "review_parser: skipping negative-context verdict %r on line %r",
+                    verdict,
+                    stripped[:80],
+                )
+                continue
+            return verdict
+    return None
+
+
+def _tail_weighted_scan(lines: list[str]) -> Optional[str]:
+    """Layer 2 — Scan the *last 20 non-blank, non-code-block lines* for a verdict.
+
+    LLM reviewers often conclude with the verdict in the final paragraph.
+    This layer re-scans only the tail of the document (skipping fenced code
+    blocks and negative-prefix lines, matching the behaviour of Layer 1) to
+    surface those late verdicts quickly.
+
+    Returns the first verdict found scanning from the *end*, or ``None``.
+    """
+    # Pre-filter: remove lines that live inside fenced code blocks so that a
+    # verdict token appearing only inside a ``` block is not falsely returned.
+    filtered: list[str] = []
+    in_code_block = False
+    for line in lines:
+        stripped = line.strip()
+        if _CODE_BLOCK_RE.match(stripped):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        if stripped:
+            filtered.append(stripped)
+
+    tail = filtered[-20:] if len(filtered) > 20 else filtered
+    # Scan tail in reverse (bottom-up) to find the most-final verdict first.
+    for stripped in reversed(tail):
+        lower = stripped.lower()
+        for verdict in _VALID_VERDICTS:
+            verdict_lower = verdict.lower()
+            # Use word-boundary regex to prevent "disapprove" / "unapproved"
+            # from matching as APPROVE (same fix as Layer 1).
+            m = re.search(r"\b" + re.escape(verdict_lower) + r"\b", lower)
+            if m is None:
+                continue
+            prefix_region = lower[: m.start()]
+            if _has_negative_prefix(prefix_region):
+                continue
+            return verdict
+    return None
+
+
+def _haiku_extraction(text: str) -> Optional[str]:  # noqa: ARG001
+    """Layer 3 — Stub for future LLM-assisted verdict extraction.
+
+    In a future iteration this would call a lightweight model (Haiku) with
+    a zero-shot prompt: "What is the verdict in the following review?  Answer
+    with exactly one word: APPROVE or REQUEST_CHANGES."
+
+    Currently returns ``None`` (no-op) because making synchronous LLM calls
+    from inside the parser would introduce latency and external dependencies
+    inappropriate for a unit-testable utility module.
+
+    Args:
+        text: Full review text (unused in this stub).
+
+    Returns:
+        ``None`` — reserved for future implementation.
+    """
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Public cascade API
+# ---------------------------------------------------------------------------
+
+
+def extract_verdict(text: str) -> Optional[str]:
+    """Extract a verdict from review text using a 4-layer cascade strategy.
+
+    Each layer tries progressively harder extraction strategies before
+    falling back to ``None``.  The cascade stops as soon as any layer
+    succeeds.
+
+    **Layer 0 — Quick first-5-lines scan (existing behaviour)**
+        Replicates the legacy ``parse_review_output`` heuristic: scan up to
+        5 non-blank lines for an exact verdict word.  Fast and reliable for
+        well-formed reviews.
+
+    **Layer 1 — Smart full-text scan** (:func:`_smart_full_text_scan`)
+        Scans *all* lines, skipping fenced code blocks and lines where the
+        verdict is preceded by a negative prefix (e.g. "would not APPROVE").
+        Catches verdicts buried deep in prose.
+
+    **Layer 2 — Tail-weighted scan** (:func:`_tail_weighted_scan`)
+        Re-scans the final 20 non-blank lines from the bottom up.  Catches
+        "In conclusion… APPROVE" patterns near the end of long reviews.
+
+    **Layer 3 — Haiku extraction** (:func:`_haiku_extraction`)
+        Reserved for future LLM-assisted extraction.  Currently a no-op stub.
+
+    **Layer 4 — Fallback**
+        Returns ``None``.  A missing verdict triggers human review in the
+        auto-merge path.
+
+    Args:
+        text: Raw LLM output from the review phase.
+
+    Returns:
+        ``"APPROVE"``, ``"REQUEST_CHANGES"``, or ``None``.
+    """
+    if not isinstance(text, str):
+        try:
+            text = str(text)
+        except Exception:
+            text = ""
+
+    lines = text.splitlines()
+
+    # ── Layer 0: Quick first-5-lines scan (legacy behaviour) ─────────────────
+    _scan_limit = 5
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        first_word = stripped.split()[0].upper()
+        if first_word in _VALID_VERDICTS:
+            return first_word
+        _scan_limit -= 1
+        if _scan_limit <= 0:
+            break
+
+    # ── Layer 1: Smart full-text scan ─────────────────────────────────────────
+    verdict = _smart_full_text_scan(lines)
+    if verdict is not None:
+        logger.debug("review_parser: extract_verdict found %r via Layer 1 (full-text scan).", verdict)
+        return verdict
+
+    # ── Layer 2: Tail-weighted scan ───────────────────────────────────────────
+    verdict = _tail_weighted_scan(lines)
+    if verdict is not None:
+        logger.debug("review_parser: extract_verdict found %r via Layer 2 (tail scan).", verdict)
+        return verdict
+
+    # ── Layer 3: Haiku extraction (stub) ──────────────────────────────────────
+    verdict = _haiku_extraction(text)
+    if verdict is not None:
+        logger.debug("review_parser: extract_verdict found %r via Layer 3 (haiku).", verdict)
+        return verdict
+
+    # ── Layer 4: Fallback ─────────────────────────────────────────────────────
+    logger.warning(
+        "review_parser: extract_verdict could not determine verdict after all layers; "
+        "text preview: %r",
+        text[:120],
+    )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -249,33 +490,12 @@ def parse_review_output(text: str) -> ReviewResult:
 
     lines = text.splitlines()
 
-    # ── Extract verdict from first 5 non-blank lines ──────────────────────────
-    # Scan up to 5 non-blank lines so that brief LLM preamble (e.g. a "running
-    # tests" notice) does not permanently hide the verdict.  We match on the
-    # *first word* of each line so that trailing commentary on the verdict line
-    # (e.g. "APPROVE — looks good") is tolerated.
-    verdict: str | None = None
-    _max_verdict_scan = 5
-    _first_nonblank: str | None = None
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if _first_nonblank is None:
-            _first_nonblank = stripped
-        first_word = stripped.split()[0].upper()
-        if first_word in _VALID_VERDICTS:
-            verdict = first_word
-            break
-        _max_verdict_scan -= 1
-        if _max_verdict_scan <= 0:
-            logger.warning(
-                "review_parser: no verdict found in first 5 non-blank lines; "
-                "first non-blank line was: %r",
-                (_first_nonblank or "")[:80],
-            )
-            break
+    # ── Extract verdict via cascading strategy ────────────────────────────────
+    # Delegates to extract_verdict() which implements a 4-layer cascade:
+    # Layer 0 (quick 5-line scan) → Layer 1 (full-text) → Layer 2 (tail) →
+    # Layer 3 (haiku stub) → None.  This is strictly more capable than the
+    # previous inline 5-line scan while remaining backward-compatible.
+    verdict: str | None = extract_verdict(text)
 
     # ── Parse tagged issue lines (all lines scanned) ──────────────────────────
     issues: list[ReviewIssue] = []
