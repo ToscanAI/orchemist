@@ -53,8 +53,8 @@ phases:
   - id: spec
     name: "Spec Interpretation"
     description: "Understand the issue and produce a clear implementation plan"
-    model_tier: sonnet
-    thinking_level: high
+    model_tier: opus
+    thinking_level: medium
     transitions:
       success: implement
     prompt_template: |
@@ -93,6 +93,7 @@ phases:
     name: "Implementation"
     description: "Write the code changes based on the spec"
     model_tier: sonnet
+    thinking_level: high
     transitions:
       success: review
     prompt_template: |
@@ -211,6 +212,7 @@ phases:
     name: "Apply Review Fixes"
     description: "Address code review feedback, then loop back to review"
     model_tier: sonnet
+    thinking_level: low
     max_iterations: 3
     transitions:
       success: review
