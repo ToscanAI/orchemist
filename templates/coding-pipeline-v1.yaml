@@ -121,6 +121,7 @@ phases:
       4. Write clean, documented code following the style guide
       5. Commit with message referencing the issue: `feat/fix(#issue): description`
       6. Run the test command to verify: `{config[test_command]}`
+      7. Push your branch to remote: `git push --set-upstream origin {config[branch_name]}`
 
       ## Output
       Write a summary of changes to {output_dir}/implement.md including:
@@ -197,6 +198,7 @@ phases:
       And category is a short label such as: security, correctness, style,
         performance, test, compatibility, design
 
+      ✅ CORRECT example:
       Correct example:
         REQUEST_CHANGES
         [BLOCKER][security] SQL query in db.py:42 uses string concatenation — use parameterized queries
@@ -204,6 +206,7 @@ phases:
         [MINOR][style] Missing docstring on helper function _build_query()
         [NITPICK][style] Trailing whitespace on line 18 of utils.py
 
+      ❌ WRONG — never start with preamble before the verdict:
       WRONG — never start with preamble before the verdict:
         Now let me run the tests first to check the implementation...
         REQUEST_CHANGES
@@ -249,6 +252,7 @@ phases:
          - IMPORTANT: Only modify code directly related to the reviewer's feedback. Do not refactor, reorganize, or rewrite code that wasn't flagged. Minimal diff — if the reviewer flagged 1 issue, your diff should touch ~1 area.
       5. Run tests: `{config[test_command]}`
       6. Commit fixes on this branch: `fix: address code review feedback`
+      7. Push your branch to remote: `git push origin {config[branch_name]}`
 
       ## Output
       Write to {output_dir}/fix.md:

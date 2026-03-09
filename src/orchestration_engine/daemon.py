@@ -1771,6 +1771,27 @@ def _post_github_result_hook(
                     or ''
                 )[:500]
             pr_body = _last_text or f"Automated result from pipeline run `{run_id}`."
+
+            # --- Safety net: ensure branch exists on remote before PR creation ---
+            # Sub-agents sometimes commit locally without pushing.  Push now so
+            # `gh pr create` doesn't fail with "No commits between main and branch".
+            from .postflight import ensure_branch_pushed  # noqa: PLC0415
+            _repo_path = initial_input.get('repo_path', '')
+            if _repo_path:
+                _pushed = ensure_branch_pushed(_repo_path, branch_name)
+                if not _pushed:
+                    logger.warning(
+                        "_post_github_result_hook: ensure_branch_pushed failed for %r"
+                        " — skipping PR creation",
+                        branch_name,
+                    )
+                    return
+            else:
+                logger.debug(
+                    "_post_github_result_hook: no repo_path in input — skipping "
+                    "ensure_branch_pushed"
+                )
+
             url = create_pr_for_issue(
                 repo=repo,
                 issue_number=issue_number,

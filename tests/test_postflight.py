@@ -11,6 +11,7 @@ from orchestration_engine.postflight import (
     PostflightCheckItem,
     PostflightChecker,
     PostflightResult,
+    ensure_branch_pushed,
 )
 
 
@@ -227,3 +228,197 @@ class TestRunAll:
             # Advisory warnings, still passes
             assert result.passed is True
             assert len(result.warnings) > 0
+
+
+# ---------------------------------------------------------------------------
+# TestEnsureBranchPushed — Issue #487
+# ---------------------------------------------------------------------------
+
+class TestCheckBranchPushed:
+    """Tests for PostflightChecker._check_branch_pushed() — Issue #487."""
+
+    def _make_checker(self, input_overrides=None):
+        data = _valid_input()
+        if input_overrides:
+            data.update(input_overrides)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            return PostflightChecker(
+                input_data=data,
+                run_id="test-push",
+                output_dir=Path(tmpdir),
+            )
+
+    def test_branch_on_remote_passes(self):
+        """ensure_branch_pushed returns True → check passes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=_valid_input(),
+                run_id="test-push",
+                output_dir=Path(tmpdir),
+            )
+            result = PostflightResult()
+            with patch(
+                "orchestration_engine.postflight.ensure_branch_pushed",
+                return_value=True,
+            ) as mock_ebp:
+                checker._check_branch_pushed(result)
+            mock_ebp.assert_called_once_with("/tmp/fake-repo", "feat/test")
+            checks = [c for c in result.checks if c.name == "branch_pushed"]
+            assert len(checks) == 1
+            assert checks[0].passed is True
+            assert "feat/test" in checks[0].message
+
+    def test_push_failure_adds_warning(self):
+        """ensure_branch_pushed returns False → check fails (advisory)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=_valid_input(),
+                run_id="test-push",
+                output_dir=Path(tmpdir),
+            )
+            result = PostflightResult()
+            with patch(
+                "orchestration_engine.postflight.ensure_branch_pushed",
+                return_value=False,
+            ):
+                checker._check_branch_pushed(result)
+            checks = [c for c in result.checks if c.name == "branch_pushed"]
+            assert len(checks) == 1
+            assert checks[0].passed is False
+            assert len(result.warnings) == 1
+
+    def test_missing_repo_path_adds_warning(self):
+        """Missing repo_path in input → check item added, no subprocess."""
+        data = _valid_input()
+        data['repo_path'] = ''
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=data,
+                run_id="test-push",
+                output_dir=Path(tmpdir),
+            )
+            result = PostflightResult()
+            with patch(
+                "orchestration_engine.postflight.ensure_branch_pushed"
+            ) as mock_ebp:
+                checker._check_branch_pushed(result)
+            mock_ebp.assert_not_called()
+            checks = [c for c in result.checks if c.name == "branch_pushed"]
+            assert len(checks) == 1
+            assert checks[0].passed is False
+
+    def test_run_all_includes_branch_pushed_check(self):
+        """run_all() must call _check_branch_pushed() before _build_github_comment()."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=_valid_input(),
+                run_id="test-run-all",
+                output_dir=Path(tmpdir),
+                completed_phases=["spec", "implement", "review", "test"],
+                scoring_passed=True,
+                scoring_score=0.90,
+            )
+            with patch("subprocess.run") as mock_run:
+                # ls-remote: branch exists; gh comment: success
+                mock_run.return_value = MagicMock(
+                    returncode=0,
+                    stdout="feat/test\n",
+                    stderr="",
+                )
+                result = checker.run_all()
+            check_names = [c.name for c in result.checks]
+            assert "branch_pushed" in check_names
+            # branch_pushed must appear before github_comment in the check list
+            bp_idx = check_names.index("branch_pushed")
+            if "github_comment" in check_names:
+                gc_idx = check_names.index("github_comment")
+                assert bp_idx < gc_idx
+
+
+class TestEnsureBranchPushed:
+    """Unit tests for ensure_branch_pushed()."""
+
+    def test_branch_already_on_remote_returns_true(self):
+        """ls-remote reports branch exists → no push, returns True."""
+        with patch("subprocess.run") as mock_run:
+            # Simulate ls-remote finding the branch
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="abc123\trefs/heads/feat/my-branch\n",
+                stderr="",
+            )
+            result = ensure_branch_pushed("/fake/repo", "feat/my-branch")
+        assert result is True
+        # Only one subprocess call expected (ls-remote, no push)
+        assert mock_run.call_count == 1
+
+    def test_branch_not_on_remote_pushes_and_returns_true(self):
+        """ls-remote returns empty → push triggered → returns True."""
+        ls_result = MagicMock(returncode=0, stdout="", stderr="")
+        push_result = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=[ls_result, push_result]) as mock_run:
+            result = ensure_branch_pushed("/fake/repo", "feat/new-branch")
+
+        assert result is True
+        assert mock_run.call_count == 2
+        # Verify the push command was invoked with --set-upstream
+        push_call_args = mock_run.call_args_list[1]
+        assert "--set-upstream" in push_call_args[0][0]
+        assert "feat/new-branch" in push_call_args[0][0]
+
+    def test_push_failure_returns_false(self):
+        """Push exits non-zero → returns False."""
+        ls_result = MagicMock(returncode=0, stdout="", stderr="")
+        push_result = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="error: remote rejected",
+        )
+
+        with patch("subprocess.run", side_effect=[ls_result, push_result]):
+            result = ensure_branch_pushed("/fake/repo", "feat/bad-branch")
+
+        assert result is False
+
+    def test_ls_remote_timeout_returns_false(self):
+        """ls-remote timeout → returns False immediately (no push)."""
+        import subprocess as _sp
+
+        with patch("subprocess.run", side_effect=_sp.TimeoutExpired(cmd="git", timeout=30)):
+            result = ensure_branch_pushed("/fake/repo", "feat/my-branch")
+
+        assert result is False
+
+    def test_push_timeout_returns_false(self):
+        """Push timeout → returns False."""
+        import subprocess as _sp
+
+        ls_result = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch(
+            "subprocess.run",
+            side_effect=[ls_result, _sp.TimeoutExpired(cmd="git", timeout=60)],
+        ):
+            result = ensure_branch_pushed("/fake/repo", "feat/my-branch")
+
+        assert result is False
+
+    def test_ls_remote_nonzero_exit_triggers_push(self):
+        """ls-remote non-zero exit (no remote at all) → still attempts push."""
+        ls_result = MagicMock(returncode=128, stdout="", stderr="fatal: not a git repo")
+        push_result = MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=[ls_result, push_result]):
+            result = ensure_branch_pushed("/fake/repo", "feat/my-branch")
+
+        assert result is True
+
+    def test_accepts_path_object(self):
+        """repo_path may be a pathlib.Path; function converts internally."""
+        ls_result = MagicMock(returncode=0, stdout="feat/my-branch\n", stderr="")
+
+        with patch("subprocess.run", return_value=ls_result):
+            result = ensure_branch_pushed(Path("/fake/repo"), "feat/my-branch")
+
+        assert result is True
