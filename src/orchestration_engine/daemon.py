@@ -246,6 +246,9 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # --- Build callbacks ---
     completed_phases: list = []
     phase_outputs: Dict[str, Any] = {}
+    # Mutable flag — set to BudgetExceededError instance when per-run budget
+    # is breached so the post-execution block can use 'budget_exceeded' status.
+    _budget_exceeded_flag: list = []  # holds at most one BudgetExceededError
 
     def _on_phase_start(phase_id: str, phase: Any, wave_index: int) -> None:
         """Emit a phase_started event to the DB for SSE streaming (Issue #258)."""
@@ -299,6 +302,60 @@ def run_daemon(run_id: str, db_path: str) -> None:
             cost_usd=float(cost) if cost is not None else None,
             state=state_val,
         )
+
+        # --- Record phase cost and enforce per-run budget (Issue #496) ---
+        if _cost_tracker is not None:
+            try:
+                _model = phase_result.get('model_used') or 'unknown'
+                _total_tokens = phase_result.get('tokens_consumed') or 0
+                if _total_tokens > 0:
+                    # The executor reports tokens_consumed as a single total
+                    # (no input/output split available).  Attribute all tokens
+                    # as input — this is conservative (input pricing >= output
+                    # pricing for most models) and safe for budget enforcement.
+                    _cost_record = _cost_tracker.record_phase(
+                        run_id=run_id,
+                        phase_id=phase_id,
+                        model=_model,
+                        input_tokens=_total_tokens,
+                        output_tokens=0,
+                    )
+                    logger.info(
+                        "Cost recorded for phase '%s': $%.6f "
+                        "(tokens=%d, model=%s)",
+                        phase_id,
+                        _cost_record['cost_usd'],
+                        _total_tokens,
+                        _model,
+                    )
+            except Exception as _cost_exc:
+                logger.warning(
+                    "Cost recording failed for phase '%s' (non-fatal): %s",
+                    phase_id,
+                    _cost_exc,
+                )
+
+            # Check per-run budget after recording (Issue #496).
+            # Only enforced when template.budget.max_cost_per_run is set.
+            if (
+                template.budget is not None
+                and template.budget.max_cost_per_run is not None
+                and not _budget_exceeded_flag
+            ):
+                try:
+                    from .cost_tracker import BudgetExceededError
+                    _cost_tracker.check_budget(
+                        run_id=run_id,
+                        budget_usd=template.budget.max_cost_per_run,
+                    )
+                except BudgetExceededError as _budget_exc:  # noqa: PERF203
+                    _budget_exceeded_flag.append(_budget_exc)
+                    logger.error(
+                        "Budget exceeded for run '%s': %s — aborting pipeline",
+                        run_id,
+                        _budget_exc,
+                    )
+                    raise  # propagate to sequencer so execution stops
 
         # Issue #4.1.6: structured summary for review phases.
         # The sequencer's _record_review_outcome hook fires automatically
@@ -358,6 +415,21 @@ def run_daemon(run_id: str, db_path: str) -> None:
         )
         _remove_pid_file(pid_path)
         return
+
+    # --- Budget-exceeded: distinct status so callers can distinguish from
+    # generic failures (Issue #496).  Checked before the general aborted path.
+    if _budget_exceeded_flag:
+        _budget_exc = _budget_exceeded_flag[0]
+        _budget_msg = str(_budget_exc)
+        logger.error("Run '%s' terminated: %s", run_id, _budget_msg)
+        db.update_pipeline_run(
+            run_id,
+            status='budget_exceeded',
+            completed_at=datetime.now().isoformat(),
+            error_message=_budget_msg,
+        )
+        _remove_pid_file(pid_path)
+        sys.exit(3)
 
     if aborted or (result and result.get('aborted')):
         failed_phase = (result or {}).get('failed_phase', 'unknown') if result else 'unknown'

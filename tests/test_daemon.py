@@ -1807,3 +1807,239 @@ phases:
             run_daemon(run_id, db_path)
 
         mock_create_gate.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestDaemonCostRecording — Issue #496: Wire CostTracker into phase completion
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonCostRecording:
+    """Verify that run_daemon() calls CostTracker.record_phase() after each phase
+    and aborts with 'budget_exceeded' status when the per-run budget is breached.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers (same pattern as TestDaemonGateFileCreation)
+    # ------------------------------------------------------------------
+
+    def _make_run_record(
+        self,
+        tmp_path,
+        input_json: str,
+        run_id: str = "cost-run-01",
+        budget_yaml: str = "",
+    ) -> tuple:
+        """Create a minimal DB + run record and return (run_id, db_path, out_dir)."""
+        from orchestration_engine.db import Database
+
+        template_yaml = tmp_path / f"cost-template-{run_id}.yaml"
+        budget_section = f"\nbudget:\n  max_cost_per_run: {budget_yaml}\n" if budget_yaml else ""
+        template_yaml.write_text(f"""\
+id: cost-test-pipeline
+name: Cost Test
+version: "1.0.0"
+description: Used for cost recording tests
+{budget_section}
+phases:
+  - id: work
+    name: Work
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Do something with {{input[topic]}}
+""")
+
+        out_dir = tmp_path / f"out-{run_id}"
+        out_dir.mkdir()
+        db_path = tmp_path / f"{run_id}.db"
+        db = Database(db_path)
+        db.insert_pipeline_run({
+            "run_id": run_id,
+            "template_path": str(template_yaml),
+            "template_id": "cost-test-pipeline",
+            "input_json": input_json,
+            "mode": "dry-run",
+            "output_dir": str(out_dir),
+        })
+        return run_id, str(db_path), out_dir
+
+    def _preflight_pass_patch(self):
+        """Return a context manager that makes preflight always pass."""
+        mock_result = MagicMock()
+        mock_result.passed = True
+        mock_result.warnings = []
+        mock_result.summary.return_value = "all checks passed"
+        mock_checker = MagicMock()
+        mock_checker.run_all.return_value = mock_result
+        return patch(
+            "orchestration_engine.preflight.PreflightChecker",
+            return_value=mock_checker,
+        )
+
+    # ------------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------------
+
+    def test_record_phase_called_after_phase_completes(self, tmp_path):
+        """record_phase() is called on the CostTracker for each completed phase."""
+        from orchestration_engine.daemon import run_daemon
+
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path,
+            json.dumps({"topic": "cost tracking"}),
+            run_id="cost-record-01",
+        )
+
+        mock_tracker = MagicMock()
+        mock_tracker.record_phase.return_value = {
+            "run_id": run_id,
+            "phase_id": "work",
+            "model": "unknown",
+            "input_tokens": 500,
+            "output_tokens": 0,
+            "cost_usd": 0.000375,
+        }
+        # check_budget does nothing (no budget configured, but mock anyway)
+        mock_tracker.check_budget.return_value = 0.000375
+
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.cost_tracker.CostTracker", return_value=mock_tracker):
+            run_daemon(run_id, db_path)
+
+        # record_phase must have been called at least once (one phase)
+        assert mock_tracker.record_phase.call_count >= 1
+        call_kwargs = mock_tracker.record_phase.call_args_list[0]
+        assert call_kwargs.kwargs["run_id"] == run_id
+        assert call_kwargs.kwargs["phase_id"] == "work"
+        assert call_kwargs.kwargs["output_tokens"] == 0  # always 0 (total as input)
+        assert call_kwargs.kwargs["input_tokens"] > 0
+
+    def test_cost_persisted_to_cost_tracking_table(self, tmp_path):
+        """Real CostTracker writes cost rows to the cost_tracking DB table."""
+        from orchestration_engine.db import Database
+        from orchestration_engine.daemon import run_daemon
+
+        run_id = "cost-db-01"
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path,
+            json.dumps({"topic": "db write"}),
+            run_id=run_id,
+        )
+
+        with self._preflight_pass_patch():
+            run_daemon(run_id, db_path)
+
+        # Open the same DB and check cost_tracking rows
+        db = Database(Path(db_path))
+        rows = db.fetch_all(
+            "SELECT * FROM cost_tracking WHERE run_id = ?", (run_id,)
+        )
+        assert len(rows) >= 1, "Expected at least one cost row in cost_tracking"
+        assert rows[0]["run_id"] == run_id
+        assert rows[0]["phase_id"] == "work"
+        assert rows[0]["input_tokens"] > 0
+        assert rows[0]["output_tokens"] == 0
+        assert rows[0]["cost_usd"] >= 0.0
+
+    def test_budget_exceeded_marks_run_as_budget_exceeded(self, tmp_path):
+        """When per-run budget is breached, run status is set to 'budget_exceeded'."""
+        from orchestration_engine.db import Database
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.cost_tracker import BudgetExceededError
+
+        run_id = "cost-budget-01"
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path,
+            json.dumps({"topic": "budget test"}),
+            run_id=run_id,
+            budget_yaml="0.01",  # template has max_cost_per_run: 0.01
+        )
+
+        # Mock CostTracker so check_budget always raises BudgetExceededError
+        mock_tracker = MagicMock()
+        mock_tracker.record_phase.return_value = {
+            "run_id": run_id,
+            "phase_id": "work",
+            "model": "unknown",
+            "input_tokens": 500,
+            "output_tokens": 0,
+            "cost_usd": 9.99,
+        }
+        mock_tracker.check_budget.side_effect = BudgetExceededError(
+            run_id=run_id,
+            budget_usd=0.01,
+            actual_usd=9.99,
+        )
+
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.cost_tracker.CostTracker", return_value=mock_tracker), \
+             pytest.raises(SystemExit) as exc_info:
+            run_daemon(run_id, db_path)
+
+        assert exc_info.value.code == 3  # budget_exceeded exit code
+
+        # DB status should be 'budget_exceeded'
+        db = Database(Path(db_path))
+        run = db.get_pipeline_run(run_id)
+        assert run is not None
+        assert run["status"] == "budget_exceeded"
+        assert "budget" in run["error_message"].lower()
+
+    def test_budget_exceeded_requires_template_budget_set(self, tmp_path):
+        """Without a budget config in the template, check_budget is never called."""
+        from orchestration_engine.daemon import run_daemon
+
+        run_id = "cost-no-budget-01"
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path,
+            json.dumps({"topic": "no budget configured"}),
+            run_id=run_id,
+            # No budget_yaml kwarg — template has no budget section
+        )
+
+        mock_tracker = MagicMock()
+        mock_tracker.record_phase.return_value = {
+            "run_id": run_id,
+            "phase_id": "work",
+            "model": "unknown",
+            "input_tokens": 500,
+            "output_tokens": 0,
+            "cost_usd": 0.001,
+        }
+
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.cost_tracker.CostTracker", return_value=mock_tracker):
+            run_daemon(run_id, db_path)
+
+        # check_budget must NOT have been called (no budget set in template)
+        mock_tracker.check_budget.assert_not_called()
+
+    def test_cost_recording_failure_is_non_fatal(self, tmp_path):
+        """If record_phase raises, the pipeline continues and succeeds."""
+        from orchestration_engine.db import Database
+        from orchestration_engine.daemon import run_daemon
+
+        run_id = "cost-nonfatal-01"
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path,
+            json.dumps({"topic": "error tolerance"}),
+            run_id=run_id,
+        )
+
+        mock_tracker = MagicMock()
+        mock_tracker.record_phase.side_effect = RuntimeError("pricing DB unavailable")
+
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.cost_tracker.CostTracker", return_value=mock_tracker):
+            # Should NOT raise — cost recording errors are non-fatal
+            run_daemon(run_id, db_path)
+
+        # Run should NOT have failed — cost errors are non-fatal
+        db = Database(Path(db_path))
+        run = db.get_pipeline_run(run_id)
+        assert run is not None
+        assert run["status"] not in ("failed", "budget_exceeded"), (
+            f"Expected non-failure status but got '{run['status']}'"
+        )
