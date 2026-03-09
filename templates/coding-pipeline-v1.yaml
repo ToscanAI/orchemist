@@ -182,6 +182,9 @@ phases:
       - `APPROVE` — code is ready to merge (no blockers, at most minor issues)
       - `REQUEST_CHANGES` — one or more blockers or major issues found
 
+      **DO NOT** write any preamble, commentary, or "thinking out loud" text before the verdict.
+      The very first line of review.md must be the verdict word and nothing else.
+
       ## Structured Output Format
       Your review.md MUST follow this exact structure:
 
@@ -194,12 +197,17 @@ phases:
       And category is a short label such as: security, correctness, style,
         performance, test, compatibility, design
 
-      Example:
+      Correct example:
         REQUEST_CHANGES
         [BLOCKER][security] SQL query in db.py:42 uses string concatenation — use parameterized queries
         [MAJOR][correctness] parse_output() returns None instead of empty list when input is empty
         [MINOR][style] Missing docstring on helper function _build_query()
         [NITPICK][style] Trailing whitespace on line 18 of utils.py
+
+      WRONG — never start with preamble before the verdict:
+        Now let me run the tests first to check the implementation...
+        REQUEST_CHANGES
+        [BLOCKER][security] ...
 
       If there are no issues (APPROVE with clean code), write only:
         APPROVE
