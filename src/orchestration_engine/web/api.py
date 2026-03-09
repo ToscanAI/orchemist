@@ -2420,9 +2420,12 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         classifier = IssueClassifier()   # stub mode; replace executor via subclass/config
         selector = TemplateSelector()
         extractor = InputExtractor()
-        confidence_threshold = float(
-            os.environ.get("ISSUE_CLASSIFY_CONFIDENCE_THRESHOLD", "0.70")
-        )
+        try:
+            confidence_threshold = float(
+                os.environ.get("ISSUE_CLASSIFY_CONFIDENCE_THRESHOLD", "0.70")
+            )
+        except (TypeError, ValueError):
+            confidence_threshold = 0.70
         dispatcher = NotificationDispatcher.from_env()
         automation = IssueAutomation(
             classifier=classifier,
