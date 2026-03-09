@@ -87,6 +87,22 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
+# v2 signal weights (Issue #4.1.6)
+# Equal llm_judge / test_pass_rate split; adds historical_calibration signal.
+# Weights are renormalised during aggregation based on which signals are present,
+# so it is safe for the table to sum to 1.0 across all *possible* signals even
+# though not all are always emitted.
+# ---------------------------------------------------------------------------
+DEFAULT_WEIGHTS_V2: dict[str, float] = {
+    "llm_judge": 0.25,              # Issue #4.1.6: equal weight with test_pass_rate
+    "test_pass_rate": 0.25,         # Issue #4.1.6: raised from 0.20
+    "review_catch_value": 0.20,     # Issue #4.1.6: raised from 0.15
+    "adversarial_audit": 0.15,      # Issue #4.1.6: raised from 0.10
+    "change_complexity": 0.10,      # Issue #4.1.6: unchanged
+    "historical_calibration": 0.05, # Issue #4.1.6: new signal via extra_signals
+}
+
+# ---------------------------------------------------------------------------
 # v2 signal weights — calibrated with Sprint 1-4 data (Issue #429.1)
 #
 # Rationale for each weight:
