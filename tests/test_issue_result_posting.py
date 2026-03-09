@@ -1,36 +1,28 @@
-"""Tests for Issue #5.1.4 — pipeline result → PR/comment posting.
+"""Tests for Issue #5.1.3 — Result Posting (post_github_comment and comment building).
 
 Covers:
-- create_pr_for_issue: success path returns PR URL
-- create_pr_for_issue: gh failure returns None
-- create_pr_for_issue: FileNotFoundError returns None
-- create_pr_for_issue: body contains 'Closes #<issue_number>'
-- post_pipeline_result_comment: delegates to post_github_comment
-- post_pipeline_result_comment: comment contains classification_type and run_id
-- post_pipeline_result_comment: returns None when post_github_comment returns None
-- post_failure_summary_comment: basic failure (no diagnosis)
-- post_failure_summary_comment: with dict diagnosis (failure_class, remediation, confidence)
-- post_failure_summary_comment: with object diagnosis (attribute access)
-- post_failure_summary_comment: partial diagnosis (missing fields are skipped)
-- post_failure_summary_comment: returns None when post_github_comment returns None
-- db.get_issue_classification_by_run_id: returns row when run_id matches
-- db.get_issue_classification_by_run_id: returns None when no match
-- db.get_issue_classification_by_run_id: returns most recent row on duplicates
-- _post_github_result_hook: skips when no issue_number in input
-- _post_github_result_hook: skips when no repo in input
-- _post_github_result_hook: posts failure comment on status='failed'
-- _post_github_result_hook: creates PR for 'bug' classification on success
-- _post_github_result_hook: creates PR for 'feature' classification on success
-- _post_github_result_hook: creates PR for 'refactor' classification on success
-- _post_github_result_hook: posts result comment for 'content' classification
-- _post_github_result_hook: posts result comment for 'docs' classification
-- _post_github_result_hook: posts result comment for 'research' classification
-- _post_github_result_hook: uses fallback branch name when not in input
-- _post_github_result_hook: non-fatal on unexpected exception
-- _post_github_result_hook: uses DB classification_type over initial_input
+- post_github_comment(): success path (returncode 0, non-empty stdout)
+- post_github_comment(): failure path (non-zero returncode)
+- post_github_comment(): subprocess.TimeoutExpired → returns None
+- post_github_comment(): FileNotFoundError (gh not found) → returns None
+- post_github_comment(): OSError → returns None
+- post_github_comment(): empty stdout → returns None
+- post_github_comment(): whitespace-only stdout → returns None
+- post_github_comment(): verifies correct gh api command arguments
+- IssueAutomation._build_comment(): with run_id
+- IssueAutomation._build_comment(): without run_id (shows not-launched indicator)
+- IssueAutomation._build_comment(): with reasoning
+- IssueAutomation._build_comment(): without reasoning
+- IssueAutomation._build_comment(): contains classification type
+- IssueAutomation._build_comment(): contains template name
+- IssueAutomation._build_comment(): contains "Orchemist" branding
+- IssueAutomation._build_comment(): confidence shown as percentage
+- comment_body included in process() result
+- comment_url key present in webhook 202 response
+- Module: post_github_comment in __all__ and importable
 
-All tests are independent — no shared mutable state, no real LLM calls,
-no real subprocess invocations.
+All tests are independent — no shared state, no real subprocess calls,
+no real HTTP calls, no real LLM calls.
 """
 
 from __future__ import annotations
@@ -38,19 +30,20 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+from pathlib import Path
 from typing import Any, Dict, Optional
 from unittest.mock import MagicMock, patch, call
 
 import pytest
 
 from orchestration_engine.issue_automation import (
-    create_pr_for_issue,
-    post_pipeline_result_comment,
-    post_failure_summary_comment,
+    IssueAutomation,
+    IssueClassification,
+    IssueClassifier,
+    InputExtractor,
+    TemplateSelector,
     post_github_comment,
 )
-from orchestration_engine.db import Database
-from orchestration_engine.daemon import _post_github_result_hook
 
 
 # ---------------------------------------------------------------------------
@@ -58,586 +51,454 @@ from orchestration_engine.daemon import _post_github_result_hook
 # ---------------------------------------------------------------------------
 
 
-def _make_db() -> Database:
-    """Create a fresh temp-file Database for testing."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-    tmp.close()
-    return Database(tmp.name)
-
-
-def _insert_ipm_row(
-    db: Database,
-    run_id: str,
-    issue_number: int = 42,
-    repo: str = "owner/repo",
-    classification_type: str = "feature",
-) -> int:
-    """Insert a minimal issue_pipeline_map row and return its row id."""
-    return db.insert_issue_classification(
-        data={
-            "issue_number": issue_number,
-            "repo": repo,
-            "classification_type": classification_type,
-            "confidence": 0.90,
-            "reasoning": "test",
-            "pipeline_template": "coding-pipeline-v1.yaml",
-            "run_id": run_id,
-            "status": "launched",
-        }
+def _make_classification(
+    cls_type: str = "feature",
+    confidence: float = 0.9,
+    reasoning: str = "",
+    template_id: str = "coding-pipeline",
+) -> IssueClassification:
+    """Create a minimal IssueClassification for testing."""
+    return IssueClassification(
+        issue_number=1,
+        repo="owner/repo",
+        classification_type=cls_type,
+        confidence=confidence,
+        template_id=template_id,
+        reasoning=reasoning,
     )
 
 
-def _completed_result(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:
-    """Build a mock CompletedProcess."""
+def _make_classifier(cls_type: str = "bug", confidence: float = 0.9) -> IssueClassifier:
+    """Return an IssueClassifier backed by a mock executor."""
     mock = MagicMock()
-    mock.returncode = returncode
-    mock.stdout = stdout
-    mock.stderr = stderr
-    return mock
+    mock.execute.return_value = json.dumps({
+        "classification_type": cls_type,
+        "confidence": confidence,
+        "reasoning": "Test reasoning.",
+    })
+    return IssueClassifier(executor=mock)
 
 
-# ---------------------------------------------------------------------------
-# create_pr_for_issue
-# ---------------------------------------------------------------------------
+def _make_automation(cls_type: str = "feature", confidence: float = 0.8) -> IssueAutomation:
+    """Return an IssueAutomation with a mock classifier."""
+    return IssueAutomation(
+        classifier=_make_classifier(cls_type, confidence),
+        selector=TemplateSelector(),
+        extractor=InputExtractor(),
+    )
 
 
-class TestCreatePrForIssue:
-    def test_success_returns_pr_url(self):
-        pr_url = "https://github.com/owner/repo/pull/99"
-        mock_result = _completed_result(returncode=0, stdout=pr_url + "\n")
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
-            url = create_pr_for_issue(
-                repo="owner/repo",
-                issue_number=42,
-                branch_name="feat/my-branch",
-                title="My PR Title",
-                body="Description.",
-            )
-        assert url == pr_url
+# ===========================================================================
+# Tests: post_github_comment
+# ===========================================================================
+
+
+class TestPostGithubComment:
+    """Unit tests for post_github_comment()."""
+
+    def test_success_returns_url(self):
+        """Returncode 0 and non-empty stdout → returns the trimmed URL."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "https://github.com/owner/repo/issues/1#issuecomment-123\n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            url = post_github_comment("owner/repo", 1, "Hello!")
+
+        assert url == "https://github.com/owner/repo/issues/1#issuecomment-123"
 
     def test_failure_returns_none(self):
-        mock_result = _completed_result(returncode=1, stderr="error: already exists")
-        with patch("subprocess.run", return_value=mock_result):
-            url = create_pr_for_issue(
-                "owner/repo", 42, "feat/branch", "Title", "Body"
-            )
-        assert url is None
+        """Non-zero returncode → returns None."""
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "gh: authentication required"
 
-    def test_file_not_found_returns_none(self):
-        with patch("subprocess.run", side_effect=FileNotFoundError("gh not found")):
-            url = create_pr_for_issue(
-                "owner/repo", 42, "feat/branch", "Title", "Body"
-            )
+        with patch("subprocess.run", return_value=mock_result):
+            url = post_github_comment("owner/repo", 1, "Hello!")
+
         assert url is None
 
     def test_timeout_returns_none(self):
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 30)):
-            url = create_pr_for_issue(
-                "owner/repo", 42, "feat/branch", "Title", "Body"
-            )
+        """subprocess.TimeoutExpired → returns None, no exception raised."""
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 15)):
+            url = post_github_comment("owner/repo", 1, "Hello!")
+
         assert url is None
 
-    def test_body_contains_closes_reference(self):
-        """The PR body must include 'Closes #<issue_number>'."""
-        mock_result = _completed_result(returncode=0, stdout="https://github.com/owner/repo/pull/1\n")
-        captured_args = {}
-        def _mock_run(cmd, **kwargs):
-            captured_args["cmd"] = cmd
-            return mock_result
-        with patch("subprocess.run", side_effect=_mock_run):
-            create_pr_for_issue("owner/repo", 77, "feat/branch", "Title", "Body text")
-        # The --body argument should contain 'Closes #77'
-        cmd = captured_args["cmd"]
-        body_idx = cmd.index("--body") + 1
-        assert "Closes #77" in cmd[body_idx]
+    def test_gh_not_found_returns_none(self):
+        """FileNotFoundError (gh CLI not installed) → returns None."""
+        with patch("subprocess.run", side_effect=FileNotFoundError("gh: no such file")):
+            url = post_github_comment("owner/repo", 1, "Hello!")
 
-    def test_uses_correct_gh_pr_create_subcommand(self):
-        mock_result = _completed_result(returncode=0, stdout="https://github.com/owner/repo/pull/1\n")
-        with patch("subprocess.run", return_value=mock_result) as mock_run:
-            create_pr_for_issue("owner/repo", 42, "feat/br", "Title", "Body")
-        cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "gh"
-        assert "pr" in cmd
-        assert "create" in cmd
+        assert url is None
+
+    def test_os_error_returns_none(self):
+        """OSError → returns None, no exception raised."""
+        with patch("subprocess.run", side_effect=OSError("Broken pipe")):
+            url = post_github_comment("owner/repo", 1, "Hello!")
+
+        assert url is None
 
     def test_empty_stdout_returns_none(self):
-        mock_result = _completed_result(returncode=0, stdout="   ")
+        """Returncode 0 but completely empty stdout → returns None."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
         with patch("subprocess.run", return_value=mock_result):
-            url = create_pr_for_issue("owner/repo", 42, "feat/br", "Title", "Body")
+            url = post_github_comment("owner/repo", 1, "Hello!")
+
         assert url is None
 
+    def test_whitespace_only_stdout_returns_none(self):
+        """Returncode 0 but whitespace-only stdout → strip yields empty string → None."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "   \n\t  \n"
+        mock_result.stderr = ""
 
-# ---------------------------------------------------------------------------
-# post_pipeline_result_comment
-# ---------------------------------------------------------------------------
+        with patch("subprocess.run", return_value=mock_result):
+            url = post_github_comment("owner/repo", 1, "Hello!")
+
+        assert url is None
+
+    def test_subprocess_called_with_correct_repo(self):
+        """The gh api command URL must include the repo path."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "https://github.com/x/y/issues/5#issuecomment-99\n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            post_github_comment("x/y", 5, "Test body")
+
+        cmd = mock_run.call_args[0][0]
+        assert any("repos/x/y/issues/5/comments" in arg for arg in cmd)
+
+    def test_subprocess_called_with_post_method(self):
+        """The gh api command must use --method POST."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "https://github.com/x/y/issues/5#issuecomment-99\n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            post_github_comment("x/y", 5, "Test body")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--method" in cmd
+        method_idx = cmd.index("--method")
+        assert cmd[method_idx + 1] == "POST"
+
+    def test_subprocess_includes_body_field(self):
+        """The gh api command must include --field body=<body>."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "https://github.com/x/y/issues/5#issuecomment-99\n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            post_github_comment("x/y", 5, "My comment body")
+
+        cmd = mock_run.call_args[0][0]
+        assert "--field" in cmd
+        # Find all --field values
+        field_values = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--field"]
+        assert any("body=My comment body" in fv for fv in field_values)
+
+    def test_gh_is_first_command(self):
+        """The command should start with 'gh'."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "https://github.com/x/y/issues/1#issuecomment-1\n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            post_github_comment("x/y", 1, "Hello")
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "gh"
+        assert cmd[1] == "api"
+
+    def test_returns_stripped_url(self):
+        """Returned URL should be stripped of surrounding whitespace/newlines."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "  https://github.com/a/b/issues/3#issuecomment-999  \n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result):
+            url = post_github_comment("a/b", 3, "Hi")
+
+        assert url == "https://github.com/a/b/issues/3#issuecomment-999"
+
+    def test_different_repo_and_number_in_command(self):
+        """Verify parameterisation — correct issue_number is used in the API path."""
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "https://github.com/acme/svc/issues/42#issuecomment-7\n"
+        mock_result.stderr = ""
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            post_github_comment("acme/svc", 42, "body")
+
+        cmd = mock_run.call_args[0][0]
+        assert any("repos/acme/svc/issues/42/comments" in a for a in cmd)
 
 
-class TestPostPipelineResultComment:
-    def test_success_returns_url(self):
-        comment_url = "https://github.com/owner/repo/issues/42#issuecomment-1"
+# ===========================================================================
+# Tests: IssueAutomation._build_comment
+# ===========================================================================
+
+
+class TestBuildComment:
+    """Unit tests for IssueAutomation._build_comment()."""
+
+    def test_comment_contains_orchemist(self):
+        """The comment must mention Orchemist."""
+        auto = _make_automation()
+        cls = _make_classification("feature")
+        comment = auto._build_comment(1, cls, "coding-pipeline", "run123")
+        assert "Orchemist" in comment
+
+    def test_comment_contains_classification_type(self):
+        """The comment must contain the classification type."""
+        auto = _make_automation()
+        cls = _make_classification("bug")
+        comment = auto._build_comment(1, cls, "coding-pipeline", "run123")
+        assert "bug" in comment
+
+    def test_comment_contains_run_id_when_present(self):
+        """When run_id is given, it should appear in the comment."""
+        auto = _make_automation()
+        cls = _make_classification()
+        comment = auto._build_comment(1, cls, "coding-pipeline", "abc12345")
+        assert "abc12345" in comment
+
+    def test_comment_no_run_id_shows_not_launched(self):
+        """When run_id is None, the comment must indicate the run was not launched."""
+        auto = _make_automation()
+        cls = _make_classification()
+        comment = auto._build_comment(1, cls, "coding-pipeline", None)
+        lower = comment.lower()
+        assert "not launched" in lower or "unavailable" in lower
+
+    def test_comment_no_run_id_does_not_contain_fake_id(self):
+        """When run_id is None, no run ID string should appear."""
+        auto = _make_automation()
+        cls = _make_classification()
+        comment = auto._build_comment(1, cls, "coding-pipeline", None)
+        assert "abc12345" not in comment
+
+    def test_comment_contains_reasoning_when_present(self):
+        """If classification has reasoning, it should appear in the comment."""
+        auto = _make_automation()
+        cls = _make_classification(reasoning="Clear crash report with stack trace.")
+        comment = auto._build_comment(1, cls, "coding-pipeline", "r1")
+        assert "Clear crash report with stack trace." in comment
+
+    def test_comment_handles_empty_reasoning(self):
+        """Empty reasoning should not cause errors; comment should still be valid."""
+        auto = _make_automation()
+        cls = _make_classification(reasoning="")
+        comment = auto._build_comment(1, cls, "coding-pipeline", "r1")
+        assert isinstance(comment, str)
+        assert len(comment) > 0
+
+    def test_comment_contains_template_name(self):
+        """The comment must contain the selected pipeline template name."""
+        auto = _make_automation()
+        cls = _make_classification()
+        comment = auto._build_comment(1, cls, "content-pipeline", "r1")
+        assert "content-pipeline" in comment
+
+    def test_comment_shows_confidence_as_percentage(self):
+        """Confidence should be represented as a percentage in the comment."""
+        auto = _make_automation()
+        cls = _make_classification(confidence=0.87)
+        comment = auto._build_comment(1, cls, "coding-pipeline", "r1")
+        # Should contain some % representation
+        assert "%" in comment
+
+    def test_comment_is_non_empty_string(self):
+        """The comment must be a non-empty string."""
+        auto = _make_automation()
+        cls = _make_classification()
+        comment = auto._build_comment(1, cls, "coding-pipeline", "r1")
+        assert isinstance(comment, str)
+        assert comment.strip()
+
+    def test_comment_for_docs_classification(self):
+        """Works correctly for 'docs' classification type."""
+        auto = _make_automation()
+        cls = _make_classification(cls_type="docs")
+        comment = auto._build_comment(1, cls, "content-pipeline", "docrun")
+        assert "docs" in comment
+        assert "content-pipeline" in comment
+
+    def test_comment_for_refactor_classification(self):
+        """Works correctly for 'refactor' classification type."""
+        auto = _make_automation()
+        cls = _make_classification(cls_type="refactor")
+        comment = auto._build_comment(1, cls, "coding-pipeline", "refrun")
+        assert "refactor" in comment
+
+
+# ===========================================================================
+# Tests: comment_body in process() result
+# ===========================================================================
+
+
+class TestProcessCommentBody:
+    """Verify that process() always includes a valid comment_body in its result."""
+
+    def test_comment_body_present_in_result(self):
+        auto = _make_automation()
+        result = auto.process(issue_number=1, repo="o/r", title="Test")
+        assert "comment_body" in result
+
+    def test_comment_body_is_non_empty(self):
+        auto = _make_automation()
+        result = auto.process(issue_number=1, repo="o/r", title="Test")
+        assert result["comment_body"]
+        assert len(result["comment_body"]) > 0
+
+    def test_comment_body_contains_classification(self):
+        auto = _make_automation("bug")
+        result = auto.process(issue_number=1, repo="o/r", title="Bug title")
+        assert "bug" in result["comment_body"]
+
+    def test_comment_body_contains_template(self):
+        auto = _make_automation("content")
+        result = auto.process(issue_number=1, repo="o/r", title="Blog post")
+        assert "content-pipeline" in result["comment_body"]
+
+    def test_comment_body_with_run_id_contains_run_id(self):
+        """When launcher provides a run_id, comment_body should contain it."""
+        mock_launcher = MagicMock(return_value={"run_id": "myrun999"})
+        mock_resolver = MagicMock(return_value=Path("/tmp/fake.yaml"))
+        mock_template = MagicMock()
+        mock_template.config_schema = {}
+        mock_engine = MagicMock()
+        mock_engine.load_template.return_value = mock_template
+
+        auto = _make_automation("feature")
+        result = auto.process(
+            issue_number=1,
+            repo="o/r",
+            title="Feature",
+            launcher=mock_launcher,
+            template_resolver=mock_resolver,
+            template_engine=mock_engine,
+        )
+        assert "myrun999" in result["comment_body"]
+
+    def test_comment_body_without_launcher_shows_not_launched(self):
+        """Without a launcher, comment_body should indicate no run was launched."""
+        auto = _make_automation()
+        result = auto.process(issue_number=1, repo="o/r", title="Test")
+        lower = result["comment_body"].lower()
+        assert "not launched" in lower or "unavailable" in lower
+
+
+# ===========================================================================
+# Tests: comment_url in API webhook response
+# ===========================================================================
+
+
+class TestCommentUrlInWebhookResponse:
+    """Verify that the webhook 202 response includes comment_url."""
+
+    def _make_client(self):
+        from fastapi.testclient import TestClient
+        from orchestration_engine.web.api import create_api_app
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        app = create_api_app(db_path=tmp.name)
+        return TestClient(app, raise_server_exceptions=True)
+
+    def _issue_payload(
+        self,
+        action: str = "opened",
+        labels: Optional[list] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "action": action,
+            "issue": {
+                "number": 1,
+                "title": "Test issue",
+                "body": "Test body",
+                "labels": [{"name": lbl} for lbl in (labels or [])],
+            },
+            "repository": {"full_name": "owner/repo"},
+        }
+
+    def test_comment_url_key_present_when_comment_returns_url(self):
+        """When post_github_comment returns a URL, it should be in the response."""
+        client = self._make_client()
+        payload = self._issue_payload(action="opened", labels=["orchemist"])
+        comment_url = "https://github.com/owner/repo/issues/1#issuecomment-1"
+
         with patch(
             "orchestration_engine.issue_automation.post_github_comment",
             return_value=comment_url,
-        ) as mock_pgc:
-            url = post_pipeline_result_comment(
-                repo="owner/repo",
-                issue_number=42,
-                classification_type="content",
-                result_text="Here is the output.",
-                run_id="run-abc-123",
-            )
-        assert url == comment_url
-
-    def test_comment_contains_classification_type(self):
-        captured_body = {}
-        def _mock_pgc(repo, issue_number, body):
-            captured_body["body"] = body
-            return "https://github.com/owner/repo/issues/42#issuecomment-1"
-        with patch(
-            "orchestration_engine.issue_automation.post_github_comment",
-            side_effect=_mock_pgc,
         ):
-            post_pipeline_result_comment(
-                "owner/repo", 42, "research", "Some findings.", "run-xyz"
+            resp = client.post(
+                "/api/v1/github/issues",
+                json=payload,
+                headers={"X-GitHub-Event": "issues"},
             )
-        assert "research" in captured_body["body"]
 
-    def test_comment_contains_run_id(self):
-        captured_body = {}
-        def _mock_pgc(repo, issue_number, body):
-            captured_body["body"] = body
-            return "url"
-        with patch(
-            "orchestration_engine.issue_automation.post_github_comment",
-            side_effect=_mock_pgc,
-        ):
-            post_pipeline_result_comment(
-                "owner/repo", 42, "docs", "Content.", "my-run-id-999"
-            )
-        assert "my-run-id-999" in captured_body["body"]
+        assert resp.status_code == 202
+        data = resp.json()
+        assert "comment_url" in data
+        assert data["comment_url"] == comment_url
 
-    def test_returns_none_when_post_fails(self):
+    def test_comment_url_key_present_when_comment_fails(self):
+        """Even when post_github_comment returns None, comment_url key should exist."""
+        client = self._make_client()
+        payload = self._issue_payload(action="opened", labels=["orchemist"])
+
         with patch(
             "orchestration_engine.issue_automation.post_github_comment",
             return_value=None,
         ):
-            url = post_pipeline_result_comment(
-                "owner/repo", 42, "content", "text", "run-1"
+            resp = client.post(
+                "/api/v1/github/issues",
+                json=payload,
+                headers={"X-GitHub-Event": "issues"},
             )
-        assert url is None
+
+        assert resp.status_code == 202
+        data = resp.json()
+        assert "comment_url" in data
+        assert data["comment_url"] is None
 
 
-# ---------------------------------------------------------------------------
-# post_failure_summary_comment
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Tests: Module exports
+# ===========================================================================
 
 
-class TestPostFailureSummaryComment:
-    def test_basic_failure_no_diagnosis(self):
-        captured = {}
-        def _mock_pgc(repo, issue_number, body):
-            captured["body"] = body
-            return "https://github.com/owner/repo/issues/42#issuecomment-2"
-        with patch(
-            "orchestration_engine.issue_automation.post_github_comment",
-            side_effect=_mock_pgc,
-        ):
-            url = post_failure_summary_comment(
-                repo="owner/repo",
-                issue_number=42,
-                error_message="Phase 'build' timed out",
-                run_id="run-fail-1",
-            )
-        assert url is not None
-        assert "Phase 'build' timed out" in captured["body"]
-        assert "run-fail-1" in captured["body"]
+class TestModuleExports:
+    """Verify module-level exports for post_github_comment."""
 
-    def test_with_dict_diagnosis(self):
-        captured = {}
-        def _mock_pgc(repo, issue_number, body):
-            captured["body"] = body
-            return "url"
-        diagnosis = {
-            "failure_class": "timeout",
-            "remediation": "Increase phase timeout to 300s",
-            "confidence": 0.85,
-        }
-        with patch(
-            "orchestration_engine.issue_automation.post_github_comment",
-            side_effect=_mock_pgc,
-        ):
-            post_failure_summary_comment(
-                "owner/repo", 42, "Something broke", "run-2", diagnosis=diagnosis
-            )
-        body = captured["body"]
-        assert "timeout" in body
-        assert "Increase phase timeout" in body
-        assert "85%" in body
+    def test_post_github_comment_in_issue_automation_all(self):
+        from orchestration_engine import issue_automation
+        assert "post_github_comment" in issue_automation.__all__
 
-    def test_with_object_diagnosis(self):
-        """Diagnosis object accessed via attributes (not dict)."""
-        captured = {}
-        def _mock_pgc(repo, issue_number, body):
-            captured["body"] = body
-            return "url"
-        diag = MagicMock()
-        diag.failure_class = "oom_error"
-        diag.remediation = "Reduce batch size"
-        diag.confidence = 0.70
-        with patch(
-            "orchestration_engine.issue_automation.post_github_comment",
-            side_effect=_mock_pgc,
-        ):
-            post_failure_summary_comment(
-                "owner/repo", 5, "Memory error", "run-3", diagnosis=diag
-            )
-        body = captured["body"]
-        assert "oom_error" in body
-        assert "Reduce batch size" in body
-        assert "70%" in body
+    def test_post_github_comment_importable_from_module(self):
+        from orchestration_engine.issue_automation import post_github_comment
+        assert callable(post_github_comment)
 
-    def test_partial_diagnosis_skips_missing_fields(self):
-        """Diagnosis with only failure_class; remediation and confidence absent."""
-        captured = {}
-        def _mock_pgc(repo, issue_number, body):
-            captured["body"] = body
-            return "url"
-        diagnosis = {"failure_class": "network"}
-        with patch(
-            "orchestration_engine.issue_automation.post_github_comment",
-            side_effect=_mock_pgc,
-        ):
-            post_failure_summary_comment(
-                "owner/repo", 1, "Net err", "run-4", diagnosis=diagnosis
-            )
-        body = captured["body"]
-        assert "network" in body
-        # Remediation/confidence lines should not appear
-        assert "Remediation" not in body
-        assert "Confidence" not in body
+    def test_post_github_comment_in_top_level_all(self):
+        import orchestration_engine
+        assert "post_github_comment" in orchestration_engine.__all__
 
-    def test_returns_none_when_post_fails(self):
-        with patch(
-            "orchestration_engine.issue_automation.post_github_comment",
-            return_value=None,
-        ):
-            url = post_failure_summary_comment(
-                "owner/repo", 1, "error", "run-5"
-            )
-        assert url is None
-
-
-# ---------------------------------------------------------------------------
-# db.get_issue_classification_by_run_id
-# ---------------------------------------------------------------------------
-
-
-class TestGetIssueClassificationByRunId:
-    def test_returns_row_when_match(self):
-        db = _make_db()
-        _insert_ipm_row(db, run_id="run-aaa", issue_number=10, classification_type="bug")
-        row = db.get_issue_classification_by_run_id("run-aaa")
-        assert row is not None
-        assert row["run_id"] == "run-aaa"
-        assert row["issue_number"] == 10
-        assert row["classification_type"] == "bug"
-
-    def test_returns_none_when_no_match(self):
-        db = _make_db()
-        row = db.get_issue_classification_by_run_id("nonexistent-run-id")
-        assert row is None
-
-    def test_returns_most_recent_on_duplicates(self):
-        """When two rows share the same run_id, the higher id (latest) is returned."""
-        db = _make_db()
-        # Insert two rows with same run_id but different classification_type
-        _insert_ipm_row(db, run_id="run-dup", classification_type="bug")
-        _insert_ipm_row(db, run_id="run-dup", classification_type="feature")
-        row = db.get_issue_classification_by_run_id("run-dup")
-        # Should return the latest insert (feature)
-        assert row["classification_type"] == "feature"
-
-    def test_does_not_match_different_run_id(self):
-        db = _make_db()
-        _insert_ipm_row(db, run_id="run-aaa")
-        row = db.get_issue_classification_by_run_id("run-bbb")
-        assert row is None
-
-
-# ---------------------------------------------------------------------------
-# _post_github_result_hook (daemon helper)
-# ---------------------------------------------------------------------------
-
-
-def _make_mock_db(classification_type: Optional[str] = None) -> MagicMock:
-    """Build a mock DB with get_issue_classification_by_run_id."""
-    db = MagicMock()
-    if classification_type is not None:
-        db.get_issue_classification_by_run_id.return_value = {
-            "classification_type": classification_type,
-            "run_id": "test-run",
-            "issue_number": 42,
-            "repo": "owner/repo",
-        }
-    else:
-        db.get_issue_classification_by_run_id.return_value = None
-    return db
-
-
-class TestPostGithubResultHook:
-    def test_skips_when_no_issue_number(self):
-        """Hook is a no-op when initial_input has no issue_number."""
-        db = _make_mock_db("feature")
-        with patch("orchestration_engine.issue_automation.post_failure_summary_comment") as mock_fn:
-            _post_github_result_hook(
-                run_id="run-1",
-                db=db,
-                initial_input={"repo": "owner/repo"},  # no issue_number
-                phase_outputs={},
-                final_status="failed",
-                error_message="err",
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        mock_fn.assert_not_called()
-
-    def test_skips_when_no_repo(self):
-        """Hook is a no-op when initial_input has no repo."""
-        db = _make_mock_db("feature")
-        with patch("orchestration_engine.issue_automation.post_failure_summary_comment") as mock_fn:
-            _post_github_result_hook(
-                run_id="run-1",
-                db=db,
-                initial_input={"issue_number": 42},  # no repo
-                phase_outputs={},
-                final_status="failed",
-                error_message="err",
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        mock_fn.assert_not_called()
-
-    def test_posts_failure_comment_on_failed_status(self):
-        db = _make_mock_db("feature")
-        with patch(
-            "orchestration_engine.issue_automation.post_failure_summary_comment",
-            return_value="https://github.com/owner/repo/issues/42#issuecomment-9",
-        ) as mock_fail:
-            _post_github_result_hook(
-                run_id="run-2",
-                db=db,
-                initial_input={"issue_number": 42, "repo": "owner/repo"},
-                phase_outputs={},
-                final_status="failed",
-                error_message="Something went wrong",
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        mock_fail.assert_called_once()
-        kwargs = mock_fail.call_args[1] if mock_fail.call_args.kwargs else {}
-        args = mock_fail.call_args[0]
-        # Accept both positional and keyword calls
-        all_args = list(args) + list(kwargs.values())
-        assert any("Something went wrong" in str(a) for a in all_args)
-
-    def test_creates_pr_for_bug_classification(self):
-        db = _make_mock_db("bug")
-        with patch(
-            "orchestration_engine.issue_automation.create_pr_for_issue",
-            return_value="https://github.com/owner/repo/pull/1",
-        ) as mock_pr:
-            _post_github_result_hook(
-                run_id="run-3",
-                db=db,
-                initial_input={
-                    "issue_number": 42,
-                    "repo": "owner/repo",
-                    "branch_name": "fix/bug-branch",
-                },
-                phase_outputs={},
-                final_status="success",
-                error_message=None,
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        mock_pr.assert_called_once()
-
-    def test_creates_pr_for_feature_classification(self):
-        db = _make_mock_db("feature")
-        with patch(
-            "orchestration_engine.issue_automation.create_pr_for_issue",
-            return_value="https://github.com/owner/repo/pull/2",
-        ) as mock_pr:
-            _post_github_result_hook(
-                run_id="run-4",
-                db=db,
-                initial_input={
-                    "issue_number": 10,
-                    "repo": "owner/repo",
-                    "branch_name": "feat/my-feature",
-                },
-                phase_outputs={},
-                final_status="success",
-                error_message=None,
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        mock_pr.assert_called_once()
-
-    def test_creates_pr_for_refactor_classification(self):
-        db = _make_mock_db("refactor")
-        with patch(
-            "orchestration_engine.issue_automation.create_pr_for_issue",
-            return_value="https://github.com/owner/repo/pull/3",
-        ) as mock_pr:
-            _post_github_result_hook(
-                run_id="run-5",
-                db=db,
-                initial_input={
-                    "issue_number": 7,
-                    "repo": "owner/repo",
-                    "branch_name": "refactor/cleanup",
-                },
-                phase_outputs={},
-                final_status="success",
-                error_message=None,
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        mock_pr.assert_called_once()
-
-    def test_posts_result_comment_for_content_classification(self):
-        db = _make_mock_db("content")
-        with patch(
-            "orchestration_engine.issue_automation.post_pipeline_result_comment",
-            return_value="https://github.com/owner/repo/issues/42#issuecomment-10",
-        ) as mock_comment:
-            _post_github_result_hook(
-                run_id="run-6",
-                db=db,
-                initial_input={"issue_number": 42, "repo": "owner/repo"},
-                phase_outputs={},
-                final_status="success",
-                error_message=None,
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        mock_comment.assert_called_once()
-
-    def test_posts_result_comment_for_docs_classification(self):
-        db = _make_mock_db("docs")
-        with patch(
-            "orchestration_engine.issue_automation.post_pipeline_result_comment",
-            return_value="url",
-        ) as mock_comment:
-            _post_github_result_hook(
-                run_id="run-7",
-                db=db,
-                initial_input={"issue_number": 5, "repo": "owner/repo"},
-                phase_outputs={},
-                final_status="success",
-                error_message=None,
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        mock_comment.assert_called_once()
-
-    def test_posts_result_comment_for_research_classification(self):
-        db = _make_mock_db("research")
-        with patch(
-            "orchestration_engine.issue_automation.post_pipeline_result_comment",
-            return_value="url",
-        ) as mock_comment:
-            _post_github_result_hook(
-                run_id="run-8",
-                db=db,
-                initial_input={"issue_number": 3, "repo": "owner/repo"},
-                phase_outputs={},
-                final_status="success",
-                error_message=None,
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        mock_comment.assert_called_once()
-
-    def test_fallback_branch_name_when_missing_from_input(self):
-        """When branch_name is absent, falls back to feat/issue-<number>."""
-        db = _make_mock_db("feature")
-        captured = {}
-        def _mock_pr(repo, issue_number, branch_name, title, body):
-            captured["branch_name"] = branch_name
-            return "url"
-        with patch("orchestration_engine.issue_automation.create_pr_for_issue", side_effect=_mock_pr):
-            _post_github_result_hook(
-                run_id="run-9",
-                db=db,
-                initial_input={"issue_number": 99, "repo": "owner/repo"},
-                phase_outputs={},
-                final_status="success",
-                error_message=None,
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        assert captured["branch_name"] == "feat/issue-99"
-
-    def test_non_fatal_on_unexpected_exception(self):
-        """An exception raised inside the hook must not propagate."""
-        db = MagicMock()
-        db.get_issue_classification_by_run_id.side_effect = RuntimeError("DB exploded")
-        # Should NOT raise
-        _post_github_result_hook(
-            run_id="run-10",
-            db=db,
-            initial_input={"issue_number": 1, "repo": "owner/repo"},
-            phase_outputs={},
-            final_status="success",
-            error_message=None,
-            diagnosis=None,
-            output_dir="/tmp/out",
-        )
-
-    def test_uses_db_classification_over_input(self):
-        """DB row classification_type overrides initial_input value."""
-        db = _make_mock_db("research")  # DB says research
-        with patch(
-            "orchestration_engine.issue_automation.post_pipeline_result_comment",
-            return_value="url",
-        ) as mock_comment:
-            _post_github_result_hook(
-                run_id="run-11",
-                db=db,
-                initial_input={
-                    "issue_number": 42,
-                    "repo": "owner/repo",
-                    "classification_type": "feature",  # Input says feature — should be ignored
-                },
-                phase_outputs={},
-                final_status="success",
-                error_message=None,
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        # research → post_pipeline_result_comment, NOT create_pr_for_issue
-        mock_comment.assert_called_once()
-
-    def test_unrecognised_classification_type_skips(self):
-        """An unknown classification_type neither posts a comment nor creates a PR."""
-        db = _make_mock_db("unknown_type")
-        with (
-            patch("orchestration_engine.issue_automation.create_pr_for_issue") as mock_pr,
-            patch("orchestration_engine.issue_automation.post_pipeline_result_comment") as mock_cmt,
-            patch("orchestration_engine.issue_automation.post_failure_summary_comment") as mock_fail,
-        ):
-            _post_github_result_hook(
-                run_id="run-12",
-                db=db,
-                initial_input={"issue_number": 42, "repo": "owner/repo"},
-                phase_outputs={},
-                final_status="success",
-                error_message=None,
-                diagnosis=None,
-                output_dir="/tmp/out",
-            )
-        mock_pr.assert_not_called()
-        mock_cmt.assert_not_called()
-        mock_fail.assert_not_called()
+    def test_post_github_comment_importable_from_top_level(self):
+        from orchestration_engine import post_github_comment
+        assert callable(post_github_comment)

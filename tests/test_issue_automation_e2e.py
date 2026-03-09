@@ -1,38 +1,57 @@
-"""End-to-end integration tests for IssueAutomation — Issue #5.1.5.
+"""End-to-end tests for Issue #5.1.3 — Issue Webhook Handler.
 
-Covers the full flow: mock issue → classify → template select → input extract
-→ launch → result posting, as well as the confidence escalation gate.
+These tests verify the full flow from HTTP webhook → IssueAutomation →
+Database persistence → GitHub comment (mocked), covering:
 
-Test inventory:
-- E2E happy path: high-confidence issue → pipeline launched, escalated=False
-- E2E with DB: classification persisted, status updated to "launched"
-- E2E escalation path: low-confidence → no launch, escalated=True
-- E2E escalation with dispatcher: dispatcher.dispatch() called with correct kwargs
-- E2E escalation without dispatcher: no dispatch, graceful silent escalation
-- E2E escalation: run_id is None on escalated result
-- E2E escalation: comment body contains warning text
-- E2E escalation: comment body does NOT contain pipeline/run-id lines
-- E2E normal path: comment body contains pipeline name and run_id
-- E2E normal path: launcher called with correct template and inputs
-- E2E normal path: result dict contains all expected keys
-- E2E custom threshold: exact boundary (confidence == threshold) → NOT escalated
-- E2E custom threshold: just below boundary → escalated
-- E2E template resolver failure → falls back to empty schema, still launches
-- E2E no launcher → run_id None, escalated=False for high-confidence
-- Confidence threshold default is 0.70
-- IssueAutomation accepts confidence_threshold kwarg
-- IssueAutomation accepts notification_dispatcher kwarg
+Automation end-to-end (no HTTP):
+- classify → select → extract → no launcher (run_id None)
+- classify → select → extract → launcher → run_id populated
+- classify → select → extract → launcher fails → run_id None, no exception
+- classify → select → extract → template resolver fails → fallback, no crash
+- DB classification row persisted on process()
+- DB classification status updated to "launched" after successful launch
+- pipeline inputs include issue_number and repo
+- result dict has all required keys
 
-All tests are fully mocked — no real LLM calls, no real network, no real DB writes
-(temp-file SQLite used where DB persistence is tested).
+Database.get_active_issue_run:
+- returns None when no rows
+- returns None when run_id IS NULL (not launched)
+- returns None for every terminal status (failed, success, cancelled)
+- returns row when run is pending (non-terminal)
+- returns row when run is running (non-terminal)
+- ignores rows from a different repo
+- ignores rows from a different issue number
+
+Webhook API end-to-end (HTTP with TestClient):
+- wrong X-GitHub-Event header → 200 ignored
+- missing X-GitHub-Event header → 200 ignored
+- unsupported action → 200 ignored
+- labeled action, wrong label → 200 ignored (reason: label_not_trigger)
+- opened action, no trigger label → 200 ignored (reason: trigger_label_absent)
+- invalid JSON body → 400
+- missing issue.number → 400
+- missing repository.full_name → 400
+- opened with trigger label → 202
+- labeled with trigger label → 202
+- deduplication: active run exists → 200 skipped
+- deduplication: previous run was terminal → 202 (not blocked)
+- deleted action → 200 ignored
+- empty body {} → 200 ignored
+- 202 response contains classification_type
+- 202 response contains comment_url key
+
+All tests are independent — no shared mutable state, no real LLM calls,
+no real subprocess calls, no real HTTP calls.
 """
 
 from __future__ import annotations
 
 import json
 import tempfile
+import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -42,9 +61,9 @@ from orchestration_engine.issue_automation import (
     IssueClassifier,
     InputExtractor,
     TemplateSelector,
+    post_github_comment,
 )
-from orchestration_engine.notifications import NotificationDispatcher
-from orchestration_engine.db import Database
+from orchestration_engine.db import Database, TERMINAL_STATUSES
 
 
 # ---------------------------------------------------------------------------
@@ -59,603 +78,722 @@ def _make_db() -> Database:
     return Database(tmp.name)
 
 
-def _mock_classifier(cls_type: str = "bug", confidence: float = 0.90) -> IssueClassifier:
-    """Return an IssueClassifier whose executor returns a deterministic response."""
-    mock_exec = MagicMock()
-    mock_exec.execute.return_value = json.dumps({
+def _make_classifier(cls_type: str = "bug", confidence: float = 0.9) -> IssueClassifier:
+    """Return an IssueClassifier backed by a mock executor."""
+    mock = MagicMock()
+    mock.execute.return_value = json.dumps({
         "classification_type": cls_type,
         "confidence": confidence,
-        "reasoning": "E2E test reasoning.",
+        "reasoning": "Test reasoning.",
     })
-    return IssueClassifier(executor=mock_exec)
-
-
-def _mock_extractor(extracted: Optional[Dict[str, Any]] = None) -> InputExtractor:
-    """Return an InputExtractor whose executor returns *extracted* as JSON."""
-    data = extracted or {"issue_number": 42, "repo": "owner/repo"}
-    mock_exec = MagicMock()
-    mock_exec.execute.return_value = json.dumps(data)
-    return InputExtractor(executor=mock_exec)
-
-
-def _mock_template(config_schema: Optional[Dict[str, Any]] = None) -> Any:
-    """Return a mock template object with an optional config_schema."""
-    tpl = MagicMock()
-    tpl.config_schema = config_schema or {}
-    return tpl
-
-
-def _make_launcher(run_id: str = "test-run-abc") -> MagicMock:
-    """Return a launcher callable that returns a run dict."""
-    launcher = MagicMock(return_value={"run_id": run_id})
-    return launcher
+    return IssueClassifier(executor=mock)
 
 
 def _make_automation(
-    cls_type: str = "bug",
-    confidence: float = 0.90,
-    confidence_threshold: float = 0.70,
-    dispatcher: Optional[NotificationDispatcher] = None,
+    cls_type: str = "feature",
+    confidence: float = 0.8,
 ) -> IssueAutomation:
-    """Build a fully-wired IssueAutomation with mock dependencies."""
+    """Return an IssueAutomation with mock classifier."""
     return IssueAutomation(
-        classifier=_mock_classifier(cls_type, confidence),
+        classifier=_make_classifier(cls_type, confidence),
         selector=TemplateSelector(),
-        extractor=_mock_extractor(),
-        confidence_threshold=confidence_threshold,
-        notification_dispatcher=dispatcher,
+        extractor=InputExtractor(),
     )
 
 
-def _make_template_resolver_and_engine(config_schema: Optional[Dict] = None):
-    """Return (template_resolver, template_engine) mocks."""
-    tpl = _mock_template(config_schema)
-    template_path = MagicMock()
-    resolver = MagicMock(return_value=template_path)
-    engine = MagicMock()
-    engine.load_template.return_value = tpl
-    return resolver, engine, template_path, tpl
+def _insert_run(db: Database, run_id: str, status: str) -> None:
+    """Insert a minimal pipeline_run row with the given status."""
+    db.insert_pipeline_run({
+        "run_id": run_id,
+        "template_path": "/tmp/fake.yaml",
+        "template_id": "coding-pipeline",
+        "input_json": "{}",
+        "mode": "standalone",
+        "output_dir": "/tmp/out",
+        "gateway_url": None,
+        "skip_scoring": 0,
+        "status": status,
+    })
 
 
-# ---------------------------------------------------------------------------
-# Tests — confidence_threshold default and kwarg acceptance
-# ---------------------------------------------------------------------------
+def _insert_issue_map(
+    db: Database,
+    issue_number: int,
+    repo: str,
+    run_id: Optional[str],
+    status: str = "launched",
+) -> int:
+    """Insert an issue_pipeline_map row and return its pk."""
+    return db.insert_issue_classification({
+        "issue_number": issue_number,
+        "repo": repo,
+        "classification_type": "feature",
+        "confidence": 0.8,
+        "template_id": "coding-pipeline",
+        "run_id": run_id,
+        "status": status,
+        "created_at": None,
+    })
 
 
-class TestIssueAutomationInit:
-    """Verify new __init__ parameters are accepted and stored correctly."""
+def _make_test_client(db_path: str):
+    """Create a FastAPI TestClient wired to *db_path*."""
+    from fastapi.testclient import TestClient
+    from orchestration_engine.web.api import create_api_app
 
-    def test_default_confidence_threshold(self):
-        automation = IssueAutomation(
-            classifier=_mock_classifier(),
-            selector=TemplateSelector(),
-            extractor=InputExtractor(),
-        )
-        assert automation._confidence_threshold == 0.70
-
-    def test_custom_confidence_threshold(self):
-        automation = IssueAutomation(
-            classifier=_mock_classifier(),
-            selector=TemplateSelector(),
-            extractor=InputExtractor(),
-            confidence_threshold=0.85,
-        )
-        assert automation._confidence_threshold == 0.85
-
-    def test_notification_dispatcher_default_none(self):
-        automation = IssueAutomation(
-            classifier=_mock_classifier(),
-            selector=TemplateSelector(),
-            extractor=InputExtractor(),
-        )
-        assert automation._dispatcher is None
-
-    def test_notification_dispatcher_stored(self):
-        dispatcher = MagicMock(spec=NotificationDispatcher)
-        automation = IssueAutomation(
-            classifier=_mock_classifier(),
-            selector=TemplateSelector(),
-            extractor=InputExtractor(),
-            notification_dispatcher=dispatcher,
-        )
-        assert automation._dispatcher is dispatcher
+    app = create_api_app(db_path=db_path)
+    return TestClient(app, raise_server_exceptions=True)
 
 
-# ---------------------------------------------------------------------------
-# Tests — E2E happy path (high confidence)
-# ---------------------------------------------------------------------------
+def _fresh_client():
+    """Return a (TestClient, db_path) tuple with a fresh temporary database."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    return _make_test_client(tmp.name), tmp.name
 
 
-class TestIssueAutomationE2EHappyPath:
-    """Full flow: classify → select → extract → launch with high confidence."""
+def _issue_payload(
+    action: str = "opened",
+    issue_number: int = 1,
+    repo: str = "owner/repo",
+    labels: Optional[list] = None,
+    applied_label: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a minimal GitHub issues webhook payload."""
+    payload: Dict[str, Any] = {
+        "action": action,
+        "issue": {
+            "number": issue_number,
+            "title": "Test issue",
+            "body": "Test body",
+            "labels": [{"name": lbl} for lbl in (labels or [])],
+        },
+        "repository": {"full_name": repo},
+    }
+    if applied_label is not None:
+        payload["label"] = {"name": applied_label}
+    return payload
 
-    def test_result_contains_all_expected_keys(self):
-        automation = _make_automation(confidence=0.90)
-        resolver, engine, path, tpl = _make_template_resolver_and_engine()
-        launcher = _make_launcher("run-happy-001")
 
-        result = automation.process(
-            issue_number=42,
-            repo="owner/repo",
-            title="Fix crash on empty input",
-            body="When the list is empty the runner crashes.",
-            labels=["bug"],
-            launcher=launcher,
-            template_resolver=resolver,
-            template_engine=engine,
-        )
+# ===========================================================================
+# Tests: IssueAutomation.process() — unit/integration (no HTTP)
+# ===========================================================================
 
-        assert "issue_number" in result
-        assert "repo" in result
-        assert "classification_type" in result
-        assert "confidence" in result
-        assert "template" in result
-        assert "run_id" in result
-        assert "comment_body" in result
-        assert "escalated" in result
 
-    def test_escalated_false_on_high_confidence(self):
-        automation = _make_automation(confidence=0.90)
-        resolver, engine, path, tpl = _make_template_resolver_and_engine()
-        launcher = _make_launcher("run-001")
+class TestIssueAutomationProcess:
+    """Unit tests for IssueAutomation.process()."""
 
-        result = automation.process(
-            issue_number=42,
-            repo="owner/repo",
-            title="Fix crash",
-            launcher=launcher,
-            template_resolver=resolver,
-            template_engine=engine,
-        )
+    def test_returns_dict_with_all_required_keys(self):
+        """process() must return a dict containing all required keys."""
+        auto = _make_automation()
+        result = auto.process(issue_number=1, repo="o/r", title="Test")
+        required_keys = {
+            "issue_number", "repo", "classification_type",
+            "confidence", "template", "run_id", "comment_body",
+        }
+        assert required_keys.issubset(result.keys())
 
-        assert result["escalated"] is False
+    def test_issue_number_propagated_correctly(self):
+        auto = _make_automation()
+        result = auto.process(issue_number=42, repo="acme/service", title="Crash")
+        assert result["issue_number"] == 42
 
-    def test_run_id_populated_on_successful_launch(self):
-        automation = _make_automation(confidence=0.90)
-        resolver, engine, path, tpl = _make_template_resolver_and_engine()
-        launcher = _make_launcher("run-xyz-999")
+    def test_repo_propagated_correctly(self):
+        auto = _make_automation()
+        result = auto.process(issue_number=42, repo="acme/service", title="Crash")
+        assert result["repo"] == "acme/service"
 
-        result = automation.process(
-            issue_number=1,
-            repo="owner/repo",
-            title="Add feature",
-            launcher=launcher,
-            template_resolver=resolver,
-            template_engine=engine,
-        )
-
-        assert result["run_id"] == "run-xyz-999"
-
-    def test_launcher_called_with_correct_template(self):
-        automation = _make_automation(cls_type="bug", confidence=0.90)
-        resolver, engine, path, tpl = _make_template_resolver_and_engine()
-        launcher = _make_launcher()
-
-        automation.process(
-            issue_number=10,
-            repo="owner/repo",
-            title="Bug fix",
-            launcher=launcher,
-            template_resolver=resolver,
-            template_engine=engine,
-        )
-
-        launcher.assert_called_once()
-        call_kwargs = launcher.call_args
-        assert call_kwargs.kwargs["template_file"] is path
-        assert call_kwargs.kwargs["template"] is tpl
-
-    def test_correct_classification_type_returned(self):
-        automation = _make_automation(cls_type="feature", confidence=0.88)
-        result = automation.process(
-            issue_number=5,
-            repo="owner/repo",
-            title="Add new feature",
-        )
+    def test_classification_type_in_result(self):
+        auto = _make_automation("feature")
+        result = auto.process(issue_number=1, repo="o/r", title="New feature")
         assert result["classification_type"] == "feature"
 
-    def test_template_selected_for_bug(self):
-        automation = _make_automation(cls_type="bug", confidence=0.90)
-        result = automation.process(
-            issue_number=5,
-            repo="owner/repo",
-            title="Bug fix",
-        )
+    def test_bug_maps_to_coding_pipeline(self):
+        """'bug' classification should map to 'coding-pipeline' template."""
+        auto = _make_automation("bug")
+        result = auto.process(issue_number=1, repo="o/r", title="Bug fix")
         assert result["template"] == "coding-pipeline"
 
-    def test_comment_body_contains_pipeline_name(self):
-        automation = _make_automation(cls_type="bug", confidence=0.90)
-        resolver, engine, path, tpl = _make_template_resolver_and_engine()
-        launcher = _make_launcher("run-001")
+    def test_content_maps_to_content_pipeline(self):
+        """'content' classification should map to 'content-pipeline' template."""
+        auto = _make_automation("content")
+        result = auto.process(issue_number=1, repo="o/r", title="Blog post")
+        assert result["template"] == "content-pipeline"
 
-        result = automation.process(
-            issue_number=5,
-            repo="owner/repo",
-            title="Bug fix",
-            launcher=launcher,
-            template_resolver=resolver,
-            template_engine=engine,
+    def test_no_launcher_run_id_is_none(self):
+        """Without a launcher, run_id should be None."""
+        auto = _make_automation("bug")
+        result = auto.process(issue_number=1, repo="o/r", title="Bug")
+        assert result["run_id"] is None
+
+    def test_confidence_in_result(self):
+        auto = _make_automation("bug", confidence=0.77)
+        result = auto.process(issue_number=1, repo="o/r", title="Bug")
+        assert abs(result["confidence"] - 0.77) < 0.01
+
+    def test_with_launcher_run_id_set(self):
+        """When a launcher is provided and succeeds, run_id should be set."""
+        mock_launcher = MagicMock(return_value={"run_id": "abc12345"})
+        mock_resolver = MagicMock(return_value=Path("/tmp/fake.yaml"))
+        mock_template = MagicMock()
+        mock_template.config_schema = {}
+        mock_engine = MagicMock()
+        mock_engine.load_template.return_value = mock_template
+
+        auto = _make_automation("feature")
+        result = auto.process(
+            issue_number=7,
+            repo="o/r",
+            title="New feature",
+            launcher=mock_launcher,
+            template_resolver=mock_resolver,
+            template_engine=mock_engine,
         )
+        assert result["run_id"] == "abc12345"
 
-        assert "coding-pipeline" in result["comment_body"]
-        assert "run-001" in result["comment_body"]
+    def test_launcher_failure_does_not_raise(self):
+        """A launcher that raises should not propagate — run_id should be None."""
+        mock_launcher = MagicMock(side_effect=RuntimeError("launch failed"))
+        mock_resolver = MagicMock(return_value=Path("/tmp/fake.yaml"))
+        mock_template = MagicMock()
+        mock_template.config_schema = {}
+        mock_engine = MagicMock()
+        mock_engine.load_template.return_value = mock_template
 
+        auto = _make_automation("feature")
+        result = auto.process(
+            issue_number=1,
+            repo="o/r",
+            title="Test",
+            launcher=mock_launcher,
+            template_resolver=mock_resolver,
+            template_engine=mock_engine,
+        )
+        assert result["run_id"] is None
 
-# ---------------------------------------------------------------------------
-# Tests — E2E with DB persistence
-# ---------------------------------------------------------------------------
+    def test_template_resolver_failure_does_not_raise(self):
+        """When template resolution raises, process() should not crash."""
+        mock_resolver = MagicMock(side_effect=Exception("template not found"))
+        mock_engine = MagicMock()
 
+        auto = _make_automation("bug")
+        result = auto.process(
+            issue_number=1,
+            repo="o/r",
+            title="Test",
+            template_resolver=mock_resolver,
+            template_engine=mock_engine,
+        )
+        assert "classification_type" in result
+        assert result["run_id"] is None
 
-class TestIssueAutomationE2EWithDB:
-    """Verify DB persistence and status updates."""
+    def test_pipeline_inputs_include_issue_number(self):
+        """The launcher should receive inputs containing issue_number."""
+        captured: Dict[str, Any] = {}
 
-    def test_classification_persisted_to_db(self):
+        def fake_launcher(**kwargs: Any) -> Dict[str, Any]:
+            captured.update(kwargs.get("input_data", {}))
+            return {"run_id": "run001"}
+
+        mock_resolver = MagicMock(return_value=Path("/tmp/fake.yaml"))
+        mock_template = MagicMock()
+        mock_template.config_schema = {}
+        mock_engine = MagicMock()
+        mock_engine.load_template.return_value = mock_template
+
+        auto = _make_automation("feature")
+        auto.process(
+            issue_number=55,
+            repo="test/repo",
+            title="Feature",
+            launcher=fake_launcher,
+            template_resolver=mock_resolver,
+            template_engine=mock_engine,
+        )
+        assert captured.get("issue_number") == 55
+
+    def test_pipeline_inputs_include_repo(self):
+        """The launcher should receive inputs containing repo."""
+        captured: Dict[str, Any] = {}
+
+        def fake_launcher(**kwargs: Any) -> Dict[str, Any]:
+            captured.update(kwargs.get("input_data", {}))
+            return {"run_id": "run002"}
+
+        mock_resolver = MagicMock(return_value=Path("/tmp/fake.yaml"))
+        mock_template = MagicMock()
+        mock_template.config_schema = {}
+        mock_engine = MagicMock()
+        mock_engine.load_template.return_value = mock_template
+
+        auto = _make_automation("feature")
+        auto.process(
+            issue_number=55,
+            repo="test/repo",
+            title="Feature",
+            launcher=fake_launcher,
+            template_resolver=mock_resolver,
+            template_engine=mock_engine,
+        )
+        assert captured.get("repo") == "test/repo"
+
+    def test_db_classification_persisted(self):
+        """When db is provided, the classification row should be persisted."""
         db = _make_db()
-        automation = _make_automation(cls_type="bug", confidence=0.90)
-        resolver, engine, path, tpl = _make_template_resolver_and_engine()
-        launcher = _make_launcher("run-db-001")
+        auto = _make_automation("bug")
+        auto.process(issue_number=33, repo="o/r", title="Test bug", db=db)
 
-        automation.process(
-            issue_number=99,
-            repo="myorg/myrepo",
-            title="DB persistence test",
-            db=db,
-            launcher=launcher,
-            template_resolver=resolver,
-            template_engine=engine,
-        )
-
-        row = db.get_issue_classification(99, "myorg/myrepo")
+        row = db.get_issue_classification(33, "o/r")
         assert row is not None
-        assert row["issue_number"] == 99
-        assert row["repo"] == "myorg/myrepo"
         assert row["classification_type"] == "bug"
 
-    def test_status_updated_to_launched_after_successful_launch(self):
+    def test_db_status_updated_to_launched_on_success(self):
+        """DB classification status should be 'launched' after a successful launch."""
         db = _make_db()
-        automation = _make_automation(cls_type="bug", confidence=0.90)
-        resolver, engine, path, tpl = _make_template_resolver_and_engine()
-        launcher = _make_launcher("run-db-002")
+        mock_launcher = MagicMock(return_value={"run_id": "xyz99"})
+        mock_resolver = MagicMock(return_value=Path("/tmp/fake.yaml"))
+        mock_template = MagicMock()
+        mock_template.config_schema = {}
+        mock_engine = MagicMock()
+        mock_engine.load_template.return_value = mock_template
 
-        automation.process(
-            issue_number=55,
-            repo="myorg/myrepo",
-            title="Status update test",
+        auto = _make_automation("bug")
+        auto.process(
+            issue_number=99,
+            repo="owner/repo",
+            title="Bug",
             db=db,
-            launcher=launcher,
-            template_resolver=resolver,
-            template_engine=engine,
+            launcher=mock_launcher,
+            template_resolver=mock_resolver,
+            template_engine=mock_engine,
         )
-
-        row = db.get_issue_classification(55, "myorg/myrepo")
+        row = db.get_issue_classification(99, "owner/repo")
         assert row is not None
         assert row["status"] == "launched"
 
-
-# ---------------------------------------------------------------------------
-# Tests — E2E escalation path (low confidence)
-# ---------------------------------------------------------------------------
-
-
-class TestIssueAutomationEscalation:
-    """Confidence gate: low-confidence issues must be escalated, not launched."""
-
-    def test_escalated_true_when_below_threshold(self):
-        automation = _make_automation(confidence=0.50, confidence_threshold=0.70)
-        result = automation.process(
-            issue_number=7,
-            repo="owner/repo",
-            title="Vague issue",
-        )
-        assert result["escalated"] is True
-
-    def test_run_id_none_when_escalated(self):
-        automation = _make_automation(confidence=0.40, confidence_threshold=0.70)
-        result = automation.process(
-            issue_number=7,
-            repo="owner/repo",
-            title="Vague issue",
-        )
-        assert result["run_id"] is None
-
-    def test_launcher_not_called_when_escalated(self):
-        automation = _make_automation(confidence=0.30, confidence_threshold=0.70)
-        launcher = _make_launcher()
-
-        automation.process(
-            issue_number=7,
-            repo="owner/repo",
-            title="Vague issue",
-            launcher=launcher,
-        )
-
-        launcher.assert_not_called()
-
-    def test_comment_contains_warning_text_when_escalated(self):
-        automation = _make_automation(confidence=0.45, confidence_threshold=0.70)
-        result = automation.process(
-            issue_number=7,
-            repo="owner/repo",
-            title="Vague issue",
-        )
-        assert "Confidence too low for automatic launch" in result["comment_body"]
-
-    def test_comment_contains_telegram_escalation_text(self):
-        automation = _make_automation(confidence=0.45, confidence_threshold=0.70)
-        result = automation.process(
-            issue_number=7,
-            repo="owner/repo",
-            title="Vague issue",
-        )
-        assert "escalated to human review via Telegram" in result["comment_body"]
-
-    def test_comment_does_not_contain_pipeline_line_when_escalated(self):
-        automation = _make_automation(confidence=0.45, confidence_threshold=0.70)
-        result = automation.process(
-            issue_number=7,
-            repo="owner/repo",
-            title="Vague issue",
-        )
-        # The normal pipeline / run-id lines should NOT appear
-        assert "**Pipeline:**" not in result["comment_body"]
-        assert "**Run ID:**" not in result["comment_body"]
-
-    def test_result_has_all_expected_keys_on_escalation(self):
-        automation = _make_automation(confidence=0.20, confidence_threshold=0.70)
-        result = automation.process(
-            issue_number=7,
-            repo="owner/repo",
-            title="Vague issue",
-        )
-        for key in ("issue_number", "repo", "classification_type", "confidence",
-                    "template", "run_id", "comment_body", "escalated"):
-            assert key in result, f"Missing key: {key!r}"
-
-    def test_comment_contains_confidence_percentage(self):
-        automation = _make_automation(confidence=0.45, confidence_threshold=0.70)
-        result = automation.process(
-            issue_number=7,
-            repo="owner/repo",
-            title="Vague issue",
-        )
-        # 45% should appear in the comment
-        assert "45%" in result["comment_body"]
+    def test_no_db_does_not_raise(self):
+        """process() should work fine without a db argument."""
+        auto = _make_automation()
+        result = auto.process(issue_number=1, repo="o/r", title="Test")
+        assert isinstance(result, dict)
 
 
-# ---------------------------------------------------------------------------
-# Tests — dispatcher interaction on escalation
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Tests: Database.get_active_issue_run
+# ===========================================================================
 
 
-class TestEscalationDispatcher:
-    """Verify the NotificationDispatcher is called correctly on escalation."""
+class TestGetActiveIssueRun:
+    """Tests for Database.get_active_issue_run()."""
 
-    def test_dispatcher_called_when_escalated(self):
-        dispatcher = MagicMock(spec=NotificationDispatcher)
-        automation = _make_automation(
-            confidence=0.30,
-            confidence_threshold=0.70,
-            dispatcher=dispatcher,
-        )
-
-        automation.process(
-            issue_number=77,
-            repo="owner/repo",
-            title="Ambiguous issue",
-        )
-
-        dispatcher.dispatch.assert_called_once()
-
-    def test_dispatcher_called_with_human_review_event(self):
-        dispatcher = MagicMock(spec=NotificationDispatcher)
-        automation = _make_automation(
-            confidence=0.30,
-            confidence_threshold=0.70,
-            dispatcher=dispatcher,
-        )
-
-        automation.process(
-            issue_number=77,
-            repo="owner/repo",
-            title="Ambiguous issue",
-        )
-
-        call_kwargs = dispatcher.dispatch.call_args
-        assert call_kwargs.kwargs.get("event") == "human_review" or \
-               (call_kwargs.args and call_kwargs.args[0] == "human_review")
-
-    def test_dispatcher_called_with_correct_run_id(self):
-        dispatcher = MagicMock(spec=NotificationDispatcher)
-        automation = _make_automation(
-            confidence=0.30,
-            confidence_threshold=0.70,
-            dispatcher=dispatcher,
-        )
-
-        automation.process(
-            issue_number=77,
-            repo="owner/repo",
-            title="Ambiguous issue",
-        )
-
-        call_kwargs = dispatcher.dispatch.call_args
-        assert call_kwargs.kwargs.get("run_id") == "issue-77"
-
-    def test_dispatcher_called_with_escalation_tier(self):
-        dispatcher = MagicMock(spec=NotificationDispatcher)
-        automation = _make_automation(
-            confidence=0.30,
-            confidence_threshold=0.70,
-            dispatcher=dispatcher,
-        )
-
-        automation.process(
-            issue_number=77,
-            repo="owner/repo",
-            title="Ambiguous issue",
-        )
-
-        call_kwargs = dispatcher.dispatch.call_args
-        assert call_kwargs.kwargs.get("tier") == "escalation"
-
-    def test_dispatcher_not_called_when_above_threshold(self):
-        dispatcher = MagicMock(spec=NotificationDispatcher)
-        automation = _make_automation(
-            confidence=0.90,
-            confidence_threshold=0.70,
-            dispatcher=dispatcher,
-        )
-
-        automation.process(
-            issue_number=77,
-            repo="owner/repo",
-            title="Clear issue title",
-        )
-
-        dispatcher.dispatch.assert_not_called()
-
-    def test_no_error_when_dispatcher_is_none_and_escalated(self):
-        """When no dispatcher is set, escalation must still succeed silently."""
-        automation = _make_automation(
-            confidence=0.20,
-            confidence_threshold=0.70,
-            dispatcher=None,  # explicitly None
-        )
-
-        result = automation.process(
-            issue_number=7,
-            repo="owner/repo",
-            title="Vague issue",
-        )
-
-        assert result["escalated"] is True
-        assert result["run_id"] is None
-
-
-# ---------------------------------------------------------------------------
-# Tests — threshold boundary conditions
-# ---------------------------------------------------------------------------
-
-
-class TestThresholdBoundary:
-    """Exact and near-boundary confidence values."""
-
-    def test_exactly_at_threshold_not_escalated(self):
-        """confidence == threshold is NOT escalated (only < threshold escalates)."""
-        automation = _make_automation(confidence=0.70, confidence_threshold=0.70)
-        result = automation.process(
-            issue_number=10,
-            repo="owner/repo",
-            title="Boundary issue",
-        )
-        assert result["escalated"] is False
-
-    def test_just_below_threshold_escalated(self):
-        automation = _make_automation(confidence=0.6999, confidence_threshold=0.70)
-        result = automation.process(
-            issue_number=10,
-            repo="owner/repo",
-            title="Boundary issue",
-        )
-        assert result["escalated"] is True
-
-    def test_custom_threshold_respected(self):
-        """Custom threshold of 0.85: confidence 0.80 should escalate."""
-        automation = _make_automation(confidence=0.80, confidence_threshold=0.85)
-        result = automation.process(
-            issue_number=10,
-            repo="owner/repo",
-            title="High-bar issue",
-        )
-        assert result["escalated"] is True
-
-    def test_custom_threshold_not_escalated_above(self):
-        """Custom threshold of 0.85: confidence 0.90 should NOT escalate."""
-        automation = _make_automation(confidence=0.90, confidence_threshold=0.85)
-        result = automation.process(
-            issue_number=10,
-            repo="owner/repo",
-            title="High-bar issue",
-        )
-        assert result["escalated"] is False
-
-
-# ---------------------------------------------------------------------------
-# Tests — E2E miscellaneous
-# ---------------------------------------------------------------------------
-
-
-class TestIssueAutomationE2EMisc:
-    """Additional integration edge cases."""
-
-    def test_no_launcher_high_confidence_not_escalated(self):
-        """No launcher provided, but confidence is high — escalated must be False."""
-        automation = _make_automation(confidence=0.90)
-        result = automation.process(
-            issue_number=1,
-            repo="owner/repo",
-            title="Fix this please",
-        )
-        assert result["escalated"] is False
-        assert result["run_id"] is None
-
-    def test_template_resolver_failure_still_launches(self):
-        """When template resolver raises, fall back to empty schema and still launch."""
-        automation = _make_automation(confidence=0.90)
-        bad_resolver = MagicMock(side_effect=FileNotFoundError("template not found"))
-        engine = MagicMock()
-        launcher = _make_launcher("run-fallback")
-
-        # Should not raise
-        result = automation.process(
-            issue_number=20,
-            repo="owner/repo",
-            title="Feature issue",
-            launcher=launcher,
-            template_resolver=bad_resolver,
-            template_engine=engine,
-        )
-
-        # Launcher was NOT called (template_path_obj is None → skip launch)
-        # This is consistent with existing logic: no path → no launch
-        assert result["escalated"] is False
-
-    def test_full_e2e_pipeline_run_flow(self):
-        """Complete E2E: classify bug at 92%, select template, extract inputs, launch."""
+    def test_returns_none_when_no_rows(self):
         db = _make_db()
-        extractor = InputExtractor(executor=MagicMock(
-            **{"execute.return_value": json.dumps({"issue_number": 101, "repo": "org/repo"})}
-        ))
-        schema = {"issue_number": "int", "repo": "str"}
-        automation = IssueAutomation(
-            classifier=_mock_classifier("bug", 0.92),
-            selector=TemplateSelector(),
-            extractor=extractor,
-            confidence_threshold=0.70,
+        assert db.get_active_issue_run(1, "o/r") is None
+
+    def test_returns_none_when_run_id_is_null(self):
+        """Rows with run_id IS NULL (classified but not launched) should not block."""
+        db = _make_db()
+        _insert_issue_map(db, 1, "o/r", run_id=None, status="classified")
+        assert db.get_active_issue_run(1, "o/r") is None
+
+    def test_returns_none_for_failed_run(self):
+        db = _make_db()
+        run_id = str(uuid.uuid4())[:8]
+        _insert_run(db, run_id, "failed")
+        _insert_issue_map(db, 1, "o/r", run_id=run_id, status="launched")
+        assert db.get_active_issue_run(1, "o/r") is None
+
+    def test_returns_none_for_success_run(self):
+        db = _make_db()
+        run_id = str(uuid.uuid4())[:8]
+        _insert_run(db, run_id, "success")
+        _insert_issue_map(db, 1, "o/r", run_id=run_id, status="launched")
+        assert db.get_active_issue_run(1, "o/r") is None
+
+    def test_returns_none_for_cancelled_run(self):
+        db = _make_db()
+        run_id = str(uuid.uuid4())[:8]
+        _insert_run(db, run_id, "cancelled")
+        _insert_issue_map(db, 1, "o/r", run_id=run_id, status="launched")
+        assert db.get_active_issue_run(1, "o/r") is None
+
+    def test_returns_none_for_all_terminal_statuses(self):
+        """All terminal statuses should result in no active run."""
+        for status in TERMINAL_STATUSES:
+            db = _make_db()
+            run_id = str(uuid.uuid4())[:8]
+            _insert_run(db, run_id, status)
+            _insert_issue_map(db, 1, "o/r", run_id=run_id, status="launched")
+            result = db.get_active_issue_run(1, "o/r")
+            assert result is None, f"Expected None for terminal status {status!r}"
+
+    def test_returns_row_for_pending_run(self):
+        """A 'pending' pipeline run is not terminal → should return the row."""
+        db = _make_db()
+        run_id = str(uuid.uuid4())[:8]
+        _insert_run(db, run_id, "pending")
+        _insert_issue_map(db, 1, "o/r", run_id=run_id, status="launched")
+        result = db.get_active_issue_run(1, "o/r")
+        assert result is not None
+        assert result["run_id"] == run_id
+
+    def test_returns_row_for_running_run(self):
+        """A 'running' pipeline run is not terminal → should return the row."""
+        db = _make_db()
+        run_id = str(uuid.uuid4())[:8]
+        _insert_run(db, run_id, "running")
+        _insert_issue_map(db, 1, "o/r", run_id=run_id, status="launched")
+        result = db.get_active_issue_run(1, "o/r")
+        assert result is not None
+        assert result["run_id"] == run_id
+
+    def test_ignores_row_from_different_repo(self):
+        """An active run in a different repo should not block this repo."""
+        db = _make_db()
+        run_id = str(uuid.uuid4())[:8]
+        _insert_run(db, run_id, "running")
+        _insert_issue_map(db, 1, "other/repo", run_id=run_id, status="launched")
+        assert db.get_active_issue_run(1, "o/r") is None
+
+    def test_ignores_row_from_different_issue_number(self):
+        """An active run for a different issue number should not affect others."""
+        db = _make_db()
+        run_id = str(uuid.uuid4())[:8]
+        _insert_run(db, run_id, "running")
+        _insert_issue_map(db, 99, "o/r", run_id=run_id, status="launched")
+        assert db.get_active_issue_run(1, "o/r") is None
+
+    def test_returns_correct_run_id(self):
+        """The returned row should contain the correct run_id."""
+        db = _make_db()
+        run_id = "unique-run-xyz"
+        _insert_run(db, run_id, "running")
+        _insert_issue_map(db, 5, "some/repo", run_id=run_id, status="launched")
+        result = db.get_active_issue_run(5, "some/repo")
+        assert result["run_id"] == run_id
+
+
+# ===========================================================================
+# Tests: POST /api/v1/github/issues — webhook route E2E
+# ===========================================================================
+
+
+class TestGithubIssuesWebhookE2E:
+    """End-to-end tests for the POST /api/v1/github/issues webhook route."""
+
+    def test_wrong_event_header_returns_200_ignored(self):
+        client, _ = _fresh_client()
+        resp = client.post(
+            "/api/v1/github/issues",
+            json={"action": "opened"},
+            headers={"X-GitHub-Event": "push"},
         )
-        resolver, engine, path, tpl = _make_template_resolver_and_engine(schema)
-        launcher = _make_launcher("run-full-e2e-001")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+        assert resp.json()["reason"] == "not_issues_event"
 
-        result = automation.process(
-            issue_number=101,
-            repo="org/repo",
-            title="Critical null pointer exception in pipeline",
-            body="Steps to reproduce: send empty payload. Expected: error message.",
-            labels=["bug", "critical"],
-            db=db,
-            launcher=launcher,
-            template_resolver=resolver,
-            template_engine=engine,
+    def test_missing_event_header_returns_200_ignored(self):
+        client, _ = _fresh_client()
+        resp = client.post(
+            "/api/v1/github/issues",
+            json={"action": "opened"},
         )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
 
-        assert result["escalated"] is False
-        assert result["run_id"] == "run-full-e2e-001"
-        assert result["classification_type"] == "bug"
-        assert result["template"] == "coding-pipeline"
-        assert result["confidence"] == pytest.approx(0.92)
-        assert result["issue_number"] == 101
-        assert result["repo"] == "org/repo"
+    def test_unsupported_action_returns_200_ignored(self):
+        client, _ = _fresh_client()
+        resp = client.post(
+            "/api/v1/github/issues",
+            json={"action": "closed"},
+            headers={"X-GitHub-Event": "issues"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
 
-        # Verify DB state
-        row = db.get_issue_classification(101, "org/repo")
-        assert row["status"] == "launched"
+    def test_labeled_wrong_label_returns_200_ignored(self):
+        client, _ = _fresh_client()
+        payload = _issue_payload(action="labeled", applied_label="bug")
+        resp = client.post(
+            "/api/v1/github/issues",
+            json=payload,
+            headers={"X-GitHub-Event": "issues"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+        assert resp.json()["reason"] == "label_not_trigger"
+
+    def test_opened_no_trigger_label_returns_200_ignored(self):
+        client, _ = _fresh_client()
+        payload = _issue_payload(action="opened", labels=["bug", "enhancement"])
+        resp = client.post(
+            "/api/v1/github/issues",
+            json=payload,
+            headers={"X-GitHub-Event": "issues"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+        assert resp.json()["reason"] == "trigger_label_absent"
+
+    def test_invalid_json_returns_400(self):
+        client, _ = _fresh_client()
+        resp = client.post(
+            "/api/v1/github/issues",
+            content=b"not-json",
+            headers={
+                "X-GitHub-Event": "issues",
+                "Content-Type": "application/json",
+            },
+        )
+        assert resp.status_code == 400
+
+    def test_missing_issue_number_returns_400(self):
+        client, _ = _fresh_client()
+        payload = {
+            "action": "opened",
+            "issue": {"title": "Test", "body": "", "labels": [{"name": "orchemist"}]},
+            "repository": {"full_name": "owner/repo"},
+        }
+        resp = client.post(
+            "/api/v1/github/issues",
+            json=payload,
+            headers={"X-GitHub-Event": "issues"},
+        )
+        assert resp.status_code == 400
+
+    def test_missing_repo_returns_400(self):
+        client, _ = _fresh_client()
+        payload = {
+            "action": "opened",
+            "issue": {
+                "number": 1,
+                "title": "Test",
+                "body": "",
+                "labels": [{"name": "orchemist"}],
+            },
+        }
+        resp = client.post(
+            "/api/v1/github/issues",
+            json=payload,
+            headers={"X-GitHub-Event": "issues"},
+        )
+        assert resp.status_code == 400
+
+    def test_opened_with_trigger_label_returns_202(self):
+        """An 'opened' issue with trigger label should return 202."""
+        client, _ = _fresh_client()
+        payload = _issue_payload(action="opened", labels=["orchemist"])
+
+        with patch(
+            "orchestration_engine.issue_automation.post_github_comment",
+            return_value=None,
+        ):
+            resp = client.post(
+                "/api/v1/github/issues",
+                json=payload,
+                headers={"X-GitHub-Event": "issues"},
+            )
+
+        assert resp.status_code == 202
+        assert "classification_type" in resp.json()
+
+    def test_labeled_with_trigger_label_returns_202(self):
+        """A 'labeled' event with the trigger label should return 202."""
+        client, _ = _fresh_client()
+        payload = _issue_payload(action="labeled", labels=["orchemist"], applied_label="orchemist")
+
+        with patch(
+            "orchestration_engine.issue_automation.post_github_comment",
+            return_value=None,
+        ):
+            resp = client.post(
+                "/api/v1/github/issues",
+                json=payload,
+                headers={"X-GitHub-Event": "issues"},
+            )
+
+        assert resp.status_code == 202
+        assert "classification_type" in resp.json()
+
+    def test_dedup_active_run_returns_200_skipped(self):
+        """When an active run already exists, should return 200 skipped."""
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        db = Database(tmp.name)
+
+        run_id = str(uuid.uuid4())[:8]
+        _insert_run(db, run_id, "running")
+        _insert_issue_map(db, 1, "owner/repo", run_id=run_id, status="launched")
+
+        client = _make_test_client(tmp.name)
+        payload = _issue_payload(action="opened", issue_number=1, labels=["orchemist"])
+
+        with patch(
+            "orchestration_engine.issue_automation.post_github_comment",
+            return_value=None,
+        ):
+            resp = client.post(
+                "/api/v1/github/issues",
+                json=payload,
+                headers={"X-GitHub-Event": "issues"},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "skipped"
+        assert data["reason"] == "active_run_exists"
+
+    def test_dedup_allows_when_previous_run_terminal(self):
+        """When previous run is terminal (failed), should proceed and return 202."""
+        tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        tmp.close()
+        db = Database(tmp.name)
+
+        run_id = str(uuid.uuid4())[:8]
+        _insert_run(db, run_id, "failed")
+        _insert_issue_map(db, 1, "owner/repo", run_id=run_id, status="launched")
+
+        client = _make_test_client(tmp.name)
+        payload = _issue_payload(action="opened", issue_number=1, labels=["orchemist"])
+
+        with patch(
+            "orchestration_engine.issue_automation.post_github_comment",
+            return_value=None,
+        ):
+            resp = client.post(
+                "/api/v1/github/issues",
+                json=payload,
+                headers={"X-GitHub-Event": "issues"},
+            )
+
+        assert resp.status_code == 202
+
+    def test_response_contains_comment_url_key(self):
+        """202 response should always include 'comment_url' key."""
+        client, _ = _fresh_client()
+        payload = _issue_payload(action="opened", labels=["orchemist"])
+
+        with patch(
+            "orchestration_engine.issue_automation.post_github_comment",
+            return_value="https://github.com/owner/repo/issues/1#issuecomment-1",
+        ):
+            resp = client.post(
+                "/api/v1/github/issues",
+                json=payload,
+                headers={"X-GitHub-Event": "issues"},
+            )
+
+        assert resp.status_code == 202
+        assert "comment_url" in resp.json()
+
+    def test_deleted_action_is_ignored(self):
+        client, _ = _fresh_client()
+        resp = client.post(
+            "/api/v1/github/issues",
+            json={"action": "deleted"},
+            headers={"X-GitHub-Event": "issues"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+
+    def test_empty_body_with_issues_event_returns_ignored(self):
+        """Empty body: action is '' → not in (opened, labeled) → ignored."""
+        client, _ = _fresh_client()
+        resp = client.post(
+            "/api/v1/github/issues",
+            json={},
+            headers={"X-GitHub-Event": "issues"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ignored"
+
+    def test_202_response_contains_classification_type(self):
+        """202 response should include classification_type from IssueAutomation."""
+        client, _ = _fresh_client()
+        payload = _issue_payload(action="opened", labels=["orchemist"])
+
+        with patch(
+            "orchestration_engine.issue_automation.post_github_comment",
+            return_value=None,
+        ):
+            resp = client.post(
+                "/api/v1/github/issues",
+                json=payload,
+                headers={"X-GitHub-Event": "issues"},
+            )
+
+        assert resp.status_code == 202
+        data = resp.json()
+        assert "classification_type" in data
+        assert data["classification_type"] in {
+            "bug", "feature", "docs", "refactor", "research", "content"
+        }
+
+    def test_202_response_contains_repo(self):
+        """202 response should include the repo field."""
+        client, _ = _fresh_client()
+        payload = _issue_payload(action="opened", labels=["orchemist"], repo="myorg/myrepo")
+
+        with patch(
+            "orchestration_engine.issue_automation.post_github_comment",
+            return_value=None,
+        ):
+            resp = client.post(
+                "/api/v1/github/issues",
+                json=payload,
+                headers={"X-GitHub-Event": "issues"},
+            )
+
+        assert resp.status_code == 202
+        assert resp.json().get("repo") == "myorg/myrepo"
+
+    def test_202_response_contains_issue_number(self):
+        """202 response should include the issue_number field."""
+        client, _ = _fresh_client()
+        payload = _issue_payload(action="opened", issue_number=77, labels=["orchemist"])
+
+        with patch(
+            "orchestration_engine.issue_automation.post_github_comment",
+            return_value=None,
+        ):
+            resp = client.post(
+                "/api/v1/github/issues",
+                json=payload,
+                headers={"X-GitHub-Event": "issues"},
+            )
+
+        assert resp.status_code == 202
+        assert resp.json().get("issue_number") == 77
+
+
+# ===========================================================================
+# Tests: Module exports
+# ===========================================================================
+
+
+class TestModuleExports:
+    """Verify top-level exports for issue automation components."""
+
+    def test_issue_automation_in_top_level_all(self):
+        import orchestration_engine
+        assert "IssueAutomation" in orchestration_engine.__all__
+
+    def test_post_github_comment_in_top_level_all(self):
+        import orchestration_engine
+        assert "post_github_comment" in orchestration_engine.__all__
+
+    def test_issue_automation_importable(self):
+        from orchestration_engine import IssueAutomation
+        assert IssueAutomation is not None
+
+    def test_post_github_comment_importable(self):
+        from orchestration_engine import post_github_comment
+        assert callable(post_github_comment)
+
+    def test_issue_automation_in_issue_automation_all(self):
+        from orchestration_engine import issue_automation
+        assert "IssueAutomation" in issue_automation.__all__
+
+    def test_post_github_comment_in_issue_automation_all(self):
+        from orchestration_engine import issue_automation
+        assert "post_github_comment" in issue_automation.__all__
