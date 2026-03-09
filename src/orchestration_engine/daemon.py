@@ -352,6 +352,18 @@ def run_daemon(run_id: str, db_path: str) -> None:
             except Exception as _retry_exc:
                 logger.warning("Adaptive retry failed (non-fatal): %s", _retry_exc)
 
+        # --- Post failure result to GitHub (Issue #5.1.4) ---
+        _post_github_result_hook(
+            run_id=run_id,
+            db=db,
+            initial_input=initial_input,
+            phase_outputs=phase_outputs,
+            final_status='failed',
+            error_message=msg,
+            diagnosis=_diagnosis,
+            output_dir=output_dir,
+        )
+
         _remove_pid_file(pid_path)
         sys.exit(2)
 
@@ -483,6 +495,18 @@ def run_daemon(run_id: str, db_path: str) -> None:
         completed_at=datetime.now().isoformat(),
         completed_phases=json.dumps(completed_phases),
         phase_outputs=json.dumps(phase_outputs, default=str),
+    )
+
+    # --- Post success result to GitHub (Issue #5.1.4) ---
+    _post_github_result_hook(
+        run_id=run_id,
+        db=db,
+        initial_input=initial_input,
+        phase_outputs=phase_outputs,
+        final_status=_final_status,
+        error_message=None,
+        diagnosis=None,
+        output_dir=output_dir,
     )
 
     # --- Chain execution (Issue #330.2) ---
@@ -1627,6 +1651,171 @@ def dispatch_regression_fix_safely(
         regression.id,
     )
     return fixer.spawn_fix(regression, db, db_path)
+
+
+# ---------------------------------------------------------------------------
+# _post_github_result_hook — post pipeline outcome back to GitHub issue
+# ---------------------------------------------------------------------------
+
+
+def _post_github_result_hook(
+    run_id: str,
+    db: Any,
+    initial_input: Dict[str, Any],
+    phase_outputs: Dict[str, Any],
+    final_status: str,
+    error_message: Optional[str],
+    diagnosis: Any,
+    output_dir: Any,
+) -> None:
+    """Post pipeline results back to the originating GitHub issue (Issue #5.1.4).
+
+    Resolves the triggering issue context from *initial_input* and the DB,
+    then dispatches to the appropriate :mod:`issue_automation` function based
+    on *final_status* and the pipeline's ``classification_type``:
+
+    - ``failed`` → :func:`~orchestration_engine.issue_automation.post_failure_summary_comment`
+    - ``bug`` / ``feature`` / ``refactor`` (success) → :func:`~orchestration_engine.issue_automation.create_pr_for_issue`
+    - ``content`` / ``docs`` / ``research`` (success) → :func:`~orchestration_engine.issue_automation.post_pipeline_result_comment`
+
+    All exceptions are caught and logged as warnings so this hook is
+    completely non-fatal — the pipeline run has already been persisted with
+    its final status before this function is called.
+
+    Args:
+        run_id:        Pipeline run ID.
+        db:            Open :class:`~orchestration_engine.db.Database` instance.
+        initial_input: Parsed ``input_json`` for the run (issue_number, repo, …).
+        phase_outputs: Phase output dict keyed by phase ID.
+        final_status:  Terminal status string (e.g. ``"success"``, ``"failed"``).
+        error_message: Error/abort message string, or ``None`` on success.
+        diagnosis:     Diagnosis result object/dict, or ``None``.
+        output_dir:    Pipeline output directory (:class:`pathlib.Path`).
+    """
+    try:
+        from .issue_automation import (
+            create_pr_for_issue,
+            post_pipeline_result_comment,
+            post_failure_summary_comment,
+        )
+
+        # --- Resolve issue context ---
+        issue_number: Optional[int] = initial_input.get('issue_number')
+        repo: str = _extract_repo_slug(
+            initial_input.get('repo_url', '') or initial_input.get('repo', '')
+        )
+
+        if not issue_number or not repo:
+            # Not triggered by a GitHub issue — nothing to post.
+            logger.debug(
+                "_post_github_result_hook: no issue_number/repo in input — skipping"
+            )
+            return
+
+        issue_number = int(issue_number)
+
+        # --- Look up classification_type via DB (more authoritative than input) ---
+        classification_type: Optional[str] = None
+        try:
+            ipm_row = db.get_issue_classification_by_run_id(run_id)
+            if ipm_row:
+                classification_type = ipm_row.get('classification_type')
+        except Exception as _db_exc:
+            logger.warning(
+                "_post_github_result_hook: DB lookup failed (non-fatal): %s", _db_exc
+            )
+
+        # Fall back to initial_input if DB lookup missed.
+        if not classification_type:
+            classification_type = initial_input.get('classification_type', 'feature')
+
+        # --- Dispatch ---
+        if final_status == 'failed':
+            url = post_failure_summary_comment(
+                repo=repo,
+                issue_number=issue_number,
+                error_message=error_message or 'Unknown error',
+                run_id=run_id,
+                diagnosis=diagnosis,
+            )
+            if url:
+                logger.info(
+                    "_post_github_result_hook: failure comment posted → %s", url
+                )
+            else:
+                logger.warning(
+                    "_post_github_result_hook: failure comment post returned None"
+                )
+
+        elif classification_type in ('bug', 'feature', 'refactor'):
+            # Code pipeline — open a PR.
+            branch_name: str = (
+                initial_input.get('branch_name')
+                or initial_input.get('feature_branch')
+                or f"feat/issue-{issue_number}"
+            )
+            pr_title = initial_input.get('pr_title') or f"Pipeline result for #{issue_number}"
+            # Collect a short summary from the last phase output.
+            _last_text = ""
+            if phase_outputs:
+                _last_phase = list(phase_outputs.values())[-1]
+                _last_text = (
+                    _last_phase.get('output', '')
+                    or _last_phase.get('text', '')
+                    or ''
+                )[:500]
+            pr_body = _last_text or f"Automated result from pipeline run `{run_id}`."
+            url = create_pr_for_issue(
+                repo=repo,
+                issue_number=issue_number,
+                branch_name=branch_name,
+                title=pr_title,
+                body=pr_body,
+            )
+            if url:
+                logger.info(
+                    "_post_github_result_hook: PR created → %s", url
+                )
+            else:
+                logger.warning(
+                    "_post_github_result_hook: PR creation returned None"
+                )
+
+        elif classification_type in ('content', 'docs', 'research'):
+            # Non-code pipeline — post output as comment.
+            _result_text = ""
+            if phase_outputs:
+                _last_phase = list(phase_outputs.values())[-1]
+                _result_text = (
+                    _last_phase.get('output', '')
+                    or _last_phase.get('text', '')
+                    or ''
+                )
+            url = post_pipeline_result_comment(
+                repo=repo,
+                issue_number=issue_number,
+                classification_type=classification_type,
+                result_text=_result_text or "*(No output text captured.)*",
+                run_id=run_id,
+            )
+            if url:
+                logger.info(
+                    "_post_github_result_hook: result comment posted → %s", url
+                )
+            else:
+                logger.warning(
+                    "_post_github_result_hook: result comment post returned None"
+                )
+        else:
+            logger.debug(
+                "_post_github_result_hook: unrecognised classification_type=%r — skipping",
+                classification_type,
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "_post_github_result_hook: unexpected error (non-fatal): %s", exc
+        )
 
 
 # ---------------------------------------------------------------------------

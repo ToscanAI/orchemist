@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
+from orchestration_engine.notifications import NotificationDispatcher
+
 if TYPE_CHECKING:
     from .db import Database
 
@@ -779,6 +781,188 @@ def post_github_comment(repo: str, issue_number: int, body: str) -> Optional[str
 
 
 # ---------------------------------------------------------------------------
+# create_pr_for_issue — open a PR linked to a triggering GitHub issue
+# ---------------------------------------------------------------------------
+
+
+def create_pr_for_issue(
+    repo: str,
+    issue_number: int,
+    branch_name: str,
+    title: str,
+    body: str,
+) -> Optional[str]:
+    """Open a pull request on *repo* that closes *issue_number*.
+
+    Invokes ``gh pr create`` with ``--base main``, ``--head <branch_name>``,
+    and appends ``Closes #<issue_number>`` to *body* so GitHub automatically
+    links and closes the issue on merge.
+
+    Args:
+        repo:         Repository slug (e.g. ``"owner/repo"``).
+        issue_number: GitHub issue number the PR resolves.
+        branch_name:  Source branch name for the PR head.
+        title:        PR title string.
+        body:         PR description body (Markdown).
+
+    Returns:
+        The PR HTML URL string on success.  ``None`` on any failure — errors
+        are logged as warnings so callers can continue without a PR.
+
+    Example::
+
+        url = create_pr_for_issue(
+            "owner/repo", 42, "feat/my-branch",
+            "feat: implement new feature", "Summary of changes.",
+        )
+        if url:
+            print(f"PR opened: {url}")
+    """
+    import subprocess
+
+    pr_body = f"{body}\n\nCloses #{issue_number}"
+    try:
+        result = subprocess.run(
+            [
+                "gh", "pr", "create",
+                "--repo", repo,
+                "--base", "main",
+                "--head", branch_name,
+                "--title", title,
+                "--body", pr_body,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode == 0:
+            pr_url = result.stdout.strip()
+            return pr_url or None
+        logger.warning(
+            "create_pr_for_issue: gh pr create failed (rc=%d): %s",
+            result.returncode,
+            result.stderr.strip(),
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.warning("create_pr_for_issue: error creating PR: %s", exc)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# post_pipeline_result_comment — post pipeline output to issue thread
+# ---------------------------------------------------------------------------
+
+
+def post_pipeline_result_comment(
+    repo: str,
+    issue_number: int,
+    classification_type: str,
+    result_text: str,
+    run_id: str,
+) -> Optional[str]:
+    """Post the pipeline output as a comment on *issue_number*.
+
+    Formats a Markdown comment containing the pipeline result text and run
+    metadata, then delegates to :func:`post_github_comment`.
+
+    Used for non-code pipelines (``content``, ``docs``, ``research``) where
+    the output is delivered directly as an issue comment rather than a PR.
+
+    Args:
+        repo:                Repository slug (e.g. ``"owner/repo"``).
+        issue_number:        GitHub issue number.
+        classification_type: Classification type label (e.g. ``"content"``).
+        result_text:         Main output text from the pipeline run.
+        run_id:              Pipeline run ID for traceability.
+
+    Returns:
+        The comment HTML URL on success, or ``None`` on failure.
+
+    Example::
+
+        url = post_pipeline_result_comment(
+            "owner/repo", 42, "research",
+            "Here are the findings...", "abc-123",
+        )
+    """
+    body = (
+        f"## 🤖 Pipeline Result — `{classification_type}`\n\n"
+        f"{result_text}\n\n"
+        f"---\n"
+        f"*Run ID: `{run_id}`*"
+    )
+    return post_github_comment(repo, issue_number, body)
+
+
+# ---------------------------------------------------------------------------
+# post_failure_summary_comment — post a human-readable failure summary
+# ---------------------------------------------------------------------------
+
+
+def post_failure_summary_comment(
+    repo: str,
+    issue_number: int,
+    error_message: str,
+    run_id: str,
+    diagnosis: Optional[object] = None,
+) -> Optional[str]:
+    """Post a failure summary comment on *issue_number*.
+
+    Formats a Markdown failure summary including the error message and, when
+    available, diagnosis fields (``failure_class``, ``remediation``,
+    ``confidence``).  Delegates to :func:`post_github_comment`.
+
+    Args:
+        repo:          Repository slug (e.g. ``"owner/repo"``).
+        issue_number:  GitHub issue number.
+        error_message: Human-readable error or abort message.
+        run_id:        Pipeline run ID for traceability.
+        diagnosis:     Optional diagnosis object/dict with ``failure_class``,
+                       ``remediation``, and ``confidence`` attributes/keys.
+                       ``None`` when no diagnosis was produced.
+
+    Returns:
+        The comment HTML URL on success, or ``None`` on failure.
+
+    Example::
+
+        url = post_failure_summary_comment(
+            "owner/repo", 42, "Phase 'build' timed out", "abc-123",
+        )
+    """
+    lines = [
+        "## ❌ Pipeline Failed\n",
+        f"**Error:** {error_message}\n",
+    ]
+
+    if diagnosis is not None:
+        # Support both dict-like and object-like diagnosis results.
+        def _get(obj: Any, key: str) -> Any:
+            if isinstance(obj, dict):
+                return obj.get(key)
+            return getattr(obj, key, None)
+
+        failure_class = _get(diagnosis, "failure_class")
+        remediation = _get(diagnosis, "remediation")
+        confidence = _get(diagnosis, "confidence")
+
+        lines.append("\n### 🔍 Diagnosis\n")
+        if failure_class:
+            lines.append(f"- **Failure class:** `{failure_class}`")
+        if remediation:
+            lines.append(f"- **Remediation:** {remediation}")
+        if confidence is not None:
+            lines.append(f"- **Confidence:** {confidence:.0%}" if isinstance(confidence, float) else f"- **Confidence:** {confidence}")
+
+    lines.append(f"\n---\n*Run ID: `{run_id}`*")
+
+    body = "\n".join(lines)
+    return post_github_comment(repo, issue_number, body)
+
+
+# ---------------------------------------------------------------------------
 # IssueAutomation — orchestrates classify → select → extract → launch
 # ---------------------------------------------------------------------------
 
@@ -826,10 +1010,14 @@ class IssueAutomation:
         classifier: "IssueClassifier",
         selector: "TemplateSelector",
         extractor: "InputExtractor",
+        confidence_threshold: float = 0.70,
+        notification_dispatcher: Optional[NotificationDispatcher] = None,
     ) -> None:
         self.classifier = classifier
         self.selector = selector
         self.extractor = extractor
+        self._confidence_threshold = confidence_threshold
+        self._dispatcher = notification_dispatcher
 
     # ------------------------------------------------------------------
     # Public API
@@ -908,6 +1096,55 @@ class IssueAutomation:
             db=db,
         )
 
+        # Confidence threshold gate — escalate to human review when confidence
+        # is too low to trust automatic pipeline selection.
+        run_id: Optional[str] = None
+        escalated: bool = False
+
+        if classification.confidence < self._confidence_threshold:
+            logger.warning(
+                "IssueAutomation: confidence %.2f below threshold %.2f for issue #%d "
+                "in %r — escalating to human review",
+                classification.confidence,
+                self._confidence_threshold,
+                issue_number,
+                repo,
+            )
+            if self._dispatcher is not None:
+                self._dispatcher.dispatch(
+                    event="human_review",
+                    run_id=f"issue-{issue_number}",
+                    issue_number=issue_number,
+                    confidence=f"{classification.confidence:.0%}",
+                    summary=(
+                        f"Low-confidence classification: "
+                        f"{classification.classification_type} "
+                        f"({classification.confidence:.0%}). Manual review needed."
+                    ),
+                    tier="escalation",
+                )
+            escalated = True
+            template_name = self.selector.select(classification.classification_type)
+
+            comment_body = self._build_comment(
+                issue_number=issue_number,
+                classification=classification,
+                template_name=template_name,
+                run_id=None,
+                escalated=True,
+            )
+
+            return {
+                "issue_number": issue_number,
+                "repo": repo,
+                "classification_type": classification.classification_type,
+                "confidence": classification.confidence,
+                "template": template_name,
+                "run_id": None,
+                "comment_body": comment_body,
+                "escalated": True,
+            }
+
         # Step 2: Select template
         template_name = self.selector.select(classification.classification_type)
 
@@ -938,8 +1175,6 @@ class IssueAutomation:
         pipeline_inputs.setdefault("repo", repo)
 
         # Step 4: Launch pipeline
-        run_id: Optional[str] = None
-
         if launcher is not None and template_path_obj is not None and template_obj is not None:
             try:
                 run_dict = launcher(
@@ -973,6 +1208,7 @@ class IssueAutomation:
             classification=classification,
             template_name=template_name,
             run_id=run_id,
+            escalated=False,
         )
 
         return {
@@ -983,6 +1219,7 @@ class IssueAutomation:
             "template": template_name,
             "run_id": run_id,
             "comment_body": comment_body,
+            "escalated": False,
         }
 
     # ------------------------------------------------------------------
@@ -995,6 +1232,7 @@ class IssueAutomation:
         classification: "IssueClassification",
         template_name: str,
         run_id: Optional[str],
+        escalated: bool = False,
     ) -> str:
         """Build the GitHub comment body for an issue automation result.
 
@@ -1003,6 +1241,8 @@ class IssueAutomation:
             classification:  The populated :class:`IssueClassification` instance.
             template_name:   Selected pipeline template name.
             run_id:          Pipeline run ID, or ``None`` when no run was launched.
+            escalated:       When ``True``, the comment reflects that the issue
+                             was escalated to human review due to low confidence.
 
         Returns:
             Markdown-formatted comment text suitable for posting as a GitHub issue comment.
@@ -1012,12 +1252,21 @@ class IssueAutomation:
             "",
             f"**Classification:** `{classification.classification_type}` "
             f"(confidence: {classification.confidence:.0%})",
-            f"**Pipeline:** `{template_name}`",
         ]
-        if run_id:
-            lines.append(f"**Run ID:** `{run_id}`")
+        if escalated:
+            lines.append(
+                f"⚠️ **Confidence too low for automatic launch** "
+                f"(`{classification.confidence:.0%}` < threshold)"
+            )
+            lines.append(
+                "This issue has been escalated to human review via Telegram."
+            )
         else:
-            lines.append("**Run ID:** *(not launched — template unavailable or no launcher)*")
+            lines.append(f"**Pipeline:** `{template_name}`")
+            if run_id:
+                lines.append(f"**Run ID:** `{run_id}`")
+            else:
+                lines.append("**Run ID:** *(not launched — template unavailable or no launcher)*")
         if classification.reasoning:
             lines.append(f"**Reasoning:** {classification.reasoning}")
         return "\n".join(lines)
