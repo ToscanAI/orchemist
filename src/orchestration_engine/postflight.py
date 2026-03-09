@@ -13,9 +13,71 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_branch_pushed(
+    repo_path: Union[str, "Path"],
+    branch_name: str,
+) -> bool:
+    """Verify *branch_name* exists on ``origin``; push it if missing.
+
+    Runs ``git ls-remote --heads origin <branch_name>`` to check remote
+    state, then pushes with ``--set-upstream`` if the branch is absent.
+
+    Returns:
+        ``True``  — branch is on the remote (already there or just pushed).
+        ``False`` — push failed; callers should skip PR creation.
+
+    Issue #487.
+    """
+    repo_path = str(repo_path)
+    try:
+        ls = subprocess.run(
+            ["git", "ls-remote", "--heads", "origin", branch_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            cwd=repo_path,
+        )
+        # ls-remote prints a line per matching ref; empty output = not on remote
+        if ls.returncode == 0 and branch_name in ls.stdout:
+            logger.debug(
+                "ensure_branch_pushed: %s already on remote", branch_name
+            )
+            return True
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.warning("ensure_branch_pushed: ls-remote failed: %s", exc)
+        return False
+
+    # Branch not on remote — push it.
+    logger.info(
+        "ensure_branch_pushed: pushing %s to origin", branch_name
+    )
+    try:
+        push = subprocess.run(
+            ["git", "push", "--set-upstream", "origin", branch_name],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=repo_path,
+        )
+        if push.returncode == 0:
+            logger.info(
+                "ensure_branch_pushed: push succeeded for %s", branch_name
+            )
+            return True
+        logger.warning(
+            "ensure_branch_pushed: push failed (rc=%d): %s",
+            push.returncode,
+            push.stderr.strip(),
+        )
+        return False
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.warning("ensure_branch_pushed: push raised %s", exc)
+        return False
 
 
 @dataclass

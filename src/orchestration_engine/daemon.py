@@ -1285,12 +1285,14 @@ def _dispatch_auto_merge(
             )
             return
         review_text = _extract_output_text(review_out).strip()
-        first_line = review_text.split('\n')[0].strip().upper()
-        if first_line != "APPROVE":
+        from .review_parser import parse_review_output as _parse_review  # noqa: PLC0415
+        _review_result = _parse_review(review_text)
+        if _review_result.verdict != "APPROVE":
             logger.info(
                 "Auto-merge skipped for run '%s': review phase '%s' did not "
-                "return APPROVE on first line (got: %r).",
-                run_id, review_phase_id, first_line[:80],
+                "return APPROVE verdict (got: %r).",
+                run_id, review_phase_id,
+                _review_result.verdict,
             )
             return
 
@@ -1769,6 +1771,27 @@ def _post_github_result_hook(
                     or ''
                 )[:500]
             pr_body = _last_text or f"Automated result from pipeline run `{run_id}`."
+
+            # --- Safety net: ensure branch exists on remote before PR creation ---
+            # Sub-agents sometimes commit locally without pushing.  Push now so
+            # `gh pr create` doesn't fail with "No commits between main and branch".
+            from .postflight import ensure_branch_pushed  # noqa: PLC0415
+            _repo_path = initial_input.get('repo_path', '')
+            if _repo_path:
+                _pushed = ensure_branch_pushed(_repo_path, branch_name)
+                if not _pushed:
+                    logger.warning(
+                        "_post_github_result_hook: ensure_branch_pushed failed for %r"
+                        " — skipping PR creation",
+                        branch_name,
+                    )
+                    return
+            else:
+                logger.debug(
+                    "_post_github_result_hook: no repo_path in input — skipping "
+                    "ensure_branch_pushed"
+                )
+
             url = create_pr_for_issue(
                 repo=repo,
                 issue_number=issue_number,
