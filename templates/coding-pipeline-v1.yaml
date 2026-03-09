@@ -199,6 +199,7 @@ phases:
         performance, test, compatibility, design
 
       ✅ CORRECT example:
+      Correct example:
         REQUEST_CHANGES
         [BLOCKER][security] SQL query in db.py:42 uses string concatenation — use parameterized queries
         [MAJOR][correctness] parse_output() returns None instead of empty list when input is empty
@@ -206,6 +207,7 @@ phases:
         [NITPICK][style] Trailing whitespace on line 18 of utils.py
 
       ❌ WRONG — never start with preamble before the verdict:
+      WRONG — never start with preamble before the verdict:
         Now let me run the tests first to check the implementation...
         REQUEST_CHANGES
         [BLOCKER][security] ...
