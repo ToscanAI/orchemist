@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -183,8 +184,12 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 logger.warning("Preflight warning: %s", w)
     except ImportError:
         logger.debug("Preflight module not available, skipping")
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Preflight infra check failed (non-fatal): %s", exc)
     except Exception as exc:
-        logger.warning("Preflight checks failed (non-fatal): %s", exc)
+        logger.error("Preflight raised unexpected error — failing safe: %s", exc)
+        _fail(db, run_id, pid_path, f"Preflight error (fail-safe): {exc}")
+        return
 
     # --- Extract trust routing context (Issue #4.2.3) ---
     # template_id comes from the run record; repo and task_type from initial_input.
@@ -784,12 +789,8 @@ def _run_post_pipeline_review_analysis(
         3. Run AuditPhase on the most recent review outcome (if executor is
            available and review outcomes exist).
         4. Call :meth:`~reviewer_calibration.ReviewerCalibrator.calibrate_and_save`
-<<<<<<< Updated upstream
-           on all calibration outcomes to persist per-model accuracy snapshots.
-=======
            on all calibration outcomes (including the new audit result) to
            persist per-model accuracy snapshots to the DB.
->>>>>>> Stashed changes
 
     All steps are non-fatal: exceptions are caught and logged, and the
     corresponding result defaults to an empty list.
@@ -797,11 +798,7 @@ def _run_post_pipeline_review_analysis(
     Args:
         run_id:       Pipeline run identifier.
         db:           Database instance.
-<<<<<<< Updated upstream
-        phase_outputs: Dict of phase_id -> phase result dict; used to extract
-=======
         phase_outputs: Dict of phase_id → phase result dict; used to extract
->>>>>>> Stashed changes
                        a code diff for the AuditPhase.
         executor:     Optional pipeline executor for AuditPhase.  When
                       ``None``, AuditPhase is skipped.
@@ -882,13 +879,8 @@ def _run_post_pipeline_review_analysis(
 
     # 4. Persist calibration snapshots post-audit (Issue #4.1.6)
     # calibrate_and_save() writes per-model CalibrationMetrics rows to the DB.
-<<<<<<< Updated upstream
-    # Uses all available calibration outcomes so the snapshot reflects the
-    # updated longitudinal accuracy.
-=======
     # Uses all available calibration outcomes (including current run's outcomes)
     # so the snapshot reflects the updated longitudinal accuracy.
->>>>>>> Stashed changes
     if calibration_outcomes:
         try:
             from .reviewer_calibration import ReviewerCalibrator  # noqa: PLC0415
@@ -991,14 +983,7 @@ def _compute_and_dispatch_routing(
             confidence_result.confidence_level.value,
         )
 
-<<<<<<< Updated upstream
-        # 4. Evaluate routing (use template config if provided, else default).
-        # Call .evaluate() instead of .route() so that trust-profile-based
-        # dynamic thresholds are consulted when a post-bootstrap profile exists
-        # for this (repo, template_id, task_type) triplet (Issue #4.2.3).
-=======
         # 3. Evaluate routing (use template config if provided, else default)
->>>>>>> Stashed changes
         _routing_cfg = routing_config or DEFAULT_ROUTING_CONFIG
         decision = RoutingEngine(_routing_cfg).evaluate(
             confidence_result,
@@ -1043,41 +1028,7 @@ def _compute_and_dispatch_routing(
             run_id, action,
         )
 
-<<<<<<< Updated upstream
-        # 5b. Update trust profile after routing decision is persisted (Issue #4.2.3).
-        # The outcome is always 'run_success' here — this function is called only on
-        # successful pipeline execution.  Failures are logged and swallowed so that
-        # a trust DB error never blocks the pipeline.
-        if repo and template_id:
-            try:
-                from .trust import TrustCalibrator  # noqa: PLC0415
-                _calibrator = TrustCalibrator(
-                    repo=repo,
-                    template_id=template_id,
-                    task_type=task_type or "general",
-                )
-                _trust_result = _calibrator.update_after_run(
-                    run_id=run_id,
-                    outcome="run_success",
-                    db=db,
-                )
-                logger.info(
-                    "Trust calibration updated for run '%s': repo=%r template=%r "
-                    "task_type=%r new_score=%s threshold=%s",
-                    run_id, repo, template_id, task_type or "general",
-                    _trust_result.get("new_score"),
-                    _trust_result.get("threshold"),
-                )
-            except Exception as _trust_exc:
-                logger.warning(
-                    "Trust calibration failed for run '%s' (non-fatal): %s",
-                    run_id, _trust_exc,
-                )
-
-        # 6. Only dispatch action if pipeline succeeded (don't auto-merge a failing run)
-=======
         # 5. Only dispatch action if pipeline succeeded (don't auto-merge a failing run)
->>>>>>> Stashed changes
         if final_status not in ('success',):
             logger.info(
                 "Routing dispatch skipped for run '%s': final_status='%s' "

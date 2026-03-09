@@ -112,7 +112,7 @@ class PostflightChecker:
             if path.exists():
                 content = path.read_text(errors='replace')
                 # Look for test file creation/modification
-                if re.search(r'test_\w+\.py|tests/', content):
+                if re.search(r'test_\w+\.py|tests/|_test\.py|conftest\.py', content):
                     has_new_tests = True
                 # Look for code creation
                 if re.search(r'\.py\b', content) and not has_new_tests:

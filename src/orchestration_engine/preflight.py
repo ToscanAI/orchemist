@@ -8,6 +8,7 @@ Issue #476.
 
 import json
 import logging
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -300,7 +301,6 @@ class PreflightChecker:
 
     def _check_dependencies(self, result: PreflightResult) -> None:
         """Check if dependent issues are merged (parses 'depends on #NNN' from issue body)."""
-        import re
 
         issue_body = self.input_data.get('issue_body', '')
         repo_url = self.input_data.get('repo_url', '')
