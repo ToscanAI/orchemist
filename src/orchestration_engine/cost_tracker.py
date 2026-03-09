@@ -36,6 +36,7 @@ Typical usage
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -402,6 +403,39 @@ class CostTracker:
                 actual_usd=actual,
             )
         return actual
+
+    def get_daily_cost(self) -> float:
+        """Return the total USD cost across all runs for today (UTC).
+
+        Queries the ``cost_tracking`` table and sums ``cost_usd`` for all
+        rows whose ``created_at`` timestamp falls on today's UTC date.
+
+        Returns:
+            Sum of ``cost_usd`` for today's rows, or ``0.0`` if none exist.
+        """
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return self.get_daily_cost_for_date(today_str)
+
+    def get_daily_cost_for_date(self, date_str: str) -> float:
+        """Return the total USD cost across all runs for a specific UTC date.
+
+        Useful for testing with a fixed date rather than relying on ``now()``.
+
+        Args:
+            date_str: Date in ``"YYYY-MM-DD"`` format (UTC).
+
+        Returns:
+            Sum of ``cost_usd`` for rows matching *date_str*, or ``0.0``.
+        """
+        row = self._db.fetch_one(
+            """
+            SELECT COALESCE(SUM(cost_usd), 0.0) AS total
+            FROM cost_tracking
+            WHERE DATE(created_at) = ?
+            """,
+            (date_str,),
+        )
+        return float(row["total"]) if row else 0.0
 
     # ------------------------------------------------------------------
     # Convenience property

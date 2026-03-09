@@ -166,10 +166,23 @@ def run_daemon(run_id: str, db_path: str) -> None:
         _fail(db, run_id, pid_path, f"Input JSON parse error: {exc}")
         return
 
+    # --- Instantiate CostTracker (Issue #5.2.2) ---
+    try:
+        from .cost_tracker import CostTracker
+        _cost_tracker = CostTracker(db)
+    except Exception as exc:
+        logger.warning("CostTracker init failed (non-fatal): %s", exc)
+        _cost_tracker = None
+
     # --- Preflight: Definition of Ready (Issue #476) ---
     try:
         from .preflight import PreflightChecker
-        _preflight = PreflightChecker(initial_input, db=db)
+        _preflight = PreflightChecker(
+            initial_input,
+            db=db,
+            budget_config=template.budget,
+            cost_tracker=_cost_tracker,
+        )
         _preflight_result = _preflight.run_all()
         logger.info("Preflight checks:\n%s", _preflight_result.summary())
         if not _preflight_result.passed:
