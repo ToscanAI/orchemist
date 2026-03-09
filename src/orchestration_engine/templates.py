@@ -248,6 +248,14 @@ class BudgetConfig:
         warn_at_percentage: When the per-run cost reaches this percentage of
             ``max_cost_per_run``, a ``budget_warning`` notification is
             dispatched but execution continues.  Default: 80.0.
+
+    Note:
+        Per-run enforcement (abort on ``max_cost_per_run``, warn at
+        ``warn_at_percentage``) is **not yet implemented** in the daemon.
+        Only the daily-cap preflight check (``max_cost_per_day``) is
+        active in this release.  The ``budget_exceeded`` status and
+        ``budget_warning`` notification dispatch are reserved for a
+        future implementation pass.
     """
 
     max_cost_per_run: Optional[float] = None   # USD — abort if exceeded
@@ -300,12 +308,15 @@ def _parse_budget_config(raw: Any) -> Optional["BudgetConfig"]:
         )
 
     kwargs: Dict[str, Any] = {}
-    if "max_cost_per_run" in raw and raw["max_cost_per_run"] is not None:
-        kwargs["max_cost_per_run"] = float(raw["max_cost_per_run"])
-    if "max_cost_per_day" in raw and raw["max_cost_per_day"] is not None:
-        kwargs["max_cost_per_day"] = float(raw["max_cost_per_day"])
-    if "warn_at_percentage" in raw and raw["warn_at_percentage"] is not None:
-        kwargs["warn_at_percentage"] = float(raw["warn_at_percentage"])
+    for field_name in ("max_cost_per_run", "max_cost_per_day", "warn_at_percentage"):
+        if field_name in raw and raw[field_name] is not None:
+            try:
+                kwargs[field_name] = float(raw[field_name])
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"Template budget config: '{field_name}' must be a number, "
+                    f"got {raw[field_name]!r}"
+                ) from exc
 
     return BudgetConfig(**kwargs)
 
