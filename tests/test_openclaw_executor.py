@@ -556,18 +556,19 @@ class TestTimeoutHandling:
         # Issue #346+#347: The retry loop attempts _run_session up to 3 times on TimeoutError,
         # then the fallback chain escalates to the next model tier and retries 3 more times.
         # Each attempt needs its own set of monotonic values:
-        #   [loop_start, poll-1 within deadline, poll-2 exceeds deadline]
-        # Providing 18 values (3 per attempt × 6 attempts: 3 for sonnet + 3 for opus fallback)
-        # ensures all retries exhaust via TimeoutError and the final error code is "timeout".
+        #   [loop_start, poll-1 now (within deadline), poll-1 stall-check, poll-2 now (exceeds deadline)]
+        # 4 values per attempt × 6 attempts = 24 total.
+        # The stall-check is an extra time.monotonic() call added by the stall detection
+        # feature (#413) that fires when a non-empty poll result has no token progress.
         with patch.object(executor, "_http_post", side_effect=mock), \
              patch("orchestration_engine.openclaw_executor.time.sleep"), \
              patch("orchestration_engine.openclaw_executor.time.monotonic",
-                   side_effect=[0.0, 0.0, 2.0,   # sonnet attempt 0: times out
-                                 0.0, 0.0, 2.0,   # sonnet attempt 1: times out (retry)
-                                 0.0, 0.0, 2.0,   # sonnet attempt 2: times out (retry)
-                                 0.0, 0.0, 2.0,   # opus attempt 0: times out (fallback tier)
-                                 0.0, 0.0, 2.0,   # opus attempt 1: times out (retry)
-                                 0.0, 0.0, 2.0]):  # opus attempt 2: times out (retry)
+                   side_effect=[0.0, 0.0, 0.5, 2.0,   # sonnet attempt 0: times out
+                                 0.0, 0.0, 0.5, 2.0,   # sonnet attempt 1: times out (retry)
+                                 0.0, 0.0, 0.5, 2.0,   # sonnet attempt 2: times out (retry)
+                                 0.0, 0.0, 0.5, 2.0,   # opus attempt 0: times out (fallback tier)
+                                 0.0, 0.0, 0.5, 2.0,   # opus attempt 1: times out (retry)
+                                 0.0, 0.0, 0.5, 2.0]):  # opus attempt 2: times out (retry)
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
@@ -580,15 +581,16 @@ class TestTimeoutHandling:
 
         # Issue #346+#347: Provide enough monotonic values for all retry attempts
         # across both the primary model tier (sonnet) and the fallback tier (opus).
+        # 4 values per attempt (start + iter1.now + iter1.stall-check + iter2.now/timeout)
         with patch.object(executor, "_http_post", side_effect=mock), \
              patch("orchestration_engine.openclaw_executor.time.sleep"), \
              patch("orchestration_engine.openclaw_executor.time.monotonic",
-                   side_effect=[0.0, 0.0, 2.0,   # sonnet attempt 0
-                                 0.0, 0.0, 2.0,   # sonnet attempt 1
-                                 0.0, 0.0, 2.0,   # sonnet attempt 2
-                                 0.0, 0.0, 2.0,   # opus attempt 0 (fallback)
-                                 0.0, 0.0, 2.0,   # opus attempt 1
-                                 0.0, 0.0, 2.0]):  # opus attempt 2
+                   side_effect=[0.0, 0.0, 0.5, 2.0,   # sonnet attempt 0
+                                 0.0, 0.0, 0.5, 2.0,   # sonnet attempt 1
+                                 0.0, 0.0, 0.5, 2.0,   # sonnet attempt 2
+                                 0.0, 0.0, 0.5, 2.0,   # opus attempt 0 (fallback)
+                                 0.0, 0.0, 0.5, 2.0,   # opus attempt 1
+                                 0.0, 0.0, 0.5, 2.0]):  # opus attempt 2
             result = executor.execute(sample_task)
 
         assert "my-session-xyz" in result.errors[0].message
@@ -1261,6 +1263,7 @@ class TestPollTimeout:
         mono_values = iter([
             0.0,    # loop_start
             0.0,    # first iteration now (within deadline — no timeout)
+            0.5,    # first iteration stall-check (extra call added by #413 stall detection)
             9999.0, # second iteration now (exceeds deadline)
         ])
 
@@ -1288,11 +1291,16 @@ class TestPollTimeout:
 
         # Loop: start=0, iter1=below threshold, iter2=at/above threshold,
         #       iter3=still above, iter4=deadline exceeded → TimeoutError
+        # Each non-timeout iteration has an extra stall-check monotonic() call (#413).
+        # Stall values are kept < 60s from loop_start=0 to avoid spurious stall warnings.
         mono_values = iter([
             0.0,               # loop_start
             0.0,               # iter 1 now → below threshold (0 < 80)
+            0.5,               # iter 1 stall-check (stall_seconds=0.5 < 60 → no stall warn)
             threshold + 1.0,   # iter 2 now → above threshold (81 > 80) → warning
+            0.5,               # iter 2 stall-check
             threshold + 2.0,   # iter 3 now → still above (should NOT warn again)
+            0.5,               # iter 3 stall-check
             9999.0,            # iter 4 now → deadline exceeded
         ])
 
@@ -1329,8 +1337,10 @@ class TestPollTimeout:
         """Loop fires TimeoutError even after many non-terminal gateway responses (#240 AC-5)."""
         session_key = "sess-ac5"
         # Simulate 3 non-terminal responses, then deadline exceeded
-        # Monotonic: start=0, iter1=1, iter2=2, iter3=3, iter4=9999 (timeout)
-        mono_values = iter([0.0, 1.0, 2.0, 3.0, 9999.0])
+        # Monotonic: start=0, iter1=[now=1, stall=0.5], iter2=[now=2, stall=0.5],
+        # iter3=[now=3, stall=0.5], iter4=[now=9999 → timeout]
+        # Each iteration with non-empty messages uses 2 monotonic calls (#413 stall detection).
+        mono_values = iter([0.0, 1.0, 0.5, 2.0, 0.5, 3.0, 0.5, 9999.0])
         poll_count = {"n": 0}
 
         def mock_post(url, body):

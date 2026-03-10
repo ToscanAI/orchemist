@@ -260,11 +260,12 @@ class TestAC1_NoneTimeoutUsesDefault:
         session_key = "sess-ac1-deadline"
         loop_start = 500.0
         # Simulate: loop_start=500, deadline=500+1200=1700
-        # Iteration 1: now=501 → within deadline (no timeout)
+        # Iteration 1: now=501 → within deadline (no timeout) + stall-check call (#413)
         # Iteration 2: now=1701 → past deadline → TimeoutError
         mono_values = iter([
-            loop_start,     # loop_start assignment
-            loop_start + 1, # iteration 1: now → within deadline
+            loop_start,          # loop_start assignment
+            loop_start + 1,      # iteration 1: now → within deadline
+            loop_start + 0.5,    # iteration 1: stall-check (stall_seconds=0.5 < 60)
             loop_start + DEFAULT_TIMEOUT_SECONDS + 1,  # iteration 2: now → past deadline
         ])
 
@@ -412,6 +413,7 @@ class TestAC3_DeadlineExceededRaisesTimeoutError:
         mono_values = iter([
             0.0,    # loop_start
             0.0,    # iteration 1: within deadline
+            0.5,    # iteration 1: stall-check (#413)
             9999.0, # iteration 2: past deadline
         ])
 
@@ -434,7 +436,7 @@ class TestAC3_DeadlineExceededRaisesTimeoutError:
     def test_timeout_error_message_contains_session_key(self, executor):
         """TimeoutError message must identify the session (AC-3)."""
         session_key = "my-identifiable-session-key"
-        mono_values = iter([0.0, 0.0, 9999.0])
+        mono_values = iter([0.0, 0.0, 0.5, 9999.0])  # extra 0.5 for stall-check (#413)
 
         def mock_post(url, body):
             if body.get("tool") == "sessions_spawn":
@@ -460,7 +462,7 @@ class TestAC3_DeadlineExceededRaisesTimeoutError:
         """TimeoutError message should mention the timeout duration."""
         session_key = "sess-ac3-duration"
         timeout_value = 42
-        mono_values = iter([0.0, 0.0, 9999.0])
+        mono_values = iter([0.0, 0.0, 0.5, 9999.0])  # extra 0.5 for stall-check (#413)
 
         def mock_post(url, body):
             if body.get("tool") == "sessions_spawn":
@@ -506,16 +508,17 @@ class TestAC3_DeadlineExceededRaisesTimeoutError:
         and retries again.  Provide enough monotonic values for all retry attempts
         across both model tiers (sonnet + opus fallback) so the test is stable.
         """
-        # 3 values per _run_session attempt (loop_start, poll-within, poll-over-deadline).
+        # 4 values per _run_session attempt:
+        #   [loop_start, iter1.now (within deadline), iter1.stall-check (#413), iter2.now (timeout)]
         # With max_attempts=3 and 2 model tiers (sonnet + opus fallback), we need
-        # 18 values total: 9 for sonnet attempts + 9 for opus fallback attempts.
+        # 24 values total: 12 for sonnet attempts + 12 for opus fallback attempts.
         mono_values = iter([
-            0.0, 0.0, 9999.0,   # sonnet attempt 0 → TimeoutError
-            0.0, 0.0, 9999.0,   # sonnet attempt 1 → TimeoutError (retry)
-            0.0, 0.0, 9999.0,   # sonnet attempt 2 → TimeoutError (retry)
-            0.0, 0.0, 9999.0,   # opus attempt 0 → TimeoutError (fallback tier)
-            0.0, 0.0, 9999.0,   # opus attempt 1 → TimeoutError (retry)
-            0.0, 0.0, 9999.0,   # opus attempt 2 → TimeoutError (retry)
+            0.0, 0.0, 0.5, 9999.0,   # sonnet attempt 0 → TimeoutError
+            0.0, 0.0, 0.5, 9999.0,   # sonnet attempt 1 → TimeoutError (retry)
+            0.0, 0.0, 0.5, 9999.0,   # sonnet attempt 2 → TimeoutError (retry)
+            0.0, 0.0, 0.5, 9999.0,   # opus attempt 0 → TimeoutError (fallback tier)
+            0.0, 0.0, 0.5, 9999.0,   # opus attempt 1 → TimeoutError (retry)
+            0.0, 0.0, 0.5, 9999.0,   # opus attempt 2 → TimeoutError (retry)
         ])
 
         def mock_post(url, body):
@@ -547,13 +550,20 @@ class TestAC4_EightyPercentWarning:
         timeout = 100
         threshold = 0.8 * timeout  # 80s
 
-        # Monotonic sequence:
+        # Monotonic sequence (each non-timeout iteration uses 2 calls: now + stall-check #413):
         # - loop_start = 0
-        # - iter 1: now=0   → elapsed=0  → below threshold (no warn)
-        # - iter 2: now=81  → elapsed=81 → above threshold (WARN)
-        # - iter 3: now=82  → elapsed=82 → still above (must NOT warn again)
-        # - iter 4: now=9999→ deadline exceeded (loop ends)
-        mono_values = iter([0.0, 0.0, threshold + 1.0, threshold + 2.0, 9999.0])
+        # - iter 1: now=0 (below threshold), stall-check=0.5
+        # - iter 2: now=81 (above threshold → WARN), stall-check=0.5
+        # - iter 3: now=82 (still above, no repeat warn), stall-check=0.5
+        # - iter 4: now=9999 → deadline exceeded (loop ends)
+        # Stall values < 60 avoid spurious "no token progress" warnings.
+        mono_values = iter([
+            0.0,
+            0.0, 0.5,             # iter 1: now=0, stall-check
+            threshold + 1.0, 0.5, # iter 2: now=81, stall-check
+            threshold + 2.0, 0.5, # iter 3: now=82, stall-check
+            9999.0,               # iter 4: timeout
+        ])
 
         def mock_post(url, body):
             if body.get("tool") == "sessions_spawn":
@@ -590,15 +600,18 @@ class TestAC4_EightyPercentWarning:
         timeout = 100
         threshold = 0.8 * timeout  # 80s
 
-        # All iterations stay below threshold, then session completes
+        # All iterations stay below threshold, then session completes.
+        # Each iteration uses 2 monotonic calls: now (deadline+elapsed) + stall-check (#413).
+        # Stall-check values must be < loop_start + 60 to avoid spurious stall warnings
+        # (which contain "%" and would trip the premature-warning assertion).
         mono_values = iter([
-            0.0,                    # loop_start
-            threshold - 10.0,       # iter 1: deadline check
-            threshold - 10.0,       # iter 1: elapsed calc
-            threshold - 5.0,        # iter 2: deadline check
-            threshold - 5.0,        # iter 2: elapsed calc
-            threshold - 1.0,        # iter 3: deadline check (done response)
-            threshold - 1.0,        # iter 3: elapsed calc
+            0.0,              # loop_start
+            threshold - 10.0, # iter 1: now (deadline+elapsed)
+            1.0,              # iter 1: stall-check (stall_seconds=1 < 60 → no stall warn)
+            threshold - 5.0,  # iter 2: now
+            2.0,              # iter 2: stall-check
+            threshold - 1.0,  # iter 3: now (done response → terminal, returns)
+            3.0,              # iter 3: stall-check
         ])
         # After two running responses, return done
         call_count = {"n": 0}
@@ -645,8 +658,9 @@ class TestAC4_EightyPercentWarning:
 
         mono_values = iter([
             0.0,              # loop_start
-            0.0,              # iter 1: elapsed=0 → below threshold
-            threshold + 0.1,  # iter 2: elapsed=1.7 → above threshold (WARN)
+            0.0, 0.5,         # iter 1: now=0 (below threshold), stall-check (#413)
+            threshold + 0.1,  # iter 2: now → elapsed=1.7 → above threshold (WARN)
+            0.5,              # iter 2: stall-check
             9999.0,           # iter 3: deadline exceeded
         ])
 
@@ -686,7 +700,8 @@ class TestAC4_EightyPercentWarning:
 
         mono_values = iter([
             0.0,        # loop_start
-            threshold,  # iter 1: elapsed = exactly 80% → WARN
+            threshold,  # iter 1: now → elapsed = exactly 80% → WARN
+            0.5,        # iter 1: stall-check (#413)
             9999.0,     # iter 2: deadline exceeded
         ])
 
@@ -723,7 +738,8 @@ class TestAC4_EightyPercentWarning:
         # Elapsed stays well below 80% (threshold = 800s)
         mono_values = iter([
             0.0,   # loop_start
-            10.0,  # iter 1: 10s elapsed → way below threshold
+            10.0,  # iter 1: now → 10s elapsed → way below threshold
+            0.5,   # iter 1: stall-check (#413, done resp triggers stall path)
         ])
         call_count = {"n": 0}
 
@@ -764,8 +780,9 @@ class TestAC5_DeadlineCheckedEveryIteration:
     def test_multiple_non_terminal_responses_eventually_timeout(self, executor):
         """TimeoutError fires even after N non-terminal polling responses (AC-5)."""
         session_key = "sess-ac5-many"
+        # Each non-timeout iteration uses 2 monotonic calls: now + stall-check (#413)
         mono_values = iter([
-            0.0, 1.0, 2.0, 3.0, 9999.0
+            0.0, 1.0, 0.5, 2.0, 0.5, 3.0, 0.5, 9999.0
         ])
         poll_count = {"n": 0}
 
@@ -1039,6 +1056,7 @@ class TestTimeoutEdgeCases:
         mono_values = iter([
             0.0,   # loop_start
             5.0,   # iter 1: now=5 → well within deadline (100s)
+            0.5,   # iter 1: stall-check (#413, done resp triggers stall path)
         ])
 
         def mock_post(url, body):
