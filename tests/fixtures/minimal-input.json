@@ -1,0 +1,9 @@
+{
+  "issue_title": "Add hello world endpoint",
+  "issue_body": "As a user I want a /hello endpoint that returns 'Hello, World!'",
+  "repo_path": "/tmp/test-repo",
+  "branch_name": "fix/e2e-test-branch",
+  "issue_number": 501,
+  "repo_url": "https://github.com/test-owner/test-repo",
+  "test_command": "echo 'tests pass'"
+}

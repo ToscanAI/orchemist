@@ -1,0 +1,29 @@
+# smoke-with-scenario.yaml — One-phase pipeline that references a scenario.
+#
+# Used by tests/test_e2e_smoke.py to test that run_daemon() correctly
+# writes scoring_status to the DB when auto-scoring is configured.
+#
+# Scenario path is relative to this file's directory.
+
+id: smoke-with-scenario
+name: "Smoke Test Pipeline With Scenario"
+version: "1.0.0"
+description: >
+  Single-phase dry-run pipeline with scenario reference.
+  Used to validate the scoring_status lifecycle in integration tests.
+author: "Test Harness"
+category: "testing"
+tags:
+  - smoke-test
+  - testing
+
+scenario: smoke-scenario.yaml
+
+phases:
+  - id: smoke-scored-phase
+    name: "Smoke Scored Phase"
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Write a one-sentence summary of: {input[topic]}

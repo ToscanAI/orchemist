@@ -1,0 +1,25 @@
+# minimal-smoke.yaml — Minimal one-phase pipeline for E2E smoke tests.
+#
+# Used by tests/test_e2e_smoke.py.
+# Designed to be fast, offline (dry-run mode), and assert-friendly.
+
+id: minimal-smoke
+name: "Minimal Smoke Test Pipeline"
+version: "1.0.0"
+description: >
+  Single-phase dry-run pipeline used as the smoke test fixture.
+  No scenario, no scoring, no git integration.
+author: "Test Harness"
+category: "testing"
+tags:
+  - smoke-test
+  - testing
+
+phases:
+  - id: smoke-phase
+    name: "Smoke Phase"
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Write a one-sentence summary of: {input[topic]}

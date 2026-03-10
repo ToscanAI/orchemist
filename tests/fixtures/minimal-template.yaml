@@ -1,0 +1,30 @@
+id: minimal-e2e-test
+name: "Minimal E2E Test Pipeline"
+description: "Minimal 2-phase pipeline for E2E integration tests"
+version: "1.0.0"
+category: "code"
+tags: [test, e2e]
+
+budget:
+  max_cost_per_run: 10.00
+
+auto_merge:
+  enabled: true
+  min_score: 0.80
+
+phases:
+  - id: spec
+    name: "Spec Phase"
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Write a spec for: {input[issue_title]}
+
+  - id: implement
+    name: "Implement Phase"
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Implement the feature: {input[issue_title]}

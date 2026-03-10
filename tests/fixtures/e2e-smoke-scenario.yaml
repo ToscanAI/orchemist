@@ -1,0 +1,14 @@
+id: e2e-smoke
+name: "E2E Smoke Scenario"
+description: "Minimal scoring scenario for E2E tests — verifies output is non-empty"
+version: "1.0.0"
+
+acceptance:
+  - id: output_not_empty
+    description: "Pipeline output must contain some content"
+    grader: keyword
+    weight: 1.0
+    config:
+      keywords: ["spec", "implement", "feature"]
+      match_mode: any
+      min_matches: 0
