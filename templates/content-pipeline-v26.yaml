@@ -99,7 +99,7 @@ phases:
       4. Do NOT fabricate quotes, statistics, or personal stories
       5. The article should read like a person wrote it after thinking hard, not like a pipeline produced it
       6. Strong opening hook, strong closing that resonates
-      7. MANDATORY: End with a "Sources" section listing every source cited, with full attribution and URLs
+      7. MANDATORY: End with a "Sources" section listing every source cited, with full attribution. URLs MUST be formatted as markdown links: [Title](https://url) — never bare URLs
 
       ## Structure guidance
       - Opening: hook the reader in 2 sentences
@@ -196,7 +196,7 @@ phases:
       4. **PRESERVE ALL HUMOR** — every joke, witty aside, self-deprecating observation that wasn't flagged as backlash-risky STAYS EXACTLY AS WRITTEN
       5. If humor WAS flagged: IMPROVE the joke, don't delete it
       6. Voice style: {config[voice_style]}
-      7. MANDATORY: Keep the Sources section at the end. Fix any citation errors noted by fact-check.
+      7. MANDATORY: Keep the Sources section at the end. Fix any citation errors noted by fact-check. URLs MUST be markdown links: [Title](https://url) — never bare URLs.
       8. Stay within {config[word_count]} words
       9. The article must sound like {config[author_name]} wrote it, not like it was edited by committee
 
@@ -253,7 +253,7 @@ phases:
       3. Opening must hook in the first two sentences
       4. Closing must leave the reader thinking
       5. Every section transition should feel natural
-      6. MANDATORY: Sources section at the end with full attribution
+      6. MANDATORY: Sources section at the end with full attribution. All URLs as markdown links: [Title](url)
       7. Read it as a reader, not an editor. Does this make you want to share it? If not, fix that.
 
       Output the COMPLETE final article. This goes to human review.
