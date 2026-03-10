@@ -56,6 +56,9 @@ __all__ = [
     "InputExtractor",
     "IssueAutomation",
     "post_github_comment",
+    "slugify_branch",
+    "generate_pipeline_input",
+    "remove_github_label",
     # Re-exports from github_fetcher (Issue #507)
     "GitHubIssueData",
     "GitHubIssueFetcher",
@@ -789,6 +792,172 @@ def post_github_comment(repo: str, issue_number: int, body: str) -> Optional[str
         logger.warning("post_github_comment: error posting comment: %s", exc)
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# slugify_branch — convert a title to a git-branch-safe slug (Issue #511)
+# ---------------------------------------------------------------------------
+
+
+def slugify_branch(title: str, max_length: int = 40) -> str:
+    """Convert an issue title to a git-branch-safe slug.
+
+    Normalises Unicode characters, strips non-alphanumeric characters
+    (keeping hyphens), collapses consecutive hyphens, and truncates to
+    *max_length* characters.  Returns ``"issue"`` for empty inputs.
+
+    Args:
+        title:      Raw title string (may contain Unicode, spaces, special chars).
+        max_length: Maximum length of the returned slug.  Defaults to ``40``.
+
+    Returns:
+        A lowercase, hyphen-separated slug safe for use in a git branch name.
+        Never starts or ends with a hyphen.
+
+    Examples::
+
+        slugify_branch("Fix null pointer in pipeline runner")
+        # → "fix-null-pointer-in-pipeline-runner"
+
+        slugify_branch("Add résumé parser 🚀")
+        # → "add-resume-parser"
+
+        slugify_branch("")
+        # → "issue"
+    """
+    import unicodedata
+
+    if not title or not title.strip():
+        return "issue"
+
+    # Normalise to ASCII — decompose accented chars then strip non-ASCII
+    nfkd = unicodedata.normalize("NFKD", title)
+    ascii_str = nfkd.encode("ascii", "ignore").decode("ascii")
+
+    # Lowercase
+    lower = ascii_str.lower()
+
+    # Replace any non-alphanumeric, non-hyphen character with a hyphen
+    slug = re.sub(r"[^a-z0-9]+", "-", lower)
+
+    # Strip leading/trailing hyphens
+    slug = slug.strip("-")
+
+    # Truncate to max_length, then strip trailing hyphens again
+    slug = slug[:max_length].rstrip("-")
+
+    return slug or "issue"
+
+
+# ---------------------------------------------------------------------------
+# generate_pipeline_input — build coding-pipeline-v1 input dict (Issue #511)
+# ---------------------------------------------------------------------------
+
+
+def generate_pipeline_input(
+    issue_number: int,
+    title: str,
+    body: str,
+    repo: str,
+    repo_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a ``coding-pipeline-v1`` input dict for an issue.
+
+    Constructs a deterministic branch name from the issue number and title
+    slug, then assembles the full input dict suitable for ``--input-file``.
+
+    Args:
+        issue_number: GitHub issue number.
+        title:        Issue title — used to derive the branch slug.
+        body:         Issue body / description.
+        repo:         Repository slug (e.g. ``"owner/repo"``).
+        repo_path:    Optional local filesystem path to the repository.
+                      When ``None``, the key is omitted from the dict.
+
+    Returns:
+        Dict with pipeline input variables for ``coding-pipeline-v1``::
+
+            {
+                "issue_number": 42,
+                "repo": "owner/repo",
+                "title": "Fix crash on empty input",
+                "body": "...",
+                "branch_name": "feat/42-fix-crash-on-empty-input",
+                # optional:
+                "repo_path": "/path/to/repo",
+            }
+
+    Example::
+
+        inp = generate_pipeline_input(42, "Fix NPE in runner", "...", "org/repo")
+        # inp["branch_name"] == "feat/42-fix-npe-in-runner"
+    """
+    slug = slugify_branch(title)
+    branch_name = f"feat/{issue_number}-{slug}"
+
+    result: Dict[str, Any] = {
+        "issue_number": issue_number,
+        "repo": repo,
+        "title": title,
+        "body": body,
+        "branch_name": branch_name,
+    }
+    if repo_path is not None:
+        result["repo_path"] = repo_path
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# remove_github_label — DELETE a label from a GitHub issue (Issue #511)
+# ---------------------------------------------------------------------------
+
+
+def remove_github_label(repo: str, issue_number: int, label: str) -> bool:
+    """Remove a label from a GitHub issue via ``gh api`` DELETE.
+
+    Uses the GitHub CLI (``gh``) to call the REST API.  The label name is
+    URL-encoded to handle labels with spaces or special characters.
+
+    Args:
+        repo:         Repository slug (e.g. ``"owner/repo"``).
+        issue_number: GitHub issue number.
+        label:        Label name to remove (URL-encoded internally).
+
+    Returns:
+        ``True`` when the label was removed successfully (exit code 0).
+        ``False`` on any failure (gh not found, API error, timeout).
+
+    Example::
+
+        ok = remove_github_label("owner/repo", 42, "pipeline-ready")
+        # ok == True when the label was successfully removed
+    """
+    import subprocess
+    from urllib.parse import quote
+
+    encoded_label = quote(label, safe="")
+    endpoint = f"repos/{repo}/issues/{issue_number}/labels/{encoded_label}"
+
+    try:
+        result = subprocess.run(
+            ["gh", "api", endpoint, "--method", "DELETE"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if result.returncode == 0:
+            return True
+        logger.warning(
+            "remove_github_label: gh api DELETE failed (rc=%d): %s",
+            result.returncode,
+            result.stderr.strip(),
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.warning("remove_github_label: error removing label %r: %s", label, exc)
+
+    return False
 
 
 # ---------------------------------------------------------------------------
