@@ -81,6 +81,32 @@ class LoggingConfig(BaseModel):
     console_output: bool = Field(default=True)
 
 
+class GitHubAppConfig(BaseModel):
+    """GitHub App credentials configuration."""
+
+    app_id: Optional[int] = Field(default=None, description="GitHub App numeric ID")
+    private_key_path: Optional[str] = Field(
+        default=None,
+        description="Path to PEM private key file",
+    )
+    webhook_secret: Optional[str] = Field(
+        default=None,
+        description="HMAC webhook secret from GitHub App settings",
+    )
+    installation_id: Optional[int] = Field(
+        default=None,
+        description="Default installation ID for token exchange",
+    )
+
+    @field_validator("private_key_path")
+    @classmethod
+    def expand_key_path(cls, v: Optional[str]) -> Optional[str]:
+        """Expand ``~`` and resolve the private key path."""
+        if v is None:
+            return v
+        return str(Path(v).expanduser())
+
+
 class EngineConfig(BaseModel):
     """Complete orchestration engine configuration."""
     model_config = ConfigDict(validate_assignment=True, extra="ignore")
@@ -91,7 +117,11 @@ class EngineConfig(BaseModel):
     paths: PathsConfig = Field(default_factory=PathsConfig)
     resources: ResourceConfig = Field(default_factory=ResourceConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
-    
+    github_app: Optional[GitHubAppConfig] = Field(
+        default=None,
+        description="GitHub App authentication settings",
+    )
+
     # Meta configuration
     environment: str = Field(default="production", description="Environment: development/production")
     debug_mode: bool = Field(default=False, description="Enable debug features")
@@ -259,6 +289,12 @@ backup_count = 5
 environment = "production"
 debug_mode = false
 dry_run = false
+
+# [github_app]
+# app_id = 12345
+# private_key_path = "~/.orchestration-engine/orchemist-bot.private-key.pem"
+# webhook_secret = ""   # set via ORCH_GITHUB_APP_WEBHOOK_SECRET env var
+# installation_id = 67890
 """
     
     with open(config_path, 'w') as f:

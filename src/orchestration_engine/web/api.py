@@ -2436,10 +2436,30 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                 status_code=200,
             )
 
-        # 2. Parse JSON body
+        # 1b. Read body bytes once — reused for signature verification and JSON parsing
+        _body_bytes = await request.body()
+
+        # 1c. GitHub App webhook signature verification (opt-in)
+        from orchestration_engine.config import get_global_config
+        cfg = get_global_config()
+        if cfg.github_app and cfg.github_app.webhook_secret:
+            sig_header = request.headers.get("X-Hub-Signature-256")
+            if not _verify_github_signature(
+                cfg.github_app.webhook_secret, _body_bytes, sig_header
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Invalid or missing X-Hub-Signature-256 header",
+                )
+        else:
+            logger.warning(
+                "GitHub App webhook_secret is not configured — "
+                "POST /api/v1/github/issues is accepting unauthenticated requests."
+            )
+
+        # 2. Parse JSON body (reuse already-read bytes)
         try:
-            body_bytes = await request.body()
-            payload: Dict[str, Any] = json.loads(body_bytes) if body_bytes else {}
+            payload: Dict[str, Any] = json.loads(_body_bytes) if _body_bytes else {}
         except (json.JSONDecodeError, ValueError) as exc:
             raise HTTPException(
                 status_code=400,
