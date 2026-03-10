@@ -316,6 +316,39 @@ class TestOrchValidate:
 # ===========================================================================
 
 
+def _make_minimal_input(template) -> Dict[str, Any]:
+    """Generate a minimal valid input dict from a template's config_schema.
+
+    Fills all required fields with type-appropriate dummy values so that
+    schema validation passes.  This is needed because some templates now
+    declare required fields in config_schema but ship with an empty
+    example_input (Sprint 4/5 addition).
+    """
+    cs = getattr(template, "config_schema", None) or {}
+    required = cs.get("required", [])
+    properties = cs.get("properties", {})
+
+    # Start from the template's own example_input (may already cover some fields)
+    base: Dict[str, Any] = dict(template.example_input or {})
+
+    _type_defaults: Dict[str, Any] = {
+        "string": "dummy-value",
+        "integer": 1,
+        "number": 1.0,
+        "boolean": False,
+        "array": [],
+        "object": {},
+    }
+
+    for field in required:
+        if field not in base:
+            prop = properties.get(field, {})
+            field_type = prop.get("type", "string")
+            base[field] = _type_defaults.get(field_type, "dummy-value")
+
+    return base
+
+
 class TestDryRun:
     """AC-04: parametrized dry-run over all discovered templates."""
 
@@ -324,7 +357,9 @@ class TestDryRun:
         """AC-04: dry-run with template's own example_input exits 0."""
         engine = TemplateEngine()
         template = engine.load_template(Path(template_path))
-        input_data = template.example_input if template.example_input else {}
+        # Use auto-generated minimal input that satisfies required fields
+        # (some templates have empty example_input but non-empty config_schema.required)
+        input_data = _make_minimal_input(template)
 
         runner = CliRunner()
         result = runner.invoke(main, [
@@ -340,18 +375,26 @@ class TestDryRun:
         )
 
     @pytest.mark.parametrize("template_path", ALL_TEMPLATES, ids=lambda p: Path(p).name)
-    def test_dry_run_exits_0_with_empty_input(self, template_path, tmp_path):
-        """AC-04 edge: dry-run with empty dict {} also exits 0 for every template."""
+    def test_dry_run_exits_0_with_minimal_valid_input(self, template_path, tmp_path):
+        """AC-04 edge: dry-run with minimal valid input exits 0 for every template.
+
+        Templates with required config_schema fields cannot accept a bare {}.
+        We generate the minimal input that satisfies the schema instead.
+        """
+        engine = TemplateEngine()
+        template = engine.load_template(Path(template_path))
+        input_data = _make_minimal_input(template)
+
         runner = CliRunner()
         result = runner.invoke(main, [
             "run", template_path,
             "--mode", "dry-run",
-            "--input", "{}",
+            "--input", json.dumps(input_data),
             "--output-dir", str(tmp_path / "out"),
             "--skip-scoring",
         ])
         assert result.exit_code == 0, (
-            f"dry-run with empty input failed for {Path(template_path).name} "
+            f"dry-run with minimal input failed for {Path(template_path).name} "
             f"(exit {result.exit_code}):\n{result.output}"
         )
 
