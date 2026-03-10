@@ -2029,56 +2029,6 @@ def pipeline_children(run_id: str, db_path: Optional[str]) -> None:
     "--active",
     is_flag=True,
     default=False,
-    help="List all active chains instead of showing a specific run's chain.",
-)
-@click.option(
-    "--db-path",
-    default=None,
-    help="Override path to the persistent pipeline-runs DB.",
-)
-def pipeline_chain(run_id: Optional[str], active: bool, db_path: Optional[str]) -> None:
-    """Show the full chain for a pipeline run, or list all active chains.
-
-    With RUN_ID: walks up to the chain root and displays the full
-    parent-child tree with status and elapsed time.
-
-    With --active: lists all chains that have at least one non-terminal run.
-
-    \b
-    Examples:
-      orch chain a3f8c2d1
-      orch chain --active
-    """  # Issue #508: chain monitoring CLI command
-    from orchestration_engine.db import Database
-    from orchestration_engine.chain_monitor import (
-        build_chain_display,
-        build_active_chains_display,
-    )
-
-    effective_db_path = db_path or _get_persistent_db_path()
-    db = Database(Path(effective_db_path))
-
-    if active:
-        click.echo(build_active_chains_display(db))
-        return
-
-    if not run_id:
-        click.echo("Error: Provide RUN_ID or use --active.", err=True)
-        sys.exit(1)
-
-    output = build_chain_display(db, run_id)
-    if output.startswith("Run '") and output.endswith("not found."):
-        click.echo(output, err=True)
-        sys.exit(1)
-    click.echo(output)
-
-
-@main.command("chain")
-@click.argument("run_id", required=False, default=None)
-@click.option(
-    "--active",
-    is_flag=True,
-    default=False,
     help="List all currently active (non-terminal) chains.",
 )
 @click.option(
