@@ -53,8 +53,8 @@ phases:
   - id: spec
     name: "Spec Interpretation"
     description: "Understand the issue and produce a clear implementation plan"
-    model_tier: opus
-    thinking_level: medium
+    model_tier: sonnet
+    thinking_level: high
     transitions:
       success: implement
     prompt_template: |
