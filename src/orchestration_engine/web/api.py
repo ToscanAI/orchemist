@@ -2582,4 +2582,171 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
 
         return JSONResponse(result, status_code=202)
 
+    # ------------------------------------------------------------------
+    # GitHub Issues — pipeline-ready label trigger (Issue #511)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/v1/github/issues/pipeline-ready", status_code=202)
+    async def handle_github_issues_pipeline_ready(request: Request) -> JSONResponse:
+        """Receive GitHub ``issues`` webhook events for the ``pipeline-ready`` label.
+
+        Triggered when a GitHub issue is labeled with ``pipeline-ready``.
+
+        Flow:
+
+        1. Validate that ``X-GitHub-Event`` is ``"issues"``.
+        2. Filter for ``action == "labeled"`` and label == ``"pipeline-ready"``.
+        3. Dedup — skip if an active pipeline run already exists for this issue.
+        4. Launch ``coding-pipeline-v1`` via daemon infrastructure.
+        5. Remove the ``pipeline-ready`` label (best-effort).
+        6. Post a comment with the run ID.
+        7. Return 202 with ``run_id`` and ``branch_name``.
+
+        Returns:
+            - **200** when the event was ignored (wrong type, action, or label,
+              or a duplicate run already exists).
+            - **202** when the pipeline was launched.
+            - **400** when the request body is invalid.
+        """
+        from orchestration_engine.issue_automation import (
+            generate_pipeline_input,
+            post_github_comment,
+            remove_github_label,
+        )
+
+        # 1. Validate event type header
+        event_type = request.headers.get("X-GitHub-Event", "")
+        if event_type != "issues":
+            return JSONResponse(
+                {"status": "ignored", "reason": "not_issues_event"},
+                status_code=200,
+            )
+
+        # 2. Read body
+        _body_bytes = await request.body()
+
+        # Signature verification (opt-in, same as handle_github_issues)
+        from orchestration_engine.config import get_global_config
+        _cfg = get_global_config()
+        if _cfg.github_app and _cfg.github_app.webhook_secret:
+            sig_header = request.headers.get("X-Hub-Signature-256")
+            if not _verify_github_signature(
+                _cfg.github_app.webhook_secret, _body_bytes, sig_header
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Invalid or missing X-Hub-Signature-256 header",
+                )
+
+        # 3. Parse JSON
+        try:
+            payload: Dict[str, Any] = json.loads(_body_bytes) if _body_bytes else {}
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid JSON in request body: {exc}",
+            )
+
+        action = payload.get("action", "")
+
+        # 4. Only process labeled events
+        if action != "labeled":
+            return JSONResponse(
+                {"status": "ignored", "reason": f"action_{action}_not_relevant"},
+                status_code=200,
+            )
+
+        # 5. Check label is pipeline-ready
+        applied_label = (payload.get("label") or {}).get("name", "")
+        if applied_label != "pipeline-ready":
+            return JSONResponse(
+                {"status": "ignored", "reason": "label_not_pipeline_ready"},
+                status_code=200,
+            )
+
+        # 6. Extract issue and repo
+        issue = payload.get("issue", {}) or {}
+        issue_number = issue.get("number")
+        if not issue_number:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing issue.number in webhook payload",
+            )
+
+        repo_data = payload.get("repository", {}) or {}
+        repo = repo_data.get("full_name", "")
+        if not repo:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing repository.full_name in webhook payload",
+            )
+
+        # 7. Dedup — skip if active run exists for this issue
+        db = Database(Path(effective_db_path))
+        active_run = db.get_active_issue_run(issue_number, repo)
+        if active_run is not None:
+            return JSONResponse(
+                {
+                    "status": "skipped",
+                    "reason": "active_run_exists",
+                    "run_id": active_run.get("run_id"),
+                },
+                status_code=200,
+            )
+
+        # 8. Build pipeline input
+        title = issue.get("title", "") or ""
+        body_text = issue.get("body", "") or ""
+        pipeline_input = generate_pipeline_input(
+            issue_number=issue_number,
+            title=title,
+            body=body_text,
+            repo=repo,
+        )
+        branch_name = pipeline_input["branch_name"]
+
+        # 9. Resolve and load template
+        try:
+            template_file = _resolve_template("coding-pipeline-v1")
+        except HTTPException:
+            raise HTTPException(
+                status_code=400,
+                detail="Template 'coding-pipeline-v1' not found",
+            )
+
+        engine = TemplateEngine()
+        try:
+            template = engine.load_template(template_file)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid template: {exc}")
+
+        # 10. Launch pipeline
+        gw_url = os.environ.get("OPENCLAW_GATEWAY_URL")
+        run_dict = _launch_pipeline_from_trigger(
+            template_file=template_file,
+            template=template,
+            input_data=pipeline_input,
+            mode="standalone",
+            gateway_url=gw_url,
+            db=db,
+        )
+        run_id = run_dict["run_id"]
+
+        # 11. Remove pipeline-ready label (best-effort)
+        remove_github_label(repo, issue_number, "pipeline-ready")
+
+        # 12. Post comment with run ID (best-effort)
+        comment_body = (
+            f"🤖 **Orchemist** detected `pipeline-ready` label and launched the coding pipeline.\n\n"
+            f"**Branch:** `{branch_name}`\n"
+            f"**Run ID:** `{run_id}`\n\n"
+            f"Progress can be tracked via `orch status {run_id}`."
+        )
+        post_github_comment(repo=repo, issue_number=issue_number, body=comment_body)
+
+        return JSONResponse(
+            {"status": "accepted", "run_id": run_id, "branch_name": branch_name},
+            status_code=202,
+        )
+
     return app
