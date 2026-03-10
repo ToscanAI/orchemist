@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from orchestration_engine.db import Database
-from orchestration_engine.daemon import _compute_and_dispatch_routing
+from orchestration_engine.daemon import _compute_and_dispatch_routing, _dispatch_auto_merge
 
 
 # ---------------------------------------------------------------------------
@@ -55,8 +55,12 @@ def _call_routing(
     routing_config: Any = None,
     phase_outputs: Optional[dict] = None,
 ) -> str:
-    """Convenience wrapper around _compute_and_dispatch_routing."""
-    return _compute_and_dispatch_routing(
+    """Convenience wrapper around _compute_and_dispatch_routing.
+
+    _compute_and_dispatch_routing now returns tuple[str, Optional[Dict]].
+    We unpack the first element (the status string) for backward compatibility.
+    """
+    result = _compute_and_dispatch_routing(
         run_id=run_id,
         output_dir=output_dir,
         db=db,
@@ -67,6 +71,15 @@ def _call_routing(
         phase_outputs=phase_outputs or {},
         final_status=final_status,
     )
+    # Guard for both old (str) and new (tuple) return types.
+    # When routing defers an auto_merge (merge_intent is not None), dispatch it
+    # here so tests that assert on auto_merge_pr being called still work.
+    if isinstance(result, tuple):
+        status, merge_intent = result
+        if merge_intent is not None:
+            _dispatch_auto_merge(**merge_intent)
+        return status
+    return result
 
 
 # ---------------------------------------------------------------------------
