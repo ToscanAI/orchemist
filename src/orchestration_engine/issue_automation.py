@@ -56,7 +56,18 @@ __all__ = [
     "InputExtractor",
     "IssueAutomation",
     "post_github_comment",
+    # Re-exports from github_fetcher (Issue #507)
+    "GitHubIssueData",
+    "GitHubIssueFetcher",
+    "fetch_github_issue",
 ]
+
+# Re-exports from github_fetcher
+from orchestration_engine.github_fetcher import (  # noqa: E402
+    GitHubIssueData,
+    GitHubIssueFetcher,
+    fetch_github_issue,
+)
 
 logger = logging.getLogger(__name__)
 

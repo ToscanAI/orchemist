@@ -1100,6 +1100,19 @@ def workers(detailed: bool) -> None:
         'Requires --output-dir pointing to a completed run.'
     ),
 )
+@click.option(
+    '--issue',
+    'issue_number',
+    type=int,
+    default=None,
+    help='GitHub issue number to auto-fetch and merge into pipeline input.',
+)
+@click.option(
+    '--repo',
+    'repo',
+    default=None,
+    help='GitHub repository slug (e.g. owner/repo) for --issue lookup.',
+)
 def run_template(
     template_name_or_file: str,
     mode: str,
@@ -1113,6 +1126,8 @@ def run_template(
     dry_run_failure_rate: float,
     skip_scoring: bool,
     score_only: bool,
+    issue_number: Optional[int],
+    repo: Optional[str],
 ) -> None:
     """Execute a pipeline template end-to-end.
 
@@ -1261,7 +1276,32 @@ def run_template(
             click.echo(f"✗ Invalid JSON in --input: {exc}", err=True)
             sys.exit(1)
 
-    # --- 2b. Validate required config fields (#411) ---
+    # --- 2b. Auto-fetch GitHub issue data (#507) ---
+    if issue_number is not None:
+        if not repo:
+            click.echo("⚠ --issue requires --repo (e.g. owner/repo). Skipping GitHub fetch.", err=True)
+        else:
+            try:
+                from .github_fetcher import fetch_github_issue
+                issue_data = fetch_github_issue(repo=repo, issue_number=issue_number)
+                if issue_data:
+                    initial_input = issue_data.merge_into(initial_input)
+                    click.echo(
+                        f"  ✓ GitHub issue #{issue_number} fetched: {issue_data.title!r}",
+                        err=True,
+                    )
+                else:
+                    click.echo(
+                        f"  ⚠ Could not fetch GitHub issue #{issue_number} from {repo} — continuing with provided input.",
+                        err=True,
+                    )
+            except Exception as _gh_exc:
+                click.echo(
+                    f"  ⚠ GitHub fetch error: {_gh_exc} — continuing with provided input.",
+                    err=True,
+                )
+
+    # --- 2c. Validate required config fields (#411) ---
     missing = _validate_required_config(template, initial_input)
     if missing:
         click.echo(f"✗ Missing {len(missing)} required config field(s):", err=True)
@@ -1703,6 +1743,27 @@ def _get_persistent_db_path() -> str:
     help='Path to a JSON file containing pipeline input.',
 )
 @click.option(
+    '--issue',
+    'issue_number',
+    type=int,
+    default=None,
+    help=(
+        'GitHub issue number to auto-fetch as pipeline input. '
+        'Fetched fields (title, body, labels, assignees, milestone) are '
+        'merged as the base input; explicit --input / --input-file keys take '
+        'precedence over fetched values.'
+    ),
+)
+@click.option(
+    '--repo',
+    default=None,
+    envvar='GITHUB_REPOSITORY',
+    help=(
+        'Repository slug (owner/repo) used with --issue to fetch issue data. '
+        'Defaults to the GITHUB_REPOSITORY environment variable when set.'
+    ),
+)
+@click.option(
     '--output-dir',
     type=click.Path(path_type=Path),
     default=None,
@@ -1730,6 +1791,8 @@ def pipeline_launch(
     mode: str,
     input_json: Optional[str],
     input_file: Optional[Path],
+    issue_number: Optional[int],
+    repo: Optional[str],
     output_dir: Optional[Path],
     gateway_url: Optional[str],
     skip_scoring: bool,
@@ -1743,6 +1806,7 @@ def pipeline_launch(
     \b
     Examples:
       orch launch content-pipeline --mode openclaw --input '{"brief": "AI"}'
+      orch launch coding-pipeline-v1 --issue 42 --repo owner/repo
       orch status <run-id>
       orch logs <run-id> --follow
       orch wait <run-id>
@@ -1788,6 +1852,30 @@ def pipeline_launch(
         except json.JSONDecodeError as exc:
             click.echo(f"✗ Invalid JSON in --input: {exc}", err=True)
             sys.exit(1)
+
+    # --- Auto-fetch GitHub issue data (#507) ---
+    if issue_number is not None:
+        if not repo:
+            click.echo(
+                "⚠ --issue requires --repo (or GITHUB_REPOSITORY env var). "
+                "Skipping issue fetch.",
+                err=True,
+            )
+        else:
+            from .github_fetcher import fetch_github_issue
+
+            click.echo(f"  Fetching issue #{issue_number} from {repo}…")
+            issue_data = fetch_github_issue(repo=repo, issue_number=issue_number)
+            if issue_data is None:
+                click.echo(
+                    f"⚠ Could not fetch issue #{issue_number} from {repo}. "
+                    "Continuing with provided --input / --input-file data.",
+                    err=True,
+                )
+            else:
+                # GitHub data fills missing keys; canonical fields always from GitHub.
+                initial_input = issue_data.merge_into(initial_input)
+                click.echo(f"  ✓ Issue #{issue_number} fetched: {issue_data.title!r}")
 
     # --- Validate required config fields (#411) ---
     missing = _validate_required_config(template, initial_input)
