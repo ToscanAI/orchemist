@@ -309,3 +309,112 @@ class TestInputMapContent:
         assert entry.input_map["issues_json"] == "[]", (
             f"issues_json must be '[]' in step→v1 chain, got: {entry.input_map['issues_json']!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# SR-16: str.format() interpolation works on both templates' prepare phases
+# ---------------------------------------------------------------------------
+
+
+class TestPreparePhaseFormatInterpolation:
+    """Verify that prepare phase commands can be str.format()-interpolated without KeyError.
+
+    The prepare phase command is a Python script embedded in YAML. Any bare `{`
+    and `}` in dict/set literals must be escaped as `{{` / `}}` so that
+    str.format() doesn't mistake them for template placeholders.
+    """
+
+    MOCK_CONFIG = {
+        "parent_output_dir": "/tmp/parent",
+        "issues_json": "[506]",
+        "sprint_name": "Sprint 1",
+        "repo_path": "/tmp/repo",
+        "repo_url": "https://github.com/owner/repo",
+        "test_command": "python3 -m pytest tests/ -x -q",
+        "language": "python",
+        "style_guide": "Follow existing style.",
+        "files_context": "",
+    }
+
+    def _get_prepare_command(self, tpl_name: str) -> str:
+        tpl = _load(tpl_name)
+        prepare_phase = next(p for p in tpl.phases if p.id == "prepare")
+        return prepare_phase.command
+
+    def test_sprint_runner_v1_prepare_format_no_key_error(self):
+        """SR-16a: sprint-runner-v1 prepare command survives str.format() interpolation."""
+        cmd = self._get_prepare_command("sprint-runner-v1.yaml")
+        result = cmd.format(config=self.MOCK_CONFIG, output_dir="/tmp/test")
+        assert "{config[" not in result, (
+            "Unresolved {config[...]} placeholders remain after format()"
+        )
+        assert self.MOCK_CONFIG["sprint_name"] in result
+
+    def test_sprint_runner_step_v1_prepare_format_no_key_error(self):
+        """SR-16b: sprint-runner-step-v1 prepare command survives str.format() interpolation."""
+        cmd = self._get_prepare_command("sprint-runner-step-v1.yaml")
+        result = cmd.format(config=self.MOCK_CONFIG, output_dir="/tmp/test")
+        assert "{config[" not in result, (
+            "Unresolved {config[...]} placeholders remain after format()"
+        )
+        assert self.MOCK_CONFIG["sprint_name"] in result
+
+
+# ---------------------------------------------------------------------------
+# SR-16: str.format() interpolation of prepare phase command strings
+# ---------------------------------------------------------------------------
+
+
+class TestPreparePhaseInterpolation:
+    """SR-16: Both templates' prepare phase commands survive str.format() interpolation.
+
+    Catches unescaped dict literals (e.g. `{` instead of `{{`) that cause
+    KeyError at runtime when the engine interpolates {config[...]} placeholders.
+    """
+
+    DUMMY_CONFIG = {
+        "sprint_name": "test-sprint",
+        "repo_path": "/tmp/repo",
+        "repo_url": "owner/repo",
+        "test_command": "pytest tests/ -q",
+        "issues_json": "[1, 2]",
+        "parent_output_dir": "/tmp/parent",
+        "language": "Python",
+        "style_guide": "PEP8",
+        "files_context": "src/",
+    }
+
+    def _get_prepare_command(self, name: str) -> str:
+        tpl = _load(name)
+        prepare_phase = next(p for p in tpl.phases if p.id == "prepare")
+        return prepare_phase.command
+
+    def test_sprint_runner_v1_prepare_interpolation(self):
+        """SR-16a: sprint-runner-v1 prepare command interpolates without KeyError."""
+        cmd = self._get_prepare_command("sprint-runner-v1.yaml")
+        try:
+            result = cmd.format(config=self.DUMMY_CONFIG, output_dir="/tmp/out")
+        except KeyError as e:
+            pytest.fail(
+                f"sprint-runner-v1 prepare command raised KeyError {e} during "
+                f"str.format() — likely an unescaped '{{' in a dict literal. "
+                f"Use '{{{{' and '}}}}' instead."
+            )
+        assert "{config[" not in result, (
+            "Unresolved {config[...]} placeholder found in interpolated command"
+        )
+
+    def test_sprint_runner_step_v1_prepare_interpolation(self):
+        """SR-16b: sprint-runner-step-v1 prepare command interpolates without KeyError."""
+        cmd = self._get_prepare_command("sprint-runner-step-v1.yaml")
+        try:
+            result = cmd.format(config=self.DUMMY_CONFIG, output_dir="/tmp/out")
+        except KeyError as e:
+            pytest.fail(
+                f"sprint-runner-step-v1 prepare command raised KeyError {e} during "
+                f"str.format() — likely an unescaped '{{' in a dict literal. "
+                f"Use '{{{{' and '}}}}' instead."
+            )
+        assert "{config[" not in result, (
+            "Unresolved {config[...]} placeholder found in interpolated command"
+        )

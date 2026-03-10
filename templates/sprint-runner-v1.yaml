@@ -123,7 +123,7 @@ phases:
 
       result = subprocess.run(
           ['gh', 'issue', 'view', str(current), '--repo', repo_url, '--json', 'title,body,number'],
-          capture_output=True, text=True
+          capture_output=True, text=True, timeout=60
       )
       if result.returncode != 0:
           print(f'Error fetching issue {{current}}: {{result.stderr}}', file=sys.stderr)

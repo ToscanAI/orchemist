@@ -103,20 +103,20 @@ phases:
 
       result = subprocess.run(
           ['gh', 'issue', 'view', str(current), '--repo', repo_url, '--json', 'title,body,number'],
-          capture_output=True, text=True
+          capture_output=True, text=True, timeout=60
       )
       if result.returncode != 0:
           print('Error fetching issue ' + str(current) + ': ' + result.stderr, file=sys.stderr)
           sys.exit(1)
 
       issue_data = json.loads(result.stdout)
-      prepare = {
+      prepare = {{
           'current_issue': issue_data,
           'remaining_issues': new_remaining,
           'sprint_name': sprint_name,
           'repo_path': repo_path,
           'repo_url': repo_url,
-      }
+      }}
 
       os.makedirs(output_dir, exist_ok=True)
       with open(os.path.join(output_dir, 'prepare.json'), 'w') as f:
