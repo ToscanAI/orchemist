@@ -2023,6 +2023,63 @@ def pipeline_children(run_id: str, db_path: Optional[str]) -> None:
         )
 
 
+@main.command("chain")
+@click.argument("run_id", required=False, default=None)
+@click.option(
+    "--active",
+    is_flag=True,
+    default=False,
+    help="List all currently active (non-terminal) chains.",
+)
+@click.option(
+    "--db-path",
+    default=None,
+    help="Override path to the persistent pipeline-runs DB.",
+)
+def pipeline_chain(
+    run_id: Optional[str],
+    active: bool,
+    db_path: Optional[str],
+) -> None:
+    """Monitor pipeline chain execution status.
+
+    \b
+    Examples:
+      orch chain a3f8c2d1          # Show full chain for a given run ID
+      orch chain --active          # List all currently running chains
+      orch chain a3f8c2d1 --db-path /tmp/custom.db
+    """  # Issue #508: chain monitoring CLI
+    from orchestration_engine.db import Database
+    from orchestration_engine import chain_monitor
+
+    # Validate: exactly one of run_id or --active must be provided
+    if not run_id and not active:
+        raise click.UsageError(
+            "Provide a RUN_ID to inspect a chain, or use --active to list all active chains."
+        )
+    if run_id and active:
+        raise click.UsageError("Cannot use both RUN_ID and --active together.")
+
+    effective_db_path = db_path or _get_persistent_db_path()
+    db = Database(Path(effective_db_path))
+
+    if active:
+        click.echo(chain_monitor.build_active_chains_display(db))
+        return
+
+    # run_id mode: find root, then display full chain
+    root = chain_monitor.find_chain_root(db, run_id)
+    if root is None:
+        click.echo(f"✗ Run '{run_id}' not found.", err=True)
+        sys.exit(1)
+
+    root_run_id = root["run_id"]
+    if root_run_id != run_id:
+        click.echo(f"(Showing chain from root: {root_run_id})")
+
+    click.echo(chain_monitor.build_chain_display(db, root_run_id))
+
+
 @main.command("wait")
 @click.argument('run_id')
 @click.option('--timeout', type=int, default=1800, show_default=True,

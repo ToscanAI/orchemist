@@ -694,6 +694,7 @@ class Database:
             ("016_add_trust_tables", self._migration_016_add_trust_tables),                              # Issue #4.2.1
             ("017_add_issue_pipeline_map", self._migration_017_add_issue_pipeline_map),               # Issue #5.1.1
             ("018_add_cost_tracking_table", self._migration_018_add_cost_tracking_table),             # Issue #5.2.1
+            ("019_add_parent_run_id_index", self._migration_019_add_parent_run_id_index),             # Issue #508
         ]
         
         # Apply pending migrations
@@ -2363,6 +2364,97 @@ class Database:
         Safe to run on both fresh and existing databases.
         """
         self._create_table_cost_tracking(conn)
+
+    def _migration_019_add_parent_run_id_index(self, conn: sqlite3.Connection) -> None:
+        """Add index on pipeline_runs(parent_run_id) for chain traversal (Issue #508).
+
+        Idempotent: uses CREATE INDEX IF NOT EXISTS.
+        """
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_parent_run_id "
+            "ON pipeline_runs(parent_run_id)"
+        )
+
+    # ------------------------------------------------------------------
+    # Chain query methods (Issue #508)
+    # ------------------------------------------------------------------
+
+    def get_full_chain(self, root_run_id: str) -> List[Dict[str, Any]]:
+        """Return all runs in a chain starting from *root_run_id* (inclusive).
+
+        Uses a recursive CTE to walk *down* the parent→child tree.  The root
+        run is returned first (depth 0), then children ordered by created_at.
+
+        Args:
+            root_run_id: The run_id of the chain root.
+
+        Returns:
+            Ordered list of pipeline_run dicts (root first, then descendants).
+        """
+        query = """
+            WITH RECURSIVE chain(run_id, depth) AS (
+                SELECT run_id, 0 FROM pipeline_runs WHERE run_id = ?
+                UNION ALL
+                SELECT pr.run_id, chain.depth + 1
+                FROM pipeline_runs pr
+                JOIN chain ON pr.parent_run_id = chain.run_id
+                WHERE chain.depth < 50
+            )
+            SELECT pr.*
+            FROM pipeline_runs pr
+            JOIN chain ON pr.run_id = chain.run_id
+            ORDER BY chain.depth ASC, pr.created_at ASC
+        """
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(query, (root_run_id,))
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def list_active_chain_roots(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Return all root runs that have at least one non-terminal descendant.
+
+        A *root* is a run with no parent (parent_run_id IS NULL).  A chain is
+        *active* when any run in the chain is not in TERMINAL_STATUSES.
+
+        Args:
+            limit: Optional maximum number of roots to return.
+
+        Returns:
+            List of root pipeline_run dicts, ordered by created_at DESC.
+        """
+        terminal_list = list(TERMINAL_STATUSES)
+        placeholders = ",".join("?" * len(terminal_list))
+        query = f"""
+            WITH RECURSIVE chain(root_id, run_id) AS (
+                SELECT run_id, run_id
+                FROM pipeline_runs
+                WHERE parent_run_id IS NULL
+                UNION ALL
+                SELECT chain.root_id, pr.run_id
+                FROM pipeline_runs pr
+                JOIN chain ON pr.parent_run_id = chain.run_id
+            )
+            SELECT DISTINCT pr.*
+            FROM pipeline_runs pr
+            WHERE pr.parent_run_id IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM chain c
+                  JOIN pipeline_runs pr2 ON c.run_id = pr2.run_id
+                  WHERE c.root_id = pr.run_id
+                    AND pr2.status NOT IN ({placeholders})
+              )
+            ORDER BY pr.created_at DESC
+        """
+        params: List[Any] = terminal_list
+        if limit is not None:
+            query += " LIMIT ?"
+            params = terminal_list + [limit]
+        with self._locked():
+            conn = self.get_connection()
+            cursor = conn.execute(query, params)
+            rows = cursor.fetchall()
+        return [self._row_to_dict(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Cost API query methods (Issue #5.2.3)
