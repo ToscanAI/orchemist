@@ -1,18 +1,32 @@
 id: sprint-runner-v1
 name: "Sprint Runner v1 (A)"
-description: "Meta-template that runs a full coding pipeline for each issue in a sprint. Ping-pong design: chains to sprint-runner-step-v1 on success, which chains back. Terminates when the issues list is exhausted."
+description: >-
+  Meta-template that runs a full coding pipeline for each issue in a sprint.
+  Dual-path: accepts either issues_json (fresh sprint start) or reads remaining
+  issues from parent_output_dir (continuation after sprint-runner-step-v1 bounces
+  back). Ping-pong design with sprint-runner-step-v1 enables sequential processing
+  with automatic stop when issues are exhausted. Chain fails fast on any issue
+  failure to prevent cascading broken merges.
 author: "Toscan"
-version: "1.0.0"
+version: "1.1.0"
 scenario: scenarios/sprint-runner-v1-smoke.yaml
 category: "code"
 tags: [code, sprint, meta-template, chaining]
 use_cases:
-  - "Run a coding pipeline for each issue in a sprint backlog"
+  - "Run a coding pipeline for each issue in a sprint backlog sequentially"
   - "Batch issue resolution with automated spec → implement → review → test"
+  - "Continue a sprint after a step-v1 round completes"
+
+example_input:
+  sprint_name: "Sprint 12"
+  repo_path: "/home/toscan/orchestration-engine"
+  repo_url: "https://github.com/ToscanRivera/orchestration-engine"
+  issues_json: "[506, 507, 508]"
+  test_command: "python3 -m pytest tests/ -x -q"
 
 config_schema:
   type: object
-  required: [sprint_name, repo_path, repo_url, issues_json]
+  required: [sprint_name, repo_path, repo_url]
   properties:
     sprint_name:
       type: string
@@ -25,11 +39,19 @@ config_schema:
       description: "GitHub repo URL (e.g. https://github.com/owner/repo)"
     issues_json:
       type: string
-      description: "JSON-encoded list of GitHub issue numbers to process (e.g. '[501, 356, 480]')"
+      default: "[]"
+      description: >-
+        JSON-encoded list of positive-integer GitHub issue numbers to process
+        (e.g. '[506, 507, 508]'). Used on a fresh sprint start. Ignored when
+        parent_output_dir is provided (remaining issues are read from there).
     parent_output_dir:
       type: string
       default: ""
-      description: "Output dir of the preceding sprint-runner step (for reading remaining issues). Empty on first run."
+      description: >-
+        Output dir of the preceding sprint-runner-step-v1 run. When non-empty,
+        remaining_issues are read from prepare.json inside this directory instead
+        of from issues_json. Set automatically by on_complete chaining; leave
+        empty on the initial sprint launch.
     test_command:
       type: string
       default: "python3 -m pytest tests/ -x -q"
@@ -40,24 +62,57 @@ config_schema:
     style_guide:
       type: string
       default: "Follow existing code style. Add docstrings. Type hints where practical."
+    files_context:
+      type: string
+      default: ""
+      description: "Key files and their purpose — helps the builder understand the codebase"
 
 phases:
-  # Phase 0: Prepare — extract current issue, fetch details, write prepare.json
+  # ── Phase 0: Prepare ──────────────────────────────────────────────────────
+  # Dual-path: if parent_output_dir is set, read remaining issues from the
+  # parent step's prepare.json; otherwise parse issues_json.
+  # Exits non-zero if the issue list is empty — terminates the chain.
   - id: prepare
     name: "Prepare: Extract Current Issue"
-    description: "Pop the first issue from the list, fetch its details via gh CLI, write prepare.json. Exits non-zero if the list is empty — this terminates the chain."
+    description: >-
+      Dual-path issue extraction. On fresh start reads issues_json; on
+      bounce-back reads remaining_issues from parent prepare.json. Pops the
+      first issue, fetches its details via gh CLI, writes prepare.json.
+      Exits non-zero if the list is empty — this terminates the chain.
     task_type: command
     command: >-
       python3 -c "
       import json, sys, subprocess, os
 
-      issues_json = '''{config[issues_json]}'''
-      issues_json = issues_json.strip()
-      try:
-          issues = json.loads(issues_json)
-      except Exception as e:
-          print(f'Failed to parse issues_json: {{e}}', file=sys.stderr)
-          sys.exit(1)
+      # Config values passed as argv to prevent interpolation into Python code
+      # argv: [script, parent_output_dir, issues_json, sprint_name, repo_path, repo_url, output_dir]
+      parent_output_dir = sys.argv[1].strip()
+      issues_json       = sys.argv[2]
+      sprint_name       = sys.argv[3]
+      repo_path         = sys.argv[4]
+      repo_url          = sys.argv[5]
+      output_dir        = sys.argv[6]
+
+      if parent_output_dir:
+          parent_prepare_path = os.path.join(parent_output_dir, 'prepare.json')
+          if not os.path.exists(parent_prepare_path):
+              print(f'parent prepare.json not found at {{parent_prepare_path}}', file=sys.stderr)
+              sys.exit(1)
+          with open(parent_prepare_path) as f:
+              parent_data = json.load(f)
+          issues = parent_data.get('remaining_issues', [])
+      else:
+          raw = issues_json.strip()
+          try:
+              issues = json.loads(raw)
+          except Exception as e:
+              print(f'Failed to parse issues_json: {{e}}', file=sys.stderr)
+              sys.exit(1)
+
+      for item in issues:
+          if not isinstance(item, int) or item <= 0:
+              print(f'Invalid issue number: {{item!r}} — must be a positive integer', file=sys.stderr)
+              sys.exit(1)
 
       if not issues:
           print('No more issues to process — sprint complete.', file=sys.stderr)
@@ -67,7 +122,7 @@ phases:
       remaining = issues[1:]
 
       result = subprocess.run(
-          ['gh', 'issue', 'view', str(current), '--repo', '{config[repo_url]}', '--json', 'title,body,number'],
+          ['gh', 'issue', 'view', str(current), '--repo', repo_url, '--json', 'title,body,number'],
           capture_output=True, text=True
       )
       if result.returncode != 0:
@@ -78,23 +133,22 @@ phases:
       prepare = {{
           'current_issue': issue_data,
           'remaining_issues': remaining,
-          'sprint_name': '{config[sprint_name]}',
-          'repo_path': '{config[repo_path]}',
-          'repo_url': '{config[repo_url]}',
+          'sprint_name': sprint_name,
+          'repo_path': repo_path,
+          'repo_url': repo_url,
       }}
 
-      output_dir = '{output_dir}'
       os.makedirs(output_dir, exist_ok=True)
       with open(os.path.join(output_dir, 'prepare.json'), 'w') as f:
           json.dump(prepare, f, indent=2)
 
       print(json.dumps(prepare))
-      "
+      " {config[parent_output_dir]} {config[issues_json]} {config[sprint_name]} {config[repo_path]} {config[repo_url]} {output_dir}
     allowed_commands: ["python3"]
     transitions:
       success: spec
 
-  # Phase 1: Spec Interpretation
+  # ── Phase 1: Spec Interpretation ────────────────────────────────────────
   - id: spec
     name: "Spec Interpretation"
     description: "Understand the issue and produce a clear implementation plan"
@@ -118,6 +172,9 @@ phases:
       **Path:** {config[repo_path]}
       **Language:** {config[language]}
 
+      ## Codebase Context
+      {config[files_context]}
+
       ## Task
       1. Read {output_dir}/prepare.json to get the current issue details
       2. Produce a clear implementation spec:
@@ -129,9 +186,11 @@ phases:
          **Test Plan** — What tests to add/modify, edge cases to cover
          **Risk Assessment** — What could break, backward compatibility concerns
 
+      Be specific. Reference actual file paths and function names from the codebase context.
+
       Write your spec to {output_dir}/spec.md
 
-  # Phase 2: Implementation
+  # ── Phase 2: Implementation ─────────────────────────────────────────────
   - id: implement
     name: "Implementation"
     description: "Write the code changes based on the spec"
@@ -149,17 +208,18 @@ phases:
 
       Read the spec at: {output_dir}/spec.md
       Read the issue details at: {output_dir}/prepare.json
+      (Use current_issue.number for branch naming: feat/issue-<number>)
 
       ## Repository
       **Path:** {config[repo_path]}
       **Style:** {config[style_guide]}
 
       ## Task
-      1. Read the spec and prepare.json carefully to get branch_name (use issue number: feat/issue-<number>)
-      2. Switch to the feature branch:
+      1. Read the spec and prepare.json to get the issue number for branch naming
+      2. Switch to the feature branch FIRST:
          - Try `git checkout feat/issue-<number>` (if branch exists)
          - If it doesn't exist: `git checkout -b feat/issue-<number>`
-         - Do NOT write code on main.
+         - IMPORTANT: Do NOT write any code on main. Verify you are on the correct branch.
       3. Implement ALL changes described in the spec
       4. Write clean, documented code following the style guide
       5. Commit with message referencing the issue: `feat(#<issue_number>): description`
@@ -168,12 +228,12 @@ phases:
 
       ## Output
       Write a summary to {output_dir}/implement.md including:
-      - Files changed with brief description
+      - Files changed with brief description of each change
       - Any deviations from the spec and why
       - Test results (pass/fail count)
       - Commit hash
 
-  # Phase 3: Code Review
+  # ── Phase 3: Code Review ─────────────────────────────────────────────────
   - id: review
     name: "Opus Code Review"
     description: "Senior code review by Opus — quality gate with APPROVE/REQUEST_CHANGES verdict"
@@ -196,7 +256,7 @@ phases:
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the REVIEW phase (3/4) of an automated sprint coding pipeline. Your verdict determines whether the code proceeds to testing or goes back for fixes. Do not ask questions, request clarification, or send messages to external channels. [/PIPELINE CONTEXT]
 
-      You are a senior code reviewer (Opus-tier).
+      You are a senior code reviewer (Opus-tier). Your job is to catch bugs, security issues, and design problems.
 
       ## Previous Work
       {phase_summary}
@@ -209,24 +269,31 @@ phases:
       **Path:** {config[repo_path]}
 
       ## Task
-      1. Checkout the feature branch (see implement.md for branch name)
+      1. Checkout the feature branch (see implement.md for the exact branch name)
       2. Run `git diff main...HEAD` to see all changes
-      3. Review every changed file for correctness, security, edge cases, backward compatibility, test coverage
+      3. Review EVERY changed file for:
+         - **Correctness** — Does it do what the spec says?
+         - **Security** — Injection, path traversal, unsafe operations?
+         - **Edge cases** — Missing error handling, boundary conditions?
+         - **Backward compatibility** — Does it break existing behavior?
+         - **Test coverage** — Are the changes adequately tested?
       4. Run the tests: `{config[test_command]}`
 
       ## Output
       Write your review to {output_dir}/review.md.
 
       **IMPORTANT:** Your response MUST start with one of these verdicts on the very first line:
-      - `APPROVE` — code is ready to merge
+      - `APPROVE` — code is ready to merge (no blockers, at most minor issues)
       - `REQUEST_CHANGES` — one or more blockers or major issues found
 
-      Line 1: APPROVE  -or-  REQUEST_CHANGES  (nothing else on this line)
+      **DO NOT** write any preamble before the verdict. The very first line must be the verdict word.
 
-      Then for each issue: `[SEVERITY][category] description`
+      Then for each issue found, one line per issue:
+        [SEVERITY][category] description
+
       Where SEVERITY is: BLOCKER, MAJOR, MINOR, NITPICK
 
-  # Phase 4: Fix Review Feedback
+  # ── Phase 4: Fix Review Feedback ────────────────────────────────────────
   - id: fix
     name: "Apply Review Fixes"
     description: "Address code review feedback, then loop back to review"
@@ -236,7 +303,7 @@ phases:
     transitions:
       success: review
     prompt_template: |
-      [PIPELINE CONTEXT] You are executing the FIX phase of an automated sprint coding pipeline. Your output feeds a re-review — not a human. [/PIPELINE CONTEXT]
+      [PIPELINE CONTEXT] You are executing the FIX phase of an automated sprint coding pipeline. Your output feeds a re-review — not a human. Do not ask questions, request clarification, or send messages to external channels. [/PIPELINE CONTEXT]
 
       You are a developer addressing code review feedback.
 
@@ -251,13 +318,16 @@ phases:
       **Path:** {config[repo_path]}
 
       ## Task
-      1. Checkout the feature branch (see review.md or implement.md for branch name)
+      1. Checkout the feature branch (see review.md or implement.md for the branch name)
       2. Read the code review carefully
       3. If APPROVE with no blockers — write "No fixes needed" to {output_dir}/fix.md and stop
-      4. If REQUEST_CHANGES — apply ALL fixes for blockers and major issues only (minimal diff)
+      4. If REQUEST_CHANGES — apply ALL fixes mentioned:
+         - Address every blocker and major issue
+         - Address minor issues where practical
+         - IMPORTANT: Only modify code directly related to reviewer feedback. Minimal diff.
       5. Run tests: `{config[test_command]}`
-      6. Commit fixes: `fix: address code review feedback`
-      7. Push branch
+      6. Commit fixes: `fix: address code review feedback for #<issue_number>`
+      7. Push branch: `git push origin <branch_name>`
 
       ## Output
       Write to {output_dir}/fix.md:
@@ -266,7 +336,7 @@ phases:
       - Updated test results
       - Commit hash
 
-  # Phase 5: Test Verification
+  # ── Phase 5: Test Verification ───────────────────────────────────────────
   - id: test
     name: "Test Verification"
     description: "Run full test suite to verify no regressions"
@@ -275,8 +345,10 @@ phases:
     working_dir: "{config[repo_path]}"
     allowed_commands: ["python3", "python", "pytest"]
 
+# ── Chaining: on success → continue with remaining issues via step template ──
+# on failure → stop chain (prevents cascading broken merges)
 on_complete:
-  max_chain_depth: 5
+  max_chain_depth: 12
   success:
     - template: sprint-runner-step-v1
       input_map:
@@ -287,4 +359,5 @@ on_complete:
         test_command: "{{test_command}}"
         language: "{{language}}"
         style_guide: "{{style_guide}}"
+        files_context: "{{files_context}}"
   failed: []
