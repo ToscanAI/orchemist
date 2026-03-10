@@ -330,6 +330,9 @@ class RegressionWebhookHandler:
         repo_path: Path,
         repo_slug: str,
         template_id: str = "ci",
+        *,
+        auto_fix_mode: bool = False,
+        fixer: Optional["RegressionFixer"] = None,
     ) -> None:
         self._db = db
         self._git = git_context
@@ -342,6 +345,11 @@ class RegressionWebhookHandler:
         # "ci" for backward compatibility with tests and callers that don't have
         # per-template context.
         self._template_id = template_id
+        # auto_fix_mode: when True, automatically spawn a fix run via fixer
+        # after a regression is detected (gated by SafetyGuard).
+        self._auto_fix_mode = auto_fix_mode
+        # fixer: optional RegressionFixer instance; required when auto_fix_mode=True.
+        self._fixer = fixer
 
     # ------------------------------------------------------------------
     # Public entry point (matches Sprint 2 trigger interface)
@@ -460,6 +468,49 @@ class RegressionWebhookHandler:
                     regression.id,
                 )
 
+            # Post a PR comment if a PR is associated with this check_suite.
+            failed_check_names = self._fetch_and_extract_failed_check_names(event_payload)
+            check_suite = event_payload.get("check_suite", {})
+            check_suite_id = check_suite.get("id")
+            pr_number = self._extract_pr_number(event_payload)
+            if pr_number is not None:
+                comment_body = self._build_pr_comment(
+                    regression, failed_check_names, self._auto_fix_mode
+                )
+                self._post_pr_comment(pr_number, comment_body)
+            else:
+                logger.info(
+                    "RegressionWebhookHandler: no PR associated with check_suite for %s; "
+                    "skipping PR comment",
+                    self._repo_slug,
+                )
+
+            # Auto-fix if enabled and SafetyGuard allows.
+            if self._auto_fix_mode and self._fixer is not None:
+                guard = SafetyGuard()
+                allowed, reason = guard.should_attempt_fix(regression, self._db)
+                if allowed:
+                    run_id = self._fixer.spawn_fix(regression, self._db, None)
+                    if run_id:
+                        logger.info(
+                            "RegressionWebhookHandler: auto-fix spawned run %s for "
+                            "regression %s",
+                            run_id,
+                            regression.id,
+                        )
+                    else:
+                        logger.warning(
+                            "RegressionWebhookHandler: auto-fix spawn failed for "
+                            "regression %s",
+                            regression.id,
+                        )
+                else:
+                    logger.info(
+                        "RegressionWebhookHandler: auto-fix blocked for regression %s: %s",
+                        regression.id,
+                        reason,
+                    )
+
             return regression
 
         except Exception:
@@ -502,6 +553,212 @@ class RegressionWebhookHandler:
             if value:
                 parts.append(value)
         return "\n".join(parts)
+
+    @staticmethod
+    def _extract_failed_check_names_from_inline(event_payload: dict) -> List[str]:
+        """Extract names of failed check runs from the inline payload.
+
+        Looks inside ``check_suite.check_runs`` for runs with a ``conclusion``
+        of ``"failure"`` or ``"timed_out"`` and returns their ``name`` values.
+
+        Args:
+            event_payload: The raw webhook event dict.
+
+        Returns:
+            List of failed check run name strings (may be empty).
+        """
+        check_suite = event_payload.get("check_suite", {})
+        check_runs = check_suite.get("check_runs") or []
+        failed_names: List[str] = []
+        for run in check_runs:
+            conclusion = run.get("conclusion") or ""
+            if conclusion in ("failure", "timed_out"):
+                name = run.get("name") or ""
+                if name:
+                    failed_names.append(name)
+        return failed_names
+
+    @staticmethod
+    def _extract_pr_number(event_payload: dict) -> Optional[int]:
+        """Extract the PR number associated with a check_suite payload.
+
+        Looks in ``check_suite.pull_requests`` (a list) and returns the
+        ``number`` of the first entry, or ``None`` if absent.
+
+        Args:
+            event_payload: The raw webhook event dict.
+
+        Returns:
+            Integer PR number, or ``None`` if no PR is associated.
+        """
+        check_suite = event_payload.get("check_suite", {})
+        pull_requests = check_suite.get("pull_requests") or []
+        if pull_requests:
+            first_pr = pull_requests[0]
+            pr_number = first_pr.get("number")
+            if pr_number is not None:
+                return int(pr_number)
+        return None
+
+    def _fetch_check_run_details(self, check_suite_id: int) -> List[dict]:
+        """Fetch check run details from the GitHub API for a check suite.
+
+        Uses ``gh api repos/{slug}/check-suites/{id}/check-runs`` to retrieve
+        the full list of check runs.  Soft-fails on any subprocess error.
+
+        Args:
+            check_suite_id: Numeric ID of the check suite.
+
+        Returns:
+            List of check run dicts from the API, or empty list on error.
+        """
+        endpoint = f"repos/{self._repo_slug}/check-suites/{check_suite_id}/check-runs"
+        cmd = ["gh", "api", endpoint]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "RegressionWebhookHandler: gh api check-runs failed (rc=%d): %s",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+                return []
+            data = json.loads(result.stdout)
+            return data.get("check_runs") or []
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning(
+                "RegressionWebhookHandler: could not fetch check run details: %s",
+                exc,
+            )
+            return []
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.warning(
+                "RegressionWebhookHandler: could not parse check run details: %s",
+                exc,
+            )
+            return []
+
+    def _fetch_and_extract_failed_check_names(self, event_payload: dict) -> List[str]:
+        """Get failed check run names: inline payload first, API fallback.
+
+        First tries :meth:`_extract_failed_check_names_from_inline`.  If the
+        inline result is empty and a check_suite ID is present in the payload,
+        fetches from the GitHub API via :meth:`_fetch_check_run_details` and
+        filters for failed runs.
+
+        Args:
+            event_payload: The raw webhook event dict.
+
+        Returns:
+            List of failed check run name strings.
+        """
+        inline_names = self._extract_failed_check_names_from_inline(event_payload)
+        if inline_names:
+            return inline_names
+
+        check_suite = event_payload.get("check_suite", {})
+        check_suite_id = check_suite.get("id")
+        if check_suite_id is None:
+            return []
+
+        api_runs = self._fetch_check_run_details(check_suite_id)
+        failed_names: List[str] = []
+        for run in api_runs:
+            conclusion = run.get("conclusion") or ""
+            if conclusion in ("failure", "timed_out"):
+                name = run.get("name") or ""
+                if name:
+                    failed_names.append(name)
+        return failed_names
+
+    @staticmethod
+    def _build_pr_comment(
+        regression: "Regression",
+        failed_check_names: List[str],
+        auto_fix_mode: bool,
+    ) -> str:
+        """Build a structured markdown PR comment for a detected regression.
+
+        Args:
+            regression:         The :class:`Regression` record.
+            failed_check_names: List of failed CI check run names.
+            auto_fix_mode:      Whether automated fix was attempted.
+
+        Returns:
+            Markdown string suitable for posting as a PR comment.
+        """
+        checks_section = (
+            "\n".join(f"- `{name}`" for name in failed_check_names)
+            if failed_check_names
+            else "_No check run details available_"
+        )
+        files_section = (
+            "\n".join(f"- `{f}`" for f in regression.affected_files)
+            if regression.affected_files
+            else "_No affected files identified_"
+        )
+        auto_fix_line = (
+            "✅ **Auto-fix is enabled** — a fix pipeline run has been spawned."
+            if auto_fix_mode
+            else "ℹ️ **Auto-fix is disabled** — manual review required."
+        )
+        return (
+            f"## 🔴 Regression Detected\n\n"
+            f"**Regression ID:** `{regression.id}`\n"
+            f"**Culprit commit:** `{regression.commit_sha}`\n"
+            f"**CI run:** {regression.ci_run_url}\n\n"
+            f"### Failed Checks\n\n"
+            f"{checks_section}\n\n"
+            f"### Affected Files\n\n"
+            f"{files_section}\n\n"
+            f"### Auto-Fix Status\n\n"
+            f"{auto_fix_line}\n\n"
+            f"_Posted automatically by the orchestration engine._"
+        )
+
+    def _post_pr_comment(self, pr_number: int, body: str) -> None:
+        """Post a comment on a GitHub PR via ``gh pr comment``.
+
+        Soft-fails on any subprocess error — logs a warning but never raises.
+
+        Args:
+            pr_number: The PR number to comment on.
+            body:      The markdown comment body.
+        """
+        cmd = [
+            "gh", "pr", "comment", str(pr_number),
+            "--repo", self._repo_slug,
+            "--body", body,
+        ]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "RegressionWebhookHandler: gh pr comment failed (rc=%d): %s",
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+            else:
+                logger.info(
+                    "RegressionWebhookHandler: posted PR comment on #%d for repo %s",
+                    pr_number,
+                    self._repo_slug,
+                )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            logger.warning(
+                "RegressionWebhookHandler: could not post PR comment: %s",
+                exc,
+            )
 
     def _open_github_issue(self, regression: "Regression") -> Optional[str]:
         """Open a GitHub issue for a detected regression via ``gh issue create``.
