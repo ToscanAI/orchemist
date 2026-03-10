@@ -1,0 +1,31 @@
+# e2e-smoke-scenario.yaml — Minimal scenario fixture for E2E integration tests.
+#
+# Referenced by TestDaemonIntegrationScenarios in tests/test_daemon.py.
+# Also used by smoke-with-scenario.yaml (via 'smoke-scenario.yaml' alias).
+#
+# Single assertion criterion that evaluates any non-empty output.
+# Designed for use with the dry-run executor in integration tests.
+
+id: e2e-smoke-scenario
+version: "1.0.0"
+name: "E2E Smoke Scenario (Fixture)"
+description: >
+  Minimal scenario for integration smoke tests.
+  The single assertion always passes on any non-empty output from the
+  DryRunExecutor so integration tests can complete without LLM calls.
+
+pipeline: tests/fixtures/smoke-with-scenario.yaml
+
+input:
+  topic: "AI orchestration testing"
+
+acceptance:
+  - id: output_non_empty
+    type: assertion
+    check: "len(str(output)) > 0"
+    weight: 1
+    description: "Hard gate: pipeline output must be non-empty."
+
+scoring:
+  method: weighted_average
+  pass_threshold: 0.5

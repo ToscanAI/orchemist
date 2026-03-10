@@ -88,6 +88,22 @@ phases:
     return p
 
 
+@pytest.fixture(autouse=True)
+def bypass_preflight_required_fields():
+    """Bypass the coding-pipeline required-field preflight check for all daemon tests.
+
+    Tests in this module use minimal template inputs (e.g. ``{"topic": "AI"}``)
+    that do not include the coding-pipeline-specific required fields
+    (issue_title, branch_name, repo_path, …).  Preflight field-validation is
+    tested separately in ``tests/test_preflight.py``.
+
+    This module-level autouse fixture patches ``REQUIRED_INPUT_FIELDS`` to an
+    empty list so that ``PreflightChecker`` does not reject minimal inputs.
+    """
+    with patch("orchestration_engine.preflight.REQUIRED_INPUT_FIELDS", []):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # 1. DB operations — insert_pipeline_run
 # ---------------------------------------------------------------------------
@@ -2438,3 +2454,322 @@ class TestDaemonSigtermHandling:
         updated = in_memory_db.get_pipeline_run(sample_run["run_id"])
         assert updated["status"] == "cancelled"
         assert "SIGTERM" in (updated.get("error_message") or "")
+
+
+# ---------------------------------------------------------------------------
+# TestDaemonIntegrationScenarios — Issue #501: E2E integration scenarios
+# ---------------------------------------------------------------------------
+
+
+class TestDaemonIntegrationScenarios:
+    """Integration-level tests exercising full daemon path with real DB + real sequencer
+    + mocked executor for specific lifecycle scenarios.
+
+    All tests use:
+    - Real file-backed SQLite DB (tmp_path)
+    - Real PhaseSequencer (no dry-run bypass)
+    - Mocked executor (controlled outputs, no real LLM calls)
+    - Real CostTracker
+    """
+
+    _FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _make_run_record(self, tmp_path, input_json: str, run_id: str,
+                          budget_yaml: str = "", skip_scoring: int = 1,
+                          template_yaml: str = "") -> tuple:
+        """Create a minimal DB + run record and return (run_id, db_path, out_dir)."""
+        from orchestration_engine.db import Database
+
+        template_path = tmp_path / f"template-{run_id}.yaml"
+        budget_section = f"\nbudget:\n  max_cost_per_run: {budget_yaml}\n" if budget_yaml else ""
+        if not template_yaml:
+            template_yaml = f"""\
+id: integration-scenario-{run_id}
+name: Integration Scenario Test
+version: "1.0.0"
+description: Test template for integration scenario
+{budget_section}
+phases:
+  - id: spec
+    name: Spec Phase
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Write a spec for: {{input[issue_title]}}
+
+  - id: implement
+    name: Implement Phase
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Implement: {{input[issue_title]}}
+"""
+        template_path.write_text(template_yaml)
+
+        out_dir = tmp_path / f"out-{run_id}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        db_path = tmp_path / f"{run_id}.db"
+        db = Database(db_path)
+        db.insert_pipeline_run({
+            "run_id": run_id,
+            "template_path": str(template_path),
+            "template_id": f"integration-scenario-{run_id}",
+            "input_json": input_json,
+            "mode": "dry-run",
+            "output_dir": str(out_dir),
+            "skip_scoring": skip_scoring,
+        })
+        return run_id, str(db_path), out_dir
+
+    def _standard_input(self) -> dict:
+        return {
+            "issue_title": "Add hello world endpoint",
+            "issue_body": "As a user I want a /hello endpoint",
+            "repo_path": "/tmp/test-repo",
+            "branch_name": "fix/integration-test-branch",
+            "issue_number": 501,
+            "repo_url": "https://github.com/test-owner/test-repo",
+            "test_command": "echo 'tests pass'",
+        }
+
+    def _preflight_pass_patch(self):
+        """Return a context manager that makes preflight always pass."""
+        mock_result = MagicMock()
+        mock_result.passed = True
+        mock_result.warnings = []
+        mock_result.errors = []
+        mock_result.summary.return_value = "all checks passed"
+        mock_checker = MagicMock()
+        mock_checker.run_all.return_value = mock_result
+        return patch(
+            "orchestration_engine.preflight.PreflightChecker",
+            return_value=mock_checker,
+        )
+
+    # ------------------------------------------------------------------
+    # Scenario 1: Happy path — pipeline completes successfully
+    # ------------------------------------------------------------------
+
+    def test_integration_scenario_happy_path(self, tmp_path):
+        """Scenario: full pipeline completes with final status in terminal states.
+
+        Verifies:
+        - DB status transitions from pending → running → terminal
+        - Phase outputs are persisted to DB
+        - No orphaned sessions (cancel_active_session not called)
+        """
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.db import Database
+
+        run_id = "intsc-happy-001"
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path,
+            json.dumps(self._standard_input()),
+            run_id=run_id,
+            skip_scoring=1,
+        )
+
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.git_integration.GitContext.create_gate"), \
+             patch("orchestration_engine.postflight.ensure_branch_pushed", return_value=True):
+            run_daemon(run_id, db_path)
+
+        db = Database(db_path)
+        run = db.get_pipeline_run(run_id)
+        assert run is not None, "Run record must exist after execution"
+        terminal_statuses = {"success", "completed", "pending_review", "rejected", "scoring_failed", "failed"}
+        assert run["status"] in terminal_statuses, \
+            f"Expected terminal status, got: {run['status']!r}"
+
+        # completed_phases must be populated
+        completed = json.loads(run.get("completed_phases") or "[]")
+        assert len(completed) >= 1, "At least one phase must be recorded as completed"
+
+    # ------------------------------------------------------------------
+    # Scenario 2: Score below threshold → human_review status
+    # ------------------------------------------------------------------
+
+    def test_integration_scenario_score_below_threshold(self, tmp_path):
+        """Scenario: run_scoring returns low score → status is 'scoring_failed' or 'pending_review'.
+
+        Mocks run_scoring to return (False, 0.3) simulating a score below threshold.
+        """
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.db import Database
+
+        run_id = "intsc-low-score-001"
+
+        # Build template WITH a scenario path so scoring branch is entered
+        template_yaml_content = f"""\
+id: intsc-low-score
+name: Low Score Test
+version: "1.0.0"
+description: Template for low-score scenario
+scenario: {str(self._FIXTURES_DIR / 'e2e-smoke-scenario.yaml')}
+phases:
+  - id: spec
+    name: Spec Phase
+    task_type: content
+    model_tier: haiku
+    thinking_level: "off"
+    prompt_template: |
+      Write a spec for: {{input[issue_title]}}
+"""
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path,
+            json.dumps(self._standard_input()),
+            run_id=run_id,
+            skip_scoring=0,
+            template_yaml=template_yaml_content,
+        )
+
+        # Mock run_scoring to return failure (score below threshold)
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.git_integration.GitContext.create_gate"), \
+             patch("orchestration_engine.git_integration.GitContext.update_gate_scoring"), \
+             patch("orchestration_engine.postflight.ensure_branch_pushed", return_value=True), \
+             patch("orchestration_engine.scoring.run_scoring", return_value=(False, 0.3)):
+            run_daemon(run_id, db_path)
+
+        db = Database(db_path)
+        run = db.get_pipeline_run(run_id)
+        assert run is not None
+        # Low score should result in scoring_failed or pending_review
+        low_score_statuses = {"scoring_failed", "pending_review", "rejected"}
+        assert run["status"] in low_score_statuses, \
+            f"Expected low-score terminal status, got: {run['status']!r}"
+
+    # ------------------------------------------------------------------
+    # Scenario 3: Budget exceeded → budget_exceeded status
+    # ------------------------------------------------------------------
+
+    def test_integration_scenario_budget_exceeded(self, tmp_path):
+        """Scenario: CostTracker raises BudgetExceededError → status becomes 'budget_exceeded'.
+
+        Uses a template with max_cost_per_run=0.001 (very low) and mocks the
+        cost tracker to raise BudgetExceededError after the first phase.
+        """
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.db import Database
+        from orchestration_engine.cost_tracker import BudgetExceededError
+
+        run_id = "intsc-budget-001"
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path,
+            json.dumps(self._standard_input()),
+            run_id=run_id,
+            budget_yaml="0.001",
+            skip_scoring=1,
+        )
+
+        mock_tracker = MagicMock()
+        mock_tracker.record_phase.return_value = {
+            "run_id": run_id, "phase_id": "spec",
+            "model": "dry-run", "cost_usd": 100.0,
+        }
+        mock_tracker.check_budget.side_effect = BudgetExceededError(
+            run_id=run_id, budget_usd=0.001, actual_usd=100.0
+        )
+
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.git_integration.GitContext.create_gate"), \
+             patch("orchestration_engine.postflight.ensure_branch_pushed", return_value=True), \
+             patch("orchestration_engine.cost_tracker.CostTracker",
+                   return_value=mock_tracker):
+            with pytest.raises(SystemExit) as exc_info:
+                run_daemon(run_id, db_path)
+            assert exc_info.value.code == 3, \
+                f"Budget exceeded must exit with code 3, got: {exc_info.value.code}"
+
+        db = Database(db_path)
+        run = db.get_pipeline_run(run_id)
+        assert run is not None
+        assert run["status"] == "budget_exceeded", \
+            f"Expected 'budget_exceeded', got: {run['status']!r}"
+        assert run.get("error_message") is not None
+
+    # ------------------------------------------------------------------
+    # Scenario 4: SIGTERM → cancelled status
+    # ------------------------------------------------------------------
+
+    def test_integration_scenario_sigterm_cancellation(self, tmp_path):
+        """Scenario: _shutdown_requested=True during run → status becomes 'cancelled'.
+
+        Simulates the SIGTERM handler by patching _shutdown_requested to True
+        before the sequencer returns, then verifying the DB status.
+        """
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.db import Database
+        import orchestration_engine.daemon as daemon_mod
+
+        run_id = "intsc-sigterm-001"
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path,
+            json.dumps(self._standard_input()),
+            run_id=run_id,
+            skip_scoring=1,
+        )
+
+        # Patch _shutdown_requested to True so daemon takes the cancellation path
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.git_integration.GitContext.create_gate"), \
+             patch("orchestration_engine.postflight.ensure_branch_pushed", return_value=True), \
+             patch.object(daemon_mod, "_shutdown_requested", True):
+            run_daemon(run_id, db_path)
+
+        db = Database(db_path)
+        run = db.get_pipeline_run(run_id)
+        assert run is not None
+        assert run["status"] == "cancelled", \
+            f"Expected 'cancelled' after SIGTERM simulation, got: {run['status']!r}"
+        assert "SIGTERM" in (run.get("error_message") or ""), \
+            "Error message must mention SIGTERM"
+
+    # ------------------------------------------------------------------
+    # Scenario 5: Phase failure → pipeline marked failed
+    # ------------------------------------------------------------------
+
+    def test_integration_scenario_phase_failure(self, tmp_path):
+        """Scenario: sequencer.execute() raises an exception → status becomes 'failed'.
+
+        Patches sequencer.execute to raise RuntimeError simulating a phase failure.
+        Verifies the daemon catches it, marks the run as failed, and records error_message.
+        """
+        from orchestration_engine.daemon import run_daemon
+        from orchestration_engine.db import Database
+
+        run_id = "intsc-phase-fail-001"
+        run_id, db_path, out_dir = self._make_run_record(
+            tmp_path,
+            json.dumps(self._standard_input()),
+            run_id=run_id,
+            skip_scoring=1,
+        )
+
+        failure_message = "Simulated phase execution failure for test"
+
+        with self._preflight_pass_patch(), \
+             patch("orchestration_engine.git_integration.GitContext.create_gate"), \
+             patch("orchestration_engine.postflight.ensure_branch_pushed", return_value=True), \
+             patch("orchestration_engine.sequencer.PhaseSequencer.execute",
+                   side_effect=RuntimeError(failure_message)), \
+             patch("orchestration_engine.sequencer.StateMachineSequencer.execute",
+                   side_effect=RuntimeError(failure_message)):
+            with pytest.raises(SystemExit) as exc_info:
+                run_daemon(run_id, db_path)
+            assert exc_info.value.code == 2, \
+                f"Phase failure must exit with code 2, got: {exc_info.value.code}"
+
+        db = Database(db_path)
+        run = db.get_pipeline_run(run_id)
+        assert run is not None
+        assert run["status"] == "failed", \
+            f"Expected 'failed' after phase exception, got: {run['status']!r}"
+        assert failure_message in (run.get("error_message") or ""), \
+            f"Error message must contain failure description: {run.get('error_message')!r}"

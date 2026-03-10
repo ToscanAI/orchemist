@@ -1,0 +1,27 @@
+# smoke-scenario.yaml — Minimal scenario for smoke test scoring validation.
+#
+# Referenced by smoke-with-scenario.yaml.
+# Single assertion criterion that always passes so dry-run scoring succeeds.
+
+id: smoke-scenario
+version: "1.0.0"
+name: "Smoke Test Scenario"
+description: >
+  Minimal scenario for integration smoke tests.
+  The single assertion always passes so dry-run scoring succeeds.
+
+pipeline: tests/fixtures/smoke-with-scenario.yaml
+
+input:
+  topic: "AI orchestration testing"
+
+acceptance:
+  - id: output_non_empty
+    type: assertion
+    check: "len(str(output)) > 0"
+    weight: 1
+    description: "Hard gate: output must be non-empty."
+
+scoring:
+  method: weighted_average
+  pass_threshold: 0.5
