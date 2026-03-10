@@ -21,7 +21,8 @@ from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
-from httpx import AsyncClient
+
+TestClient = pytest.importorskip("starlette.testclient").TestClient
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +309,6 @@ class TestGitHubAppConfig:
 # Group 6: web/api.py handle_github_issues — signature verification (opt-in)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
 class TestHandleGithubIssuesSignatureVerification:
     """Opt-in webhook signature check in handle_github_issues."""
 
@@ -328,29 +328,29 @@ class TestHandleGithubIssuesSignatureVerification:
         mac = hmac.new(secret.encode(), msg=body, digestmod=hashlib.sha256)
         return f"sha256={mac.hexdigest()}"
 
-    def _get_app(self, tmp_path):
+    def _get_client(self, tmp_path):
         from orchestration_engine.web.api import create_api_app
-        return create_api_app(db_path=str(tmp_path / "test.db"))
+        app = create_api_app(db_path=str(tmp_path / "test.db"))
+        return TestClient(app, raise_server_exceptions=False)
 
-    async def test_no_secret_configured_accepts_request(self, tmp_path):
+    def test_no_secret_configured_accepts_request(self, tmp_path):
         """When no webhook_secret configured, request passes with a warning."""
         from orchestration_engine.config import EngineConfig
 
         payload = self._build_payload()
         body = json.dumps(payload).encode()
-        fastapi_app = self._get_app(tmp_path)
         mock_config = EngineConfig(github_app=None)
 
-        with patch("orchestration_engine.web.api.get_global_config", return_value=mock_config):
-            async with AsyncClient(app=fastapi_app, base_url="http://test") as client:
-                resp = await client.post(
-                    "/api/v1/github/issues",
-                    content=body,
-                    headers={"X-GitHub-Event": "issues", "Content-Type": "application/json"},
-                )
-            assert resp.status_code != 401
+        with patch("orchestration_engine.config.get_global_config", return_value=mock_config):
+            client = self._get_client(tmp_path)
+            resp = client.post(
+                "/api/v1/github/issues",
+                content=body,
+                headers={"X-GitHub-Event": "issues", "Content-Type": "application/json"},
+            )
+        assert resp.status_code != 403
 
-    async def test_valid_signature_accepted(self, tmp_path):
+    def test_valid_signature_accepted(self, tmp_path):
         """When secret configured and signature valid → not 401."""
         from orchestration_engine.config import EngineConfig, GitHubAppConfig
 
@@ -358,57 +358,54 @@ class TestHandleGithubIssuesSignatureVerification:
         payload = self._build_payload()
         body = json.dumps(payload).encode()
         sig = self._sign(secret, body)
-        fastapi_app = self._get_app(tmp_path)
         mock_config = EngineConfig(github_app=GitHubAppConfig(webhook_secret=secret))
 
-        with patch("orchestration_engine.web.api.get_global_config", return_value=mock_config):
-            async with AsyncClient(app=fastapi_app, base_url="http://test") as client:
-                resp = await client.post(
-                    "/api/v1/github/issues",
-                    content=body,
-                    headers={
-                        "X-GitHub-Event": "issues",
-                        "Content-Type": "application/json",
-                        "X-Hub-Signature-256": sig,
-                    },
-                )
-            assert resp.status_code != 401
+        with patch("orchestration_engine.config.get_global_config", return_value=mock_config):
+            client = self._get_client(tmp_path)
+            resp = client.post(
+                "/api/v1/github/issues",
+                content=body,
+                headers={
+                    "X-GitHub-Event": "issues",
+                    "Content-Type": "application/json",
+                    "X-Hub-Signature-256": sig,
+                },
+            )
+        assert resp.status_code != 403
 
-    async def test_invalid_signature_rejected(self, tmp_path):
+    def test_invalid_signature_rejected(self, tmp_path):
         """When secret configured and signature invalid → 401."""
         from orchestration_engine.config import EngineConfig, GitHubAppConfig
 
         secret = "test-secret"
         payload = self._build_payload()
         body = json.dumps(payload).encode()
-        fastapi_app = self._get_app(tmp_path)
         mock_config = EngineConfig(github_app=GitHubAppConfig(webhook_secret=secret))
 
-        with patch("orchestration_engine.web.api.get_global_config", return_value=mock_config):
-            async with AsyncClient(app=fastapi_app, base_url="http://test") as client:
-                resp = await client.post(
-                    "/api/v1/github/issues",
-                    content=body,
-                    headers={
-                        "X-GitHub-Event": "issues",
-                        "Content-Type": "application/json",
-                        "X-Hub-Signature-256": "sha256=invalidsignature",
-                    },
-                )
-            assert resp.status_code == 401
+        with patch("orchestration_engine.config.get_global_config", return_value=mock_config):
+            client = self._get_client(tmp_path)
+            resp = client.post(
+                "/api/v1/github/issues",
+                content=body,
+                headers={
+                    "X-GitHub-Event": "issues",
+                    "Content-Type": "application/json",
+                    "X-Hub-Signature-256": "sha256=invalidsignature",
+                },
+            )
+        assert resp.status_code == 403
 
-    async def test_missing_signature_rejected_when_secret_configured(self, tmp_path):
+    def test_missing_signature_rejected_when_secret_configured(self, tmp_path):
         """When secret configured but no sig header → 401."""
         from orchestration_engine.config import EngineConfig, GitHubAppConfig
 
-        fastapi_app = self._get_app(tmp_path)
         mock_config = EngineConfig(github_app=GitHubAppConfig(webhook_secret="sec"))
 
-        with patch("orchestration_engine.web.api.get_global_config", return_value=mock_config):
-            async with AsyncClient(app=fastapi_app, base_url="http://test") as client:
-                resp = await client.post(
-                    "/api/v1/github/issues",
-                    content=b'{"action":"opened"}',
-                    headers={"X-GitHub-Event": "issues", "Content-Type": "application/json"},
-                )
-            assert resp.status_code == 401
+        with patch("orchestration_engine.config.get_global_config", return_value=mock_config):
+            client = self._get_client(tmp_path)
+            resp = client.post(
+                "/api/v1/github/issues",
+                content=b'{"action":"opened"}',
+                headers={"X-GitHub-Event": "issues", "Content-Type": "application/json"},
+            )
+        assert resp.status_code == 403
