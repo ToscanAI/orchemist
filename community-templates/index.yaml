@@ -20,7 +20,7 @@ templates:
       Minimal two-phase example (Greet → Summarise). Perfect for smoke-testing
       orch run end-to-end.
     author: Orchestration Engine Team
-    repo_url: https://github.com/ToscanRivera/orchestration-engine/blob/main/examples/hello-pipeline.yaml
+    repo_url: https://github.com/ToscanAI/orchestration-engine/blob/main/examples/hello-pipeline.yaml
     version: "1.0.0"
     category: example
     tags:
@@ -28,14 +28,14 @@ templates:
       - hello-world
       - smoke-test
       - minimal
-    install_command: "orch templates install ToscanRivera/orchestration-engine --file examples/hello-pipeline.yaml"
+    install_command: "orch templates install ToscanAI/orchestration-engine --file examples/hello-pipeline.yaml"
 
   - name: content-pipeline-v2
     description: >
       7-phase content creation pipeline: research → outline → draft →
       parallel review (flow + adversarial) → revision → final polish.
     author: Toscan
-    repo_url: https://github.com/ToscanRivera/orchestration-engine/blob/main/examples/content-pipeline-v2.yaml
+    repo_url: https://github.com/ToscanAI/orchestration-engine/blob/main/examples/content-pipeline-v2.yaml
     version: "1.0.0"
     category: content
     tags:
@@ -45,14 +45,14 @@ templates:
       - review
       - article
       - long-form
-    install_command: "orch templates install ToscanRivera/orchestration-engine --file examples/content-pipeline-v2.yaml"
+    install_command: "orch templates install ToscanAI/orchestration-engine --file examples/content-pipeline-v2.yaml"
 
   - name: code-review-pipeline
     description: >
       Automated code review: parse diff → parallel complexity / style /
       security checks → unified review report synthesis.
     author: Orchestration Engine Team
-    repo_url: https://github.com/ToscanRivera/orchestration-engine/blob/main/examples/code-review-pipeline.yaml
+    repo_url: https://github.com/ToscanAI/orchestration-engine/blob/main/examples/code-review-pipeline.yaml
     version: "1.0.0"
     category: engineering
     tags:
@@ -61,14 +61,14 @@ templates:
       - security
       - quality
       - diff
-    install_command: "orch templates install ToscanRivera/orchestration-engine --file examples/code-review-pipeline.yaml"
+    install_command: "orch templates install ToscanAI/orchestration-engine --file examples/code-review-pipeline.yaml"
 
   - name: research-pipeline
     description: >
       Structured research pipeline: source discovery → extraction →
       cross-reference → narrative synthesis → fact-check → final report.
     author: Orchestration Engine Team
-    repo_url: https://github.com/ToscanRivera/orchestration-engine/blob/main/examples/research-pipeline.yaml
+    repo_url: https://github.com/ToscanAI/orchestration-engine/blob/main/examples/research-pipeline.yaml
     version: "1.0.0"
     category: research
     tags:
@@ -77,7 +77,7 @@ templates:
       - report
       - synthesis
       - sources
-    install_command: "orch templates install ToscanRivera/orchestration-engine --file examples/research-pipeline.yaml"
+    install_command: "orch templates install ToscanAI/orchestration-engine --file examples/research-pipeline.yaml"
 
   # ── Hypothetical community contributions ───────────────────────────────
 

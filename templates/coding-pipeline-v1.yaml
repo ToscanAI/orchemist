@@ -46,7 +46,7 @@ config_schema:
       description: "GitHub issue number — auto-injected into PR body as 'Closes #N'"
     repo_url:
       type: string
-      description: "GitHub repo URL (e.g. https://github.com/ToscanRivera/orchestration-engine)"
+      description: "GitHub repo URL (e.g. https://github.com/ToscanAI/orchestration-engine)"
 
 phases:
   # Phase 1: Spec Interpretation

@@ -49,14 +49,14 @@ GITHUB_CHECK_SUITE_COMPLETED_FAILURE = {
         "conclusion": "failure",
         "head_sha": "abc123def456abc123def456abc123def456abc1",
         "status": "completed",
-        "url": "https://api.github.com/repos/ToscanRivera/orchestration-engine/check-suites/12345678",
-        "check_runs_url": "https://api.github.com/repos/ToscanRivera/orchestration-engine/check-suites/12345678/check-runs",
+        "url": "https://api.github.com/repos/ToscanAI/orchestration-engine/check-suites/12345678",
+        "check_runs_url": "https://api.github.com/repos/ToscanAI/orchestration-engine/check-suites/12345678/check-runs",
     },
     "repository": {
-        "full_name": "ToscanRivera/orchestration-engine",
+        "full_name": "ToscanAI/orchestration-engine",
         "name": "orchestration-engine",
-        "owner": {"login": "ToscanRivera"},
-        "html_url": "https://github.com/ToscanRivera/orchestration-engine",
+        "owner": {"login": "ToscanAI"},
+        "html_url": "https://github.com/ToscanAI/orchestration-engine",
         "default_branch": "main",
     },
     "sender": {"login": "github-actions[bot]"},
@@ -69,10 +69,10 @@ GITHUB_CHECK_SUITE_COMPLETED_SUCCESS = {
         "conclusion": "success",
         "head_sha": "def456abc123def456abc123def456abc123def4",
         "status": "completed",
-        "url": "https://api.github.com/repos/ToscanRivera/orchestration-engine/check-suites/12345679",
+        "url": "https://api.github.com/repos/ToscanAI/orchestration-engine/check-suites/12345679",
     },
     "repository": {
-        "full_name": "ToscanRivera/orchestration-engine",
+        "full_name": "ToscanAI/orchestration-engine",
         "name": "orchestration-engine",
     },
     "sender": {"login": "github-actions[bot]"},
@@ -558,7 +558,7 @@ class TestRegisterWebhookScript:
         with patch.dict(os.environ, {"WEBHOOK_PUBLIC_URL": "", "REGRESSION_TRIGGER_ID": ""}):
             args = module.parse_args(["--url", "https://example.com/hook"])
 
-        assert args.repo == "ToscanRivera/orchestration-engine"
+        assert args.repo == "ToscanAI/orchestration-engine"
         assert args.url == "https://example.com/hook"
         assert args.dry_run is False
 

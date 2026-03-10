@@ -2,11 +2,11 @@
 
 > **Last updated:** 2026-03-05
 > **Status:** Active engineering roadmap
-> **Maintainer:** @ToscanRivera
+> **Maintainer:** @ToscanAI
 
 > **Open Source Target:** After Sprint 4 (Dark Factory) — ~May 2026
 > **License:** Apache 2.0
-> **V2 (Go rewrite):** In parallel — `ToscanRivera/orchemist-v2`
+> **V2 (Go rewrite):** In parallel — `ToscanAI/orchemist-v2`
 
 ---
 

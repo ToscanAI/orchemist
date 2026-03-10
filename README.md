@@ -2,7 +2,7 @@
 
 ### Like Docker Compose for AI pipelines — define phases in YAML, the engine handles the rest.
 
-[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](https://github.com/ToscanRivera/orchestration-engine/actions)
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](https://github.com/ToscanAI/orchestration-engine/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![Pi Tested](https://img.shields.io/badge/Raspberry%20Pi-tested-red)](https://www.raspberrypi.com/)
@@ -204,7 +204,7 @@ pip install orchestration-engine
 ### From Source
 
 ```bash
-git clone https://github.com/ToscanRivera/orchestration-engine.git
+git clone https://github.com/ToscanAI/orchestration-engine.git
 cd orchestration-engine
 python3 -m venv .venv && source .venv/bin/activate
 pip install .
@@ -235,7 +235,7 @@ The engine works **standalone** (direct API) or **with OpenClaw** (sub-agent spa
 Pull requests are welcome! Here's how to get started:
 
 ```bash
-git clone https://github.com/ToscanRivera/orchestration-engine.git
+git clone https://github.com/ToscanAI/orchestration-engine.git
 cd orchestration-engine
 pip install -e ".[test]"
 pytest
@@ -264,7 +264,7 @@ Please read CONTRIBUTING.md for code style and PR guidelines.
 
 ## License
 
-MIT © [Conny Lazo](https://connylazo.com) & [Toscan](https://github.com/ToscanRivera)
+MIT © [Conny Lazo](https://connylazo.com) & [Toscan](https://github.com/ToscanAI)
 
 See [LICENSE](LICENSE) for the full text.
 

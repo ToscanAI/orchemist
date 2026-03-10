@@ -3031,7 +3031,7 @@ def templates_uninstall(name: str, force: bool) -> None:
 # ---------------------------------------------------------------------------
 
 DEFAULT_TEMPLATE_INDEX_URL = (
-    "https://raw.githubusercontent.com/ToscanRivera/orchestration-engine/main/"
+    "https://raw.githubusercontent.com/ToscanAI/orchestration-engine/main/"
     "community-templates/index.yaml"
 )
 _TEMPLATE_INDEX_CACHE = Path.home() / ".orch" / "cache" / "template-index.yaml"

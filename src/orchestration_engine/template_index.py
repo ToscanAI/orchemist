@@ -26,7 +26,7 @@ import yaml
 
 # Default URL for the community template index
 DEFAULT_INDEX_URL = (
-    "https://raw.githubusercontent.com/ToscanRivera/orchestration-engine/main/"
+    "https://raw.githubusercontent.com/ToscanAI/orchestration-engine/main/"
     "community-templates/index.yaml"
 )
 

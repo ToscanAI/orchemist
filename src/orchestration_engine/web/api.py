@@ -729,7 +729,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         if trigger_registered:
             try:
                 gh_result = subprocess.run(
-                    ["gh", "api", "repos/ToscanRivera/orchestration-engine/hooks"],
+                    ["gh", "api", "repos/ToscanAI/orchestration-engine/hooks"],
                     capture_output=True,
                     text=True,
                     timeout=10,

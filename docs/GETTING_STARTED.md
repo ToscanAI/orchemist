@@ -54,7 +54,7 @@ pip install orchestration-engine
 
 **Option B: Clone and install locally** *(recommended while the project is in active development)*
 ```bash
-git clone https://github.com/ToscanRivera/orchestration-engine.git
+git clone https://github.com/ToscanAI/orchestration-engine.git
 cd orchestration-engine
 pip install -e .
 ```
@@ -274,7 +274,7 @@ python3 -m venv ~/orch-env
 source ~/orch-env/bin/activate
 
 # Install the engine
-git clone https://github.com/ToscanRivera/orchestration-engine.git
+git clone https://github.com/ToscanAI/orchestration-engine.git
 cd orchestration-engine
 pip install -e .
 ```

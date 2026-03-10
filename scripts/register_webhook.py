@@ -5,7 +5,7 @@ in-engine regression trigger.
 Usage::
 
     python scripts/register_webhook.py \\
-      --repo ToscanRivera/orchestration-engine \\
+      --repo ToscanAI/orchestration-engine \\
       --url https://<your-public-host>/api/v1/webhooks/regression-ci-trigger \\
       [--trigger-id regression-ci-trigger] \\
       [--template-id regression-pipeline-v1]
@@ -57,7 +57,7 @@ logger = logging.getLogger("register_webhook")
 # Defaults
 # ---------------------------------------------------------------------------
 
-_DEFAULT_REPO = "ToscanRivera/orchestration-engine"
+_DEFAULT_REPO = "ToscanAI/orchestration-engine"
 _DEFAULT_TRIGGER_ID = "regression-ci-trigger"
 _DEFAULT_TEMPLATE_ID = "regression-pipeline-v1"
 _SECRET_FILENAME = "webhook-secret"

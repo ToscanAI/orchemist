@@ -34,7 +34,7 @@ config_schema:
       description: "Known competitors or similar tools to analyze"
     repo_org:
       type: string
-      default: "ToscanRivera"
+      default: "ToscanAI"
       description: "GitHub org/user for repo creation"
     repo_visibility:
       type: string
