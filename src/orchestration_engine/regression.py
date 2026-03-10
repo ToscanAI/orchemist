@@ -391,7 +391,7 @@ class RegressionWebhookHandler:
                     )
                 return None
 
-            if conclusion != "failure":
+            if conclusion not in ("failure", "timed_out"):
                 # cancelled, neutral, skipped, stale, etc. — ignore.
                 logger.debug(
                     "RegressionWebhookHandler: ignoring conclusion=%r for %s",
@@ -580,7 +580,7 @@ class RegressionWebhookHandler:
         check_runs = check_suite.get("check_runs") or []
         failed_names: List[str] = []
         for run in check_runs:
-            if isinstance(run, dict) and run.get("conclusion") == "failure":
+            if isinstance(run, dict) and run.get("conclusion") in ("failure", "timed_out"):
                 name = run.get("name")
                 if name:
                     failed_names.append(name)
