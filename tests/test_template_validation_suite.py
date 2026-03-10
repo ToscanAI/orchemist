@@ -375,7 +375,7 @@ class TestDryRun:
         )
 
     @pytest.mark.parametrize("template_path", ALL_TEMPLATES, ids=lambda p: Path(p).name)
-    def test_dry_run_exits_0_with_empty_input(self, template_path, tmp_path):
+    def test_dry_run_exits_0_with_minimal_valid_input(self, template_path, tmp_path):
         """AC-04 edge: dry-run with minimal valid input exits 0 for every template.
 
         Templates with required config_schema fields cannot accept a bare {}.

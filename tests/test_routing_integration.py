@@ -71,15 +71,13 @@ def _call_routing(
         phase_outputs=phase_outputs or {},
         final_status=final_status,
     )
-    # Guard for both old (str) and new (tuple) return types.
+    # Production code always returns tuple[str, Optional[Dict]].
     # When routing defers an auto_merge (merge_intent is not None), dispatch it
     # here so tests that assert on auto_merge_pr being called still work.
-    if isinstance(result, tuple):
-        status, merge_intent = result
-        if merge_intent is not None:
-            _dispatch_auto_merge(**merge_intent)
-        return status
-    return result
+    status, merge_intent = result
+    if merge_intent is not None:
+        _dispatch_auto_merge(**merge_intent)
+    return status
 
 
 # ---------------------------------------------------------------------------

@@ -361,6 +361,9 @@ class TestDaemonTrustUpdate:
                 task_type="bugfix",
             )
 
+        # TODO(#518): TrustCalibrator wiring is not yet implemented.
+        # Once issue #518 is resolved, replace this behavioural assertion with
+        # mock_update.assert_called_once() to verify the calibrator is called.
         # Routing completes and returns a valid status (trust calibrator wiring is pending)
         status = result[0] if isinstance(result, tuple) else result
         assert status in ("rejected", "pending_review", "success", "scoring_failed"), (
@@ -464,13 +467,14 @@ class TestDaemonTrustUpdate:
                 task_type="bugfix",
             )
 
-        # TrustCalibrator wiring is not yet implemented — the calibrator is not
+        # TODO(#518): TrustCalibrator wiring is not yet implemented — the calibrator is not
         # called from _compute_and_dispatch_routing even when repo+template_id
-        # are provided.  This test documents the current state.
-        # TODO: re-enable outcome assertion once wiring is added.
+        # are provided.  This test documents the current (unimplemented) state.
+        # Once issue #518 is resolved, replace with:
+        #   assert captured_outcomes == ["run_success"]
         assert len(captured_outcomes) == 0, (
             "TrustCalibrator.update_after_run was unexpectedly called. "
-            "Update this test if wiring has been added."
+            "Update this test (and issue #518) if wiring has been added."
         )
 
 
