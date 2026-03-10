@@ -2398,6 +2398,7 @@ class Database:
                 SELECT pr.run_id, chain.depth + 1
                 FROM pipeline_runs pr
                 JOIN chain ON pr.parent_run_id = chain.run_id
+                WHERE chain.depth < 50
             )
             SELECT pr.*
             FROM pipeline_runs pr
@@ -3695,18 +3696,6 @@ class Database:
             )
             row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
-
-    def _migration_019_add_parent_run_id_index(self, conn: sqlite3.Connection) -> None:
-        """Add index on pipeline_runs(parent_run_id) for recursive CTE performance (Issue #508).
-
-        The get_full_chain recursive CTE joins on parent_run_id at each level.
-        Without this index each join requires a full-table scan.
-        Idempotent: uses CREATE INDEX IF NOT EXISTS.
-        """
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_pipeline_runs_parent_run_id
-            ON pipeline_runs(parent_run_id)
-        """)
 
     def close(self) -> None:
         """Close database connections."""
