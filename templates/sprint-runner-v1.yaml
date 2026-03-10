@@ -1,0 +1,290 @@
+id: sprint-runner-v1
+name: "Sprint Runner v1 (A)"
+description: "Meta-template that runs a full coding pipeline for each issue in a sprint. Ping-pong design: chains to sprint-runner-step-v1 on success, which chains back. Terminates when the issues list is exhausted."
+author: "Toscan"
+version: "1.0.0"
+scenario: scenarios/sprint-runner-v1-smoke.yaml
+category: "code"
+tags: [code, sprint, meta-template, chaining]
+use_cases:
+  - "Run a coding pipeline for each issue in a sprint backlog"
+  - "Batch issue resolution with automated spec → implement → review → test"
+
+config_schema:
+  type: object
+  required: [sprint_name, repo_path, repo_url, issues_json]
+  properties:
+    sprint_name:
+      type: string
+      description: "Human-readable sprint name (e.g. 'Sprint 12')"
+    repo_path:
+      type: string
+      description: "Absolute path to the repository on disk"
+    repo_url:
+      type: string
+      description: "GitHub repo URL (e.g. https://github.com/owner/repo)"
+    issues_json:
+      type: string
+      description: "JSON-encoded list of GitHub issue numbers to process (e.g. '[501, 356, 480]')"
+    parent_output_dir:
+      type: string
+      default: ""
+      description: "Output dir of the preceding sprint-runner step (for reading remaining issues). Empty on first run."
+    test_command:
+      type: string
+      default: "python3 -m pytest tests/ -x -q"
+      description: "Command to run tests"
+    language:
+      type: string
+      default: "python"
+    style_guide:
+      type: string
+      default: "Follow existing code style. Add docstrings. Type hints where practical."
+
+phases:
+  # Phase 0: Prepare — extract current issue, fetch details, write prepare.json
+  - id: prepare
+    name: "Prepare: Extract Current Issue"
+    description: "Pop the first issue from the list, fetch its details via gh CLI, write prepare.json. Exits non-zero if the list is empty — this terminates the chain."
+    task_type: command
+    command: >-
+      python3 -c "
+      import json, sys, subprocess, os
+
+      issues_json = '''{config[issues_json]}'''
+      issues_json = issues_json.strip()
+      try:
+          issues = json.loads(issues_json)
+      except Exception as e:
+          print(f'Failed to parse issues_json: {{e}}', file=sys.stderr)
+          sys.exit(1)
+
+      if not issues:
+          print('No more issues to process — sprint complete.', file=sys.stderr)
+          sys.exit(1)
+
+      current = issues[0]
+      remaining = issues[1:]
+
+      result = subprocess.run(
+          ['gh', 'issue', 'view', str(current), '--repo', '{config[repo_url]}', '--json', 'title,body,number'],
+          capture_output=True, text=True
+      )
+      if result.returncode != 0:
+          print(f'Error fetching issue {{current}}: {{result.stderr}}', file=sys.stderr)
+          sys.exit(1)
+
+      issue_data = json.loads(result.stdout)
+      prepare = {{
+          'current_issue': issue_data,
+          'remaining_issues': remaining,
+          'sprint_name': '{config[sprint_name]}',
+          'repo_path': '{config[repo_path]}',
+          'repo_url': '{config[repo_url]}',
+      }}
+
+      output_dir = '{output_dir}'
+      os.makedirs(output_dir, exist_ok=True)
+      with open(os.path.join(output_dir, 'prepare.json'), 'w') as f:
+          json.dump(prepare, f, indent=2)
+
+      print(json.dumps(prepare))
+      "
+    allowed_commands: ["python3"]
+    transitions:
+      success: spec
+
+  # Phase 1: Spec Interpretation
+  - id: spec
+    name: "Spec Interpretation"
+    description: "Understand the issue and produce a clear implementation plan"
+    model_tier: opus
+    thinking_level: medium
+    transitions:
+      success: implement
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the SPEC phase (1/4) of an automated sprint coding pipeline. Your output feeds the implement phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
+
+      You are a senior developer interpreting a GitHub issue into an implementation spec.
+
+      ## Sprint
+      **Name:** {config[sprint_name]}
+
+      ## Current Issue
+      Read the current issue details from: {output_dir}/prepare.json
+      (Fields: current_issue.number, current_issue.title, current_issue.body)
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Language:** {config[language]}
+
+      ## Task
+      1. Read {output_dir}/prepare.json to get the current issue details
+      2. Produce a clear implementation spec:
+
+         **Problem Statement** — What exactly needs to change and why
+         **Files to Modify** — List each file with what changes are needed
+         **Files to Create** — Any new files with their purpose
+         **Implementation Steps** — Ordered steps, specific enough to code from
+         **Test Plan** — What tests to add/modify, edge cases to cover
+         **Risk Assessment** — What could break, backward compatibility concerns
+
+      Write your spec to {output_dir}/spec.md
+
+  # Phase 2: Implementation
+  - id: implement
+    name: "Implementation"
+    description: "Write the code changes based on the spec"
+    model_tier: sonnet
+    thinking_level: high
+    transitions:
+      success: review
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the IMPLEMENT phase (2/4) of an automated sprint coding pipeline. Your output feeds the review phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
+
+      You are a developer implementing changes based on a spec.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the spec at: {output_dir}/spec.md
+      Read the issue details at: {output_dir}/prepare.json
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Style:** {config[style_guide]}
+
+      ## Task
+      1. Read the spec and prepare.json carefully to get branch_name (use issue number: feat/issue-<number>)
+      2. Switch to the feature branch:
+         - Try `git checkout feat/issue-<number>` (if branch exists)
+         - If it doesn't exist: `git checkout -b feat/issue-<number>`
+         - Do NOT write code on main.
+      3. Implement ALL changes described in the spec
+      4. Write clean, documented code following the style guide
+      5. Commit with message referencing the issue: `feat(#<issue_number>): description`
+      6. Run the test command to verify: `{config[test_command]}`
+      7. Push your branch: `git push --set-upstream origin feat/issue-<number>`
+
+      ## Output
+      Write a summary to {output_dir}/implement.md including:
+      - Files changed with brief description
+      - Any deviations from the spec and why
+      - Test results (pass/fail count)
+      - Commit hash
+
+  # Phase 3: Code Review
+  - id: review
+    name: "Opus Code Review"
+    description: "Senior code review by Opus — quality gate with APPROVE/REQUEST_CHANGES verdict"
+    model_tier: opus
+    thinking_level: high
+    max_iterations: 3
+    supervisor: true
+    supervisor_model: opus
+    supervisor_rubric: |
+      Evaluate the code review quality:
+      - Did it identify real issues vs nitpicks?
+      - Are security concerns addressed?
+      - Is backward compatibility verified?
+      - Are the suggested fixes actionable?
+    transitions:
+      approve: test
+      request_changes: fix
+      abort: fix
+      success: test
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the REVIEW phase (3/4) of an automated sprint coding pipeline. Your verdict determines whether the code proceeds to testing or goes back for fixes. Do not ask questions, request clarification, or send messages to external channels. [/PIPELINE CONTEXT]
+
+      You are a senior code reviewer (Opus-tier).
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the implementation summary at: {output_dir}/implement.md
+      Read the spec at: {output_dir}/spec.md
+      Read the issue details at: {output_dir}/prepare.json
+
+      ## Repository
+      **Path:** {config[repo_path]}
+
+      ## Task
+      1. Checkout the feature branch (see implement.md for branch name)
+      2. Run `git diff main...HEAD` to see all changes
+      3. Review every changed file for correctness, security, edge cases, backward compatibility, test coverage
+      4. Run the tests: `{config[test_command]}`
+
+      ## Output
+      Write your review to {output_dir}/review.md.
+
+      **IMPORTANT:** Your response MUST start with one of these verdicts on the very first line:
+      - `APPROVE` — code is ready to merge
+      - `REQUEST_CHANGES` — one or more blockers or major issues found
+
+      Line 1: APPROVE  -or-  REQUEST_CHANGES  (nothing else on this line)
+
+      Then for each issue: `[SEVERITY][category] description`
+      Where SEVERITY is: BLOCKER, MAJOR, MINOR, NITPICK
+
+  # Phase 4: Fix Review Feedback
+  - id: fix
+    name: "Apply Review Fixes"
+    description: "Address code review feedback, then loop back to review"
+    model_tier: sonnet
+    thinking_level: low
+    max_iterations: 3
+    transitions:
+      success: review
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the FIX phase of an automated sprint coding pipeline. Your output feeds a re-review — not a human. [/PIPELINE CONTEXT]
+
+      You are a developer addressing code review feedback.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the code review at: {output_dir}/review.md
+      Read the original spec at: {output_dir}/spec.md
+      Read the issue details at: {output_dir}/prepare.json
+
+      ## Repository
+      **Path:** {config[repo_path]}
+
+      ## Task
+      1. Checkout the feature branch (see review.md or implement.md for branch name)
+      2. Read the code review carefully
+      3. If APPROVE with no blockers — write "No fixes needed" to {output_dir}/fix.md and stop
+      4. If REQUEST_CHANGES — apply ALL fixes for blockers and major issues only (minimal diff)
+      5. Run tests: `{config[test_command]}`
+      6. Commit fixes: `fix: address code review feedback`
+      7. Push branch
+
+      ## Output
+      Write to {output_dir}/fix.md:
+      - Each issue addressed and how
+      - Any issues intentionally deferred and why
+      - Updated test results
+      - Commit hash
+
+  # Phase 5: Test Verification
+  - id: test
+    name: "Test Verification"
+    description: "Run full test suite to verify no regressions"
+    task_type: command
+    command: "{config[test_command]}"
+    working_dir: "{config[repo_path]}"
+    allowed_commands: ["python3", "python", "pytest"]
+
+on_complete:
+  max_chain_depth: 5
+  success:
+    - template: sprint-runner-step-v1
+      input_map:
+        sprint_name: "{{sprint_name}}"
+        repo_path: "{{repo_path}}"
+        repo_url: "{{repo_url}}"
+        parent_output_dir: "{{output_dir}}"
+        test_command: "{{test_command}}"
+        language: "{{language}}"
+        style_guide: "{{style_guide}}"
+  failed: []

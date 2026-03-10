@@ -1,0 +1,94 @@
+# sprint-runner-v1-smoke.yaml — Smoke test for sprint-runner-v1.yaml
+#
+# Purpose:
+#   Validates that the sprint-runner-v1 template is structurally correct
+#   and produces recognisable output for a single-issue sprint.
+#
+# Note:
+#   The prepare phase requires `gh` CLI access and a real repo to fetch issue
+#   details. In dry-run mode the command phase produces mock output, so
+#   the scoring checks for dry-run markers alongside live keywords.
+
+id: sprint-runner-v1-smoke
+version: "1.0.0"
+name: "Sprint Runner v1 Smoke Test"
+description: >
+  Smoke test for the sprint-runner-v1 meta-template. Validates the prepare
+  phase + 5-phase coding loop: prepare → spec → implement → review → fix → test.
+  Uses a minimal single-issue sprint input.
+tags:
+  - smoke
+  - sprint-runner
+  - v1
+
+pipeline: templates/sprint-runner-v1.yaml
+
+input:
+  sprint_name: "Sprint Smoke Test"
+  repo_path: "/tmp/test-repo"
+  repo_url: "https://github.com/ToscanRivera/orchestration-engine"
+  issues_json: "[999]"
+  test_command: "python3 -m pytest tests/ -x -q"
+
+acceptance:
+  # Gate: pipeline must produce non-trivial output
+  - id: output_not_empty
+    type: assertion
+    check: "len(str(output)) > 10"
+    weight: 0
+    description: >
+      Hard gate: pipeline must produce non-trivial output.
+
+  # Keyword check for structural content
+  - id: structural_keywords
+    type: keyword
+    keywords:
+      # Live mode keywords
+      - "spec"
+      - "implement"
+      - "review"
+      - "APPROVE"
+      - "prepare"
+      - "issue"
+      # Dry-run mode keywords
+      - "mock"
+      - "execution"
+      - "content"
+    match_mode: "any"
+    threshold: 0.4
+    weight: 40
+    description: >
+      Structural check: output contains recognisable content from a sprint
+      runner execution. Live: prepare, spec, implementation, review verdict.
+      Dry-run: mock executor output.
+
+  # LLM judge for quality
+  - id: output_quality
+    type: llm_judge
+    judge_model: claude-haiku-4-5-20241022
+    rubric: |
+      You are evaluating the output of a sprint runner pipeline that processes
+      GitHub issues through a coding pipeline (prepare → spec → implement → review → test).
+
+      The output may be from a dry run (mock execution) or a live run.
+
+      Scoring criteria (equal weight):
+      1. Prepare phase evidence — issue extraction or mock prepare output present
+      2. Spec/implementation evidence — describes changes or mock content
+      3. Review evidence — APPROVE or REQUEST_CHANGES verdict, or mock review output
+      4. Test/completion evidence — test results or pipeline completion markers
+
+      Score 0.0 (none met) to 1.0 (all four met).
+
+      Respond ONLY:
+      Score: <0.0-1.0>
+      Reasoning: <one sentence>
+    threshold: 0.50
+    weight: 60
+    description: >
+      LLM judge: checks for prepare, spec, review, and test evidence in output.
+
+scoring:
+  method: weighted_average
+  pass_threshold: 0.60
+  gate_mode: all_or_nothing

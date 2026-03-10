@@ -1,0 +1,81 @@
+# sprint-runner-step-v1-smoke.yaml — Smoke test for sprint-runner-step-v1.yaml
+#
+# Purpose:
+#   Validates that the sprint-runner-step-v1 (ping-pong partner) template is
+#   structurally correct. In a real run this template is invoked by chaining
+#   from sprint-runner-v1, but for smoke testing we supply a synthetic
+#   parent_output_dir pointing to a pre-written prepare.json.
+
+id: sprint-runner-step-v1-smoke
+version: "1.0.0"
+name: "Sprint Runner Step v1 Smoke Test"
+description: >
+  Smoke test for the sprint-runner-step-v1 meta-template (ping-pong partner).
+  Validates the prepare → spec → implement → review → fix → test loop.
+tags:
+  - smoke
+  - sprint-runner
+  - v1
+  - step
+
+pipeline: templates/sprint-runner-step-v1.yaml
+
+input:
+  sprint_name: "Sprint Smoke Test (Step)"
+  repo_path: "/tmp/test-repo"
+  repo_url: "https://github.com/ToscanRivera/orchestration-engine"
+  parent_output_dir: "/tmp/sprint-runner-smoke-parent"
+  test_command: "python3 -m pytest tests/ -x -q"
+
+acceptance:
+  - id: output_not_empty
+    type: assertion
+    check: "len(str(output)) > 10"
+    weight: 0
+    description: "Hard gate: pipeline must produce non-trivial output."
+
+  - id: structural_keywords
+    type: keyword
+    keywords:
+      - "spec"
+      - "implement"
+      - "review"
+      - "APPROVE"
+      - "prepare"
+      - "issue"
+      - "mock"
+      - "execution"
+      - "content"
+    match_mode: "any"
+    threshold: 0.4
+    weight: 40
+    description: >
+      Structural check: output contains recognisable content from a sprint
+      runner step execution.
+
+  - id: output_quality
+    type: llm_judge
+    judge_model: claude-haiku-4-5-20241022
+    rubric: |
+      You are evaluating the output of a sprint runner step pipeline.
+      The pipeline processes a GitHub issue through: prepare → spec → implement → review → test.
+
+      Scoring criteria (equal weight):
+      1. Prepare phase evidence — issue extraction or mock prepare output present
+      2. Spec/implementation evidence — describes changes or mock content
+      3. Review evidence — APPROVE or REQUEST_CHANGES verdict, or mock review output
+      4. Test/completion evidence — test results or pipeline completion markers
+
+      Score 0.0 (none met) to 1.0 (all four met).
+
+      Respond ONLY:
+      Score: <0.0-1.0>
+      Reasoning: <one sentence>
+    threshold: 0.50
+    weight: 60
+    description: "LLM judge: checks for prepare, spec, review, and test evidence."
+
+scoring:
+  method: weighted_average
+  pass_threshold: 0.60
+  gate_mode: all_or_nothing
