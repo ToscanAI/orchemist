@@ -67,9 +67,14 @@ phases:
     transitions:
       success: spec_adversary
     prompt_template: |
-      [PIPELINE CONTEXT] You are executing the SPEC phase (1/4) of an automated coding pipeline. Your output feeds the implement phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
+      [PIPELINE CONTEXT] You are executing the SPEC phase (1/8) of an automated coding pipeline. Your output feeds the spec_adversary phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
 
       You are a senior developer interpreting a GitHub issue into an implementation spec.
+
+      ## Previous Work
+      {phase_summary}
+
+      If a prior adversary review exists at {output_dir}/spec_adversary.md, read it and address ALL findings before producing your updated spec.
 
       ## Issue
       **Title:** {config[issue_title]}

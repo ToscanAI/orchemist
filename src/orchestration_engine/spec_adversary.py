@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Valid finding categories (case-insensitive on input, stored lowercase)
 # ---------------------------------------------------------------------------
 
-_VALID_CATEGORIES: frozenset = frozenset(
+_VALID_CATEGORIES: frozenset[str] = frozenset(
     ["vague", "trivial", "missing_edge_case", "leakage", "divergence"]
 )
 
@@ -52,7 +52,7 @@ _VALID_CATEGORIES: frozenset = frozenset(
 _FINDING_RE = re.compile(r"^\s*\[([A-Za-z_]+)\]\s+(.+)$")
 
 # Valid verdict tokens — checked as exact stripped first-word match
-_VALID_VERDICTS: tuple = ("APPROVE", "REQUEST_CHANGES")
+_VALID_VERDICTS: tuple[str, ...] = ("APPROVE", "REQUEST_CHANGES")
 
 
 # ---------------------------------------------------------------------------
