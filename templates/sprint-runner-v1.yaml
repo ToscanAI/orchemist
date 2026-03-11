@@ -66,6 +66,15 @@ config_schema:
       type: string
       default: ""
       description: "Key files and their purpose — helps the builder understand the codebase"
+    sprint_queue_config:
+      type: string
+      default: ""
+      description: >-
+        Absolute path to a sprint_queue.yaml config file for post-merge chain
+        automation (Issue #514). When set, a successful auto-merge will trigger
+        labeling of the next issue in the queue with pipeline-ready via
+        ORCH_SPRINT_QUEUE_CONFIG env var. Leave empty to disable sprint chain
+        automation. Backward compatible — existing runs are unaffected.
 
 phases:
   # ── Phase 0: Prepare ──────────────────────────────────────────────────────
@@ -360,4 +369,5 @@ on_complete:
         language: "{{language}}"
         style_guide: "{{style_guide}}"
         files_context: "{{files_context}}"
+        sprint_queue_config: "{{sprint_queue_config}}"
   failed: []

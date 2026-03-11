@@ -59,6 +59,8 @@ __all__ = [
     "slugify_branch",
     "generate_pipeline_input",
     "remove_github_label",
+    "add_github_label",
+    "get_github_issue_labels",
     # Re-exports from github_fetcher (Issue #507)
     "GitHubIssueData",
     "GitHubIssueFetcher",
@@ -958,6 +960,100 @@ def remove_github_label(repo: str, issue_number: int, label: str) -> bool:
         logger.warning("remove_github_label: error removing label %r: %s", label, exc)
 
     return False
+
+
+# ---------------------------------------------------------------------------
+# add_github_label — POST a label onto a GitHub issue (Issue #514)
+# ---------------------------------------------------------------------------
+
+
+def add_github_label(repo: str, issue_number: int, label: str) -> bool:
+    """Apply a label to a GitHub issue via ``gh api`` POST.
+
+    Symmetric counterpart to :func:`remove_github_label`.  Uses the GitHub CLI
+    (``gh``) to call the REST Labels API.
+
+    Args:
+        repo:         Repository slug (e.g. ``"owner/repo"``).
+        issue_number: GitHub issue number.
+        label:        Label name to apply.
+
+    Returns:
+        ``True`` when the label was applied successfully (exit code 0).
+        ``False`` on any failure (gh not found, API error, timeout).
+
+    Example::
+
+        ok = add_github_label("owner/repo", 42, "pipeline-ready")
+        # ok == True when the label was successfully applied
+    """
+    import subprocess
+
+    endpoint = f"repos/{repo}/issues/{issue_number}/labels"
+    try:
+        result = subprocess.run(
+            ["gh", "api", endpoint, "--method", "POST",
+             "--field", f"labels[]={label}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if result.returncode == 0:
+            return True
+        logger.warning(
+            "add_github_label: gh api POST failed (rc=%d): %s",
+            result.returncode,
+            result.stderr.strip(),
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.warning("add_github_label: error adding label %r: %s", label, exc)
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# get_github_issue_labels — GET label names for a GitHub issue (Issue #514)
+# ---------------------------------------------------------------------------
+
+
+def get_github_issue_labels(repo: str, issue_number: int) -> list:
+    """Return the list of label names on a GitHub issue via ``gh api``.
+
+    Args:
+        repo:         Repository slug (e.g. ``"owner/repo"``).
+        issue_number: GitHub issue number.
+
+    Returns:
+        List of label name strings.  Returns ``[]`` on any failure.
+
+    Example::
+
+        labels = get_github_issue_labels("owner/repo", 42)
+        # e.g. ["pipeline-ready", "bug"]
+    """
+    import subprocess
+
+    endpoint = f"repos/{repo}/issues/{issue_number}"
+    try:
+        result = subprocess.run(
+            ["gh", "api", endpoint, "--jq", ".labels[].name"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if result.returncode == 0:
+            return [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+        logger.warning(
+            "get_github_issue_labels: gh api failed (rc=%d): %s",
+            result.returncode,
+            result.stderr.strip(),
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.warning("get_github_issue_labels: error: %s", exc)
+
+    return []
 
 
 # ---------------------------------------------------------------------------

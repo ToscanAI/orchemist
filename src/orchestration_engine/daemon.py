@@ -1604,6 +1604,85 @@ def _dispatch_auto_merge(
             run_id, _ne,
         )
 
+    # --- Sprint chain advancement (Issue #514) ---
+    _sprint_issue_number = gate_data.get("issue_number")
+    _sprint_queue_config_path = _os.environ.get("ORCH_SPRINT_QUEUE_CONFIG", "").strip()
+    _trigger_sprint_chain_next(
+        run_id=run_id,
+        repo=repo,
+        issue_number=_sprint_issue_number,
+        score=decision.score if hasattr(decision, "score") else None,
+        queue_config_path=_sprint_queue_config_path,
+        db_path=str(Path.home() / ".orchestration-engine" / "engine.db"),
+    )
+
+
+def _trigger_sprint_chain_next(
+    run_id: str,
+    repo: str,
+    issue_number: Optional[int],
+    score: Optional[float],
+    queue_config_path: str,
+    db_path: str,
+) -> None:
+    """Invoke sprint chain advancement after a successful auto-merge (non-fatal).
+
+    Called from :func:`_dispatch_auto_merge` after a successful merge.  All
+    exceptions are caught and logged as warnings so that a chain-automation
+    bug never fails the pipeline run.
+
+    When ``queue_config_path`` is empty or ``issue_number`` is ``None`` the
+    function returns immediately (no-op), making the feature entirely opt-in.
+
+    Args:
+        run_id:            Pipeline run identifier.
+        repo:              Repository slug (e.g. ``"owner/repo"``).
+        issue_number:      GitHub issue number from the gate file, or ``None``.
+        score:             Confidence score from the routing decision, or ``None``.
+        queue_config_path: Absolute path to sprint_queue.yaml; empty → disabled.
+        db_path:           Path to the orchestration engine SQLite database.
+    """
+    if not queue_config_path:
+        return
+    if not issue_number:
+        logger.debug(
+            "sprint_chain: no issue_number for run %s — skipping", run_id
+        )
+        return
+    try:
+        from .sprint_chain import SprintChainManager  # noqa: PLC0415
+        from .db import Database  # noqa: PLC0415
+        from .cost_tracker import CostTracker  # noqa: PLC0415
+
+        db = Database(Path(db_path))
+        tracker = CostTracker(db)
+        manager = SprintChainManager(db=db, cost_tracker=tracker)
+        result = manager.trigger_next(
+            repo=repo,
+            current_issue=issue_number,
+            run_id=run_id,
+            score=score,
+            queue_config_path=queue_config_path,
+        )
+        if result.triggered:
+            logger.info(
+                "sprint_chain: triggered next issue #%d in %r (run=%s)",
+                result.next_issue,
+                repo,
+                run_id,
+            )
+        else:
+            logger.info(
+                "sprint_chain: chain not advanced for run %s: %s",
+                run_id,
+                result.reason,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "sprint_chain: _trigger_sprint_chain_next failed (non-fatal): %s",
+            exc,
+        )
+
 
 def _post_reject_comment(
     run_id: str,
