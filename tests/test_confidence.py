@@ -203,6 +203,7 @@ class TestDefaultWeights:
             "change_complexity", "review_catch_value",  # Issue #4.1.3
             "adversarial_audit",                        # Issue #4.1.4/4.1.6 — renamed from audit_catch_rate
             "historical_calibration",                   # Issue #4.1.6 — extra_signals entry
+            "code_quality",                             # Issue #533 — NEW: code quality check pass rate
         ):
             assert key in DEFAULT_WEIGHTS
 
@@ -215,8 +216,9 @@ class TestDefaultWeights:
         # emitted when their data is present), so _weighted_average renormalises
         # over present signals automatically.
         # Issue #528: acceptance_pass_rate (0.40) added → sum is ~1.35.
+        # Issue #533: code_quality (0.20) added → sum is ~1.55.
         total = sum(DEFAULT_WEIGHTS.values())
-        assert 1.0 <= total <= 1.5
+        assert 1.0 <= total <= 1.8
 
     def test_llm_judge_weight(self):
         # Updated in Issue #4.1.4: 0.35 → 0.30 to accommodate adversarial_audit
@@ -227,8 +229,12 @@ class TestDefaultWeights:
         assert DEFAULT_WEIGHTS["test_pass_rate"] == 0.20
 
     def test_review_quality_weight(self):
-        # Issue #528: reduced 0.15 → 0.05 (acceptance_pass_rate is now primary signal)
-        assert DEFAULT_WEIGHTS["review_quality"] == 0.05
+        # Issue #533: raised 0.05 → 0.10 (was over-reduced in #528; corrected here)
+        assert DEFAULT_WEIGHTS["review_quality"] == 0.10
+
+    def test_code_quality_weight(self):
+        # Issue #533: NEW signal at weight 0.20
+        assert DEFAULT_WEIGHTS["code_quality"] == pytest.approx(0.20)
 
     def test_change_complexity_weight(self):
         assert DEFAULT_WEIGHTS["change_complexity"] == 0.10
@@ -262,9 +268,14 @@ class TestDefaultWeightsV2:
 
     def test_v2_weights_sum_within_expected_range(self):
         # Issue #528: acceptance_pass_rate (0.40) added to V2 weights.
+        # Issue #533: code_quality (0.20) added → sum increases further.
         # Weights intentionally sum > 1.0; _weighted_average renormalises.
         total = sum(DEFAULT_WEIGHTS_V2.values())
-        assert 1.0 <= total <= 1.5
+        assert 1.0 <= total <= 2.0
+
+    def test_v2_code_quality_weight(self):
+        # Issue #533: NEW signal at weight 0.20 (consistent with DEFAULT_WEIGHTS)
+        assert DEFAULT_WEIGHTS_V2["code_quality"] == pytest.approx(0.20)
 
     def test_v2_llm_judge_weight(self):
         # Issue #429.1: recalibrated from 0.25 → 0.40 (primary quality discriminator)
@@ -859,11 +870,20 @@ class TestDynamicWeightsCalibration:
         )
 
     def test_compute_dynamic_weights_high_accuracy(self):
-        """High reviewer accuracy boosts llm_judge weight above the base."""
+        """High reviewer accuracy boosts llm_judge weight above the normalized base.
+
+        _compute_dynamic_weights returns weights that sum to 1.0 (re-normalised),
+        so the comparison must be against the normalized base weight
+        (base / total_original_weights) rather than the raw base value.
+        Issue #533: code_quality (0.20) added to DEFAULT_WEIGHTS raises the
+        total weight sum, so the raw vs normalized distinction matters more.
+        """
         from unittest.mock import MagicMock
 
         calc = ConfidenceCalculator()
         base = calc.weights["llm_judge"]
+        # Normalized base: what llm_judge's share would be without any accuracy scaling
+        normalized_base = base / sum(calc.weights.values())
 
         mock_metrics = MagicMock()
         mock_metrics.overall_accuracy = 1.0  # perfect accuracy → 1.5x base
@@ -872,8 +892,9 @@ class TestDynamicWeightsCalibration:
 
         new_weights = calc._compute_dynamic_weights(metrics_map)
 
-        assert new_weights["llm_judge"] > base, (
-            "High accuracy should increase llm_judge weight above base."
+        assert new_weights["llm_judge"] > normalized_base, (
+            "High accuracy should increase llm_judge weight above its normalized base "
+            f"({normalized_base:.4f}), got {new_weights['llm_judge']:.4f}."
         )
 
     def test_compute_dynamic_weights_low_accuracy(self):

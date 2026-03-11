@@ -702,8 +702,9 @@ class TestDefaultWeightsAuditCatchRate:
         # when their data is present), so _weighted_average renormalises over
         # present signals automatically.
         # Issue #528: acceptance_pass_rate (0.40) added → sum is ~1.35.
+        # Issue #533: code_quality (0.20) added → sum is ~1.55.
         total = sum(DEFAULT_WEIGHTS.values())
-        assert 1.0 <= total <= 1.5
+        assert 1.0 <= total <= 1.8
 
     def test_all_expected_keys_present(self):
         expected_keys = {

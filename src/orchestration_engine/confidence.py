@@ -8,6 +8,9 @@ Signal sources (derived from task result files):
     acceptance_pass_rate   – Pass rate of spec-derived behavioral acceptance
                              tests (Issue #528).  Primary signal: 0.40 weight.
                              Read from ``{output_dir}/acceptance_results.json``.
+    code_quality           – Pass rate from code quality checks (Issue #533).
+                             Weight 0.20.  Read from
+                             ``{output_dir}/code_quality_results.json``.
     llm_judge              – Average confidence of review/judge task types.
     test_pass_rate         – Ratio of non-review tasks whose state == "success".
     review_quality         – Average confidence across ALL tasks.
@@ -83,10 +86,11 @@ HUMAN_REVIEW_THRESHOLD: float = 0.70  # Lowered from 0.75 post-calibration (Issu
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS: dict[str, float] = {
     "acceptance_pass_rate": 0.40,   # Issue #528 — PRIMARY: spec-derived behavioral tests
-    "llm_judge": 0.30,              # Updated in Issue #4.1.4: 0.35 → 0.30
     "test_pass_rate": 0.20,         # Updated in Issue #4.1.4: 0.25 → 0.20
-    "review_quality": 0.05,         # Issue #528: reduced 0.15 → 0.05 (acceptance_pass_rate is primary)
+    "code_quality": 0.20,           # Issue #533 — NEW: code quality check pass rate
+    "review_quality": 0.10,         # Issue #533: raised 0.05 → 0.10 (was over-reduced in #528)
     "change_complexity": 0.10,
+    "llm_judge": 0.30,              # Updated in Issue #4.1.4: 0.35 → 0.30
     "review_catch_value": 0.15,     # Issue #4.1.3
     "adversarial_audit": 0.10,      # Issue #4.1.4 — renamed from audit_catch_rate
     "historical_calibration": 0.05, # Issue #4.1.6 — only active via extra_signals
@@ -125,9 +129,10 @@ DEFAULT_WEIGHTS_V2: dict[str, float] = {
     "acceptance_pass_rate": 0.40,   # Issue #528 — PRIMARY: spec-derived behavioral tests
     "llm_judge": 0.40,              # ↑ Primary signal: rubric/review scores most discriminative
     "test_pass_rate": 0.30,         # ↑ Binary reliability signal — very trustworthy
+    "code_quality": 0.20,           # Issue #533 — NEW: code quality check pass rate
     "review_catch_value": 0.12,     # ↓ Reduced: often absent in coding pipeline runs
     "adversarial_audit": 0.08,      # ↓ Reduced: rarely present in Sprint 1-4
-    "review_quality": 0.02,         # Issue #528: reduced 0.06 → 0.02 (acceptance_pass_rate is primary)
+    "review_quality": 0.04,         # Issue #533: raised 0.02 → 0.04 (proportional; matches V2 philosophy)
     "change_complexity": 0.02,      # ↓ Heavily reduced: task count ≠ quality indicator
     "historical_calibration": 0.02, # Unchanged: extra_signals only
 }
@@ -337,8 +342,9 @@ class ConfidenceCalculator:
 
         # Collect all non-meta JSON files.
         # Skip files starting with "_" (meta/internal files) and known signal
-        # output files that are consumed separately (acceptance_results.json).
-        _SKIP_FILES = frozenset({"acceptance_results.json"})
+        # output files that are consumed separately (acceptance_results.json,
+        # code_quality_results.json).
+        _SKIP_FILES = frozenset({"acceptance_results.json", "code_quality_results.json"})
         task_files = sorted(
             p for p in output_dir.glob("*.json")
             if not p.name.startswith("_") and p.name not in _SKIP_FILES
@@ -467,6 +473,16 @@ class ConfidenceCalculator:
         acceptance_signal = self._extract_acceptance_pass_rate(output_dir, _eff_weights)
         if acceptance_signal is not None:
             signals.append(acceptance_signal)
+
+        # ------------------------------------------------------------------
+        # Signal: code_quality  (Issue #533)
+        # Read from {output_dir}/code_quality_results.json when present.
+        # Represents the pass rate of automated code quality checks.
+        # Absent when the file does not exist (backward-compatible).
+        # ------------------------------------------------------------------
+        code_quality_signal = self._extract_code_quality(output_dir, _eff_weights)
+        if code_quality_signal is not None:
+            signals.append(code_quality_signal)
 
         # ------------------------------------------------------------------
         # Signal: review_catch_value  (Issue #4.1.3)
@@ -622,6 +638,91 @@ class ConfidenceCalculator:
 
         return ConfidenceSignal(
             name="acceptance_pass_rate",
+            value=pass_rate,
+            weight=weight,
+            raw_value=raw,
+            source=str(results_file),
+        )
+
+    def _extract_code_quality(
+        self,
+        output_dir: Path,
+        eff_weights: dict[str, float],
+    ) -> Optional[ConfidenceSignal]:
+        """Extract code quality pass rate from code_quality_results.json.
+
+        Reads ``{output_dir}/code_quality_results.json`` if it exists and
+        contains a valid ``pass_rate`` field.  Returns a
+        :class:`ConfidenceSignal` for the ``code_quality`` signal, or ``None``
+        if the file is absent, unreadable, or missing the required fields.
+
+        The ``pass_rate`` field must be in [0.0, 1.0].  Alternatively, if
+        ``passed`` and ``total`` are present and ``total > 0``, the pass rate
+        is computed as ``passed / total``.
+
+        Mirrors the pattern of :meth:`_extract_acceptance_pass_rate` for
+        backward compatibility: absent file → signal omitted and the weighted
+        average renormalises over remaining signals.
+
+        Args:
+            output_dir:   Pipeline output directory (Path).
+            eff_weights:  Effective weight dict to look up the signal weight.
+
+        Returns:
+            A :class:`ConfidenceSignal` with ``name="code_quality"``,
+            or ``None`` when the signal cannot be extracted.
+        """
+        results_file = output_dir / "code_quality_results.json"
+        if not results_file.exists():
+            return None
+
+        try:
+            data = json.loads(results_file.read_text())
+        except Exception as exc:
+            logger.warning(
+                "code_quality: failed to parse %s: %s",
+                results_file,
+                exc,
+            )
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        # Derive pass_rate from explicit field or from passed/total counts
+        pass_rate: Optional[float] = None
+        if "pass_rate" in data:
+            try:
+                pass_rate = float(data["pass_rate"])
+            except (TypeError, ValueError):
+                pass
+
+        if pass_rate is None:
+            passed = data.get("passed")
+            total = data.get("total")
+            if passed is not None and total is not None:
+                try:
+                    total_f = float(total)
+                    if total_f > 0:
+                        pass_rate = float(passed) / total_f
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+
+        if pass_rate is None:
+            logger.warning(
+                "code_quality: %s lacks 'pass_rate' or 'passed'/'total' fields",
+                results_file,
+            )
+            return None
+
+        weight = eff_weights.get(
+            "code_quality",
+            DEFAULT_WEIGHTS.get("code_quality", 0.20),
+        )
+        raw = {k: data.get(k) for k in ("passed", "failed", "errors", "total", "pass_rate")}
+
+        return ConfidenceSignal(
+            name="code_quality",
             value=pass_rate,
             weight=weight,
             raw_value=raw,
