@@ -181,6 +181,7 @@ class Database:
             self._create_table_trust_adjustments(conn)     # Issue #4.2.1
             self._create_table_issue_pipeline_map(conn)    # Issue #5.1.1
             self._create_table_cost_tracking(conn)         # Issue #5.2.1
+            self._create_table_sprint_chain_state(conn)    # Issue #514
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -695,6 +696,7 @@ class Database:
             ("017_add_issue_pipeline_map", self._migration_017_add_issue_pipeline_map),               # Issue #5.1.1
             ("018_add_cost_tracking_table", self._migration_018_add_cost_tracking_table),             # Issue #5.2.1
             ("019_add_parent_run_id_index", self._migration_019_add_parent_run_id_index),             # Issue #508
+            ("020_add_sprint_chain_state_table", self._migration_020_add_sprint_chain_state_table),  # Issue #514
         ]
         
         # Apply pending migrations
@@ -2374,6 +2376,154 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_parent_run_id "
             "ON pipeline_runs(parent_run_id)"
         )
+
+    # ------------------------------------------------------------------
+    # Sprint chain state table (Issue #514)
+    # ------------------------------------------------------------------
+
+    def _create_table_sprint_chain_state(self, conn: sqlite3.Connection) -> None:
+        """Create sprint_chain_state table for post-merge chain automation (Issue #514).
+
+        Called from ``_initialize_database`` so fresh databases get the table
+        without requiring a migration run.  Idempotent via
+        ``CREATE TABLE IF NOT EXISTS``.
+
+        Columns:
+            id:            Auto-increment primary key.
+            repo:          Repository slug (e.g. ``"owner/repo"``).
+            issue_number:  GitHub issue number.
+            status:        Processing status: ``"processed"`` or ``"paused"``.
+            run_id:        Pipeline run_id that triggered the processing.
+            score:         Confidence score at the time of processing.
+            processed_at:  UTC timestamp when the record was inserted/updated.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sprint_chain_state (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo         TEXT NOT NULL,
+                issue_number INTEGER NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'processed',
+                run_id       TEXT,
+                score        REAL,
+                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(repo, issue_number)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sprint_chain_repo
+            ON sprint_chain_state(repo, processed_at)
+        """)
+
+    def _migration_020_add_sprint_chain_state_table(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Add sprint_chain_state table for post-merge chain automation (Issue #514).
+
+        Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
+        Safe to run on both fresh and existing databases.
+        """
+        self._create_table_sprint_chain_state(conn)
+
+    def upsert_sprint_chain_state(
+        self,
+        repo: str,
+        issue_number: int,
+        status: str,
+        run_id: Optional[str] = None,
+        score: Optional[float] = None,
+    ) -> None:
+        """Insert or update a sprint_chain_state row for ``(repo, issue_number)``.
+
+        Uses ``INSERT OR REPLACE`` for idempotent upsert; updates
+        ``processed_at`` to the current timestamp on each call.
+
+        Args:
+            repo:         Repository slug.
+            issue_number: GitHub issue number.
+            status:       ``"processed"`` or ``"paused"``.
+            run_id:       Pipeline run_id (optional).
+            score:        Confidence score (optional).
+        """
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO sprint_chain_state
+                    (repo, issue_number, status, run_id, score, processed_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(repo, issue_number)
+                DO UPDATE SET
+                    status       = excluded.status,
+                    run_id       = excluded.run_id,
+                    score        = excluded.score,
+                    processed_at = CURRENT_TIMESTAMP
+                """,
+                (repo, issue_number, status, run_id, score),
+            )
+
+    def get_sprint_chain_state(
+        self, repo: str, issue_number: int
+    ) -> Optional[Dict[str, Any]]:
+        """Return the sprint_chain_state row for ``(repo, issue_number)``, or ``None``.
+
+        Args:
+            repo:         Repository slug.
+            issue_number: GitHub issue number.
+
+        Returns:
+            Row dict with keys ``id``, ``repo``, ``issue_number``, ``status``,
+            ``run_id``, ``score``, ``processed_at``, or ``None`` if not found.
+        """
+        conn = self.get_connection()
+        cursor = conn.execute(
+            "SELECT * FROM sprint_chain_state WHERE repo = ? AND issue_number = ?",
+            (repo, issue_number),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        cols = [d[0] for d in cursor.description]
+        return dict(zip(cols, row))
+
+    def get_sprint_processed_issues(self, repo: str) -> List[int]:
+        """Return issue numbers marked ``"processed"`` for the given repo.
+
+        Args:
+            repo: Repository slug.
+
+        Returns:
+            List of issue numbers ordered by ``processed_at`` ascending.
+        """
+        conn = self.get_connection()
+        cursor = conn.execute(
+            """
+            SELECT issue_number FROM sprint_chain_state
+            WHERE repo = ? AND status = 'processed'
+            ORDER BY processed_at ASC
+            """,
+            (repo,),
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    def get_sprint_chain_states(self, repo: str) -> List[Dict[str, Any]]:
+        """Return all sprint_chain_state rows for the given repo.
+
+        Args:
+            repo: Repository slug.
+
+        Returns:
+            List of row dicts ordered by ``processed_at`` ascending.
+        """
+        conn = self.get_connection()
+        cursor = conn.execute(
+            """
+            SELECT * FROM sprint_chain_state
+            WHERE repo = ?
+            ORDER BY processed_at ASC
+            """,
+            (repo,),
+        )
+        cols = [d[0] for d in cursor.description]
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
     # ------------------------------------------------------------------
     # Chain query methods (Issue #508)

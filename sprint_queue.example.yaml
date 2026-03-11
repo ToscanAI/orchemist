@@ -1,0 +1,38 @@
+# Sprint Queue Configuration for post-merge chain automation (Issue #514)
+#
+# Copy this file to sprint_queue.yaml and set the environment variable:
+#   export ORCH_SPRINT_QUEUE_CONFIG=/path/to/sprint_queue.yaml
+#
+# The orchestration engine will then automatically label the next issue
+# `pipeline-ready` after each successful auto-merge, advancing the sprint
+# queue without manual intervention.
+#
+# Guard rails:
+#   score_threshold       — merge is not counted unless confidence score >= this value
+#   daily_budget_cap_usd  — chain pauses when today's spend reaches this cap
+#
+# Human override:
+#   To pause the chain before a specific issue, set status='paused' in the
+#   sprint_chain_state DB table for (repo, issue_number), or remove the
+#   pipeline-ready label before the webhook fires.
+
+repo: "owner/repo"
+
+issues:
+  - 501
+  - 505
+  - 511
+  - 514
+
+# Minimum confidence score required to advance the chain.
+# Set to 0.0 to disable the score guard (not recommended for production).
+score_threshold: 0.75
+
+# Maximum daily spend in USD. Chain pauses when this cap is reached.
+# Remove this field (or set to null) to disable the budget guard.
+daily_budget_cap_usd: 10.00
+
+# Comment template posted on the next issue when it is labeled.
+# Supports {previous_issue} and {next_issue} placeholders.
+comment_template: >-
+  Queued by sprint runner — previous issue #{previous_issue} merged successfully
