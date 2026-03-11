@@ -1228,10 +1228,12 @@ class TemplateEngine:
                     )
 
         # Check for empty prompt_template (postmortem fix 2026-02-26)
-        # Exception: command phases use the `command` field instead of a prompt (#190)
+        # Exception: command and acceptance_run phases use engine dispatch instead of a prompt
+        # command (#190), acceptance_run (#532)
+        _NO_PROMPT_TASK_TYPES = {"command", "acceptance_run"}
         for phase in template.phases:
-            if phase.task_type == "command":
-                continue  # command phases don't need a prompt_template
+            if phase.task_type in _NO_PROMPT_TASK_TYPES:
+                continue  # these phases are engine-executed, not LLM-prompted
             if not phase.prompt_template or not phase.prompt_template.strip():
                 errors.append(
                     f"Phase '{phase.id}' has empty prompt_template — "

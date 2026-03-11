@@ -46,11 +46,12 @@ class TestEnums:
         assert TaskType.TRANSLATION == "translation"
         assert TaskType.REVIEW == "review"
         
-        # Test all expected types are present (original + knowledge-work types from #123)
+        # Test all expected types are present (original + knowledge-work types from #123 + #532)
         expected_types = {
             "content", "code", "research", "translation", "review",
             "triage", "analysis", "compliance", "financial", "sales", "support",
             "command",
+            "acceptance_run",  # added by #532: engine-executed pytest runner phase
         }
         actual_types = {t.value for t in TaskType}
         assert actual_types == expected_types

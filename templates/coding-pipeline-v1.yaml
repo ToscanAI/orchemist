@@ -1,8 +1,8 @@
 id: coding-pipeline-v1
-name: "Coding Pipeline v1.3"
-description: "6-phase coding pipeline with behavioral validation: spec → acceptance_tests → implement → Opus review → fix loop → test. Acceptance tests written from spec before code, then used as immutable constraints for the implementing agent. Acceptance pass rate is the primary confidence signal."
+name: "Coding Pipeline v1.4"
+description: "7-phase coding pipeline: spec → acceptance_tests → implement → engine-run acceptance_run → Opus review → fix loop → test. Engine-verified behavioral validation between implement and review."
 author: "Toscan"
-version: "1.3.0"
+version: "1.4.0"
 scenario: scenarios/coding-pipeline-v1-smoke.yaml
 category: "code"
 tags: [code, development, review, testing, pipeline]
@@ -51,6 +51,10 @@ config_schema:
     repo_url:
       type: string
       description: "GitHub repo URL (e.g. https://github.com/ToscanAI/orchestration-engine)"
+    acceptance_max_retries:
+      type: integer
+      default: 3
+      description: "Max implement→acceptance_run loop iterations (set max_iterations on implement and acceptance_run phases)"
 
 phases:
   # Phase 1: Spec Interpretation
@@ -152,8 +156,9 @@ phases:
     description: "Write the code changes based on the spec, constrained by acceptance tests"
     model_tier: sonnet
     thinking_level: high
+    max_iterations: 3
     transitions:
-      success: review
+      success: acceptance_run
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the IMPLEMENT phase (3/5) of an automated coding pipeline. Your output feeds the review phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
 
@@ -186,20 +191,9 @@ phases:
          - IMPORTANT: Do NOT write any code on main. Verify you are on the correct branch before making changes.
       4. Implement ALL changes described in the spec such that acceptance tests pass
       5. Write clean, documented code following the style guide
-      6. Run the acceptance tests: `python3 -m pytest {output_dir}/acceptance_tests.py -v --tb=short`
-         - Record pass/fail counts and update `{output_dir}/acceptance_results.json`:
-           ```json
-           {{
-             "phase": "implement",
-             "status": "complete",
-             "test_file": "{output_dir}/acceptance_tests.py",
-             "passed": <N>,
-             "failed": <M>,
-             "errors": <E>,
-             "total": <N+M+E>,
-             "pass_rate": <N/(N+M+E)>
-           }}
-           ```
+      6. If `{output_dir}/acceptance_results.json` exists and shows prior failures
+         (from the acceptance_run phase — `"phase": "acceptance_run"`), read the
+         `failure_details` field carefully and fix the code to make those tests pass.
       7. Commit with message referencing the issue: `feat/fix(#issue): description`
       8. Run the full test suite to verify: `{config[test_command]}`
       9. Push your branch to remote: `git push --set-upstream origin {config[branch_name]}`
@@ -208,11 +202,21 @@ phases:
       Write a summary of changes to {output_dir}/implement.md including:
       - Files changed with brief description of each change
       - Any deviations from the spec and why
-      - Acceptance test results (pass/fail count from acceptance_tests.py)
       - Full test suite results (pass/fail count)
       - Commit hash
 
-  # Phase 3: Code Review (Opus + Supervisor)
+  # Phase 3b: Engine-executed Acceptance Test Runner
+  - id: acceptance_run
+    name: "Acceptance Test Runner"
+    description: "Engine executes pytest directly on acceptance_tests.py — no agent. Writes engine-verified results to acceptance_results.json."
+    task_type: acceptance_run
+    max_iterations: 3
+    working_dir: "{config[repo_path]}"
+    transitions:
+      success: review
+      failed: implement
+
+  # Phase 4: Code Review (Opus + Supervisor)
   - id: review
     name: "Opus Code Review"
     description: "Senior code review by Opus — quality gate with APPROVE/REQUEST_CHANGES verdict"
