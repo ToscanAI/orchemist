@@ -83,16 +83,28 @@ phases:
       {config[files_context]}
 
       ## Task
-      Produce a clear implementation spec:
+      Produce a clear implementation spec with TWO sections: behavioral and implementation.
 
+      ### Section A: Behavioral Contract (REQUIRED — this drives acceptance tests)
+      Describe WHAT the system should do, not HOW. Use this format:
+      - "When [action/input], the system [expected behavior]"
+      - "Given [precondition], calling [operation] produces [outcome]"
+      - "If [edge case], the system [graceful behavior]"
+
+      DO NOT name internal functions, private methods, or class names in behavioral contracts.
+      DO NOT specify data structures, variable names, or implementation patterns.
+      ❌ Wrong: "Add _extract_code_quality() method that reads pass_rate from JSON"
+      ✅ Right: "When code quality results are available, the composite score includes them proportionally"
+
+      ### Section B: Implementation Guidance (for the implementing agent)
       1. **Problem Statement** — What exactly needs to change and why
       2. **Files to Modify** — List each file with what changes are needed
       3. **Files to Create** — Any new files with their purpose
       4. **Implementation Steps** — Ordered steps, specific enough to code from
-      5. **Test Plan** — What tests to add/modify, edge cases to cover
-      6. **Risk Assessment** — What could break, backward compatibility concerns
+      5. **Risk Assessment** — What could break, backward compatibility concerns
 
-      Be specific. Reference actual file paths and function names from the codebase context.
+      Be specific in Section B. Reference actual file paths and function names from the codebase context.
+      Keep Section A strictly behavioral — the acceptance test agent reads ONLY Section A.
 
       Write your spec to {output_dir}/spec.md
 
@@ -116,13 +128,20 @@ phases:
       {phase_summary}
 
       Read the spec at: {output_dir}/spec.md
+      IMPORTANT: Read ONLY "Section A: Behavioral Contract" from the spec.
+      DO NOT read Section B (Implementation Guidance) — it contains implementation
+      details that would bias your tests toward testing HOW rather than WHAT.
 
       ## Task
-      1. Read the spec carefully
+      1. Read Section A of the spec carefully — behavioral contracts ONLY
       2. Write a Python test file `{output_dir}/acceptance_tests.py` that:
          - Contains pytest tests expressing behavioral contracts of the form:
            "when I call X with Y, it produces Z"
-         - Tests are derived ONLY from the spec — do not assume implementation details
+         - Tests are derived ONLY from Section A — do not assume implementation details
+         - DO NOT test for specific method names, private functions, or class internals
+         - DO NOT test that a specific function exists — test that a BEHAVIOR works
+         - ❌ Wrong: "assert hasattr(obj, '_extract_code_quality')"
+         - ✅ Right: "assert scorer.compute(with_quality_data) > scorer.compute(without_quality_data)"
          - Each test function has a clear docstring stating the behavioral contract
          - Tests use `pytest` and standard Python imports only
          - Tests are runnable: they import from the actual repo path `{config[repo_path]}`
