@@ -1,8 +1,8 @@
 id: coding-pipeline-v1
-name: "Coding Pipeline v1.4"
-description: "7-phase coding pipeline: spec → acceptance_tests → implement → engine-run acceptance_run → Opus review → fix loop → test. Engine-verified behavioral validation between implement and review."
+name: "Coding Pipeline v1.5"
+description: "8-phase coding pipeline: spec → spec_adversary → acceptance_tests → implement → engine-run acceptance_run → Opus review → fix loop → test. Adversarial spec review before acceptance tests are written. Engine-verified behavioral validation between implement and review."
 author: "Toscan"
-version: "1.4.0"
+version: "1.5.0"
 scenario: scenarios/coding-pipeline-v1-smoke.yaml
 category: "code"
 tags: [code, development, review, testing, pipeline]
@@ -63,8 +63,9 @@ phases:
     description: "Understand the issue and produce a clear implementation plan"
     model_tier: sonnet
     thinking_level: high
+    max_iterations: 4
     transitions:
-      success: acceptance_test
+      success: spec_adversary
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the SPEC phase (1/4) of an automated coding pipeline. Your output feeds the implement phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
 
@@ -109,10 +110,61 @@ phases:
       Write your FULL spec to {output_dir}/spec.md
       ALSO write Section A ONLY to {output_dir}/spec-behavioral.md (just the behavioral contracts, no implementation details)
 
+  # Phase 1b: Adversarial Spec Review
+  - id: spec_adversary
+    name: "Spec Adversary Review"
+    description: "Adversarially review behavioral contracts before acceptance tests are written. Checks for vague contracts, trivial satisfaction, missing edge cases, implementation leakage, and divergence."
+    model_tier: sonnet
+    thinking_level: high
+    max_iterations: 4
+    transitions:
+      approve: acceptance_test
+      request_changes: spec
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the SPEC_ADVERSARY phase of an automated coding pipeline. Your verdict determines whether behavioral contracts are strong enough to drive acceptance tests. Do not ask questions or send messages. Deliver a structured verdict. [/PIPELINE CONTEXT]
+
+      You are an adversarial spec reviewer. Your job is to find weaknesses in behavioral contracts BEFORE acceptance tests are written against them.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the behavioral contracts at: {output_dir}/spec-behavioral.md
+      Read the full spec at: {output_dir}/spec.md
+
+      ## Your Checks (all mandatory)
+
+      1. **Specificity** — Are contracts concrete? "System should work" → REJECT. "When input is empty list, returns empty dict" → PASS
+      2. **Trivial satisfaction** — Could a no-op or stub function pass all contracts? If yes → REJECT
+      3. **Edge case coverage** — Do contracts cover: error handling, boundary conditions, empty inputs, malformed data? Missing → REJECT
+      4. **Leakage** — Does spec-behavioral.md name internal methods, class names, or implementation details? If yes → REJECT
+      5. **Alignment** — Do behavioral contracts match what spec.md actually describes? Divergence → REJECT
+
+      ## Output Format
+
+      Your response MUST start with one of these on the very first line:
+      - `APPROVE` — all contracts are tight enough to write meaningful acceptance tests
+      - `REQUEST_CHANGES` — one or more weaknesses found
+
+      For REQUEST_CHANGES, list findings using this format (one per line):
+        [category] description of the weakness
+
+      Where category is one of: vague, trivial, missing_edge_case, leakage, divergence
+
+      Example:
+        REQUEST_CHANGES
+        [vague] "The system handles errors gracefully" — no error condition or expected output specified
+        [trivial] All contracts pass if the implementation returns empty dict for every input
+        [missing_edge_case] No contract covers what happens when the input file does not exist
+        [leakage] Behavioral contract references "_parse_verdict" which is an implementation method name
+        [divergence] Behavioral contracts describe a REST API but spec.md describes a CLI tool
+
+      If APPROVE: write only APPROVE (optionally followed by brief rationale).
+      Write your full adversary review to {output_dir}/spec_adversary.md
+
   # Phase 2: Behavioral Acceptance Tests
   - id: acceptance_test
     name: "Behavioral Acceptance Tests"
-    description: "Write behavioral tests from spec ONLY — never from implementation. These become immutable constraints for the implementing agent."
+    description: "Write behavioral tests from spec ONLY — never from implementation. These become immutable constraints for the implementing agent. Behavioral contracts have been adversarially reviewed before reaching this phase."
     model_tier: sonnet
     thinking_level: high
     transitions:
