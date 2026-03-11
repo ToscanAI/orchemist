@@ -111,11 +111,11 @@ class TestPhaseOrdering:
         )
 
     def test_phase_count_is_seven(self):
-        """Template has exactly 7 phases (spec, acceptance_test, implement, acceptance_run, review, fix, test)."""
+        """Template has exactly 8 phases (spec, spec_adversary, acceptance_test, implement, acceptance_run, review, fix, test)."""
         template = load_template()
         phase_ids = [p.get("id") for p in template.get("phases", [])]
-        assert len(phase_ids) == 7, (
-            f"Expected 7 phases, got {len(phase_ids)}: {phase_ids}"
+        assert len(phase_ids) == 8, (
+            f"Expected 8 phases, got {len(phase_ids)}: {phase_ids}"
         )
 
 
@@ -127,14 +127,36 @@ class TestTransitions:
     """Phase transitions must form a correct chain."""
 
     def test_spec_transitions_to_acceptance_test(self):
-        """spec phase success transition points to acceptance_test."""
+        """spec phase success transition points to spec_adversary (added by #546)."""
         template = load_template()
         spec = get_phase(template, "spec")
         assert spec is not None
         transitions = spec.get("transitions", {})
-        assert transitions.get("success") == "acceptance_test", (
-            f"spec success transition should be 'acceptance_test', "
+        assert transitions.get("success") == "spec_adversary", (
+            f"spec success transition should be 'spec_adversary' (updated by #546), "
             f"got {transitions.get('success')!r}"
+        )
+
+    def test_spec_adversary_transitions_to_acceptance_test(self):
+        """spec_adversary approve transition points to acceptance_test."""
+        template = load_template()
+        spec_adv = get_phase(template, "spec_adversary")
+        assert spec_adv is not None, "spec_adversary phase not found"
+        transitions = spec_adv.get("transitions", {})
+        assert transitions.get("approve") == "acceptance_test", (
+            f"spec_adversary approve transition should be 'acceptance_test', "
+            f"got {transitions.get('approve')!r}"
+        )
+
+    def test_spec_adversary_request_changes_transitions_to_spec(self):
+        """spec_adversary request_changes transition loops back to spec."""
+        template = load_template()
+        spec_adv = get_phase(template, "spec_adversary")
+        assert spec_adv is not None, "spec_adversary phase not found"
+        transitions = spec_adv.get("transitions", {})
+        assert transitions.get("request_changes") == "spec", (
+            f"spec_adversary request_changes transition should be 'spec', "
+            f"got {transitions.get('request_changes')!r}"
         )
 
     def test_acceptance_test_transitions_to_implement(self):
@@ -246,19 +268,19 @@ class TestTemplateVersion:
     """Template version must be bumped to 1.3.0."""
 
     def test_version_bumped(self):
-        """Template version is 1.4.0 (bumped by #532 from 1.3.0)."""
+        """Template version is 1.5.0 (bumped by #546 from 1.4.0)."""
         template = load_template()
         version = template.get("version")
-        assert version == "1.4.0", (
-            f"Expected version '1.4.0', got {version!r}"
+        assert version == "1.5.0", (
+            f"Expected version '1.5.0', got {version!r}"
         )
 
     def test_name_updated(self):
         """Template name reflects the current version."""
         template = load_template()
         name = template.get("name", "")
-        assert "1.4" in name, (
-            f"Template name should reference v1.4, got {name!r}"
+        assert "1.5" in name, (
+            f"Template name should reference v1.5, got {name!r}"
         )
 
 

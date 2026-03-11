@@ -351,6 +351,9 @@ class PhaseSequencer:
             # Record review outcome durably (Issue #4.1.2) — sequential path
             self._record_review_outcome(phase, result)
 
+            # Record spec_adversary reward (Issue #546) — sequential path
+            self._record_spec_adversary_outcome(phase, result)
+
             # Notify caller (e.g. CLI progress display)
             self._invoke_on_phase_complete(phase_id, result)
 
@@ -527,6 +530,9 @@ class PhaseSequencer:
             # Record review outcome durably (Issue #4.1.2) — parallel path
             self._record_review_outcome(phase, result)
 
+            # Record spec_adversary reward (Issue #546) — parallel path
+            self._record_spec_adversary_outcome(phase, result)
+
             # Notify caller
             self._invoke_on_phase_complete(phase_id, result)
 
@@ -648,6 +654,39 @@ class PhaseSequencer:
                 self.on_phase_complete(phase_id, result)
             except Exception:
                 pass  # Never let a callback crash the pipeline
+
+    def _record_spec_adversary_outcome(self, phase: PhaseDefinition, result: dict) -> None:
+        """Parse adversary verdict and persist reward score when output_dir is available.
+
+        Only acts on phases whose ID is ``spec_adversary``.  All errors are
+        swallowed so a reward-persist failure never crashes the pipeline.
+
+        Args:
+            phase:  The :class:`~.templates.PhaseDefinition` that just completed.
+            result: The phase result dict (as returned by :meth:`_execute_and_wait`).
+        """
+        if phase.id != "spec_adversary":
+            return
+        if not self.output_dir:
+            logger.warning(
+                "spec_adversary phase completed but output_dir is None "
+                "— skipping reward persist"
+            )
+            return
+        try:
+            from .spec_adversary import parse_adversary_output, compute_reward, persist_reward
+            raw_text = _extract_phase_text(result)
+            verdict = parse_adversary_output(raw_text)
+            reward = compute_reward(verdict)
+            persist_reward(str(self.output_dir), verdict, reward)
+            logger.info(
+                f"Pipeline {self.template.id}: spec_adversary verdict={verdict.verdict} "
+                f"reward={reward} findings={len(verdict.findings)}"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Pipeline {self.template.id}: spec_adversary reward persist failed: {exc}"
+            )
 
     def _record_review_outcome(self, phase: PhaseDefinition, result: dict) -> None:
         """Persist a review outcome to the DB when ``run_id`` and ``db`` are set.
@@ -2357,6 +2396,28 @@ class StateMachineSequencer(PhaseSequencer):
                             "abort_reason": "MAX_ITERATIONS_EXCEEDED",
                             "exceeded_phase": current_phase_id,
                         }
+                        # ── Escalation detection: spec→adversary→spec loop exhausted
+                        if current_phase_id == "spec" and "spec_adversary" in self.phase_outputs:
+                            try:
+                                from .spec_adversary import parse_adversary_output
+                                adv_raw = _extract_phase_text(self.phase_outputs["spec_adversary"])
+                                adv_verdict = parse_adversary_output(adv_raw)
+                                if adv_verdict.verdict == "REQUEST_CHANGES":
+                                    abort_result["escalation_required"] = True
+                                    abort_result["escalation_reason"] = "spec_adversary_loop_exhausted"
+                                    abort_result["adversary_findings"] = [
+                                        {"category": f.category, "description": f.description}
+                                        for f in adv_verdict.findings
+                                    ]
+                                    logger.error(
+                                        f"Pipeline {self.template.id}: spec_adversary loop exhausted "
+                                        f"after {phase.max_iterations} iterations — human review required. "
+                                        f"Findings: {len(adv_verdict.findings)}"
+                                    )
+                            except Exception as exc:
+                                logger.warning(
+                                    f"Pipeline {self.template.id}: escalation detection failed: {exc}"
+                                )
                         self._safe_call_hook(
                             self.on_pipeline_complete,
                             self.pipeline_context,
@@ -2484,6 +2545,9 @@ class StateMachineSequencer(PhaseSequencer):
                         return abort_info
                     with self._phase_outputs_lock:
                         self.phase_outputs[current_phase_id] = result
+
+                # ── Record spec_adversary reward (Issue #546) ─────────────────
+                self._record_spec_adversary_outcome(phase, result)
 
                 # ── on_phase_complete callback ────────────────────────────────
                 self._invoke_on_phase_complete(current_phase_id, result)
