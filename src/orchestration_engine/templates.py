@@ -399,6 +399,12 @@ class PhaseDefinition:
     # if the output text is shorter than this threshold, catching truncated LLM
     # responses before they propagate to downstream phases.
 
+    # Protected outputs for file-guard hash verification (Issue #531)
+    protected_outputs: List[str] = field(default_factory=list)
+    # List of filenames (relative to output_dir) to checksum-protect.
+    # Hashes are computed after this phase completes and verified before
+    # the next consuming phase's output is accepted.
+
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
         if self.depends_on is None:
@@ -450,6 +456,9 @@ class PhaseDefinition:
         if self.min_output_length is None:
             self.min_output_length = 0
         self.min_output_length = max(0, int(self.min_output_length))
+        # Normalise protected outputs field (#531)
+        if self.protected_outputs is None:
+            self.protected_outputs = []
 
 
 @dataclass
@@ -875,6 +884,8 @@ class TemplateEngine:
                 "model_chain",
                 # Output length validation (#351)
                 "min_output_length",
+                # Protected outputs for file-guard hash verification (#531)
+                "protected_outputs",
             }
 
             # Warn on unknown fields (prevents silent data loss)
@@ -1618,3 +1629,23 @@ class TemplateEngine:
                 )
 
         return errors, warnings
+
+
+
+def load_template(template_path: str) -> "PipelineTemplate":
+    """Module-level convenience wrapper around TemplateEngine.load_template().
+
+    Allows callers to do::
+
+        from orchestration_engine.templates import load_template
+        template = load_template("/path/to/template.yaml")
+
+    instead of instantiating TemplateEngine explicitly.
+
+    Args:
+        template_path: Path to the YAML template file (str or Path).
+
+    Returns:
+        PipelineTemplate instance.
+    """
+    return TemplateEngine().load_template(Path(template_path))
