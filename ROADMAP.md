@@ -1,6 +1,6 @@
 # Orchemist Roadmap: Level 4 → Level 5 (Dark Factory)
 
-> **Last updated:** 2026-03-05
+> **Last updated:** 2026-03-11
 > **Status:** Active engineering roadmap
 > **Maintainer:** @ToscanAI
 
@@ -209,6 +209,110 @@ Level 5 eliminates all of these manual steps for routine work.
 
 ---
 
+## Sprint 7: Behavioral Trust Gate — From Reading Code to Validating Behavior (Month 1)
+
+*Trust shifts from "an AI read the code and liked it" to "the system verified it works." This is the inflection point between Level 3 and Level 4.*
+
+> **Status:** In progress (March 2026)
+> **Trust level:** Level 3 → Level 4
+
+### Where We Were (Level 3)
+The implementing agent wrote code AND tests. Opus reviewed by reading code. Trust came from an AI's opinion. The implementing agent could game tests it wrote itself.
+
+### 7.1 Spec-Driven Acceptance Tests (#528) ✅
+- **What:** A separate Sonnet agent writes behavioral tests from the spec BEFORE the implementing agent sees it. Tests describe expected behavior ("when I call X with Y, it produces Z"), not implementation details.
+- **Why:** Tests written by a different agent from a different source (spec, not code) can't be gamed by the implementer.
+- **Delivered:** New `acceptance_test` phase in `coding-pipeline-v1.yaml` (v1.3), runs between spec and implement.
+
+### 7.2 Hash-Sealed Protected Files (#531) ✅
+- **What:** The sequencer silently checksums `acceptance_tests.py` after creation. After the implement phase, it re-computes and compares. Hash mismatch = run fails. The implementing agent never knows the seal exists.
+- **Why:** Don't ask the agent to behave. Verify that it did. Prompt-based "don't modify this file" is a soft guard rail. SHA256 is a hard one.
+- **Delivered:** `file_guard.py` module, `protected_outputs` config in pipeline template.
+
+### 7.3 Engine-Executed Test Runner (#532) ✅
+- **What:** The sequencer runs acceptance tests directly — no agent involved. Exit code and pass/fail counts come from the engine, not from the agent's self-report.
+- **Why:** Self-grading is not grading. The engine is the judge, the agent is the student. Failed tests loop back to implement with actual failure output.
+- **Delivered:** `test_runner.py` module, `acceptance_run` phase type in sequencer.
+
+### 7.4 Composite Scorer Reweighting (#533) 🔄
+- **What:** `acceptance_pass_rate` becomes the primary scoring dimension (weight 0.40). `review_quality` drops to 0.10. Trust now comes from behavioral validation, not from the reviewer's opinion.
+- **Why:** The reviewer is still there as a safety net, but it's no longer the foundation. Auto-merge confidence is driven by "did the tests pass" not "did Opus like the code."
+- **Status:** Pipeline running.
+
+### 7.5 Behavioral Validation E2E (#534) 🔵
+- **What:** End-to-end integration test: spec → acceptance tests → implement (constrained) → engine runs tests → hash verified → score reflects behavior. Validates the full trust chain works together.
+- **Why:** Individual pieces work in isolation. This proves they work as a system.
+
+### 7.6 Sprint Board Automation (#515) 🔵
+- **What:** Move issues between GitHub Project board columns (Backlog → In Progress → Done) based on pipeline events.
+- **Why:** Carried from Sprint 6. Closes the loop on project visibility.
+
+### What Sprint 7 Achieves
+After Sprint 7, trust comes from a chain: **spec → sealed behavioral tests → constrained implementation → engine-verified results → behavioral scoring**. The reviewer exists but is demoted. The implementing agent can't game the system because it didn't write the tests, can't modify them, and doesn't grade itself.
+
+This is **Level 4**: AI writes, behavior validates.
+
+---
+
+## Sprint 8: External Validator — Trust Boundary Separation (Month 2)
+
+*The validator must be a separate process from the orchestrator. Defense in depth: even if an agent exploits the orchestrator, the validator is untouched.*
+
+> **Prerequisite:** Sprint 7 ships the internal validator (#529-#534). Sprint 8 externalizes it.
+> **Architecture:** See `level5-architecture.md` → "External Validator Architecture" for full design.
+
+### Why This Matters
+
+Sprint 7 gets behavioral validation working (acceptance tests, hash-sealed protected outputs via `file_guard.py`, composite scoring). But the validator runs *inside* the orchestrator process. This means:
+
+- A compromised orchestrator = compromised validator
+- The orchestrator could theoretically fake test results
+- No defense in depth — single trust boundary for everything
+
+Sprint 8 moves the validator to its own process with its own trust boundary. The protocol (JSON-RPC over stdio) is simple enough for a single Sprint, and the design scales to container isolation (Sprint 9-10).
+
+### 8.1 External Validator Subprocess
+
+- **What:** A standalone `validator_runner.py` that runs as a subprocess. The orchestrator spawns it, sends validation requests via stdin (JSON-RPC 2.0), receives verdicts via stdout. The validator has read-only access to the repo and test store — it cannot modify code or tests.
+- **Why:** Process-level separation is the minimum viable trust boundary. The validator can't be influenced by in-process state corruption, prompt injection side effects, or agent exploits targeting the orchestrator.
+- **Dependencies:** Sprint 7 acceptance test runner (#532), `file_guard.py` (#531)
+- **Complexity:** M
+- **Existing foundation:** `file_guard.py` (hash verification), `sequencer.py` (phase execution), acceptance test runner (#532)
+
+### 8.2 IPC Protocol: Orchestrator ↔ Validator
+
+- **What:** JSON-RPC 2.0 protocol over stdin/stdout pipes. Structured request/response format with typed fields: `validate` method (run tests, return verdict), `health` method (subprocess alive check). Schema-validated on both ends.
+- **Why:** Structured IPC prevents the orchestrator from passing arbitrary data to the validator. The protocol is the contract — both sides enforce it independently. Stdin/stdout chosen over sockets to minimize attack surface.
+- **Dependencies:** Validator subprocess (8.1)
+- **Complexity:** S
+- **Existing foundation:** `file_guard.py` patterns (hash verification as structured data)
+
+### 8.3 Immutable Acceptance Test Store
+
+- **What:** A dedicated directory (`$ORCHEMIST_TEST_STORE/{run_id}/`) where acceptance tests are sealed after the acceptance_test phase. Sealing = write file + compute SHA256 + write manifest + set filesystem permissions to read-only. Neither orchestrator nor validator can modify tests after sealing.
+- **Why:** The test store is the neutral ground. If either process could modify tests after creation, the trust model breaks. Immutability is enforced at the filesystem level (permissions) and verified cryptographically (hash in manifest).
+- **Dependencies:** `file_guard.py` (#531), acceptance test phase in pipeline
+- **Complexity:** M
+- **Existing foundation:** `file_guard.py` (`compute_hash`, `verify_hash`), `protected_outputs` in pipeline template
+
+### 8.4 Validator-Driven Retry Loop
+
+- **What:** The validator's verdict includes `retry_recommended` (bool) and `retry_reason` (string with failing test details). The orchestrator's retry loop is driven by the validator's assessment — not by the orchestrator's own judgment. On retry, the validator's failure details are injected as `failure_context` into the re-implementation prompt.
+- **Why:** "Don't ask the agent to behave. Verify that it did." extended to: "Don't let the orchestrator decide if results are good enough. The validator decides." This inverts the current control flow where `sequencer.py` decides whether to retry.
+- **Dependencies:** Validator subprocess (8.1), IPC protocol (8.2), existing retry logic in `sequencer.py`
+- **Complexity:** M
+- **Existing foundation:** `_execute_and_wait` retry loop, `_format_failure_context`, `failure_context` injection in `_build_phase_input`
+
+### 8.5 Pipeline Template Integration
+
+- **What:** Add `validation_mode: external` option to pipeline template config. When set, the sequencer spawns the external validator subprocess instead of running tests in-process. Backward-compatible: defaults to `internal` (current behavior). Migration path: `orch migrate-validation` CLI command.
+- **Why:** Gradual adoption. Existing Sprint 7 pipelines work unchanged. Teams opt into external validation when ready. The CLI migration command updates templates in-place.
+- **Dependencies:** All Sprint 8 items (8.1-8.4)
+- **Complexity:** S
+- **Existing foundation:** `coding-pipeline-v1.yaml` template, `config_schema` validation, `orch validate` linting
+
+---
+
 ## Phase 3: Level 4.8 — Self-Healing (Months 2-4)
 
 *The factory doesn't just run — it detects problems and fixes them without being told.*
@@ -392,7 +496,7 @@ Level 5 eliminates all of these manual steps for routine work.
 | **Runaway costs** — retry loops burn $1000+ | 🔴 Critical | High | Budget limits (2.4) with hard caps. Circuit breaker kills pipelines that exceed thresholds. Per-run, per-day, per-org limits. |
 | **Bad code auto-merged** — regression in production | 🔴 Critical | Medium | Confidence routing (2.3) with conservative initial thresholds. Trust calibration (4.4) that demotes repos after regressions. Mandatory CI gate. Rollback pipelines (4.3). |
 | **Infinite pipeline loops** — pipeline A triggers B triggers A | 🟡 High | Medium | Depth limits on pipeline composition. DAG validation on trigger chains. Run ID propagation to detect cycles. Max spawned children per root run. |
-| **Security — LLM injection via issue text** | 🔴 Critical | Medium | Sandboxed execution environments. Input sanitization. No `eval()` of LLM output. Restricted `command_executor` allowlist. Template-level permission scoping. |
+| **Security — LLM injection via issue text** | 🔴 Critical | Medium | Sandboxed execution environments. Input sanitization. No `eval()` of LLM output. Restricted `command_executor` allowlist. Template-level permission scoping. External validator (Sprint 8) ensures agent exploits can't bypass validation. |
 | **Stale context — agent edits outdated code** | 🟡 High | High | Always `git pull` before pipeline start. Lock mechanism to prevent concurrent pipelines on same branch. Conflict detection in `git_integration.py`. |
 | **Alert fatigue** — too many notifications | 🟠 Medium | High | Batched notifications. Escalation tiers (silent → Slack → email → page). Configurable notification preferences per severity. |
 | **Hallucinated fixes** — agent "fixes" something that wasn't broken | 🟡 High | Medium | Hard gate: all fixes must pass existing test suite + new tests. Regression detection (3.3) as safety net. Human review for any change touching > N files. |
@@ -450,18 +554,20 @@ Level 5 eliminates all of these manual steps for routine work.
 ## Implementation Sequence (Critical Path)
 
 ```
-Phase 1 (Weeks 1-4)           Phase 2 (Months 1-2)         Phase 3 (Months 2-4)        Phase 4 (Months 4-8)
-─────────────────────          ───────────────────────       ──────────────────────       ──────────────────────
-                                                              
-1.3 HITL Approvals ──────────► 2.3 Confidence Routing ────► 3.3 Regression Detection ──► 4.1 Issue Automation
-1.5 Run Analytics  ──────────► 2.1 Webhook Triggers ──────► 3.1 Failure Diagnosis ─────► 4.4 Trust Calibration
-                               2.4 Cost Tracking ──────────► 3.2 Adaptive Retry ────────► 4.2 Meta-Orchestration
-1.2 Monaco Editor              2.2 Pipeline Composition ──► 3.4 Fleet Dashboard         4.3 Deploy Integration
-1.1 Visual Builder             2.5 GitHub App ─────────────► 3.5 Proactive Maintenance   4.5 Audit Trail
-1.4 Template Marketplace                                                                 4.6 Multi-Repo
+Phase 1 (Weeks 1-4)     Sprint 7-8 (Month 1-2)       Phase 2 (Months 1-2)       Phase 3 (Months 2-4)        Phase 4 (Months 4-8)
+─────────────────────    ──────────────────────────    ───────────────────────     ──────────────────────       ──────────────────────
+                                                                                    
+1.3 HITL Approvals ───►  7.1-7.5 Behavioral Valid. ─► 2.3 Confidence Routing ──► 3.3 Regression Detection ──► 4.1 Issue Automation
+1.5 Run Analytics  ───►  8.1-8.5 External Validator ► 2.1 Webhook Triggers ────► 3.1 Failure Diagnosis ─────► 4.4 Trust Calibration
+                                                       2.4 Cost Tracking ────────► 3.2 Adaptive Retry ────────► 4.2 Meta-Orchestration
+1.2 Monaco Editor                                      2.2 Pipeline Composition ► 3.4 Fleet Dashboard         4.3 Deploy Integration
+1.1 Visual Builder                                     2.5 GitHub App ───────────► 3.5 Proactive Maintenance   4.5 Audit Trail
+1.4 Template Marketplace                                                                                       4.6 Multi-Repo
 ```
 
-**The critical path is: HITL Approvals → Confidence Routing → Regression Detection → Issue Automation → Trust Calibration.**
+**The critical path is: Behavioral Validation (Sprint 7) → External Validator (Sprint 8) → Confidence Routing → Regression Detection → Issue Automation → Trust Calibration.**
+
+Sprint 8 (External Validator) is now on the critical path. Without trust boundary separation, confidence routing and regression detection inherit the single-process trust model — which is insufficient for Level 5 autonomy.
 
 Everything else is important but not blocking. The critical path is what turns a human-driven tool into an autonomous factory.
 
