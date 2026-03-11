@@ -110,12 +110,12 @@ class TestPhaseOrdering:
             f"acceptance_test (idx={at_idx}) should come before implement (idx={impl_idx})"
         )
 
-    def test_phase_count_is_six(self):
-        """Template has exactly 6 phases (spec, acceptance_test, implement, review, fix, test)."""
+    def test_phase_count_is_seven(self):
+        """Template has exactly 7 phases (spec, acceptance_test, implement, acceptance_run, review, fix, test)."""
         template = load_template()
         phase_ids = [p.get("id") for p in template.get("phases", [])]
-        assert len(phase_ids) == 6, (
-            f"Expected 6 phases, got {len(phase_ids)}: {phase_ids}"
+        assert len(phase_ids) == 7, (
+            f"Expected 7 phases, got {len(phase_ids)}: {phase_ids}"
         )
 
 
@@ -148,14 +148,14 @@ class TestTransitions:
             f"got {transitions.get('success')!r}"
         )
 
-    def test_implement_transitions_to_review(self):
-        """implement phase success transition still points to review."""
+    def test_implement_transitions_to_acceptance_run(self):
+        """implement phase success transition points to acceptance_run (updated in #532)."""
         template = load_template()
         impl = get_phase(template, "implement")
         assert impl is not None
         transitions = impl.get("transitions", {})
-        assert transitions.get("success") == "review", (
-            f"implement success transition should be 'review', "
+        assert transitions.get("success") == "acceptance_run", (
+            f"implement success transition should be 'acceptance_run' (updated by #532), "
             f"got {transitions.get('success')!r}"
         )
 
@@ -246,19 +246,19 @@ class TestTemplateVersion:
     """Template version must be bumped to 1.3.0."""
 
     def test_version_bumped(self):
-        """Template version is 1.3.0 (was 1.2.0)."""
+        """Template version is 1.4.0 (bumped by #532 from 1.3.0)."""
         template = load_template()
         version = template.get("version")
-        assert version == "1.3.0", (
-            f"Expected version '1.3.0', got {version!r}"
+        assert version == "1.4.0", (
+            f"Expected version '1.4.0', got {version!r}"
         )
 
     def test_name_updated(self):
-        """Template name reflects the new version."""
+        """Template name reflects the current version."""
         template = load_template()
         name = template.get("name", "")
-        assert "1.3" in name, (
-            f"Template name should reference v1.3, got {name!r}"
+        assert "1.4" in name, (
+            f"Template name should reference v1.4, got {name!r}"
         )
 
 
