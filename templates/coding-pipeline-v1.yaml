@@ -104,9 +104,10 @@ phases:
       5. **Risk Assessment** — What could break, backward compatibility concerns
 
       Be specific in Section B. Reference actual file paths and function names from the codebase context.
-      Keep Section A strictly behavioral — the acceptance test agent reads ONLY Section A.
+      Keep Section A strictly behavioral — it will be extracted and given to the acceptance test agent in isolation. Section B will NOT be visible to that agent.
 
-      Write your spec to {output_dir}/spec.md
+      Write your FULL spec to {output_dir}/spec.md
+      ALSO write Section A ONLY to {output_dir}/spec-behavioral.md (just the behavioral contracts, no implementation details)
 
   # Phase 2: Behavioral Acceptance Tests
   - id: acceptance_test
@@ -127,10 +128,9 @@ phases:
       ## Previous Work
       {phase_summary}
 
-      Read the spec at: {output_dir}/spec.md
-      IMPORTANT: Read ONLY "Section A: Behavioral Contract" from the spec.
-      DO NOT read Section B (Implementation Guidance) — it contains implementation
-      details that would bias your tests toward testing HOW rather than WHAT.
+      Read the behavioral contract at: {output_dir}/spec-behavioral.md
+      This file contains ONLY the behavioral contracts — what the system should do.
+      You have no access to implementation details. This is by design.
 
       ## Task
       1. Read Section A of the spec carefully — behavioral contracts ONLY
