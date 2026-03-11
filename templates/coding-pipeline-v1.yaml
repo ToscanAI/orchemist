@@ -1,8 +1,8 @@
 id: coding-pipeline-v1
-name: "Coding Pipeline v1.5"
-description: "8-phase coding pipeline: spec → spec_adversary → acceptance_tests → implement → engine-run acceptance_run → Opus review → fix loop → test. Adversarial spec review before acceptance tests are written. Engine-verified behavioral validation between implement and review."
+name: "Coding Pipeline v1.6"
+description: "8-phase coding pipeline: spec → spec_adversary → acceptance_tests → implement → acceptance_run → Opus review → fix → acceptance_run → review loop → test. Adversarial spec review. Engine-verified behavioral validation after EVERY code change (implement and fix)."
 author: "Toscan"
-version: "1.5.0"
+version: "1.6.0"
 scenario: scenarios/coding-pipeline-v1-smoke.yaml
 category: "code"
 tags: [code, development, review, testing, pipeline]
@@ -383,12 +383,12 @@ phases:
   # Phase 4: Fix Review Feedback
   - id: fix
     name: "Apply Review Fixes"
-    description: "Address code review feedback, then loop back to review"
+    description: "Address code review feedback, then re-verify behavioral contracts before re-review"
     model_tier: sonnet
     thinking_level: low
     max_iterations: 3
     transitions:
-      success: review
+      success: acceptance_run
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the FIX phase of an automated coding pipeline. Your output feeds a re-review — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
 
