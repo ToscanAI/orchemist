@@ -89,22 +89,29 @@ def _call_routing(
 def routing_output_dir_high_confidence(tmp_path: Path) -> Path:
     """Create task JSON files that produce composite confidence >= 0.90.
 
-    Exactly 2 tasks: 1 review + 1 non-review, both with state=success and
-    confidence=1.0.  With DEFAULT_WEIGHTS (v1) renormalized over the 4 active
-    signals (llm_judge, test_pass_rate, review_quality, change_complexity
-    sum to 0.75 of the total weight), this produces composite ≈ 0.911 (HIGH).
+    Exactly 2 task files + 1 acceptance_results.json meta file.
+    Task files: 1 review + 1 non-review, both with state=success and confidence=1.0.
+    acceptance_results.json: 100% pass rate (Issue #528 primary signal).
 
-    Breakdown (DEFAULT_WEIGHTS v1, renormalized to 4 present signals):
-        effective weights: llm_judge=0.40, test_pass_rate=0.267,
-                           review_quality=0.20, change_complexity=0.133
-        llm_judge:          1.00 × 0.40  = 0.400
-        test_pass_rate:     1.00 × 0.267 = 0.267
-        review_quality:     1.00 × 0.20  = 0.200
-        change_complexity:  0.333 × 0.133 = 0.044
-        composite ≈ 0.911 → HIGH (>= 0.90)
+    acceptance_results.json is excluded from the task file scan (skipped by
+    ConfidenceCalculator) and consumed separately to produce the
+    acceptance_pass_rate signal.
 
-    Note: Confidence 0.95 was insufficient with renormalized weights (yields
-    ~0.881); raised to 1.0 to reliably clear the 0.90 AUTO_MERGE_THRESHOLD.
+    Breakdown (DEFAULT_WEIGHTS v1, 5 active signals, Issue #528):
+        Present weights:
+            acceptance_pass_rate: 0.40   (from acceptance_results.json)
+            llm_judge:            0.30   (from review_phase.json)
+            test_pass_rate:       0.20   (from phase_0.json)
+            review_quality:       0.05   (avg confidence over 2 task files)
+            change_complexity:    0.10   (2 task files → 1/(1+2) ≈ 0.333)
+        Total present weight = 1.05
+
+        acceptance_pass_rate: 1.00 × 0.40  = 0.400
+        llm_judge:            1.00 × 0.30  = 0.300
+        test_pass_rate:       1.00 × 0.20  = 0.200
+        review_quality:       1.00 × 0.05  = 0.050
+        change_complexity:    0.333 × 0.10 = 0.033
+        composite ≈ 0.983 / 1.05 ≈ 0.936 → HIGH (>= 0.90)
     """
     out = tmp_path / "output"
     out.mkdir()
@@ -119,6 +126,16 @@ def routing_output_dir_high_confidence(tmp_path: Path) -> Path:
         "state": "success",
         "confidence": 1.0,
         "task_type": "review",
+    }))
+    # Acceptance test results — triggers acceptance_pass_rate signal (Issue #528)
+    # This file is intentionally NOT counted in the task file scan.
+    (out / "acceptance_results.json").write_text(json.dumps({
+        "phase": "implement",
+        "status": "complete",
+        "passed": 10,
+        "failed": 0,
+        "total": 10,
+        "pass_rate": 1.0,
     }))
     return out
 
@@ -472,10 +489,14 @@ class TestRoutingDecisionPersisted:
         for name, sig in signals.items():
             assert "value" in sig, f"Signal '{name}' missing 'value': {sig}"
 
-    def test_all_4_signals_present_when_review_and_non_review_tasks(
+    def test_all_core_signals_present_when_review_and_non_review_tasks(
         self, tmp_path: Path, routing_output_dir_high_confidence: Path
     ) -> None:
-        """All 4 signal types are captured when both review and non-review tasks are present."""
+        """All core signal types are captured when both review and non-review tasks are present.
+
+        Issue #528: acceptance_pass_rate is now also expected when acceptance_results.json
+        is present in the output directory (as the high-confidence fixture includes it).
+        """
         db = _make_db(tmp_path)
         run_id = "test-persist-all-signals"
         _seed_run(db, run_id, routing_output_dir_high_confidence)
@@ -495,9 +516,15 @@ class TestRoutingDecisionPersisted:
         assert row is not None
         signals = row["signals_json"]
         assert isinstance(signals, dict)
-        expected = {"llm_judge", "test_pass_rate", "review_quality", "change_complexity"}
-        found = set(signals.keys())
-        assert expected == found, f"Expected signals {expected}, got {found}"
+        # Core signals always present when both review and non-review tasks exist
+        core_expected = {"llm_judge", "test_pass_rate", "review_quality", "change_complexity"}
+        assert core_expected.issubset(set(signals.keys())), (
+            f"Missing core signals. Expected subset {core_expected}, got {set(signals.keys())}"
+        )
+        # Issue #528: acceptance_pass_rate present when acceptance_results.json exists
+        assert "acceptance_pass_rate" in signals, (
+            "acceptance_pass_rate signal should be present when acceptance_results.json exists"
+        )
 
 
 # ===========================================================================

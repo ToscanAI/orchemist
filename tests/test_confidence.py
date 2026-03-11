@@ -211,11 +211,12 @@ class TestDefaultWeights:
         assert "audit_catch_rate" not in DEFAULT_WEIGHTS
 
     def test_weights_sum_within_expected_range(self):
-        # DEFAULT_WEIGHTS now includes historical_calibration (0.05) which is
-        # only emitted via extra_signals; weights sum to slightly above 1.0
-        # because _weighted_average() renormalises across present signals.
+        # DEFAULT_WEIGHTS weights sum > 1.0: several signals are optional (only
+        # emitted when their data is present), so _weighted_average renormalises
+        # over present signals automatically.
+        # Issue #528: acceptance_pass_rate (0.40) added → sum is ~1.35.
         total = sum(DEFAULT_WEIGHTS.values())
-        assert 1.0 <= total <= 1.1
+        assert 1.0 <= total <= 1.5
 
     def test_llm_judge_weight(self):
         # Updated in Issue #4.1.4: 0.35 → 0.30 to accommodate adversarial_audit
@@ -226,8 +227,8 @@ class TestDefaultWeights:
         assert DEFAULT_WEIGHTS["test_pass_rate"] == 0.20
 
     def test_review_quality_weight(self):
-        # Updated in Issue #4.1.3: 0.2 → 0.15
-        assert DEFAULT_WEIGHTS["review_quality"] == 0.15
+        # Issue #528: reduced 0.15 → 0.05 (acceptance_pass_rate is now primary signal)
+        assert DEFAULT_WEIGHTS["review_quality"] == 0.05
 
     def test_change_complexity_weight(self):
         assert DEFAULT_WEIGHTS["change_complexity"] == 0.10
@@ -259,9 +260,11 @@ class TestDefaultWeightsV2:
         ):
             assert key in DEFAULT_WEIGHTS_V2
 
-    def test_v2_weights_sum_to_one(self):
+    def test_v2_weights_sum_within_expected_range(self):
+        # Issue #528: acceptance_pass_rate (0.40) added to V2 weights.
+        # Weights intentionally sum > 1.0; _weighted_average renormalises.
         total = sum(DEFAULT_WEIGHTS_V2.values())
-        assert abs(total - 1.0) < 1e-9
+        assert 1.0 <= total <= 1.5
 
     def test_v2_llm_judge_weight(self):
         # Issue #429.1: recalibrated from 0.25 → 0.40 (primary quality discriminator)

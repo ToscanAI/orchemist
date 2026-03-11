@@ -698,13 +698,16 @@ class TestDefaultWeightsAuditCatchRate:
         assert DEFAULT_WEIGHTS["historical_calibration"] == pytest.approx(0.05)
 
     def test_weights_sum_within_expected_range(self):
-        # DEFAULT_WEIGHTS now includes historical_calibration (0.05) which is
-        # only emitted via extra_signals; weights sum slightly above 1.0.
+        # DEFAULT_WEIGHTS sum > 1.0: several signals are optional (only emitted
+        # when their data is present), so _weighted_average renormalises over
+        # present signals automatically.
+        # Issue #528: acceptance_pass_rate (0.40) added → sum is ~1.35.
         total = sum(DEFAULT_WEIGHTS.values())
-        assert 1.0 <= total <= 1.1
+        assert 1.0 <= total <= 1.5
 
     def test_all_expected_keys_present(self):
         expected_keys = {
+            "acceptance_pass_rate",    # added in Issue #528 — PRIMARY signal
             "llm_judge",
             "test_pass_rate",
             "review_quality",

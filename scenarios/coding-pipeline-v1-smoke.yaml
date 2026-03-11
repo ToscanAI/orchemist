@@ -2,7 +2,8 @@
 #
 # Purpose:
 #   Validates that the coding-pipeline-v1 template produces structurally
-#   correct output across all 5 phases: spec → implement → review → fix → test.
+#   correct output across all 6 phases:
+#   spec → acceptance_test → implement → review → fix → test.
 #
 # Scoring:
 #   Non-gate weights: keyword(40) + llm_judge(60) = 100
@@ -10,12 +11,14 @@
 #   Expected dry-run score: (1.0×40 + 0.8×60) / 100 = 0.88 → PASS
 
 id: coding-pipeline-v1-smoke
-version: "1.0.0"
+version: "1.1.0"
 name: "Coding Pipeline v1 Smoke Test"
 description: >
-  Smoke test for the coding-pipeline-v1 template. Validates the 5-phase
-  coding loop: spec interpretation → implementation → Opus code review →
-  fix → test. Checks for structural output, review verdicts, and test results.
+  Smoke test for the coding-pipeline-v1 template. Validates the 6-phase
+  coding loop: spec interpretation → behavioral acceptance tests →
+  implementation → Opus code review → fix → test.
+  Checks for structural output, acceptance test pass rate, review verdicts,
+  and test results.
 tags:
   - smoke
   - coding-pipeline
@@ -47,11 +50,16 @@ acceptance:
     keywords:
       # Live mode keywords
       - "spec"
+      - "acceptance_test"
+      - "behavioral"
+      - "acceptance_tests"
+      - "produces"
       - "implement"
       - "review"
       - "APPROVE"
       - "test"
       - "fix"
+      - "pass_rate"
       # Dry-run mode keywords
       - "mock"
       - "execution"
@@ -61,34 +69,44 @@ acceptance:
     weight: 40
     description: >
       Structural check: output contains recognisable content from a coding
-      pipeline run. Live: spec analysis, implementation, review verdict
-      (APPROVE/REVISE), fix pass, test results. Dry-run: mock executor output.
+      pipeline run. Live: spec analysis, behavioral acceptance tests, implementation,
+      review verdict (APPROVE/REVISE), fix pass, test results.
+      Dry-run: mock executor output.
 
   # LLM judge for quality
   - id: output_quality
     type: llm_judge
     judge_model: claude-haiku-4-5-20241022
     rubric: |
-      You are evaluating the output of a 5-phase coding pipeline.
-      The output consists of phase summaries (spec, implement, review, fix, test).
+      You are evaluating the output of a 6-phase coding pipeline.
+      The output consists of phase summaries:
+        spec → acceptance_test → implement → review → fix → test.
       Code is committed to git — you will see commit references and file change
       descriptions, NOT raw code. This is expected behavior.
 
       Phases:
       1. Spec interpretation — analyzes the issue, lists files to change, implementation steps
-      2. Implementation — describes code changes made, files modified, commit hash
-      3. Code review — APPROVE or REQUEST_CHANGES verdict with reasoning
-      4. Fix — addresses review feedback (may be absent if first review approved)
-      5. Test — test execution results with pass/fail counts
+      2. Behavioral Acceptance Tests — writes pytest tests expressing "when I call X with Y,
+         it produces Z" contracts BEFORE implementation. Produces acceptance_tests.py and
+         acceptance_results.json with pass_rate.
+      3. Implementation — implements changes, runs acceptance tests, reports pass_rate and
+         commit hash
+      4. Code review — APPROVE or REQUEST_CHANGES verdict with reasoning
+      5. Fix — addresses review feedback (may be absent if first review approved)
+      6. Test — full test suite results with pass/fail counts
 
       Scoring criteria (equal weight):
       1. Spec completeness — references requirements, files to change, implementation approach
-      2. Implementation evidence — describes files changed, functions added/modified, commit hash
-      3. Review verdict — APPROVE or REQUEST_CHANGES with substantive reasoning
-      4. Test results — pass/fail counts present (e.g. "48 passed", "0 failed")
+      2. Acceptance tests present — behavioral contracts listed, acceptance_results.json
+         with pass_rate field (e.g. "pass_rate: 0.9")
+      3. Implementation evidence — describes files changed, functions added/modified,
+         acceptance test pass rate, commit hash
+      4. Review verdict — APPROVE or REQUEST_CHANGES with substantive reasoning
+      5. Test results — pass/fail counts present (e.g. "48 passed", "0 failed")
 
-      Score 0.0 (none met) to 1.0 (all four met).
-      If the fix phase is absent (first-pass APPROVE), score criteria 1-3 plus test results.
+      Score 0.0 (none met) to 1.0 (all five met).
+      If fix phase is absent (first-pass APPROVE), score criteria 1-4 plus test results.
+      If acceptance_test phase output is absent (legacy pipeline), score the remaining criteria.
 
       Respond ONLY:
       Score: <0.0-1.0>
@@ -96,7 +114,8 @@ acceptance:
     threshold: 0.60
     weight: 60
     description: >
-      LLM judge: checks for spec analysis, code output, review verdict, test results.
+      LLM judge: checks for spec analysis, behavioral acceptance tests, code output,
+      review verdict, and test results.
 
 scoring:
   method: weighted_average
