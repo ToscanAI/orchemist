@@ -100,6 +100,8 @@ phases:
     thinking_level: high
     transitions:
       success: implement
+    protected_outputs:
+      - acceptance_tests.py
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the ACCEPTANCE_TEST phase (2/5) of an automated coding pipeline. Your output feeds the implement phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
 

@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+from .file_guard import compute_hash, FileGuardError
 from .output_parser import extract_and_write, parse_output
 from .review_parser import parse_review_output, ReviewOutcome
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
@@ -140,6 +141,10 @@ class PhaseSequencer:
         """Protects ``phase_outputs`` during concurrent wave execution."""
         self._callback_lock: threading.Lock = threading.Lock()
         """Serialises on_phase_start / on_phase_complete callback invocations."""
+
+        # File-guard hash store (Issue #531)
+        # Maps absolute file path → SHA256 hex digest for protected_outputs verification.
+        self._protected_hashes: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -302,8 +307,26 @@ class PhaseSequencer:
             if phase.write_files:
                 self._handle_file_write(phase, result)
 
+            # Hash verification — check if THIS phase tampered with protected files (#531)
+            guard_failure = self._verify_protected_hashes(phase)
+            if guard_failure is not None:
+                result = guard_failure
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+                self._invoke_on_phase_complete(phase_id, result)
+                return {
+                    "phase_outputs": self.phase_outputs,
+                    "final_output": result,
+                    "failed_phase": phase_id,
+                    "aborted": True,
+                }
+
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
+
+            # Hash capture — record protected_outputs from THIS phase for future verification (#531)
+            if result.get('state') == 'success' and getattr(phase, 'protected_outputs', []):
+                self._store_protected_hashes(phase)
 
             # Output length validation (#351) — fail phase if output is too short
             validation_failure = self._validate_phase_output(phase, result)
@@ -453,9 +476,22 @@ class PhaseSequencer:
             if phase.write_files:
                 self._handle_file_write(phase, result)
 
+            # Hash verification — check if THIS phase tampered with protected files (#531)
+            guard_failure = self._verify_protected_hashes(phase)
+            if guard_failure is not None:
+                result = guard_failure
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+                self._invoke_on_phase_complete(phase_id, result)
+                return result
+
             # Write result under lock — prevents lost updates on shared dict
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
+
+            # Hash capture — record protected_outputs from THIS phase for future verification (#531)
+            if result.get('state') == 'success' and getattr(phase, 'protected_outputs', []):
+                self._store_protected_hashes(phase)
 
             # Output length validation (#351) — fail phase if output is too short
             validation_failure = self._validate_phase_output(phase, result)
@@ -1082,6 +1118,124 @@ class PhaseSequencer:
             )
 
         return None  # validation passed
+
+    # ------------------------------------------------------------------
+    # File-guard hash helpers (Issue #531)
+    # ------------------------------------------------------------------
+
+    def _store_protected_hashes(self, phase: "PhaseDefinition") -> None:
+        """Compute and store SHA256 hashes for all files in phase.protected_outputs.
+
+        Called after a successful phase that has a non-empty protected_outputs list.
+        Hashes are stored in self._protected_hashes keyed by absolute file path.
+
+        Graceful degradation:
+        - If output_dir is None, logs a WARNING and returns without storing.
+        - If a file does not exist, logs a WARNING and skips that file.
+
+        Args:
+            phase: The phase definition whose protected_outputs to hash.
+        """
+        if not self.output_dir:
+            logger.warning(
+                f"Phase '{phase.id}': protected_outputs declared but output_dir is None "
+                f"— skipping hash computation"
+            )
+            return
+
+        with self._phase_outputs_lock:
+            for filename in getattr(phase, 'protected_outputs', []):
+                abs_path = str(Path(self.output_dir) / filename)
+                try:
+                    digest = compute_hash(abs_path)
+                    self._protected_hashes[abs_path] = digest
+                    logger.debug(
+                        f"Phase '{phase.id}': stored hash for protected output "
+                        f"'{filename}' → sha256:{digest[:16]}…"
+                    )
+                except FileNotFoundError:
+                    logger.warning(
+                        f"Phase '{phase.id}': protected output '{filename}' not found "
+                        f"after phase completion — skipping hash"
+                    )
+
+    def _verify_protected_hashes(self, phase: "PhaseDefinition") -> Optional[dict]:
+        """Verify all stored protected-file hashes before accepting a phase's output.
+
+        Fast path: if _protected_hashes is empty, returns None immediately
+        (zero overhead on pipelines without protected_outputs).
+
+        For each stored path → expected hash pair, re-computes the hash and
+        compares. On mismatch or deletion, returns a synthetic FAILED result dict
+        with error code "PROTECTED_FILE_MODIFIED" and a human-readable message.
+
+        Args:
+            phase: The phase whose output is about to be accepted (used for error context).
+
+        Returns:
+            None if all hashes match (or no hashes stored).
+            A synthetic FAILED result dict on any hash mismatch or file deletion.
+        """
+        if not self._protected_hashes:
+            return None  # fast path — no protected outputs
+
+        with self._phase_outputs_lock:
+            items = list(self._protected_hashes.items())
+
+        for abs_path, expected in items:
+            filename = Path(abs_path).name
+            try:
+                actual = compute_hash(abs_path)
+                if actual != expected:
+                    msg = (
+                        f"Protected file modified: {filename} "
+                        f"(expected sha256:{expected}, got sha256:{actual})"
+                    )
+                    logger.error(
+                        f"Pipeline {self.template.id}: file-guard FAILED "
+                        f"on phase '{phase.id}': {msg}"
+                    )
+                    return {
+                        "state": TaskState.FAILED.value,
+                        "result": {"text": ""},
+                        "errors": [{
+                            "code": "PROTECTED_FILE_MODIFIED",
+                            "message": msg,
+                            "severity": "error",
+                        }],
+                        "metadata": {
+                            "attempt_number": 1,
+                            "total_attempts": 1,
+                            "file_guard_failure": True,
+                        },
+                        "confidence": 0.0,
+                    }
+            except FileNotFoundError:
+                msg = (
+                    f"Protected file deleted: {filename} "
+                    f"(expected sha256:{expected}, file not found)"
+                )
+                logger.error(
+                    f"Pipeline {self.template.id}: file-guard FAILED "
+                    f"on phase '{phase.id}': {msg}"
+                )
+                return {
+                    "state": TaskState.FAILED.value,
+                    "result": {"text": ""},
+                    "errors": [{
+                        "code": "PROTECTED_FILE_MODIFIED",
+                        "message": msg,
+                        "severity": "error",
+                    }],
+                    "metadata": {
+                        "attempt_number": 1,
+                        "total_attempts": 1,
+                        "file_guard_failure": True,
+                    },
+                    "confidence": 0.0,
+                }
+
+        return None  # all hashes match
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -2267,6 +2421,33 @@ class StateMachineSequencer(PhaseSequencer):
                 if phase.write_files:
                     self._handle_file_write(phase, result)
 
+                # ── Hash verification — check if THIS phase tampered with protected files (#531)
+                guard_failure = self._verify_protected_hashes(phase)
+                if guard_failure is not None:
+                    result = guard_failure
+                    with self._phase_outputs_lock:
+                        if current_phase_id in self.phase_outputs:
+                            self.iteration_history[current_phase_id].append(
+                                self.phase_outputs[current_phase_id]
+                            )
+                        result.setdefault("metadata", {})["iteration"] = current_iter
+                        self.phase_outputs[current_phase_id] = result
+                    self._invoke_on_phase_complete(current_phase_id, result)
+                    self._safe_call_hook(
+                        self.on_pipeline_complete,
+                        self.pipeline_context,
+                        None,
+                        pipeline_id=self.template.id,
+                    )
+                    return {
+                        "phase_outputs": self.phase_outputs,
+                        "final_output": result,
+                        "failed_phase": current_phase_id,
+                        "aborted": True,
+                        "iteration_history": dict(self.iteration_history),
+                        "iteration_counts": dict(self.iteration_counts),
+                    }
+
                 with self._phase_outputs_lock:
                     # Save the previous result to iteration_history before overwriting.
                     # This preserves the full per-phase execution history for
@@ -2279,6 +2460,10 @@ class StateMachineSequencer(PhaseSequencer):
                     # can identify which run produced each output.
                     result.setdefault("metadata", {})["iteration"] = current_iter
                     self.phase_outputs[current_phase_id] = result
+
+                # ── Hash capture — record protected_outputs from THIS phase for future verification (#531)
+                if result.get('state') == 'success' and getattr(phase, 'protected_outputs', []):
+                    self._store_protected_hashes(phase)
 
                 # ── Supervisor hook (#194) ────────────────────────────────────
                 if getattr(phase, "supervisor", False) and result.get("state") == "success":
