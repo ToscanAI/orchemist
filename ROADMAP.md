@@ -1,4 +1,4 @@
-# Orchemist Roadmap: Level 4 → Level 5 (Dark Factory)
+# Orchemist Roadmap: Level 3 → Level 5 (Dark Factory)
 
 > **Last updated:** 2026-03-11
 > **Status:** Active engineering roadmap
@@ -484,6 +484,113 @@ Sprint 8 moves the validator to its own process with its own trust boundary. The
 - **Dependencies:** GitHub App (2.5), issue automation (4.1), deployment integration (4.3)
 - **Complexity:** XL
 - **Existing foundation:** `git_integration.py` is repo-aware, template resolution supports project-local configs
+
+---
+
+## Sprint Roadmap: Behavioral Trust Path (Sprints 7-10)
+
+*The phases above describe capabilities. These sprints describe the execution path from Level 3 (current) to Level 5 (Dark Factory), organized around the shift from code-review trust to behavioral trust.*
+
+> **Reference:** StrongDM operates at Level 5 — "code must not be written by humans, code must not be reviewed by humans." Trust comes from behavioral validation, not code comprehension. Code is treated as opaque weights.
+
+### Where We Actually Are (Level 3)
+
+Today's pipeline: `Spec → Implement → Review (Opus reads code) → Fix → Test → PR`
+
+- Opus reviews by **reading** code — trust comes from code comprehension
+- The implementing agent writes both code AND tests — gaming vector exists
+- A human triggers every pipeline and approves every merge
+- Issue #528 (in progress) begins the transition to behavioral trust
+
+### Sprint 7: Behavioral Validation Foundation (Level 3 → Level 4)
+
+*The reviewer becomes secondary. Behavioral tests become the primary trust signal.*
+
+**Epic:** Behavioral Trust Gate — Acceptance Tests Replace Code Review as Primary Signal
+
+| Issue | Title | Deliverables | Size |
+|-------|-------|-------------|------|
+| 7.1 | Acceptance test phase in coding pipeline | New `acceptance_test` phase in `coding-pipeline-v1.yaml` between spec and implement. Separate agent writes behavioral tests from spec only — no implementation context. | S |
+| 7.2 | Read-only guard for acceptance tests | `AcceptanceTestGuard` in `postflight.py` — verifies acceptance test file hash unchanged after implement phase. `AcceptanceTestTamperedError` on violation. | S |
+| 7.3 | Acceptance test runner integration | `AcceptanceTestRunner` class — executes generated acceptance tests, parses results into `ScenarioResult` format compatible with `scoring.py`. | M |
+| 7.4 | Composite scorer reweighting | `DEFAULT_WEIGHTS_V3` in `confidence.py`: `acceptance_pass_rate` 0.40, `test_pass_rate` 0.25, `review_quality` 0.10. New signal in `ConfidenceCalculator`. | S |
+| 7.5 | Behavioral validation phase in pipeline | New `validate` phase: runs acceptance tests + unit tests, produces composite score. Validate is the gate, review is secondary. Pipeline: `spec → acceptance_test → implement → validate → (review) → PR`. | M |
+
+**Trust model after Sprint 7:** Behavioral pass rate is the primary signal. Review still runs but doesn't block. Auto-merge based on behavioral score ≥ 0.90.
+
+**Builds on:** Issue #528, `scoring.py`, `confidence.py`, `postflight.py`, `ScenarioRunner`
+
+### Sprint 8: Post-Merge Behavioral Regression (Level 4 → Level 4.5)
+
+*Behavioral contracts survive beyond the PR. The regression suite grows with every merge.*
+
+**Epic:** Regression Suite — Behavioral Contracts Accumulate and Protect Main
+
+| Issue | Title | Deliverables | Size |
+|-------|-------|-------------|------|
+| 8.1 | Acceptance test archival system | `regression_suite.py` — after merge, archive acceptance tests to `regression_suite/{issue_number}/`. Tag with issue, date, tested files. | M |
+| 8.2 | Post-merge regression runner | `post_merge_runner.py` — webhook-triggered on merge to main. Runs full regression suite. Reports as GitHub commit status. | M |
+| 8.3 | Auto-rollback on regression failure | Extend `regression.py` — when post-merge suite fails, auto-revert merge commit, create regression issue with failing tests + diff, label `pipeline-ready`. | M |
+| 8.4 | Flaky test detection and quarantine | `flaky_detector.py` — track test stability over N runs. Quarantine tests failing >20% of the time. Quarantined tests don't block but are flagged. | S |
+| 8.5 | Regression suite pruning | Pruning logic — when tested code is deleted (file removed from repo), retire associated regression tests. Prevents suite bloat. Audit trail for retirements. | S |
+
+**Trust model after Sprint 8:** Every merge is validated against the full history of behavioral contracts. Regressions auto-revert and auto-fix. Human monitors but rarely intervenes.
+
+**Builds on:** `regression.py`, `RegressionDetector`, `webhooks.py`, `git_integration.py`, `sprint_chain.py`
+
+### Sprint 9: Code as Opaque Weights (Level 4.5 → Level 4.8)
+
+*The review phase is architecturally removed. Code is opaque. Behavior is everything.*
+
+**Epic:** Remove Reviewer — Behavioral Trust Only
+
+| Issue | Title | Deliverables | Size |
+|-------|-------|-------------|------|
+| 9.1 | Pipeline template v2 (no review phase) | `coding-pipeline-v2.yaml`: `spec → acceptance_test → implement → validate`. No review. No fix loop. Validate is the sole gate. | M |
+| 9.2 | Re-implementation loop (validate → re-implement) | On validation failure: `diagnosis.py` classifies → `adaptive_retry.py` selects strategy → re-run implement with adjusted params. Acceptance tests immutable. Max 3 attempts. | L |
+| 9.3 | Performance and security behavioral probes | Extend acceptance test prompt: include non-functional assertions (response time, memory usage, injection resistance, path traversal probes). | S |
+| 9.4 | Trust profile auto-adjustment | Extend `trust.py`: auto-lower thresholds for repos with >20 behavioral merges and <2% regression rate. Auto-raise after regressions. EMA-based decay. | M |
+| 9.5 | Review phase sunset tooling | `orch migrate-template` CLI command — converts v1 templates (with review) to v2 (without review). Migration guide. Preserves all other config. | S |
+
+**Trust model after Sprint 9:** Code is never read by a reviewer. Correctness is inferred entirely from behavioral validation. Trust profiles adjust automatically based on track record.
+
+**Builds on:** `trust.py`, `TrustCalibrator`, `diagnosis.py`, `adaptive_retry.py`, `AdaptiveRetryEngine`
+
+### Sprint 10: Full Dark Factory (Level 5)
+
+*Issue → Deploy. Self-healing. Self-improving. No human in the loop.*
+
+**Epic:** Zero-Human Pipeline — The Factory Runs in the Dark
+
+| Issue | Title | Deliverables | Size |
+|-------|-------|-------------|------|
+| 10.1 | Issue-to-pipeline full automation | Extend `issue_automation.py`: label `pipeline-ready` → classify → select v2 template → extract inputs → launch → PR → auto-merge on behavioral pass. Zero human steps. | L |
+| 10.2 | Self-healing regression loop | Post-merge regression fails → auto-rollback → create fix issue → auto-label `pipeline-ready` → pipeline fixes regression → re-merge. Full cycle automated. | L |
+| 10.3 | Sprint chain with behavioral gates | Extend `sprint_chain.py`: after merge + regression suite green, auto-advance to next issue. Chain continues until queue empty or budget exceeded. | M |
+| 10.4 | Self-improvement: acceptance test quality feedback | Track which acceptance tests catch real bugs vs. pass trivially. Feed quality signal back to acceptance test generation prompt. Improve test specificity over time. | M |
+| 10.5 | Factory dashboard and kill switch | `orch factory status` — active chains, behavioral scores, regression health. `orch factory stop` — immediate pause all autonomous operations. Emergency brake. | S |
+
+**Trust model after Sprint 10:** A human opens an issue. Everything else — implementation, validation, merge, deployment, regression detection, fixing — happens without human intervention. Trust is earned from the behavioral track record.
+
+**Builds on:** `issue_automation.py`, `IssueAutomation`, `sprint_chain.py`, `SprintChainManager`, `regression.py`, all previous sprints
+
+### Sprint Dependency Chain
+
+```
+Sprint 7 (Level 4)          Sprint 8 (Level 4.5)        Sprint 9 (Level 4.8)       Sprint 10 (Level 5)
+──────────────────          ────────────────────        ────────────────────       ──────────────────
+
+7.1 Accept. phase ────┐
+7.2 Read-only guard ──┤
+7.3 Test runner ──────┼──► 8.1 Test archival ────┐
+7.4 Scorer weights ───┤    8.2 Post-merge run ──┼──► 9.1 Pipeline v2 ────────► 10.1 Full automation
+7.5 Validate phase ───┘    8.3 Auto-rollback ───┤    9.2 Re-impl loop ──────► 10.2 Self-healing
+                           8.4 Flaky detection ─┤    9.3 Perf/sec probes      10.3 Sprint chain
+                           8.5 Suite pruning ────┘    9.4 Trust auto-adjust ─► 10.4 Self-improvement
+                                                      9.5 Migration tooling    10.5 Factory dashboard
+```
+
+**Critical path:** 7.1 → 7.5 → 8.2 → 8.3 → 9.1 → 9.2 → 10.1 → 10.2
 
 ---
 
