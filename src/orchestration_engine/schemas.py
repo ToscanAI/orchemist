@@ -38,6 +38,7 @@ class TaskType(str, Enum):
     SALES = "sales"
     SUPPORT = "support"
     COMMAND = "command"
+    ACCEPTANCE_RUN = "acceptance_run"
 
 
 class TaskState(str, Enum):
@@ -626,3 +627,22 @@ class RunnerStatus(BaseModel):
 # do ``from orchestration_engine.schemas import PhaseOutcome`` without needing
 # to know which module owns the definition.
 from .transitions import PhaseOutcome, determine_outcome  # noqa: F401  re-export
+
+
+class PipelineConfig(BaseModel):
+    """Typed container for pipeline configuration values.
+
+    Used by sequencer and executor components to carry pipeline-level
+    configuration through the execution chain.  Fields are intentionally
+    open (``extra="allow"``) so any config_schema property from a pipeline
+    YAML can be stored without schema changes.
+    """
+
+    model_config = {"extra": "allow"}
+
+    repo_path: Optional[str] = None
+    branch_name: Optional[str] = None
+    issue_number: Optional[int] = None
+    issue_title: Optional[str] = None
+    issue_body: Optional[str] = None
+    repo_url: Optional[str] = None

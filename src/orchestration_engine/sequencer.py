@@ -1857,7 +1857,7 @@ class PhaseSequencer:
             Dict with keys ``command``, ``allowed_commands``, ``working_dir``,
             and ``output_dir`` when task_type is "command"; otherwise ``{}``.
         """
-        if phase.task_type != "command":
+        if phase.task_type not in ("command", "acceptance_run"):
             return {}
 
         raw_command: str = phase.command or ""

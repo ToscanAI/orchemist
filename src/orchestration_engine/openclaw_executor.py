@@ -317,6 +317,10 @@ class OpenClawExecutor(TaskExecutor):
         if task.type == TaskType.COMMAND:
             return self._execute_command_task(task, start_time, task_id)
 
+        # ── ACCEPTANCE_RUN TASK: run pytest locally, skip LLM agent ─────────
+        if task.type == TaskType.ACCEPTANCE_RUN:
+            return self._execute_acceptance_run_task(task, start_time, task_id)
+
         # ── 1. Resolve model / thinking ──────────────────────────────────────
         tier_key = model_tier or (
             task.preferred_model.value
@@ -845,6 +849,136 @@ class OpenClawExecutor(TaskExecutor):
                 model_used="local-subprocess",
                 execution_time_seconds=elapsed,
             )
+
+    def _execute_acceptance_run_task(
+        self,
+        task: TaskSpec,
+        start_time: datetime,
+        task_id: str,
+    ) -> TaskResult:
+        """Execute acceptance tests via pytest — engine-side, no LLM agent.
+
+        Reads ``output_dir`` from ``task.payload``, runs pytest on
+        ``{output_dir}/acceptance_tests.py``, writes engine-verified results
+        to ``{output_dir}/acceptance_results.json``, and returns a
+        ``TaskResult`` with ``state=SUCCESS`` iff all tests pass.
+
+        Args:
+            task:       TaskSpec with type == TaskType.ACCEPTANCE_RUN.
+            start_time: Datetime when the task started (already captured).
+            task_id:    Stable task identifier string.
+
+        Returns:
+            TaskResult with pytest outcome in metadata and failure summary in
+            result['text'] (for downstream prompt feedback).
+        """
+        from . import test_runner  # local import to avoid circular deps at module load
+
+        output_dir: str = task.payload.get("output_dir", "")
+        timeout_sec: int = (
+            task.timeout_seconds
+            if hasattr(task, "timeout_seconds") and task.timeout_seconds
+            else 300
+        )
+
+        if not output_dir:
+            return self._acceptance_run_error(
+                task_id, task, start_time,
+                "missing_output_dir",
+                "No 'output_dir' in task payload for acceptance_run phase",
+            )
+
+        test_file = os.path.join(output_dir, "acceptance_tests.py")
+
+        if not os.path.exists(test_file):
+            return self._acceptance_run_error(
+                task_id, task, start_time,
+                "test_file_not_found",
+                f"acceptance_tests.py not found at: {test_file}",
+            )
+
+        # ── Dry-run shortcut ──────────────────────────────────────────
+        if self.dry_run:
+            mock_result = test_runner.TestRunResult(
+                passed=3, failed=0, errors=0, total=3,
+                pass_rate=1.0,
+                failure_details="",
+                full_output="[dry-run]",
+                exit_code=0,
+            )
+            test_runner.write_acceptance_results(mock_result, output_dir)
+            elapsed = (datetime.now() - start_time).total_seconds()
+            return TaskResult(
+                task_id=task_id,
+                task_type=task.type,
+                state=TaskState.SUCCESS,
+                confidence=1.0,
+                result={"text": "[dry-run] acceptance_run: 3 passed, 0 failed"},
+                errors=[],
+                started_at=start_time,
+                completed_at=datetime.now(),
+                model_used="local-subprocess",
+                execution_time_seconds=elapsed,
+            )
+
+        # ── Execute pytest ────────────────────────────────────────────
+        try:
+            result = test_runner.run_pytest(test_file, timeout_seconds=timeout_sec)
+        except Exception as exc:
+            return self._acceptance_run_error(
+                task_id, task, start_time, "execution_error", str(exc)
+            )
+
+        test_runner.write_acceptance_results(result, output_dir)
+
+        elapsed = (datetime.now() - start_time).total_seconds()
+        all_passed = (result.failed == 0 and result.errors == 0 and result.total > 0)
+        state = TaskState.SUCCESS if all_passed else TaskState.FAILED
+
+        summary = test_runner.format_failure_summary(result)
+
+        logger.info(
+            "OpenClawExecutor: ACCEPTANCE_RUN task=%s state=%s "
+            "passed=%d failed=%d errors=%d total=%d",
+            task_id, state.value,
+            result.passed, result.failed, result.errors, result.total,
+        )
+
+        return TaskResult(
+            task_id=task_id,
+            task_type=task.type,
+            state=state,
+            confidence=result.pass_rate,
+            result={"text": summary},
+            errors=[],
+            started_at=start_time,
+            completed_at=datetime.now(),
+            model_used="local-subprocess",
+            execution_time_seconds=elapsed,
+        )
+
+    def _acceptance_run_error(
+        self,
+        task_id: str,
+        task: TaskSpec,
+        start_time: datetime,
+        code: str,
+        message: str,
+    ) -> TaskResult:
+        """Return a FAILED TaskResult for an acceptance_run-phase error."""
+        logger.error("ACCEPTANCE_RUN task %s failed: [%s] %s", task_id, code, message)
+        return TaskResult(
+            task_id=task_id,
+            task_type=task.type,
+            state=TaskState.FAILED,
+            confidence=0.0,
+            result={"text": ""},
+            errors=[TaskError(code=code, message=message, severity="error")],
+            started_at=start_time,
+            completed_at=datetime.now(),
+            model_used="local-subprocess",
+            execution_time_seconds=(datetime.now() - start_time).total_seconds(),
+        )
 
     def _write_command_output(
         self,
