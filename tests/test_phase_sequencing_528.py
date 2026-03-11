@@ -285,10 +285,10 @@ class TestConfidenceWeights:
         )
 
     def test_review_quality_reduced_in_default_weights(self):
-        """DEFAULT_WEIGHTS['review_quality'] is 0.05 (reduced from 0.15)."""
+        """DEFAULT_WEIGHTS['review_quality'] is 0.10 (raised from 0.05 by Issue #533)."""
         from orchestration_engine.confidence import DEFAULT_WEIGHTS
-        assert DEFAULT_WEIGHTS["review_quality"] == pytest.approx(0.05), (
-            f"review_quality weight should be 0.05 (reduced from 0.15), "
+        assert DEFAULT_WEIGHTS["review_quality"] == pytest.approx(0.10), (
+            f"review_quality weight should be 0.10 (raised from 0.05 in #533), "
             f"got {DEFAULT_WEIGHTS['review_quality']}"
         )
 
@@ -300,10 +300,10 @@ class TestConfidenceWeights:
         )
 
     def test_review_quality_reduced_in_v2_weights(self):
-        """DEFAULT_WEIGHTS_V2['review_quality'] is 0.02 (reduced from 0.06)."""
+        """DEFAULT_WEIGHTS_V2['review_quality'] is 0.04 (raised from 0.02 by Issue #533)."""
         from orchestration_engine.confidence import DEFAULT_WEIGHTS_V2
-        assert DEFAULT_WEIGHTS_V2["review_quality"] == pytest.approx(0.02), (
-            f"DEFAULT_WEIGHTS_V2 review_quality should be 0.02 (reduced from 0.06), "
+        assert DEFAULT_WEIGHTS_V2["review_quality"] == pytest.approx(0.04), (
+            f"DEFAULT_WEIGHTS_V2 review_quality should be 0.04 (raised from 0.02 in #533), "
             f"got {DEFAULT_WEIGHTS_V2['review_quality']}"
         )
 

@@ -85,10 +85,11 @@ class TestWeightsV2Invariants:
 
     def test_weights_sum_within_expected_range(self):
         # Issue #528: acceptance_pass_rate (0.40) added to V2 weights.
+        # Issue #533: code_quality (0.20) added to V2 weights.
         # Weights intentionally sum > 1.0; _weighted_average renormalises over
         # present signals automatically.
         total = sum(DEFAULT_WEIGHTS_V2.values())
-        assert 1.0 <= total <= 1.5, f"Weights sum to {total}, expected in [1.0, 1.5]"
+        assert 1.0 <= total <= 2.0, f"Weights sum to {total}, expected in [1.0, 2.0]"
 
     def test_llm_judge_is_primary(self):
         """llm_judge must be the highest-weighted signal (Issue #429.1)."""
