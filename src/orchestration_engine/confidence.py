@@ -5,6 +5,9 @@ ConfidenceCalculator that aggregates multiple signals from task result JSON
 files in a pipeline output directory into a single composite score.
 
 Signal sources (derived from task result files):
+    acceptance_pass_rate   – Pass rate of spec-derived behavioral acceptance
+                             tests (Issue #528).  Primary signal: 0.40 weight.
+                             Read from ``{output_dir}/acceptance_results.json``.
     llm_judge              – Average confidence of review/judge task types.
     test_pass_rate         – Ratio of non-review tasks whose state == "success".
     review_quality         – Average confidence across ALL tasks.
@@ -74,12 +77,15 @@ AUTO_MERGE_THRESHOLD: float = 0.90    # ConfidenceLevel.HIGH boundary
 HUMAN_REVIEW_THRESHOLD: float = 0.70  # Lowered from 0.75 post-calibration (Issue #429.1)
 
 # ---------------------------------------------------------------------------
-# Default signal weights (v1 — sum to 1.0 for the six standard signals)
+# Default signal weights (v1 — renormalised over present signals)
+# Issue #528: acceptance_pass_rate (0.40) is now the primary signal.
+#             review_quality reduced 0.15 → 0.05 to make room.
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS: dict[str, float] = {
+    "acceptance_pass_rate": 0.40,   # Issue #528 — PRIMARY: spec-derived behavioral tests
     "llm_judge": 0.30,              # Updated in Issue #4.1.4: 0.35 → 0.30
     "test_pass_rate": 0.20,         # Updated in Issue #4.1.4: 0.25 → 0.20
-    "review_quality": 0.15,
+    "review_quality": 0.05,         # Issue #528: reduced 0.15 → 0.05 (acceptance_pass_rate is primary)
     "change_complexity": 0.10,
     "review_catch_value": 0.15,     # Issue #4.1.3
     "adversarial_audit": 0.10,      # Issue #4.1.4 — renamed from audit_catch_rate
@@ -116,15 +122,16 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 # defined above and should be updated in lock-step when this table changes.
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS_V2: dict[str, float] = {
+    "acceptance_pass_rate": 0.40,   # Issue #528 — PRIMARY: spec-derived behavioral tests
     "llm_judge": 0.40,              # ↑ Primary signal: rubric/review scores most discriminative
     "test_pass_rate": 0.30,         # ↑ Binary reliability signal — very trustworthy
     "review_catch_value": 0.12,     # ↓ Reduced: often absent in coding pipeline runs
     "adversarial_audit": 0.08,      # ↓ Reduced: rarely present in Sprint 1-4
-    "review_quality": 0.06,         # ↑ Restored: documents v2 fallback behaviour
+    "review_quality": 0.02,         # Issue #528: reduced 0.06 → 0.02 (acceptance_pass_rate is primary)
     "change_complexity": 0.02,      # ↓ Heavily reduced: task count ≠ quality indicator
     "historical_calibration": 0.02, # Unchanged: extra_signals only
 }
-# Note: weights sum to 1.00; renormalisation in _weighted_average handles absent signals.
+# Note: weights do not need to sum to 1.00; renormalisation in _weighted_average handles absent signals.
 
 
 # ---------------------------------------------------------------------------
@@ -328,10 +335,13 @@ class ConfidenceCalculator:
                     _cal_exc,
                 )
 
-        # Collect all non-meta JSON files (skip files starting with "_")
+        # Collect all non-meta JSON files.
+        # Skip files starting with "_" (meta/internal files) and known signal
+        # output files that are consumed separately (acceptance_results.json).
+        _SKIP_FILES = frozenset({"acceptance_results.json"})
         task_files = sorted(
             p for p in output_dir.glob("*.json")
-            if not p.name.startswith("_")
+            if not p.name.startswith("_") and p.name not in _SKIP_FILES
         )
 
         # Parse each file as a task result dict
@@ -449,6 +459,16 @@ class ConfidenceCalculator:
         ))
 
         # ------------------------------------------------------------------
+        # Signal: acceptance_pass_rate  (Issue #528)
+        # Read from {output_dir}/acceptance_results.json when present.
+        # This is the PRIMARY behavioral signal: tests written from spec before
+        # implementation, forming an immutable behavioral contract.
+        # ------------------------------------------------------------------
+        acceptance_signal = self._extract_acceptance_pass_rate(output_dir, _eff_weights)
+        if acceptance_signal is not None:
+            signals.append(acceptance_signal)
+
+        # ------------------------------------------------------------------
         # Signal: review_catch_value  (Issue #4.1.3)
         # Only emitted when review_outcomes is a non-empty list.
         # Lazy import avoids circular dependency since ReviewCatchValueCalculator
@@ -518,6 +538,95 @@ class ConfidenceCalculator:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _extract_acceptance_pass_rate(
+        self,
+        output_dir: Path,
+        eff_weights: dict[str, float],
+    ) -> Optional[ConfidenceSignal]:
+        """Extract acceptance test pass rate from acceptance_results.json.
+
+        Reads ``{output_dir}/acceptance_results.json`` if it exists and contains
+        a valid ``pass_rate`` field.  Returns a :class:`ConfidenceSignal` for
+        the ``acceptance_pass_rate`` signal, or ``None`` if the file is absent,
+        unreadable, or missing the required fields.
+
+        The ``pass_rate`` field must be in [0.0, 1.0].  Alternatively, if
+        ``passed`` and ``total`` are present and ``total > 0``, the pass rate
+        is computed as ``passed / total``.
+
+        Args:
+            output_dir:   Pipeline output directory (Path).
+            eff_weights:  Effective weight dict to look up the signal weight.
+
+        Returns:
+            A :class:`ConfidenceSignal` with ``name="acceptance_pass_rate"``,
+            or ``None`` when the signal cannot be extracted.
+        """
+        results_file = output_dir / "acceptance_results.json"
+        if not results_file.exists():
+            return None
+
+        try:
+            data = json.loads(results_file.read_text())
+        except Exception as exc:
+            logger.warning(
+                "acceptance_pass_rate: failed to parse %s: %s",
+                results_file,
+                exc,
+            )
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        # Skip placeholder records written before implementation runs tests
+        if data.get("status") == "tests_written" and data.get("total", 0) == 0:
+            logger.debug(
+                "acceptance_pass_rate: skipping pre-implementation placeholder in %s",
+                results_file,
+            )
+            return None
+
+        # Derive pass_rate from explicit field or from passed/total counts
+        pass_rate: Optional[float] = None
+        if "pass_rate" in data:
+            try:
+                pass_rate = float(data["pass_rate"])
+            except (TypeError, ValueError):
+                pass
+
+        if pass_rate is None:
+            passed = data.get("passed")
+            total = data.get("total")
+            if passed is not None and total is not None:
+                try:
+                    total_f = float(total)
+                    if total_f > 0:
+                        pass_rate = float(passed) / total_f
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+
+        if pass_rate is None:
+            logger.warning(
+                "acceptance_pass_rate: %s lacks 'pass_rate' or 'passed'/'total' fields",
+                results_file,
+            )
+            return None
+
+        weight = eff_weights.get(
+            "acceptance_pass_rate",
+            DEFAULT_WEIGHTS.get("acceptance_pass_rate", 0.40),
+        )
+        raw = {k: data.get(k) for k in ("passed", "failed", "errors", "total", "pass_rate")}
+
+        return ConfidenceSignal(
+            name="acceptance_pass_rate",
+            value=pass_rate,
+            weight=weight,
+            raw_value=raw,
+            source=str(results_file),
+        )
 
     @staticmethod
     def _is_review_task(filename: str, data: dict) -> bool:
