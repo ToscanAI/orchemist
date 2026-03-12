@@ -61,8 +61,12 @@ def _run_gh_graphql(query: str, variables: dict, token: Optional[str] = None) ->
     cmd = [
         "gh", "api", "graphql",
         "-f", f"query={query}",
-        "-F", f"variables={json.dumps(variables)}",
     ]
+    for key, value in variables.items():
+        if isinstance(value, (int, float, bool)):
+            cmd += ["-F", f"{key}={value}"]
+        else:
+            cmd += ["-f", f"{key}={value}"]
 
     try:
         result = subprocess.run(
@@ -335,6 +339,14 @@ def get_board_token() -> Optional[str]:
     return os.environ.get("GITHUB_PROJECTS_TOKEN") or os.environ.get("GH_TOKEN") or None
 
 
+_COLUMN_DEFAULTS: dict[str, tuple[str, str]] = {
+    "in_progress": ("GITHUB_PROJECTS_COLUMN_IN_PROGRESS", "In Progress"),
+    "review":      ("GITHUB_PROJECTS_COLUMN_REVIEW",      "Review"),
+    "done":        ("GITHUB_PROJECTS_COLUMN_DONE",         "Done"),
+    "blocked":     ("GITHUB_PROJECTS_COLUMN_BLOCKED",      "Blocked"),
+}
+
+
 def get_column_name(event: str) -> str:
     """Map a pipeline lifecycle event string to a project board column name.
 
@@ -346,13 +358,7 @@ def get_column_name(event: str) -> str:
     Returns:
         Column name string suitable for use as a Projects v2 single-select option.
     """
-    _DEFAULTS: dict[str, tuple[str, str]] = {
-        "in_progress": ("GITHUB_PROJECTS_COLUMN_IN_PROGRESS", "In Progress"),
-        "review":      ("GITHUB_PROJECTS_COLUMN_REVIEW",      "Review"),
-        "done":        ("GITHUB_PROJECTS_COLUMN_DONE",         "Done"),
-        "blocked":     ("GITHUB_PROJECTS_COLUMN_BLOCKED",      "Blocked"),
-    }
-    env_var, default = _DEFAULTS.get(event, ("", event))
+    env_var, default = _COLUMN_DEFAULTS.get(event, ("", event))
     if env_var:
         return os.environ.get(env_var, default)
     return default
