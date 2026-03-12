@@ -609,6 +609,15 @@ Sprint 7 (Level 4)          Sprint 8 (Level 4.5)        Sprint 9 (Level 4.8)    
 | **Hallucinated fixes** — agent "fixes" something that wasn't broken | 🟡 High | Medium | Hard gate: all fixes must pass existing test suite + new tests. Regression detection (3.3) as safety net. Human review for any change touching > N files. |
 | **Single point of failure** — Orchemist daemon crashes | 🟠 Medium | Low | Daemon health checks. Auto-restart via systemd/supervisor. Run state persisted in DB (crash-safe). Orphan run detection and recovery. |
 
+### Trust Hardening (Identified Sprint 7, tracked in #569)
+
+| Risk | Severity | Status | Mitigation |
+|---|---|---|---|
+| **Engine self-modification** — pipeline corrupts its own verification code | 🔴 Critical | Partially addressed (Sprint 8 external validator) | Pre-run engine integrity check against known-good manifest. Engine changes require N+1 review. Separate protected repo for engine code. |
+| **Meaningless acceptance tests** — tests that assert True score 1.0 | 🟡 High | Not addressed | Mutation testing (inject faults, verify tests catch them). Coverage analysis. Minimum assertion complexity heuristics. |
+| **Spec agent controls trust root** — one agent writes both behavioral and implementation specs | 🟡 High | Partially addressed (adversary reviews) | Behavioral contracts from issue body, not spec agent. Spec agent writes implementation plan only. Model diversity for adversary (Opus or different provider). |
+| **Single model provider** — all agents share Anthropic blind spots | 🟠 Medium | Not addressed | Adversary on different model tier (Opus) or different provider. Evaluate when Gemini/DeepSeek code reasoning matures. |
+
 ### Non-Negotiable Guardrails
 
 1. **No auto-merge without CI green.** Period. The LLM judge score is necessary but not sufficient. CI must pass.
