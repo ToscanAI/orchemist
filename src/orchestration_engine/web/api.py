@@ -2735,6 +2735,22 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         # 11. Remove pipeline-ready label (best-effort)
         remove_github_label(repo, issue_number, "pipeline-ready")
 
+        # Board: move to In Progress (Issue #515)
+        try:
+            from orchestration_engine.github_utils import (  # noqa: PLC0415
+                move_issue_on_board, get_board_token, get_column_name,
+            )
+            _repo_owner, _, _repo_name = repo.partition("/")
+            move_issue_on_board(
+                repo_owner=_repo_owner,
+                repo_name=_repo_name,
+                issue_number=issue_number,
+                column_name=get_column_name("in_progress"),
+                token=get_board_token(),
+            )
+        except Exception as _board_exc:  # noqa: BLE001
+            logger.warning("Board move to In Progress failed (non-fatal): %s", _board_exc)
+
         # 12. Post comment with run ID (best-effort)
         comment_body = (
             f"🤖 **Orchemist** detected `pipeline-ready` label and launched the coding pipeline.\n\n"

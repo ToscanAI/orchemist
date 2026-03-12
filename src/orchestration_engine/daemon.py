@@ -598,6 +598,9 @@ def run_daemon(run_id: str, db_path: str) -> None:
                     "Scoring FAILED (score=%.4f) — marking run as 'scoring_failed'",
                     scoring_score,
                 )
+            else:
+                # Board: move to Review on scoring success (Issue #515)
+                _try_board_move(run_id, _gate_issue, _trust_repo, "review")
         except Exception as exc:
             logger.warning("Auto-scoring raised an exception: %s", exc)
             db.update_pipeline_run(run_id, scoring_status='error')
@@ -678,6 +681,17 @@ def run_daemon(run_id: str, db_path: str) -> None:
         phase_outputs=json.dumps(phase_outputs, default=str),
     )
 
+    # --- Board: move to Blocked on pipeline failure (Issue #515) ---
+    if _final_status in ('failed', 'scoring_failed'):
+        _try_board_move(run_id, _gate_issue, _trust_repo, "blocked")
+        # Apply pipeline-failed label — independently non-fatal (Issue #515)
+        if _gate_issue and _trust_repo:
+            try:
+                from .issue_automation import add_github_label  # noqa: PLC0415
+                add_github_label(_trust_repo, _gate_issue, "pipeline-failed")
+            except Exception as _lbl_exc:  # noqa: BLE001
+                logger.warning("Failed to add pipeline-failed label (non-fatal): %s", _lbl_exc)
+
     # --- Post success result to GitHub (Issue #5.1.4) ---
     # Must run BEFORE deferred auto-merge so the PR exists when gh pr merge fires.
     _post_github_result_hook(
@@ -741,6 +755,38 @@ def run_daemon(run_id: str, db_path: str) -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _try_board_move(run_id: str, issue_number: Optional[int], repo: str, column_event: str) -> None:
+    """Move a GitHub issue to a sprint board column. Non-fatal best-effort (Issue #515).
+
+    Wraps :func:`~orchestration_engine.github_utils.move_issue_on_board` in a
+    top-level ``try/except`` so that any failure — including import errors, API
+    errors, or missing config — can never affect pipeline execution.
+
+    Args:
+        run_id:       Pipeline run identifier (used in warning messages).
+        issue_number: GitHub issue number.  ``None`` or ``0`` → no-op.
+        repo:         Repository slug (e.g. ``"owner/repo"``).
+        column_event: One of ``"in_progress"``, ``"review"``, ``"done"``, ``"blocked"``.
+    """
+    if not issue_number:
+        return
+    try:
+        from .github_utils import move_issue_on_board, get_board_token, get_column_name  # noqa: PLC0415
+        repo_owner, _, repo_name = repo.partition("/")
+        move_issue_on_board(
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            issue_number=issue_number,
+            column_name=get_column_name(column_event),
+            token=get_board_token(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Board move (%s) for run '%s' failed (non-fatal): %s",
+            column_event, run_id, exc,
+        )
 
 
 def _extract_repo_slug(repo_url: str) -> str:
@@ -1615,6 +1661,9 @@ def _dispatch_auto_merge(
         queue_config_path=_sprint_queue_config_path,
         db_path=str(Path.home() / ".orchestration-engine" / "engine.db"),
     )
+
+    # --- Board: move to Done on successful auto-merge (Issue #515) ---
+    _try_board_move(run_id, _sprint_issue_number, repo, "done")
 
 
 def _trigger_sprint_chain_next(
