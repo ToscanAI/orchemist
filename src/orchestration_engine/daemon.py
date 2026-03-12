@@ -252,6 +252,9 @@ def run_daemon(run_id: str, db_path: str) -> None:
     _gate_branch: str = (
         initial_input.get('branch_name') or initial_input.get('branch') or ''
     )
+    # _gate_issue is set inside the if-block below when a branch is present;
+    # initialise to None here so it is always defined for board-move hooks (Issue #515).
+    _gate_issue: Optional[int] = None
     if _gate_branch:
         try:
             from .git_integration import GitContext as _GitContext  # noqa: PLC0415
@@ -259,7 +262,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 initial_input.get('repo_path') or initial_input.get('repo') or None
             )
             _gate_issue_raw = initial_input.get('issue_number')
-            _gate_issue: Optional[int] = int(_gate_issue_raw) if _gate_issue_raw is not None else None
+            _gate_issue = int(_gate_issue_raw) if _gate_issue_raw is not None else None
             _gate_pipeline_id: str = run.get('template_id', '')
             _GitContext.create_gate(
                 run_id=run_id,
