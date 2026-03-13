@@ -1,0 +1,147 @@
+id: research-competitive-v2
+name: "Competitive Research Pipeline"
+description: "Focused research pipeline for competitive landscape analysis. Three phases: market scan, competitive deep-dive, synthesis with positioning recommendations."
+author: "Toscan"
+version: "2.0.0"
+category: "research"
+tags: [research, competitive-analysis, market-research]
+use_cases:
+  - "Competitive landscape analysis"
+  - "Market positioning research"
+  - "Feature comparison synthesis"
+example_input:
+  research_topic: "AI orchestration engines"
+  competitors: "LangGraph, CrewAI, AutoGen, Dify"
+  our_product: "YAML-based pipeline orchestrator with scenario testing"
+  focus_areas: "architecture, ease of use, intent preservation, quality gates"
+  additional_research: "Jennifer Aaker humor in business communication"
+
+config_schema:
+  type: object
+  required: [research_topic, competitors, our_product]
+  properties:
+    research_topic:
+      type: string
+      description: "The domain to research"
+    competitors:
+      type: string
+      description: "Comma-separated list of competitors to analyze"
+    our_product:
+      type: string
+      description: "Brief description of our product for positioning"
+    focus_areas:
+      type: string
+      description: "Key dimensions to compare on"
+    additional_research:
+      type: string
+      description: "Any additional research topics to include"
+
+phases:
+  - id: market_scan
+    name: "Market Scan"
+    prompt_template: |
+      You are a market research analyst. Conduct a thorough scan of the current landscape for: {config[research_topic]}
+
+      **Competitors to analyze:** {config[competitors]}
+
+      **Additional research topics:** {config[additional_research]}
+
+      **IMPORTANT:** You have access to web search tools. USE THEM extensively for this task. Search for each competitor individually, search for comparison articles, search for recent news and releases. Do NOT rely on training data alone — actively search the web for current, verifiable information.
+
+      For each competitor, **search the web** and document:
+      1. **What it is** — one-paragraph description
+      2. **Architecture approach** — how it works technically
+      3. **Key features** — what makes it distinctive
+      4. **Pricing/licensing** — open source? paid? freemium?
+      5. **Community/adoption** — GitHub stars, downloads, notable users
+      6. **Limitations** — known weaknesses, complaints from users
+      7. **Recent developments** — last 6 months of notable changes
+
+      For additional research topics, **search the web** and provide:
+      - Key concepts and frameworks
+      - Notable practitioners/researchers
+      - Practical applications relevant to our domain
+
+      **CRITICAL:** Every claim must include a source URL from your web search. No unsourced claims.
+      Aim for 80+ sources total across all competitors and topics.
+
+      Output a structured research brief with clear sections per competitor and per additional topic.
+    model_tier: sonnet
+
+
+  - id: competitive_analysis
+    name: "Competitive Deep-Dive"
+    prompt_template: |
+      You are a competitive strategy analyst. Using the market research below, produce a deep competitive analysis.
+
+      **Our product:** {config[our_product]}
+      **Focus areas:** {config[focus_areas]}
+
+      ## Research Data
+      {market_scan.output}
+
+      ## Analysis Required:
+
+      ### 1. Feature Comparison Matrix
+      Create a detailed comparison across these dimensions:
+      - {config[focus_areas]}
+      - Also: multi-model support, testing/quality gates, extensibility, learning curve, documentation quality
+
+      ### 2. Architecture Comparison
+      How does each tool approach the orchestration problem? What are the fundamental design differences?
+
+      ### 3. Gap Analysis
+      What does NO competitor do well? Where is the market underserved?
+
+      ### 4. Our Competitive Edge
+      Based on the gaps and our product's approach, what is our genuine differentiation? Be honest — don't claim advantages we don't have.
+
+      ### 5. Positioning Statement
+      Draft a one-paragraph positioning statement that captures our unique value.
+
+      ### 6. Additional Research Synthesis
+      How do the additional research findings (e.g., humor frameworks, communication strategies) apply to our product positioning and content strategy?
+
+      **Be rigorous.** If a competitor does something better than us, say so. Credibility comes from honesty.
+    model_tier: sonnet
+
+
+  - id: synthesis
+    name: "Research Synthesis"
+    prompt_template: |
+      You are a senior strategist. Synthesize the market scan and competitive analysis into an actionable brief.
+
+      ## Market Scan
+      {market_scan.output}
+
+      ## Competitive Analysis
+      {competitive_analysis.output}
+
+      ## Deliverable:
+      Produce a **Research Synthesis Brief** with:
+
+      1. **Executive Summary** (3-4 sentences — the headline findings)
+
+      2. **Market Landscape** (500 words max)
+         - Current state, key players, market direction
+         - Where the market is headed in 12-18 months
+
+      3. **Our Position** (500 words max)
+         - Genuine strengths vs. competition
+         - Honest weaknesses to address
+         - Unique angles no one else claims
+
+      4. **Key Data Points for Content** (bullet list)
+         - Stats, quotes, and facts that would strengthen an article
+         - Each with source citation
+
+      5. **Humor & Communication Insights** (300 words max)
+         - Relevant frameworks from additional research
+         - Specific recommendations for tone and levity in technical content
+
+      6. **Recommended Narrative Angles** (for article use)
+         - 3-5 angles that position our product authentically
+         - Each with supporting evidence from the research
+
+      Keep it dense. No filler. Every sentence should carry information.
+    model_tier: sonnet

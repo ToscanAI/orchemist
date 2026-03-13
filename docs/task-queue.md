@@ -2,6 +2,8 @@
 
 The task queue is the **heart** of the orchestration engine — a SQLite-backed, persistent, concurrent task scheduling system with priority scheduling, state management, and retry logic.
 
+> **Note:** The database has grown to **22+ tables** since this document was written. The 4 core tables below remain accurate, but the engine now also stores pipeline runs, SSE events, webhook triggers, cost tracking, trust profiles, diagnosis results, regressions, routing decisions, review outcomes, and more. See `db.py` for the complete schema.
+
 ## Core Principles
 
 - **Persistence**: Survives process restarts (SQLite with WAL mode)

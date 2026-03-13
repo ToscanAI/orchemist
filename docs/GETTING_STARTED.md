@@ -49,12 +49,15 @@ If you're on Python 3.9 or older, install a newer version from [python.org](http
 
 **Option A: Install from PyPI** *(when the package is published)*
 ```bash
-pip install orchestration-engine
+pip install orchemist
 ```
 
 **Option B: Clone and install locally** *(recommended while the project is in active development)*
 ```bash
+# Development repo (latest)
 git clone https://github.com/ToscanAI/orchestration-engine.git
+# Or stable releases:
+# git clone https://github.com/connylazo/orchestration-engine.git
 cd orchestration-engine
 pip install -e .
 ```
@@ -248,7 +251,12 @@ orch scenario run scenarios/happy-path.yaml
 The assertion and LLM judge graders cover most cases. If you need something specific — say, checking a word count range or validating JSON structure — write a custom grader by subclassing the grader base class. See `scenario_runner/graders/` for examples.
 
 ### Parallel Pipelines
-Phases that don't depend on each other can theoretically run in parallel (the dependency graph groups them into independent "waves"). The current version runs them serially for simplicity, but the structure is ready for concurrency when you need it.
+Phases that don't depend on each other are grouped into the same **wave** and executed **in parallel** by default using a thread pool. This is controlled by three pipeline-level fields:
+- `parallel: true` (default) — enable concurrent execution within waves
+- `max_parallel` — cap the number of phases running simultaneously
+- `fail_fast: true` — abort all parallel phases immediately on the first failure
+
+If you set `parallel: false`, phases within a wave run sequentially instead.
 
 ### Model Tuning
 - Use `haiku` for cheap, repetitive tasks (translation, classification, first-pass research)

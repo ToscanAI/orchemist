@@ -1,0 +1,250 @@
+# code-review-pipeline-v2.yaml
+# An automated code review pipeline that parses a code diff, then runs
+# complexity, style, and security checks in parallel before synthesising
+# a unified review report.
+# v2: Removed ghost scenario reference (file did not exist).
+#
+# Run with: orch run examples/code-review-pipeline-v2.yaml --input '{"diff":"<diff text>"}'
+# Validate:  orch validate examples/code-review-pipeline-v2.yaml
+
+id: code-review-pipeline-v2
+name: "Code Review Pipeline"
+version: "1.1.0"
+description: >
+  A 5-phase automated code review pipeline. It parses a code diff to understand
+  structure and context, then runs complexity, style, and security analyses in
+  parallel, and finally synthesises all findings into a unified, prioritised
+  review report with actionable recommendations.
+author: "Toscan"
+category: "code"
+tags:
+  - code-review
+  - security
+  - code-quality
+  - static-analysis
+  - developer-tools
+
+# Real-world scenarios this pipeline is designed for
+use_cases:
+  - "Automated pull-request review with complexity, style, and security insights"
+  - "Pre-merge code quality gate in CI/CD pipelines"
+  - "Onboarding aid: explain what a diff does and highlight risks for reviewers"
+
+# Minimal example showing the required and optional config inputs
+example_input:
+  diff: "diff --git a/app/auth.py b/app/auth.py\n+def login(user, password):\n+    return db.query(f'SELECT * FROM users WHERE password={password}')"
+  language: "python"
+  severity_threshold: "medium"
+
+# Schema defining what inputs the pipeline accepts at runtime
+config_schema:
+  type: object
+  properties:
+    diff:
+      type: string
+      description: "The unified diff (git diff output) to review"
+    language:
+      type: string
+      description: "Primary programming language of the diff (e.g. 'python', 'typescript', 'go')"
+      default: "python"
+    severity_threshold:
+      type: string
+      description: "Minimum severity to include in findings: 'low', 'medium', or 'high'"
+      default: "medium"
+  required:
+    - diff
+
+# phases: parse runs first; complexity/style/security run in parallel after parse;
+# synthesize waits for all three before producing the final report.
+phases:
+
+  # ── parse ─────────────────────────────────────────────────────────────────
+  # First phase: understand what the diff is doing before any analysis.
+  - id: parse
+    name: "Parse Code Structure"
+    description: "Analyse the diff to understand what files, functions, and patterns are changed."
+    task_type: code
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: []
+    timeout_minutes: 15
+    prompt_template: |
+      You are a code analysis assistant. Parse and summarise the following code diff.
+
+      Language: {input[language]}
+
+      === DIFF ===
+      {input[diff]}
+
+      Produce a structured parse report with:
+      1. **Files changed** — list each file and what type of change (add/modify/delete)
+      2. **Functions/classes affected** — name and what changed about each
+      3. **Change summary** — 2-3 sentence high-level description of what this diff does
+      4. **Patterns observed** — coding patterns, frameworks, or libraries used
+      5. **Risk areas** — any sections that look complex or sensitive at first glance
+
+      Be factual and concise. This report will be used by downstream analysis phases.
+
+  # ── complexity ────────────────────────────────────────────────────────────
+  # Parallel phase: evaluate cyclomatic and cognitive complexity of the changes.
+  - id: complexity
+    name: "Complexity Analysis"
+    description: "Evaluate cyclomatic and cognitive complexity of changed functions and methods."
+    task_type: code
+    model_tier: sonnet
+    thinking_level: low
+    depends_on:
+      - parse
+    timeout_minutes: 20
+    prompt_template: |
+      You are a code complexity analyst. Using the parsed structure below and the
+      original diff, evaluate the complexity of the changes.
+
+      Language: {input[language]}
+      Severity threshold: {input[severity_threshold]}
+
+      === PARSE REPORT ===
+      {previous_output[parse]}
+
+      === ORIGINAL DIFF ===
+      {input[diff]}
+
+      Analyse:
+      1. **Cyclomatic complexity** — identify functions with high branching (if/else/switch/try)
+      2. **Cognitive complexity** — flag nested logic that is hard to follow
+      3. **Function length** — note functions that are too long (>30 lines in most languages)
+      4. **Parameter count** — flag functions with >5 parameters
+      5. **Dead code or redundancy** — any code that appears unreachable or duplicated
+
+      For each issue at or above the severity threshold, provide:
+      - Location (file + function name)
+      - Severity: low / medium / high
+      - Description
+      - Recommended refactoring
+
+  # ── style ─────────────────────────────────────────────────────────────────
+  # Parallel phase: check naming conventions, formatting, and language idioms.
+  - id: style
+    name: "Style & Convention Check"
+    description: "Check naming conventions, code formatting, documentation, and language-specific idioms."
+    task_type: code
+    model_tier: sonnet
+    thinking_level: low
+    depends_on:
+      - parse
+    timeout_minutes: 20
+    prompt_template: |
+      You are a code style reviewer. Check the following diff against best practices
+      and conventions for the language.
+
+      Language: {input[language]}
+      Severity threshold: {input[severity_threshold]}
+
+      === PARSE REPORT ===
+      {previous_output[parse]}
+
+      === ORIGINAL DIFF ===
+      {input[diff]}
+
+      Review for:
+      1. **Naming conventions** — variables, functions, classes follow language conventions?
+      2. **Documentation** — public functions/classes have docstrings or JSDoc comments?
+      3. **Formatting** — consistent indentation, line length, spacing?
+      4. **Language idioms** — is {input[language]}-specific best practice followed?
+      5. **Error handling** — errors caught and handled appropriately?
+      6. **Magic numbers/strings** — unexplained literals that should be constants?
+
+      For each issue at or above the severity threshold, provide:
+      - Location (file + line reference)
+      - Severity: low / medium / high
+      - Description
+      - Suggested fix or example of preferred style
+
+  # ── security ──────────────────────────────────────────────────────────────
+  # Parallel phase: scan for common security vulnerabilities and anti-patterns.
+  - id: security
+    name: "Security Scan"
+    description: "Scan for security vulnerabilities, injection risks, hardcoded secrets, and auth flaws."
+    task_type: code
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on:
+      - parse
+    timeout_minutes: 25
+    prompt_template: |
+      You are a security code reviewer. Perform a security-focused analysis of this diff.
+
+      Language: {input[language]}
+      Severity threshold: {input[severity_threshold]}
+
+      === PARSE REPORT ===
+      {previous_output[parse]}
+
+      === ORIGINAL DIFF ===
+      {input[diff]}
+
+      Scan for:
+      1. **Injection vulnerabilities** — SQL, command, LDAP, path traversal injection
+      2. **Authentication/authorisation flaws** — missing auth checks, privilege escalation
+      3. **Hardcoded secrets** — passwords, API keys, tokens in source
+      4. **Cryptographic issues** — weak algorithms, insecure randomness, improper key handling
+      5. **Input validation** — missing or insufficient validation of user input
+      6. **Insecure dependencies** — any import/require of known vulnerable patterns
+      7. **Information disclosure** — stack traces, verbose errors, logging sensitive data
+
+      For EVERY security issue found (regardless of severity threshold), provide:
+      - Location (file + line reference)
+      - Severity: low / medium / high / critical
+      - Vulnerability type (e.g. "SQL Injection", "Hardcoded Secret")
+      - Description and potential impact
+      - Recommended fix
+
+      If no issues found, explicitly state: "No security issues detected."
+
+  # ── synthesize ────────────────────────────────────────────────────────────
+  # Final phase: combine all findings into a prioritised unified review report.
+  - id: synthesize
+    name: "Synthesise Review Report"
+    description: "Combine all analysis findings into a unified, prioritised code review report."
+    task_type: review
+    model_tier: sonnet
+    thinking_level: low
+    depends_on:
+      - complexity
+      - style
+      - security
+    timeout_minutes: 25
+    prompt_template: |
+      You are a senior code reviewer. Synthesise the findings from three analyses
+      into a single, well-structured, actionable code review report.
+
+      Language: {input[language]}
+      Severity threshold applied: {input[severity_threshold]}
+
+      === COMPLEXITY ANALYSIS ===
+      {previous_output[complexity]}
+
+      === STYLE REVIEW ===
+      {previous_output[style]}
+
+      === SECURITY SCAN ===
+      {previous_output[security]}
+
+      Produce a unified review report:
+
+      ## Summary
+      - Overall assessment (approve / request-changes / needs-discussion)
+      - Total issues by severity (critical/high/medium/low)
+      - Key strengths of the change (what was done well)
+
+      ## Critical & High Priority Issues
+      (list all critical/high issues from any analysis — must be fixed before merge)
+
+      ## Medium Priority Issues
+      (list medium issues — should be fixed, but not blocking)
+
+      ## Low Priority / Suggestions
+      (optional improvements — nice to have)
+
+      ## Verdict
+      Clear merge recommendation with rationale.

@@ -124,7 +124,7 @@ phases:
     ...
 ```
 
-The `depends_on` field is the critical piece: it tells the engine "don't start `write` until `research` is finished." The engine automatically figures out the right order using a standard algorithm (topological sort). If you have two phases that don't depend on each other, they're identified as independent — though the current version runs them one at a time.
+The `depends_on` field is the critical piece: it tells the engine "don't start `write` until `research` is finished." The engine automatically figures out the right order using a standard algorithm (topological sort). If you have two phases that don't depend on each other, they're grouped into the same **wave** and executed **in parallel** by default (using a thread pool). You can control this with the `parallel`, `max_parallel`, and `fail_fast` fields on the pipeline template.
 
 ---
 
@@ -146,13 +146,13 @@ If a key is missing — say, you reference `{previous_output[some_phase]}` but t
 
 An **executor** is the thing that actually *does* the work. There are five built in:
 
-| Executor | What it does | When it's used |
-|---|---|---|
-| **AnthropicExecutor** | Calls the Anthropic Messages API directly via `urllib` | `standalone` mode; no framework dependency |
-| **OpenClawExecutor** | Calls an AI sub-agent via the OpenClaw CLI or file-based IPC | `openclaw` mode; full tool access via sub-agents |
-| **OpenAICompatibleExecutor** | Calls any OpenAI-compatible `/v1/chat/completions` endpoint | Gemini-via-proxy, Ollama, LM Studio, or other providers |
-| **DryRunExecutor** | Returns mock results instantly | Testing, development, and CI pipelines |
-| **FallbackHandler** | Wraps a primary executor; retries via `OpenAICompatibleExecutor` on retriable errors | Automatic fallback when Anthropic rate-limits or times out |
+| Executor | Module | What it does | When it's used |
+|---|---|---|---|
+| **AnthropicExecutor** | `executors/anthropic_executor.py` | Calls the Anthropic Messages API directly via `urllib` | `standalone` mode; no framework dependency |
+| **OpenClawExecutor** | `openclaw_executor.py` | Calls an AI sub-agent via the OpenClaw CLI or file-based IPC | `openclaw` mode; full tool access via sub-agents |
+| **OpenAICompatibleExecutor** | `openai_executor.py` | Calls any OpenAI-compatible `/v1/chat/completions` endpoint | Gemini-via-proxy, Ollama, LM Studio, or other providers |
+| **DryRunExecutor** | `executor.py` | Returns mock results instantly | Testing, development, and CI pipelines |
+| **FallbackHandler** | `fallback.py` | Wraps a primary executor; retries via `OpenAICompatibleExecutor` on retriable errors | Automatic fallback when Anthropic rate-limits or times out |
 
 The `AnthropicExecutor` is the primary executor for standalone use. It:
 1. Resolves the model tier (`haiku` / `sonnet` / `opus`) to the exact Anthropic model string
@@ -251,14 +251,24 @@ The entire pipeline returns a `phase_outputs` dict (every phase's result) plus a
 
 The engine uses **SQLite** stored at `~/.orchestration-engine/engine.db`. SQLite is a file-based database — there's nothing to install or configure. It just works.
 
-Four tables are maintained:
+The database has grown to **22+ tables** as features have been added. The core tables are:
 
 | Table | What's stored |
 |---|---|
 | `tasks` | Every task submitted: type, status, payload, retry count, model, cost |
 | `task_runs` | Every execution attempt, including the model used, tokens consumed, cost, and error messages |
-| `orchestras` | Multi-phase pipeline runs: which template, progress, budget |
+| `orchestras` | Multi-task pipeline workflows: which template, progress, budget |
 | `dead_letter_queue` | Tasks that permanently failed after all retries, for analysis |
+| `pipeline_runs` | Async pipeline run records (background execution via `orch launch`) |
+| `pipeline_run_events` | SSE live-progress events for the web UI |
+| `triggers` | Webhook trigger configurations |
+| `cost_tracking` | Per-phase cost records for budget enforcement |
+| `trust_profiles` | Per-(repo, template, task_type) trust calibration state |
+| `diagnosis_results` | LLM-powered failure diagnosis records |
+| `regressions` | Detected CI regressions with lifecycle tracking |
+| `routing_decisions` | Confidence-based routing outcome log |
+
+See `db.py` for the complete schema. Additional tables cover webhook invocations, failure patterns, review outcomes, reviewer calibration, trust adjustments, issue-pipeline mappings, sprint chain state, retry attempts, circuit breaker state, and error patterns.
 
 Why store all this? A few reasons:
 - **Retries**: If a task fails, the engine needs to know the retry count and when to try again

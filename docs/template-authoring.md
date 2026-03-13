@@ -96,6 +96,147 @@ phases:
 | `phases` | list[Phase] | — | `[]` | Ordered list of phase definitions. A template with no phases is technically valid but useless. |
 | `config_schema` | dict | — | `{}` | JSON Schema describing the template's accepted inputs. Drives `orch start` form rendering and `orch validate` checks. |
 | `fallback` | dict | — | `null` | Fallback executor configuration. Optional; used for Gemini fallback when Anthropic is unavailable. |
+| `parallel` | bool | — | `true` | Enable concurrent execution of independent phases within the same wave. Set `false` for purely sequential execution. |
+| `max_parallel` | int | — | `0` | Max concurrent phases per wave. `0` = unlimited (pool matches wave size). Positive values cap the thread pool. |
+| `fail_fast` | bool | — | `true` | Abort remaining phases in a parallel wave when one fails. Set `false` to collect all errors. |
+| `default_transitions` | dict | — | `{}` | Pipeline-wide outcome→phase_id map. Applied to every phase that doesn't override a given outcome key. See [State Machine Transitions](#69-state-machine-transitions). |
+| `max_iterations` | int | — | `10` | Max iterations for the state-machine loop when transitions are used. Prevents infinite cycles. |
+| `scenario` | string | — | `null` | Path to a scenario YAML for post-pipeline auto-scoring. Required for `category: code` templates. |
+| `auto_merge` | dict | — | `null` | Auto-merge configuration for git-enabled pipelines. See [Auto-Merge Config](#211-auto-merge-config). |
+| `on_complete` | dict | — | `null` | Pipeline chaining configuration. See [Pipeline Chaining Config](#212-pipeline-chaining-config). |
+| `routing_config` | dict | — | `null` | Confidence-based routing tiers. See [Routing Config](#213-routing-config). |
+| `budget` | dict | — | `null` | Cost limits and alerting. See [Budget Config](#214-budget-config). |
+| `git` | dict | — | `null` | Git lifecycle management (branch, commit, push, merge gate). See [Git Config](#215-git-config). |
+
+#### 2.1.1 Auto-Merge Config
+
+Controls automatic PR merging after scoring completes. Requires a git-enabled pipeline.
+
+```yaml
+auto_merge:
+  enabled: true                 # default: false
+  min_score: 0.90               # minimum composite score to auto-merge
+  require_approve: true         # require gate approval even if score passes
+  strategy: squash              # squash | merge | rebase
+  review_phase_id: review       # phase ID whose output is used as PR description
+```
+
+| Sub-field | Type | Default | Description |
+|---|---|:---:|---|
+| `enabled` | bool | `false` | Enable auto-merge behavior |
+| `min_score` | float | `0.90` | Minimum composite score threshold |
+| `require_approve` | bool | `true` | Require `orch gate approve` even with passing score |
+| `strategy` | string | `"squash"` | Git merge strategy: `squash`, `merge`, or `rebase` |
+| `review_phase_id` | string | `"review"` | Phase whose output populates the PR description |
+
+#### 2.1.2 Pipeline Chaining Config
+
+Triggers child pipelines on completion. Enables `success → deploy` or `failed → notify` flows.
+
+```yaml
+on_complete:
+  success:
+    - template: deploy-staging
+      input_map:
+        artifact_path: "{{output_dir}}/build"
+    - template: notify-slack
+      input_map:
+        message: "Pipeline succeeded"
+  failed:
+    - template: alert-team
+      input_map:
+        error: "{{final_output.errors}}"
+  max_chain_depth: 5             # default: 5; hard limit: 20
+```
+
+| Sub-field | Type | Default | Description |
+|---|---|:---:|---|
+| `success` | list | `[]` | Templates to launch on successful completion |
+| `failed` | list | `[]` | Templates to launch on failure |
+| `max_chain_depth` | int | `5` | Maximum chaining depth to prevent infinite recursion |
+
+Each entry has `template` (name or path) and `input_map` (dict with `{{placeholder}}` interpolation from the parent run's context).
+
+#### 2.1.3 Routing Config
+
+Confidence-based routing of pipeline results to different actions.
+
+```yaml
+routing_config:
+  tiers:
+    - name: auto_merge
+      min_score: 0.95
+      requires: [tests_pass, no_security_findings]
+    - name: human_review
+      min_score: 0.70
+      max_score: 0.95
+      notify: [slack, github_pr_comment]
+    - name: auto_retry
+      min_score: 0.40
+      max_score: 0.70
+      strategy: escalate_model
+      max_retries: 2
+    - name: reject
+      max_score: 0.40
+```
+
+| Tier sub-field | Type | Default | Description |
+|---|---|:---:|---|
+| `name` | string | required | Tier identifier |
+| `min_score` | float | `0.0` | Minimum score for this tier (inclusive) |
+| `max_score` | float | `1.0` | Maximum score for this tier (exclusive) |
+| `requires` | list | `[]` | Additional conditions that must be met |
+| `notify` | list | `[]` | Notification channels to alert |
+| `strategy` | string | `null` | Retry strategy (for retry tiers): `escalate_model`, `split_task`, `add_context` |
+| `max_retries` | int | `0` | Max retries for this tier |
+
+When absent, the engine uses a built-in default routing configuration.
+
+#### 2.1.4 Budget Config
+
+Enforces per-run and per-day cost limits. The daemon aborts a run if the per-run cap is exceeded; launches are rejected when the daily cap is reached.
+
+```yaml
+budget:
+  max_cost_per_run: 5.00        # USD; null = unlimited
+  max_cost_per_day: 50.00       # USD; null = unlimited
+  warn_at_percentage: 80.0      # alert at 80% of budget
+```
+
+| Sub-field | Type | Default | Description |
+|---|---|:---:|---|
+| `max_cost_per_run` | float | `null` | Maximum USD spend per pipeline run |
+| `max_cost_per_day` | float | `null` | Maximum USD spend per calendar day |
+| `warn_at_percentage` | float | `80.0` | Percentage of budget at which to emit a warning |
+
+#### 2.1.5 Git Config
+
+Controls the full git lifecycle: branching, committing, pushing, and merge gating.
+
+```yaml
+git:
+  enabled: true                  # default: false
+  branch_pattern: "feat/{pipeline_id}-{run_id}"
+  auto_commit: true
+  commit_phases: [implement, fix]  # only commit after these phases (empty = all)
+  working_dir: "."
+  push: true
+  merge_gate: true               # create a gate requiring orch gate approve
+  create_pr: false               # auto-create a GitHub PR on gate approval
+  base_branch: main              # null = auto-detect default branch
+```
+
+| Sub-field | Type | Default | Description |
+|---|---|:---:|---|
+| `enabled` | bool | `false` | Enable git lifecycle for this pipeline |
+| `branch_pattern` | string | `"feat/{pipeline_id}-{run_id}"` | Branch name pattern with `{placeholder}` interpolation |
+| `auto_commit` | bool | `true` | Automatically commit after each phase |
+| `commit_phases` | list | `[]` | Only commit after these phase IDs (empty = all phases) |
+| `working_dir` | string | `"."` | Working directory for git operations |
+| `push` | bool | `true` | Push commits to remote |
+| `merge_gate` | bool | `true` | Create a merge gate requiring human approval |
+| `create_pr` | bool | `false` | Auto-create a GitHub PR on gate approval |
+| `base_branch` | string | `null` | Base branch to merge into (`null` = auto-detect) |
 
 ### 2.2 Phase-Level Fields
 
@@ -115,6 +256,24 @@ phases:
 | `skill_refs` | list[string] | — | `[]` | Paths to skill context files. Resolved relative to the template directory first, then `~/.orch/skills/`. Contents are injected into the prompt context as `{skill_context[name]}`. Validated by `orch validate`. |
 | `retries` | int | — | `0` | Number of **additional** attempts if the phase fails. `0` means the phase is tried once and not retried on failure. `2` means up to 3 total attempts. |
 | `retry_delay_seconds` | float | — | `30.0` | Seconds to wait between retry attempts for this phase. Only meaningful when `retries > 0`. |
+| `write_files` | bool | — | `false` | When `true`, the sequencer parses `FILE` blocks from the phase output and writes them to `working_dir`. Used for code-generation phases. |
+| `working_dir` | string | — | `"."` | Directory where extracted files are written (when `write_files` is enabled). |
+| `base_dir` | string | — | `""` | Safety root directory — file writes are refused outside this boundary. Empty = use `working_dir` as boundary. |
+| `context_files` | list[string] | — | `[]` | Paths to local files whose contents are inlined into the phase prompt as additional context. |
+| `transitions` | dict | — | `{}` | Per-phase outcome→phase_id routing map. Merges on top of `default_transitions`. Used by the `StateMachineSequencer`. See [State Machine Transitions](#69-state-machine-transitions). |
+| `max_iterations` | int | — | `0` | Per-phase iteration limit override. `0` = use the pipeline-level `max_iterations` default. |
+| `command` | string | — | `null` | Shell command to execute. Used when `task_type: command`. The engine runs this command directly instead of calling an LLM. |
+| `allowed_commands` | list[string] | — | `[]` | Security allowlist of command prefixes. Only commands starting with one of these strings are permitted. |
+| `supervisor` | bool | — | `false` | Enable a supervisor evaluation hook after this phase. The supervisor LLM reviews the output and issues an APPROVE, REVISE, or ABORT verdict. |
+| `supervisor_prompt` | string | — | `null` | Custom supervisor evaluation prompt. Supports `{rubric}` and `{phase_output}` placeholders. Uses a built-in default if `null`. |
+| `supervisor_model` | string | — | `"opus"` | Model tier override for the supervisor call. |
+| `supervisor_rubric` | string | — | `null` | Quality criteria / rubric text injected into the supervisor prompt's `{rubric}` placeholder. |
+| `supervisor_max_retries` | int | — | `2` | Maximum REVISE→re-execute cycles before the supervisor aborts. |
+| `model_chain` | list[string] | — | `[]` | Ordered list of model tiers to try on retry (e.g. `["sonnet", "opus"]`). Empty = use executor's default escalation chain. |
+| `min_output_length` | int | — | `0` | Minimum character count for phase output. `0` = disabled. When >0, the sequencer fails the phase if output is shorter (catches truncated LLM responses). |
+| `protected_outputs` | list[string] | — | `[]` | Filenames (relative to output dir) to checksum-protect via `file_guard.py`. SHA256 hashes are computed after this phase and verified before the next consuming phase. |
+
+**Phase field aliases:** `prompt` → `prompt_template`, `model` → `model_tier`. Either form is accepted in YAML.
 
 **Phase retry example:**
 
@@ -863,6 +1022,192 @@ phases:
 
 ---
 
+### 6.6 Code Generation with File Writing (`write_files`)
+
+For coding pipelines, phases can write files directly to a working directory. The sequencer parses `FILE` blocks from the model output and extracts them.
+
+```yaml
+id: coding-pipeline
+name: "Coding Pipeline"
+version: "1.0.0"
+
+git:
+  enabled: true
+  branch_pattern: "feat/{pipeline_id}-{run_id}"
+  merge_gate: true
+
+phases:
+  - id: implement
+    name: "Implement"
+    task_type: code
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on: [spec]
+    write_files: true              # ← extract FILE blocks and write to disk
+    working_dir: "."               # relative to the repo root
+    base_dir: "src/"               # safety: refuse writes outside src/
+    prompt_template: |
+      Implement the following specification:
+      {spec.output}
+
+      Write the code as FILE blocks.
+```
+
+---
+
+### 6.7 Supervisor Review Loops
+
+A supervisor LLM evaluates phase output after execution. If the verdict is REVISE, the phase re-executes with the supervisor's feedback injected. If ABORT, the pipeline fails.
+
+```yaml
+phases:
+  - id: draft
+    name: "Draft Article"
+    task_type: content
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on: [research]
+    supervisor: true                    # ← enable supervisor hook
+    supervisor_model: opus              # supervisor uses Opus for judgment
+    supervisor_max_retries: 2           # up to 2 REVISE cycles
+    supervisor_rubric: |
+      Evaluate the article on:
+      1. Factual accuracy (cite sources)
+      2. Logical coherence (clear argument flow)
+      3. Engagement (compelling opening, strong close)
+      4. Technical depth (appropriate for the audience)
+      Score each 0-25. Total ≥ 75 = APPROVE, 50-74 = REVISE, <50 = ABORT.
+    prompt_template: |
+      Write an article based on:
+      {previous_output[research]}
+```
+
+---
+
+### 6.8 Protected Outputs (`file_guard.py`)
+
+Protect critical files from tampering between phases. Used in behavioral trust pipelines where acceptance tests must not be modified by the implementing agent.
+
+```yaml
+phases:
+  - id: acceptance_test
+    name: "Write Acceptance Tests"
+    task_type: code
+    model_tier: sonnet
+    depends_on: [spec]
+    write_files: true
+    protected_outputs:              # ← SHA256-sealed after this phase
+      - acceptance_tests.py
+
+  - id: implement
+    name: "Implement Code"
+    task_type: code
+    model_tier: sonnet
+    depends_on: [acceptance_test]
+    write_files: true
+    # file_guard verifies acceptance_tests.py hash hasn't changed
+    prompt_template: |
+      Implement the spec. Do NOT modify acceptance_tests.py.
+      {spec.output}
+```
+
+Hash verification is automatic and silent — the implementing agent never knows the seal exists.
+
+---
+
+### 6.9 State Machine Transitions
+
+For pipelines with conditional routing (review → fix loops, retry paths), use transitions instead of linear `depends_on` chains. The `StateMachineSequencer` is automatically selected when any phase has `transitions`.
+
+```yaml
+default_transitions:                # applied to all phases as a baseline
+  success: _next                   # _next = proceed to next phase in order
+  failed: _abort                   # _abort = stop the pipeline
+
+max_iterations: 10                  # safety limit for transition loops
+
+phases:
+  - id: implement
+    name: "Implement"
+    task_type: code
+    model_tier: sonnet
+    depends_on: []
+    prompt_template: "..."
+
+  - id: review
+    name: "Code Review"
+    task_type: review
+    model_tier: opus
+    depends_on: [implement]
+    supervisor: true
+    transitions:                    # ← phase-specific routing
+      approve: final               # APPROVE verdict → skip to final
+      revise: implement            # REVISE → loop back to implement
+      abort: _abort                # ABORT → stop pipeline
+    prompt_template: "..."
+
+  - id: final
+    name: "Final Output"
+    task_type: content
+    model_tier: haiku
+    depends_on: [review]
+    prompt_template: "..."
+```
+
+**Special transition targets:**
+- `_next` — proceed to the next phase in declaration order
+- `_abort` — stop the pipeline with a failure status
+- Any phase ID — jump to that phase directly
+
+---
+
+### 6.10 Budget-Controlled Pipelines
+
+Prevent runaway costs by setting per-run and per-day limits.
+
+```yaml
+id: budget-aware-pipeline
+name: "Budget-Controlled Pipeline"
+
+budget:
+  max_cost_per_run: 5.00          # abort if this run exceeds $5
+  max_cost_per_day: 50.00         # reject new launches if daily spend ≥ $50
+  warn_at_percentage: 80.0        # log a warning at 80% of limit
+
+phases:
+  # ...
+```
+
+---
+
+### 6.11 Pipeline Chaining (`on_complete`)
+
+Trigger child pipelines automatically based on the parent's outcome.
+
+```yaml
+id: code-with-deploy
+name: "Code + Auto-Deploy"
+
+on_complete:
+  success:
+    - template: deploy-staging
+      input_map:
+        artifact_path: "{{output_dir}}/build"
+        commit_sha: "{{git.commit_sha}}"
+  failed:
+    - template: alert-team
+      input_map:
+        error: "{{final_output.errors}}"
+        run_id: "{{run_id}}"
+
+phases:
+  # ...
+```
+
+`{{placeholder}}` values are interpolated from the parent run's context at chain time. The `max_chain_depth` setting (default 5, hard limit 20) prevents infinite recursion.
+
+---
+
 ## 7. Testing Your Template
 
 ### 7.1 Validate Structure
@@ -1176,6 +1521,18 @@ Phases
   [ ] thinking_level appropriate for the task
   [ ] timeout_minutes generous enough for the expected model latency
   [ ] skill_refs files exist and are within allowed directories
+
+Advanced Features (if used)
+  [ ] parallel / max_parallel / fail_fast set appropriately
+  [ ] budget limits configured if running autonomously
+  [ ] git block configured for coding pipelines
+  [ ] on_complete chains tested (check max_chain_depth)
+  [ ] supervisor phases have rubric and reasonable max_retries
+  [ ] write_files phases have base_dir safety boundary
+  [ ] protected_outputs listed for tamper-sensitive files
+  [ ] transitions do not create infinite loops (check max_iterations)
+  [ ] routing_config tiers have non-overlapping score ranges
+  [ ] scenario path set for templates that require auto-scoring
 
 Testing
   [ ] orch validate passes (0 errors)

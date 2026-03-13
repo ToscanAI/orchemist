@@ -1,6 +1,13 @@
 # Metrics and Analytics
 
-> ⚠️ **Status: DEFERRED** — Advanced metrics are planned for Week 4-5+. Related issues #28–30, #32–33 are deferred. Basic cost tracking exists in the `task_runs` table (`cost_usd`, `tokens_used`). This document describes the intended advanced design only.
+> ⚠️ **Status: PARTIALLY IMPLEMENTED** — The advanced "metrics dashboard" described below remains deferred. However, several foundational metric capabilities are now live:
+>
+> - **Cost tracking**: `cost_tracker.py` — per-phase, per-run, per-day cost aggregation with budget caps and alerts. REST API endpoints at `/api/v1/costs/daily` and `/api/v1/costs/run/{run_id}`.
+> - **Confidence scoring**: `confidence.py` — `ConfidenceCalculator` with weighted composite scoring (`acceptance_pass_rate`, `test_pass_rate`, `review_quality`).
+> - **Trust profiles**: `trust.py` — per-(repo, template, task_type) trust calibration with decay and history. REST API endpoints at `/api/v1/trust/`.
+> - **Run analytics**: `db.py` stores run duration, phase timing, token counts, and scoring results across 22+ tables.
+>
+> What remains deferred: the unified analytics UI, trend visualizations, failure clustering, and the advanced export/alerting described below.
 
 The orchestration engine provides **comprehensive metrics collection and analysis** for tasks, orchestras, models, and system performance to enable data-driven optimization and monitoring.
 

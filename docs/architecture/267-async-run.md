@@ -3,7 +3,8 @@
 **Issue:** #267 — CLI process killed by exec timeout before pipeline completes  
 **Author:** Architecture Auditor (sub-agent)  
 **Date:** 2026-03-01  
-**Status:** Recommendation
+**Original Status:** Recommendation  
+**Current Status:** ✅ **IMPLEMENTED** — The non-blocking daemon approach is live in `daemon.py` (`orch launch` detaches, PID files, SIGTERM handling, DB-backed progress). `orch status` and `orch wait` poll the daemon's DB records.
 
 ---
 

@@ -6,7 +6,7 @@
 
 ## CLI Commands
 
-The `orch` entry point is installed by `pip install orchestration-engine`. All commands accept `--db-path <path>` (custom database location) and `-v`/`--verbose` (debug logging) as global options.
+The `orch` entry point is installed by `pip install orchemist`. All commands accept `--db-path <path>` (custom database location) and `-v`/`--verbose` (debug logging) as global options.
 
 ```
 Usage: orch [OPTIONS] COMMAND [ARGS]...
@@ -316,7 +316,382 @@ Phases: 5  |  Waves: 5
     ├─ final_output                   model=sonnet    thinking=low    deps=[apply_fixes]
 ```
 
-Phases in the same wave are independent and could theoretically run in parallel.
+Phases in the same wave are independent and execute in parallel by default. Use the `parallel` field on a phase or `max_parallel` at the pipeline level to control concurrency.
+
+---
+
+### `orch launch` — Run a pipeline in the background
+
+Spawns a daemon process that runs the pipeline, then exits immediately. Use `orch status`, `orch logs`, and `orch wait` to monitor progress.
+
+```bash
+orch launch content-pipeline --mode openclaw --input '{"brief": "AI trends"}'
+orch launch coding-pipeline-v1 --issue 42 --repo owner/repo
+orch launch my-template.yaml --input-file params.json --output-dir ./results
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `TEMPLATE_NAME_OR_FILE` | argument | required | Template name, ID, or path to a YAML file |
+| `--mode` | choice | `standalone` | `standalone`, `openclaw`, or `dry-run` |
+| `--input` | JSON string | none | Pipeline input as a JSON string |
+| `--input-file` | path | none | Path to a JSON file containing pipeline input |
+| `--issue` | int | none | GitHub issue number to auto-fetch as pipeline input |
+| `--repo` | string | `$GITHUB_REPOSITORY` | Repository slug (`owner/repo`) for `--issue` |
+| `--output-dir` | path | auto-generated | Directory for phase outputs |
+| `--gateway-url` | string | `$OPENCLAW_GATEWAY_URL` | OpenClaw gateway URL (openclaw mode) |
+| `--skip-scoring` | flag | false | Skip auto-scoring even if the template declares a scenario |
+| `--db-path` | path | `~/.orchestration-engine/engine.db` | Override persistent DB path |
+
+**Output:**
+```
+✓ Pipeline launched in background
+  Run ID:  a3f8c2d1
+  PID:     12345
+  Output:  ./output/content-pipeline-20260313-143022-a3f8c2d1/
+
+  Status:  orch status a3f8c2d1
+  Logs:    orch logs a3f8c2d1
+  Wait:    orch wait a3f8c2d1
+```
+
+---
+
+### `orch wait` — Block until a pipeline finishes
+
+Polls the DB until the run reaches a terminal state (success, failed, cancelled, crashed, scoring_failed, pending_review, rejected). Exits 0 on success, 2 on failure or timeout.
+
+```bash
+orch wait a3f8c2d1
+orch wait a3f8c2d1 --timeout 120
+orch wait a3f8c2d1 --interval 5
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `RUN_ID` | argument | required | Pipeline run ID |
+| `--timeout` | int | `1800` | Maximum seconds to wait |
+| `--interval` | int | `3` | Poll interval in seconds |
+| `--db-path` | path | auto | Override persistent DB path |
+
+---
+
+### `orch logs` — Show daemon logs
+
+Prints the daemon log file for a pipeline run. Use `--follow` to tail in real time.
+
+```bash
+orch logs a3f8c2d1
+orch logs a3f8c2d1 --follow
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `RUN_ID` | argument | required | Pipeline run ID |
+| `--follow` / `-f` | flag | false | Tail the log file (like `tail -f`) |
+| `--db-path` | path | auto | Override persistent DB path |
+
+---
+
+### `orch children` — List child pipeline runs
+
+Shows all child pipeline runs spawned by a parent run via `on_complete` chaining.
+
+```bash
+orch children a3f8c2d1
+```
+
+**Output columns:** RUN ID, TEMPLATE, DEPTH, STATUS
+
+---
+
+### `orch chain` — Monitor pipeline chain execution
+
+Displays the full chain tree for a given run (tracing back to the root), or lists all currently active chains.
+
+```bash
+orch chain a3f8c2d1          # Show full chain for a run
+orch chain --active           # List all running chains
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `RUN_ID` | argument | optional | Run ID to inspect (traces to root) |
+| `--active` | flag | false | List all currently active (non-terminal) chains |
+| `--db-path` | path | auto | Override persistent DB path |
+
+---
+
+### `orch resume` — Resume a failed pipeline *(stub)*
+
+> **Note:** This command is not yet implemented. It returns an error message and exits with code 1. Re-run from scratch with `orch launch` instead.
+
+```bash
+orch resume a3f8c2d1
+```
+
+---
+
+### `orch gate` — Manage merge gates
+
+After a git-enabled pipeline completes, it creates a merge gate requiring human approval before the feature branch is merged. The `gate` group provides subcommands to list, inspect, approve, and reject gates.
+
+```bash
+orch gate list                      # Show pending gates
+orch gate list --all                # Include approved/rejected
+orch gate info abc12345             # Show gate details
+orch gate approve abc12345          # Approve a gate
+orch gate approve abc12345 --force  # Override a failed score gate
+orch gate reject abc12345 -m "Needs rework"
+```
+
+#### `orch gate list`
+
+| Option | Description |
+|---|---|
+| `--all` | Show all gates including approved and rejected (default: pending only) |
+
+#### `orch gate info <RUN_ID>`
+
+Displays: status (with emoji), pipeline ID, branch, base branch, diff stats, scoring status and score, creation/update timestamps, approval/rejection message, and commit list.
+
+#### `orch gate approve <RUN_ID>`
+
+Approves a pending gate. If the pipeline's scoring status is `failed`, approval is blocked unless `--force` is specified.
+
+| Option | Description |
+|---|---|
+| `-m` / `--message` | Optional approval message |
+| `-f` / `--force` | Override score gate enforcement |
+
+If the template has `create_pr: true`, a GitHub PR is created automatically on approval.
+
+#### `orch gate reject <RUN_ID>`
+
+Rejects a gate. The feature branch is preserved for inspection.
+
+| Option | Description |
+|---|---|
+| `-m` / `--message` | Optional rejection reason |
+
+---
+
+### `orch new` — Scaffold a new pipeline template
+
+Interactive wizard that walks you through naming a pipeline, adding phases, choosing model tiers and thinking levels, and wiring up dependencies. Generates a valid YAML file.
+
+```bash
+orch new                              # Interactive wizard
+orch new --yes                        # Non-interactive with sensible defaults
+orch new --from hello-pipeline        # Clone an existing template
+orch new --yes --phases 4 --output ./my-templates/pipeline.yaml
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--yes` / `-y` | flag | false | Non-interactive mode with sensible defaults |
+| `--from` | string | none | Clone an existing template as starting point |
+| `--output` | path | `./templates/<name>.yaml` | Output file path |
+| `--force` / `-f` | flag | false | Overwrite output if it exists |
+| `--phases` | int | 2 | Number of phases (primarily for `--yes` mode) |
+
+---
+
+### `orch import plugin-command` — Convert a plugin command to a template
+
+Converts a knowledge-work-plugin Markdown command file (with optional YAML frontmatter) into a PipelineTemplate YAML file.
+
+```bash
+orch import plugin-command campaign-plan.md
+orch import plugin-command draft-content.md --output my-draft.yaml
+orch import plugin-command brand-review.md --dry-run
+orch import plugin-command campaign-plan.md --validate
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `COMMAND_FILE` | argument | required | Path to the Markdown plugin command file |
+| `-o` / `--output` | path | `<command-id>.yaml` | Output YAML path |
+| `--author` | string | auto | Author string for the generated template |
+| `--dry-run` | flag | false | Print generated YAML to stdout without writing |
+| `--validate` | flag | false | Run `orch validate` on the generated file after writing |
+
+---
+
+### `orch serve` — Launch the web UI
+
+Starts a FastAPI server that serves the browser-based web UI (dashboard, template cards, run detail with live SSE progress). Requires the `[web]` extra.
+
+```bash
+pip install orchemist[web]
+
+orch serve                    # http://127.0.0.1:8374
+orch serve --port 9000
+orch serve --no-open          # Don't auto-open browser
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--port` | int | `8374` | Port to serve on |
+| `--host` | string | `127.0.0.1` | Host to bind to |
+| `--no-open` | flag | false | Skip auto-opening the browser |
+
+---
+
+### `orch ui` — Serve the static Next.js frontend
+
+Serves the pre-built Next.js frontend export from `frontend/out/` using Python's built-in HTTP server. Build the frontend first with `cd frontend && npm run build`.
+
+```bash
+orch ui                       # http://localhost:8080
+orch ui --port 9090
+orch ui --host 0.0.0.0       # Bind to all interfaces
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--port` | int | `8080` | Port to serve on |
+| `--host` | string | `127.0.0.1` | Host to bind to |
+| `--no-open` | flag | false | Skip auto-opening the browser |
+
+---
+
+### `orch api-server` — Launch the REST API server
+
+Starts the versioned REST API at `/api/v1/` (backed by the same daemon infrastructure as `orch launch`). Intended for CI/CD pipelines, webhooks, and programmatic consumers. Requires the `[web]` extra.
+
+```bash
+pip install orchemist[web]
+
+orch api-server                    # http://127.0.0.1:8375/api/v1/
+orch api-server --port 9000
+orch api-server --reload           # Dev mode with auto-reload
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--port` | int | `8375` | Port to serve on |
+| `--host` | string | `127.0.0.1` | Host to bind to |
+| `--reload` | flag | false | Enable auto-reload (development only) |
+| `--db-path` | path | auto | Override persistent DB path |
+
+Visit `http://host:port/api/v1/docs` for the interactive Swagger UI (auto-generated by FastAPI).
+
+---
+
+### `orch rubric generate` — Generate an LLM Judge rubric
+
+Extracts evaluation criteria from a skill Markdown file and generates a rubric YAML file suitable for use with `LLMJudgeGrader` in scenario tests.
+
+```bash
+orch rubric generate path/to/SKILL.md
+orch rubric generate path/to/SKILL.md --output my-rubric.yaml
+orch rubric generate path/to/SKILL.md -o results/rubric.yaml --force
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `SKILL_FILE` | argument | required | Path to a skill Markdown file |
+| `-o` / `--output` | path | `<skill-name>-rubric.yaml` | Output YAML file path |
+| `-f` / `--force` | flag | false | Overwrite output if it exists |
+
+**Generated YAML contains:** `rubric` (text for LLMJudgeGrader), `criteria` (machine-readable checklist), `name`, `generated_from`, `generated_at`.
+
+---
+
+### `orch scenario run` — Run an E2E scenario test
+
+Executes a pipeline template referenced by a scenario YAML file, grades the output against acceptance criteria, and prints a score report. Used for automated quality assurance.
+
+```bash
+# Dry-run (no API key needed):
+ORCH_DRY_RUN=1 orch scenario run e2e-autonomous --dry-run
+
+# Live run:
+orch scenario run e2e-autonomous --api-key sk-ant-...
+
+# Custom scenario directory:
+orch scenario run my-scenario --scenario-dir tests/scenarios/ --dry-run
+```
+
+**Options:**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `SCENARIO_ID` | argument | required | Scenario YAML stem or file path |
+| `--dry-run` | flag | false | No real API calls; graders return stub scores |
+| `--scenario-dir` | path | `./scenarios/` | Directory to search for scenario files |
+| `--api-key` | string | `$ANTHROPIC_API_KEY` | API key for live mode |
+| `--mode` | choice | `standalone` | `standalone` (direct API) or `openclaw` (gateway) |
+| `--gateway-url` | string | `$OPENCLAW_GATEWAY_URL` | Gateway URL for openclaw mode |
+| `--gateway-token` | string | `$OPENCLAW_GATEWAY_TOKEN` | Gateway token for openclaw mode |
+
+**Exit codes:** 0 if the scenario passes (score ≥ threshold), 1 otherwise.
+
+**Output:** A rich table showing per-criterion breakdown (criterion ID, grader type, weight, score, PASS/FAIL) followed by an overall score summary with gate status.
+
+---
+
+### `orch reviews` — Manage the human review queue
+
+When a pipeline run finishes with a confidence score in the human-review tier, it enters a `pending_review` status. The `reviews` group provides subcommands to list, approve, and reject these runs.
+
+```bash
+orch reviews list                         # Show pending reviews
+orch reviews list --limit 50 --offset 20
+orch reviews approve abc12345
+orch reviews approve abc12345 --reviewed-by "conny" --note "Looks good"
+orch reviews reject abc12345 "Quality too low for publication"
+```
+
+#### `orch reviews list`
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--limit` | int | `20` | Maximum number of items |
+| `--offset` | int | `0` | Number of items to skip |
+| `--db-path` | path | auto | Override persistent DB path |
+
+**Output columns:** RUN ID, TEMPLATE, CREATED AT, SCORE, TIER
+
+#### `orch reviews approve <RUN_ID>`
+
+Moves the run from `pending_review` to `success` status.
+
+| Option | Description |
+|---|---|
+| `--reviewed-by` | Reviewer identifier (for audit trail) |
+| `--note` | Optional review note |
+| `--db-path` | Override persistent DB path |
+
+#### `orch reviews reject <RUN_ID> <REASON>`
+
+Moves the run from `pending_review` to `rejected` status.
+
+| Option | Description |
+|---|---|
+| `--reviewed-by` | Reviewer identifier (for audit trail) |
+| `--db-path` | Override persistent DB path |
 
 ---
 

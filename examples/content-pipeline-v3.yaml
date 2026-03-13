@@ -1,0 +1,272 @@
+# content-pipeline-v3.yaml
+# A comprehensive content creation pipeline that takes a topic from research
+# through drafting, multi-angle review, and iterative refinement to a final
+# publication-ready article.
+# v3: Fixed hyphenated phase IDs to underscores for correct interpolation.
+#
+# Run with: orch run examples/content-pipeline-v3.yaml --input '{"topic":"AI in healthcare"}'
+# Validate:  orch validate examples/content-pipeline-v3.yaml
+
+id: content-pipeline-v3
+name: "Content Creation Pipeline v3"
+version: "1.1.0"
+description: >
+  A 7-phase content creation pipeline that researches a topic, creates an
+  outline, drafts a full article, performs both flow and adversarial review
+  in parallel, applies all feedback, and delivers a polished final piece.
+  v3: Phase IDs use underscores for correct str.format interpolation.
+author: "Toscan"
+category: "content"
+tags:
+  - content
+  - writing
+  - research
+  - review
+  - article
+
+# Real-world scenarios this pipeline is well-suited for
+use_cases:
+  - "Generate authoritative long-form blog posts with built-in adversarial review"
+  - "Produce researched LinkedIn articles with multi-perspective quality checks"
+  - "Create thought-leadership content with automatic structural and factual review"
+
+# Minimal example showing the required and optional config inputs
+example_input:
+  topic: "The impact of large language models on software development"
+  tone: "professional"
+  word_count: 1500
+
+# Schema defining what inputs the pipeline accepts at runtime
+config_schema:
+  type: object
+  properties:
+    topic:
+      type: string
+      description: "The subject or title of the article to produce"
+    tone:
+      type: string
+      description: "Writing tone, e.g. 'professional', 'conversational', 'academic'"
+      default: "professional"
+    word_count:
+      type: integer
+      description: "Target word count for the draft"
+      default: 1500
+  required:
+    - topic
+
+# phases: each step runs only after its depends_on phases have completed.
+# Phases with no depends_on run immediately (in parallel when the executor supports it).
+phases:
+
+  # ── research ────────────────────────────────────────────────────────────────
+  # First phase: gather background knowledge, credible sources, and key facts.
+  - id: research
+    name: "Source Research"
+    description: "Gather credible sources, key facts, statistics, and expert opinions on the topic."
+    task_type: research
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: []
+    timeout_minutes: 30
+    prompt_template: |
+      You are a research assistant. Gather comprehensive background on the following topic.
+
+      Topic: {input[topic]}
+      Desired tone for the final article: {input[tone]}
+
+      Produce a structured research brief that includes:
+      1. A summary of the topic (2-3 paragraphs)
+      2. At least 8 key facts, claims, or data points with source references
+      3. Notable expert perspectives or schools of thought
+      4. Current trends and recent developments
+      5. Potential counterarguments or controversies
+
+      Format your output as clearly labelled sections.
+
+  # ── outline ─────────────────────────────────────────────────────────────────
+  # Parallel with research: define the article's logical skeleton.
+  - id: outline
+    name: "Article Outline"
+    description: "Create a logical article structure with sections, sub-points, and flow rationale."
+    task_type: content
+    model_tier: sonnet
+    thinking_level: low
+    depends_on: []
+    timeout_minutes: 20
+    prompt_template: |
+      Create a detailed article outline for the following topic.
+
+      Topic: {input[topic]}
+      Target word count: {input[word_count]}
+      Tone: {input[tone]}
+
+      Produce:
+      1. A compelling working headline
+      2. A brief thesis statement (1-2 sentences)
+      3. An ordered list of sections, each with:
+         - Section title
+         - 3-5 bullet points summarising what it will cover
+         - Approximate word count allocation
+      4. A closing conclusion strategy
+
+      The outline should enable a writer to produce a coherent, well-paced article.
+
+  # ── draft ────────────────────────────────────────────────────────────────────
+  # Depends on BOTH research and outline: merges findings into a full draft.
+  - id: draft
+    name: "Full Draft"
+    description: "Write a complete article draft based on the research brief and outline."
+    task_type: content
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on:
+      - research
+      - outline
+    timeout_minutes: 45
+    prompt_template: |
+      Write a complete article based on the research brief and outline below.
+
+      === RESEARCH BRIEF ===
+      {previous_output[research]}
+
+      === OUTLINE ===
+      {previous_output[outline]}
+
+      === WRITING REQUIREMENTS ===
+      - Topic: {input[topic]}
+      - Tone: {input[tone]}
+      - Target word count: {input[word_count]}
+      - Include a compelling headline
+      - Follow the outline structure closely
+      - Weave in facts from the research brief naturally
+      - End with a clear conclusion and call-to-action
+
+      Produce only the article text — no meta-commentary.
+
+  # ── flow_review ──────────────────────────────────────────────────────────────
+  # Reviews the draft for logical flow and structural quality.
+  - id: flow_review
+    name: "Flow Review"
+    description: "Check the draft for logical flow, structural coherence, and narrative clarity."
+    task_type: review
+    model_tier: sonnet
+    thinking_level: low
+    depends_on:
+      - draft
+    timeout_minutes: 20
+    prompt_template: |
+      You are an editorial reviewer specialising in structural and narrative quality.
+      Review the following article draft for flow and coherence.
+
+      === DRAFT ===
+      {previous_output[draft]}
+
+      Evaluate and report on:
+      1. Logical flow — does each section connect naturally to the next?
+      2. Structural clarity — are sections well-defined and appropriately weighted?
+      3. Opening hook — does the introduction draw the reader in?
+      4. Transitions — are paragraph and section transitions smooth?
+      5. Conclusion strength — does it land with impact?
+
+      For each issue found, provide:
+      - Location (section/paragraph reference)
+      - Description of the problem
+      - Specific recommended fix
+
+      Summarise overall flow quality with a score (1–10) and key improvements needed.
+
+  # ── red_team ─────────────────────────────────────────────────────────────────
+  # Adversarial review: challenges claims, spots weaknesses, plays devil's advocate.
+  - id: red_team
+    name: "Adversarial Review"
+    description: "Perform an adversarial review — challenge claims, find weaknesses, and stress-test arguments."
+    task_type: review
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on:
+      - draft
+    timeout_minutes: 25
+    prompt_template: |
+      You are a critical adversarial reviewer. Your job is to stress-test the
+      following article by challenging every claim and identifying weaknesses.
+
+      === DRAFT ===
+      {previous_output[draft]}
+
+      Perform a rigorous adversarial analysis:
+      1. Identify unsupported or weakly-supported claims
+      2. Find logical fallacies or gaps in reasoning
+      3. Highlight factual statements that require stronger evidence
+      4. Note any bias, one-sidedness, or missing perspectives
+      5. Point out anything that a hostile reader could use to discredit the article
+
+      For each issue, provide:
+      - The specific claim or passage (quote it)
+      - Why it is problematic
+      - How to strengthen or remove it
+
+      Be thorough and unsparing — your goal is to make the article bulletproof.
+
+  # ── apply_fixes ──────────────────────────────────────────────────────────────
+  # Incorporates feedback from both reviews into a revised draft.
+  - id: apply_fixes
+    name: "Apply Reviewer Feedback"
+    description: "Revise the draft by incorporating all feedback from the flow review and red-team review."
+    task_type: content
+    model_tier: sonnet
+    thinking_level: medium
+    depends_on:
+      - draft
+      - flow_review
+      - red_team
+    timeout_minutes: 40
+    prompt_template: |
+      Revise the article draft by incorporating ALL feedback from two reviewers.
+      Preserve the original tone, intent, and approximate word count.
+
+      === ORIGINAL DRAFT ===
+      {previous_output[draft]}
+
+      === FLOW REVIEW FEEDBACK ===
+      {previous_output[flow_review]}
+
+      === ADVERSARIAL REVIEW FEEDBACK ===
+      {previous_output[red_team]}
+
+      Instructions:
+      - Address every specific issue raised by both reviewers
+      - Strengthen unsupported claims with qualifiers or additional context
+      - Improve transitions and structural weaknesses identified in the flow review
+      - Maintain the target tone: {input[tone]}
+      - Do not reduce quality by over-hedging — be confident where claims are solid
+      - Output only the revised article text
+
+  # ── final_review ─────────────────────────────────────────────────────────────
+  # Final quality gate before publication.
+  - id: final_review
+    name: "Final Quality Check"
+    description: "Perform a final quality check on the revised draft — polish, consistency, and publication readiness."
+    task_type: review
+    model_tier: sonnet
+    thinking_level: low
+    depends_on:
+      - apply_fixes
+    timeout_minutes: 20
+    prompt_template: |
+      Perform a final editorial review of this revised article.
+
+      === REVISED ARTICLE ===
+      {previous_output[apply_fixes]}
+
+      Check for:
+      1. Grammar, punctuation, and spelling errors
+      2. Tone consistency throughout (target: {input[tone]})
+      3. Headline effectiveness
+      4. Paragraph length and readability (aim for varied, digestible paragraphs)
+      5. Word count appropriateness (target: {input[word_count]} words)
+      6. Publication readiness — is this ready to publish as-is?
+
+      Produce:
+      - A final quality score (1–10)
+      - A list of any remaining issues (if any)
+      - The publication-ready article text (with any minor corrections applied inline)

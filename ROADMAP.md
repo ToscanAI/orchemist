@@ -5,7 +5,7 @@
 > **Maintainer:** @ToscanAI
 
 > **Open Source Target:** After Sprint 4 (Dark Factory) — ~May 2026
-> **License:** Apache 2.0
+> **License:** MIT
 > **V2 (Go rewrite):** In parallel — `ToscanAI/orchemist-v2`
 
 ---
@@ -36,6 +36,8 @@ You review 3 items that need human judgment. Everything else handled itself. The
 
 ### What's Built
 
+#### Core Engine
+
 | Capability | Status | Key Components |
 |---|---|---|
 | Multi-agent pipelines | ✅ Shipped | `PhaseSequencer`, `StateMachineSequencer`, parallel wave execution |
@@ -44,7 +46,7 @@ You review 3 items that need human judgment. Everything else handled itself. The
 | LLM judge scoring | ✅ Shipped | `scoring.py`, `ScenarioRunner`, assertion + LLM + URL graders |
 | Hard quality gates | ✅ Shipped | Failed score = no PR, scoring enforcement in daemon |
 | CLI | ✅ Shipped | `orch run`, `orch launch`, `orch status`, `orch wait`, `orch serve`, `orch ui` |
-| REST API + SSE | ✅ Shipped | FastAPI (`web/api.py`), live progress streaming |
+| REST API + SSE | ✅ Shipped | FastAPI (`web/api.py` + `web/app.py`), 33 versioned endpoints + 8 UI endpoints, live SSE streaming |
 | Web UI | ✅ Shipped | Dashboard, template cards, run detail with live progress |
 | Template CRUD | ✅ Shipped | Create/update/delete/validate via API |
 | Git lifecycle | ✅ Shipped | `git_integration.py` — branch, commit, push, merge gate (no force-push) |
@@ -53,17 +55,57 @@ You review 3 items that need human judgment. Everything else handled itself. The
 | Coding pipeline v1.1 | ✅ Shipped | spec → implement → review → fix → test (5-phase) |
 | Content pipeline v2.7 | ✅ Shipped | 7-phase with fact-checking and red-teaming |
 | Testing | ✅ Shipped | 3000+ tests, CI scenario dry-runs, extended QA suite |
+| Database | ✅ Shipped | SQLite+WAL, 22+ tables (runs, phases, webhooks, triggers, cost, trust, reviews, regressions, …) |
+
+#### Phase 2 Features (Autonomous Triggers) — Implemented
+
+> These features were originally planned as Phase 2 future work but have been fully implemented.
+
+| Capability | Status | Key Components |
+|---|---|---|
+| Webhook-driven triggers (2.1) | ✅ Shipped | `webhooks.py` — HTTP endpoints, event→template mapping, `input_map` interpolation |
+| Pipeline chaining (2.2) | ✅ Shipped | `chains.py` — `on_complete` success/failed routing, parent→child run linking |
+| Confidence-based routing (2.3) | ✅ Shipped | `routing.py` — threshold-based auto-merge/human-review/auto-retry/reject routing |
+| Cost tracking & budgets (2.4) | ✅ Shipped | `cost_tracker.py` — per-phase/run/day cost, budget caps, alerts, REST API endpoints |
+| GitHub App integration (2.5) | ✅ Shipped | `github_app.py` — webhook receiver, issue/PR events, status checks, comment posting |
+
+#### Phase 3 Features (Self-Healing) — Partially Implemented
+
+| Capability | Status | Key Components |
+|---|---|---|
+| Failed pipeline diagnosis (3.1) | ✅ Shipped | `diagnosis.py` — `DiagnosisEngine`, 8 `FailureClass` values, LLM-powered failure classification |
+| Adaptive retry strategies (3.2) | ✅ Shipped | `adaptive_retry.py` — `AdaptiveRetryEngine`, 6 `RetryStrategy` values, model escalation ladder |
+| Regression detection (3.3) | ✅ Shipped | `regression.py` — CI monitoring, `git bisect`–style blame, auto-creates issues + spawns fix pipelines |
+
+#### Phase 4 Features (Dark Factory) — Partially Implemented
+
+| Capability | Status | Key Components |
+|---|---|---|
+| Issue→pipeline automation (4.1) | ✅ Shipped | `issue_automation.py` — issue classification, template selection, input extraction, auto-spawns pipelines |
+| Trust calibration engine (4.4) | ✅ Shipped | `trust.py` — per-(repo, template, task_type) trust profiles, decay, history, REST API endpoints |
+
+#### Sprint 7 (Behavioral Trust Gate)
+
+| Capability | Status | Key Components |
+|---|---|---|
+| Spec-driven acceptance tests (7.1) | ✅ Shipped | `acceptance_test` phase in `coding-pipeline-v1.yaml` |
+| Hash-sealed protected files (7.2) | ✅ Shipped | `file_guard.py` — SHA256 checksums, `protected_outputs` config |
+| Engine-executed test runner (7.3) | ✅ Shipped | `test_runner.py` — engine-side test execution, exit code validation |
+| Composite scorer reweighting (7.4) | ✅ Shipped | `confidence.py` — `acceptance_pass_rate` as primary signal (0.40 weight) |
 
 ### What's Missing for Full Autonomy
 
-The engine can execute pipelines reliably. But a human must:
-- **Decide** which pipeline to run and when
-- **Trigger** every pipeline manually (`orch launch`)
-- **Route** results (merge, retry, or discard)
-- **Monitor** for failures and regressions
-- **Compose** multi-pipeline workflows by hand
-
-Level 5 eliminates all of these manual steps for routine work.
+The engine **can now trigger, chain, diagnose, retry, and route pipelines autonomously**. What remains:
+- **Fleet monitoring dashboard** (3.4) — no unified cross-repo UI yet
+- **Stale detection / proactive maintenance** (3.5) — repo scanning not automated
+- **Meta-orchestration** (4.2) — no `meta` phase type for pipeline-of-pipelines
+- **Deployment integration** (4.3) — no CI/CD hooks or rollback orchestration
+- **Audit trail / compliance** (4.5) — append-only audit log not formalized
+- **Multi-repo orchestration** (4.6) — engine is single-repo per instance
+- **External validator** (Sprint 8) — behavioral validator runs in-process, not as a separate trust boundary
+- **Visual pipeline builder** (1.1) — drag-and-drop UI not yet built
+- **Monaco editor** (1.2) — in-browser YAML editing not yet built
+- **Template marketplace** (1.4) — community index exists but no in-UI browse/install
 
 ---
 
@@ -114,6 +156,8 @@ Level 5 eliminates all of these manual steps for routine work.
 ---
 
 ## Phase 2: Level 4.5 — Autonomous Triggers (Months 1-2)
+
+> ✅ **ALL ITEMS IMPLEMENTED** — See "What's Built" table above. The sections below preserve the original design notes for reference.
 
 *The engine stops waiting for humans to push buttons. Events trigger pipelines. Pipelines chain together.*
 
@@ -315,6 +359,8 @@ Sprint 8 moves the validator to its own process with its own trust boundary. The
 
 ## Phase 3: Level 4.8 — Self-Healing (Months 2-4)
 
+> ✅ **3.1–3.3 IMPLEMENTED** — Diagnosis, adaptive retry, and regression detection are shipped. 3.4 (Fleet Monitoring) and 3.5 (Stale Detection) remain to be built.
+
 *The factory doesn't just run — it detects problems and fixes them without being told.*
 
 ### 3.1 Failed Pipeline Diagnosis
@@ -387,6 +433,8 @@ Sprint 8 moves the validator to its own process with its own trust boundary. The
 ---
 
 ## Phase 4: Level 5 — Dark Factory (Months 4-8)
+
+> ✅ **4.1 and 4.4 IMPLEMENTED** — Issue automation and trust calibration are shipped. 4.2 (Meta-orchestration), 4.3 (Deployment), 4.5 (Audit Trail), and 4.6 (Multi-Repo) remain to be built.
 
 *The factory runs in the dark. Issues become deployments. Pipelines spawn pipelines. Trust is earned and calibrated automatically.*
 

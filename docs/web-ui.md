@@ -40,15 +40,15 @@ If those packages are not installed, `orch serve` will print a clear error and e
 
 ## Available Endpoints
 
-The server exposes two categories of routes:
+The server exposes **two independent API surfaces**:
 
-### Single-Page Application
+### Web UI API (`/api/`)
+
+These endpoints power the browser-based frontend (`app.py`):
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/` | Serves the web UI (HTML single-page app) |
-
-### REST API
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -60,6 +60,22 @@ The server exposes two categories of routes:
 | `GET` | `/api/run/{run_id}/outputs` | All stored phase outputs for a run (completed or in progress) |
 | `POST` | `/api/run/{run_id}/resume` | Resume a paused (human-in-the-loop) pipeline run |
 | `POST` | `/api/run/{run_id}/edit` | Edit a phase output before resuming a paused run |
+
+### Versioned REST API (`/api/v1/`)
+
+A separate, programmatic REST API exists at `/api/v1/` (served by `api.py`). This API is designed for CLI integration, webhooks, and external tooling. It provides **33 endpoints** covering:
+
+- **Templates** — full CRUD (list, get, create, update, delete, validate)
+- **Pipeline Runs** — launch, list, status, children, logs, SSE streaming, delete
+- **Webhooks & Triggers** — receive webhook payloads, CRUD trigger configurations
+- **Human Reviews** — list pending reviews, approve, reject
+- **Cost Tracking** — daily summaries, per-run breakdowns
+- **Trust Profiles** — list, get, update profiles and view adjustment history
+- **Integrations** — Telegram HITL callback, GitHub issue automation
+
+The versioned API is auto-documented via FastAPI's built-in OpenAPI. When running `orch serve` or `orch api-server`, visit `/api/v1/docs` in your browser for the interactive Swagger UI.
+
+> **Which API should I use?** Use `/api/` if you're building a custom frontend. Use `/api/v1/` for programmatic integrations, webhooks, and automation.
 
 ---
 

@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "orchestration-engine"
+name = "orchemist"
 version = "0.3.0"
-description = "A scenario-driven orchestration engine for multi-agent AI pipelines"
+description = "Orchemist — a scenario-driven orchestration engine for multi-agent AI pipelines"
 authors = [
     {name = "Conny Lazo", email = "contact@renerivera.net"},
 ]
@@ -55,8 +55,9 @@ orch = "orchestration_engine.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/connylazo/orchestration-engine"
-Repository = "https://github.com/connylazo/orchestration-engine"
-Issues = "https://github.com/connylazo/orchestration-engine/issues"
+Repository = "https://github.com/ToscanAI/orchestration-engine"
+Development = "https://github.com/ToscanAI/orchestration-engine"
+Issues = "https://github.com/ToscanAI/orchestration-engine/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/orchestration_engine"]

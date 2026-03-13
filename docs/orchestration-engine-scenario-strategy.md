@@ -4,7 +4,8 @@
 
 **Author:** Independent strategy review  
 **Date:** 2026-02-20  
-**Status:** Recommendation — ready for implementation  
+**Original Status:** Recommendation — ready for implementation  
+**Current Status:** ✅ **IMPLEMENTED** — Core scenario-testing infrastructure is live: `scoring.py` (composite scorer), `ScenarioRunner` (scenario execution), assertion/LLM/URL graders in `scenario_runner/graders/`, and `quality-gates.md` enforcement. See also `scenarios/` directory for active scenario definitions.  
 **Inputs reviewed:** Scenario testing research, dark factory gap research, Nate B. Jones analysis, architecture audit v2, content pipeline protocol, sub-agent standards, engine source code (schemas, runner, recovery)
 
 ---

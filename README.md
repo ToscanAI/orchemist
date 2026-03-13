@@ -1,4 +1,4 @@
-# Orchestration Engine
+# Orchemist
 
 ### Like Docker Compose for AI pipelines — define phases in YAML, the engine handles the rest.
 
@@ -7,13 +7,18 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![Pi Tested](https://img.shields.io/badge/Raspberry%20Pi-tested-red)](https://www.raspberrypi.com/)
 
+> **Development:** [github.com/ToscanAI/orchestration-engine](https://github.com/ToscanAI/orchestration-engine)  
+> **Stable releases:** [github.com/connylazo/orchestration-engine](https://github.com/connylazo/orchestration-engine)
+
 ---
 
 ## What Is It?
 
-**Orchestration Engine** is a YAML-first orchestration engine for multi-agent AI pipelines.
+**Orchemist** is a YAML-first orchestration engine for multi-agent AI pipelines.
 
 You declare your pipeline — phases, dependencies, model tiers, and acceptance criteria — in a single YAML file. The engine handles phase sequencing, dependency resolution, output forwarding, automatic retries, fallback executors, and scenario grading. No boilerplate. No vendor lock-in. Works standalone with the Anthropic API or via OpenClaw sub-agent spawning.
+
+> **Note:** The YAML below is simplified for illustration. Orchemist's template format is evolving to support an expanding range of workloads — from content pipelines to coding, research, compliance, and beyond. See [Template Authoring](docs/template-authoring.md) for the full schema and working examples.
 
 ```yaml
 name: content-pipeline
@@ -38,7 +43,7 @@ phases:
 ## Quickstart
 
 ```bash
-pip install orchestration-engine
+pip install orchemist
 orch new --yes --output templates/my-pipeline.yaml
 orch run templates/my-pipeline.yaml --mode dry-run
 ```
@@ -90,7 +95,7 @@ Each use case is a template. Browse them with `orch templates list` or search wi
 
 ## How It Compares
 
-| Feature | Orchestration Engine | LangGraph | CrewAI | Autogen | Dify |
+| Feature | Orchemist | LangGraph | CrewAI | Autogen | Dify |
 |---------|:-------------------:|:---------:|:------:|:-------:|:----:|
 | YAML-first | ✅ | ❌ | ❌ | ❌ | Partial |
 | Visual builder | 🔜 | ⚠️ | ❌ | ❌ | ✅ |
@@ -198,13 +203,16 @@ orch health
 ### From PyPI
 
 ```bash
-pip install orchestration-engine
+pip install orchemist
 ```
 
 ### From Source
 
 ```bash
+# Development repo (latest)
 git clone https://github.com/ToscanAI/orchestration-engine.git
+# Or stable releases:
+# git clone https://github.com/connylazo/orchestration-engine.git
 cd orchestration-engine
 python3 -m venv .venv && source .venv/bin/activate
 pip install .
@@ -223,7 +231,7 @@ orch --help
 | Layer | Provides | Think of it as… |
 |-------|----------|-----------------|
 | **OpenClaw** | Sub-agent spawning, tool access, model switching | Operating System |
-| **Orchestration Engine** | Pipeline templates, phase sequencing, quality gates | Application Framework |
+| **Orchemist** | Pipeline templates, phase sequencing, quality gates | Application Framework |
 | **Scenario Runner** | Outcome-based testing, LLM judges, grading | Test Framework |
 
 The engine works **standalone** (direct API) or **with OpenClaw** (sub-agent spawning). No vendor lock-in.
@@ -237,7 +245,7 @@ Pull requests are welcome! Here's how to get started:
 ```bash
 git clone https://github.com/ToscanAI/orchestration-engine.git
 cd orchestration-engine
-pip install -e ".[test]"
+pip install -e ".[dev]"
 pytest
 ```
 
@@ -270,4 +278,4 @@ See [LICENSE](LICENSE) for the full text.
 
 ---
 
-**Tests passing. 3 execution modes. Zero vendor lock-in.**
+**Orchemist — Tests passing. 3 execution modes. Zero vendor lock-in.**

@@ -235,3 +235,67 @@ CREATE TABLE error_patterns (
 - The `is_first_failure` determination
 
 DB writes use best-effort try/except — a DB contention error doesn't abort the recovery logic.
+
+---
+
+## Level 4 Recovery: Diagnosis + Adaptive Retry
+
+The `RecoveryManager` above handles Level 3 recovery (keyword-pattern classification, exponential backoff, circuit breakers). Level 4 adds two layers on top:
+
+### Diagnosis Engine (`diagnosis.py`)
+
+When a pipeline phase fails, the `DiagnosisEngine` performs LLM-powered failure classification. Instead of simple keyword matching, it:
+
+1. Collects the full phase context (prompt, output, error, model, timing)
+2. Sends a structured prompt to Haiku for classification
+3. Parses the response into a `DiagnosisResult`
+4. Persists the result to the `diagnosis_results` DB table
+
+**Failure classes (8):**
+
+| `FailureClass` | Description |
+|---|---|
+| `BAD_PROMPT` | Prompt unclear or malformed |
+| `INSUFFICIENT_CONTEXT` | Missing files, dependencies, or background |
+| `WRONG_MODEL` | Model tier too low for the complexity |
+| `FLAKY_TEST` | Test passes intermittently |
+| `INFRA_ISSUE` | Network, API, or infrastructure failure |
+| `QUALITY_GAP` | Output quality below threshold |
+| `TIMEOUT` | Phase exceeded time limit |
+| `BUDGET_EXCEEDED` | Run exceeded cost budget (non-retryable) |
+
+**Remediation suggestions (6):**
+`RETRY_SAME`, `RETRY_ESCALATED_MODEL`, `RETRY_WITH_CONTEXT`, `SPLIT_TASK`, `ESCALATE_TO_HUMAN`, `NO_ACTION`
+
+### Adaptive Retry Engine (`adaptive_retry.py`)
+
+The `AdaptiveRetryEngine` consumes a `DiagnosisResult` and produces a `RetryPlan` with a concrete strategy:
+
+| `RetryStrategy` | When used | What changes |
+|---|---|---|
+| `ESCALATE_MODEL` | `WRONG_MODEL` or `QUALITY_GAP` | Moves up the model ladder: haiku → sonnet → opus |
+| `ADD_CONTEXT` | `INSUFFICIENT_CONTEXT` | Injects additional context files into the prompt |
+| `SPLIT_TASK` | Task too complex for single phase | Spawns child pipeline (requires chaining) |
+| `REPHRASE_PROMPT` | `BAD_PROMPT` | Modifies prompt with failure context |
+| `RETRY_UNCHANGED` | `FLAKY_TEST` or `INFRA_ISSUE` | Retries with same parameters |
+| `INCREASE_TIMEOUT` | `TIMEOUT` | Multiplies timeout by configured factor |
+
+`BUDGET_EXCEEDED` maps to `None` (non-retryable) — the run fails immediately.
+
+### How the layers interact
+
+```
+Phase fails
+    │
+    ├── DiagnosisEngine.diagnose(phase_context)
+    │       │
+    │       └── LLM classifies failure → DiagnosisResult
+    │
+    ├── AdaptiveRetryEngine.plan(diagnosis)
+    │       │
+    │       └── Maps failure class → RetryPlan (strategy, model override, timeout multiplier)
+    │
+    └── Sequencer executes retry with adjusted parameters
+```
+
+The base `RecoveryManager` still handles circuit breakers and backoff timing. The Level 4 layer adds *intelligent* strategy selection on top.

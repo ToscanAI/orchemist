@@ -1,6 +1,6 @@
 # Structured Output Schemas
 
-> ⚠️ **Partially outdated:** This file documents `schemas.py` classes but is missing `TaskStats`, `TaskRunResult`, and `TaskExecutionRequest`. It also doesn't cover the template engine classes (`PhaseDefinition`, `PipelineTemplate`, `TemplateEngine` in `templates.py`) or `PhaseSequencer` in `sequencer.py`. Update planned for Week 2.
+> ⚠️ **Partially outdated:** This file documents `schemas.py` classes but is missing `TaskStats`, `TaskRunResult`, and `TaskExecutionRequest`. It also doesn't cover the template engine classes (`PhaseDefinition`, `PipelineTemplate`, `TemplateEngine` in `templates.py`) or `PhaseSequencer` in `sequencer.py`. See also `template-authoring.md` for full template schema.
 
 All data in the orchestration engine flows through **strict, validated Pydantic V2 schemas** defined in `schemas.py`. This ensures type safety, consistent interfaces, and reliable quality assessment.
 
@@ -25,6 +25,12 @@ class Priority(IntEnum):
 class TaskType(str, Enum):
     CONTENT = "content" | CODE = "code" | RESEARCH = "research"
     TRANSLATION = "translation" | REVIEW = "review"
+    # Knowledge-work task types (#123)
+    TRIAGE = "triage" | ANALYSIS = "analysis" | COMPLIANCE = "compliance"
+    FINANCIAL = "financial" | SALES = "sales" | SUPPORT = "support"
+    # Engine-internal task types
+    COMMAND = "command"             # Shell command execution phases
+    ACCEPTANCE_RUN = "acceptance_run" # Engine-executed acceptance test phases
 
 class TaskState(str, Enum):
     QUEUED = "queued" | RUNNING = "running" | SUCCESS = "success"

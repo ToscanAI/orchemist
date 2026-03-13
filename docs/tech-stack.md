@@ -132,20 +132,29 @@ Tests use **pytest** (`pytest>=7.0`) with the `pytest-asyncio` and `pytest-cov` 
 
 ---
 
-## No Framework Dependencies
+## Optional Framework Layer (Web UI + REST API)
 
-The engine has **no FastAPI, Django, Flask, Celery, or similar framework dependencies**. This is deliberate.
+The engine's **core** (CLI, sequencer, executors, scoring) has no framework dependencies. However, the **web UI and REST API** are powered by **FastAPI** + **uvicorn** + **sse-starlette**, installed as an optional extra:
 
-**What was considered and rejected:**
+```bash
+pip install orchemist[web]
+```
 
-| Framework | Why rejected |
+This is a deliberate architecture: the core library runs anywhere (Raspberry Pi, CI, Docker) with zero server overhead, while teams who want a browser interface or programmatic API can opt in. The web layer adds:
+
+- **33 REST API endpoints** at `/api/v1/` (template CRUD, run management, webhook triggers, cost tracking, trust profiles, reviews)
+- **SSE live-progress streaming** for real-time phase updates
+- **Next.js static frontend** served via FastAPI
+
+**What was considered and rejected for the core:**
+
+| Framework | Why rejected for core |
 |---|---|
-| FastAPI | Adds async runtime, HTTP server, and 10+ transitive deps; unnecessary for a local CLI tool |
 | Celery | Requires Redis or RabbitMQ as a broker; contradicts the zero-install-server goal |
 | Django | Monolithic; designed for web applications, not CLI pipelines |
 | SQLAlchemy | Powerful but large; the database access patterns here are simple enough for raw SQLite |
 
-The engine is a **library + CLI**. Adding a framework would mean users need to run a server process, manage a message broker, and understand framework conventions — all for something that runs locally on a single host. Simplicity wins.
+The engine is a **library + CLI** at its core. The web layer is additive, not required.
 
 ---
 
@@ -173,5 +182,6 @@ This constraint also makes the engine well-suited for **CI pipelines**, **GitHub
 | PyYAML | Human-friendly multi-line templates |
 | stdlib urllib | Zero extra HTTP dependency |
 | pytest | Fixtures, parametrisation, coverage |
-| No framework | Single-host tool; frameworks add overhead and server requirements |
+| No framework (core) | Single-host core tool; frameworks add overhead and server requirements |
+| Optional FastAPI (web) | Opt-in browser UI + REST API via `pip install orchemist[web]` |
 | Raspberry Pi target | Forces minimal dependencies and low idle resource usage |
