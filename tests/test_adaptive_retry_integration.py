@@ -336,7 +336,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
 
     @patch("subprocess.Popen")
     def test_ac5_retry_cap_reached_escalates(self, mock_popen, db_with_original_run):
-        """AC-5: 3 existing retries → cap reached → escalated, no Popen."""
+        """AC-5: 3 existing retries → cap reached → failed (not escalated), no Popen."""
         # Pre-insert 3 retry runs
         for i in range(3):
             db_with_original_run.insert_pipeline_run({
@@ -353,11 +353,12 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)
         engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=":memory:")
 
-        engine.plan_and_execute(diagnosis, run, "orig-001")
+        engine.plan_and_execute(diagnosis, run, "orig-001", max_retries=3)
 
         mock_popen.assert_not_called()
         row = db_with_original_run.get_pipeline_run("orig-001")
-        assert row["status"] == "escalated"
+        assert row["status"] == "failed"
+        assert "Max retries exceeded" in (row.get("error_message") or "")
 
     @patch("subprocess.Popen")
     def test_retry_cap_not_reached_spawns(self, mock_popen, db_with_original_run):
@@ -382,7 +383,8 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)
         engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=":memory:")
 
-        engine.plan_and_execute(diagnosis, run, "orig-001")
+        # Pass max_retries=3 explicitly (2 existing < 3 cap → should spawn)
+        engine.plan_and_execute(diagnosis, run, "orig-001", max_retries=3)
 
         assert mock_popen.call_count == 1
 
@@ -451,7 +453,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)
         engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=":memory:")
 
-        engine.plan_and_execute(diagnosis, run_for_retry, "retry-001")
+        engine.plan_and_execute(diagnosis, run_for_retry, "retry-001", max_retries=3)
 
         all_rows = db_with_original_run.list_pipeline_runs()
         # The new retry should link to the ORIGINAL run, not to retry-001
@@ -568,7 +570,7 @@ class TestRetryEnginePlanCustomMaxRetries:
 
     @patch("subprocess.Popen")
     def test_custom_max_retries(self, mock_popen, db_with_original_run):
-        """max_retries=1 with 1 existing retry → escalated."""
+        """max_retries=1 with 1 existing retry → failed (cap exhausted), no Popen."""
         db_with_original_run.insert_pipeline_run({
             "run_id": "retry-pre-000",
             "template_path": "/tmp/t.yaml",
@@ -587,11 +589,12 @@ class TestRetryEnginePlanCustomMaxRetries:
 
         mock_popen.assert_not_called()
         row = db_with_original_run.get_pipeline_run("orig-001")
-        assert row["status"] == "escalated"
+        assert row["status"] == "failed"
+        assert "Max retries exceeded" in (row.get("error_message") or "")
 
     @patch("subprocess.Popen")
     def test_custom_max_retries_zero(self, mock_popen, db_with_original_run):
-        """max_retries=0 → always escalated (even with 0 existing retries)."""
+        """max_retries=0 → always failed (even with 0 existing retries)."""
         run = _base_run(run_id="orig-001", input_json={"budget_usd": 10.0})
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)
         engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=":memory:")
@@ -600,7 +603,8 @@ class TestRetryEnginePlanCustomMaxRetries:
 
         mock_popen.assert_not_called()
         row = db_with_original_run.get_pipeline_run("orig-001")
-        assert row["status"] == "escalated"
+        assert row["status"] == "failed"
+        assert "Max retries exceeded" in (row.get("error_message") or "")
 
     @patch("subprocess.Popen")
     def test_cost_limit_usd_key_works(self, mock_popen, db_with_original_run):

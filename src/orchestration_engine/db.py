@@ -85,6 +85,16 @@ class Database:
         # Initialize database schema
         self._initialize_database()
     
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        """Alias for :meth:`get_connection` for test helper compatibility.
+
+        Provides the ``db._conn`` attribute expected by test helpers that
+        introspect the underlying SQLite connection (e.g. for SELECT queries
+        on ``pipeline_runs`` in acceptance tests).
+        """
+        return self.get_connection()
+
     def get_connection(self) -> sqlite3.Connection:
         """Get a thread-local database connection.
         
