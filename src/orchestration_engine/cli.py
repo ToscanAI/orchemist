@@ -3573,10 +3573,10 @@ def _find_template(name_or_path: str):
             template = engine.load_template(p)
             return p, template
         except FileNotFoundError:
-            click.echo(f"✗ Template file not found: {name_or_path}", err=True)
+            click.echo(f"✗ Template file not found: {name_or_path}")
             sys.exit(1)
         except Exception as exc:
-            click.echo(f"✗ Could not load template: {exc}", err=True)
+            click.echo(f"✗ Could not load template: {exc}")
             sys.exit(1)
 
     search = name_or_path.lower()
@@ -3618,15 +3618,14 @@ def _find_template(name_or_path: str):
         for _, _, tmpl in found_all
         if search in tmpl.id.lower() or search in tmpl.name.lower()
     ]
-    click.echo(f"✗ Template '{name_or_path}' not found.", err=True)
+    click.echo(f"✗ Template '{name_or_path}' not found.")
     if candidates:
-        click.echo("\nDid you mean one of these?", err=True)
+        click.echo("\nDid you mean one of these?")
         for c in candidates:
-            click.echo(f"  • {c}", err=True)
+            click.echo(f"  • {c}")
     else:
         click.echo(
             "\nNo similar templates found. Run 'orch templates list' to see all.",
-            err=True,
         )
     sys.exit(1)
 

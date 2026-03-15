@@ -4,9 +4,9 @@ description: "7-phase content pipeline with file-path handoff. Instead of embedd
 author: "Toscan"
 version: "2.8.0"
 category: "content"
-tags: [content, writing, articles, fact-checking, red-team, humor, file-handoff]
+tags: [content, writing, articles, fact_checking, red_team, humor, file_handoff]
 use_cases:
-  - "Blog articles with personality and fact-checking"
+  - "Blog articles with personality and fact checking"
   - "LinkedIn newsletter content with author voice"
   - "Technical writing with humor and peer review"
 
