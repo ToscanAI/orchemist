@@ -19,6 +19,9 @@ config_schema:
   required:
     - audit_scope
 
+example_input:
+  audit_scope: "Review authentication module for security vulnerabilities"
+
 phases:
   - id: investigate
     name: "Code Investigation"

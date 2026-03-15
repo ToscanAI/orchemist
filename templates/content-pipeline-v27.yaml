@@ -41,6 +41,14 @@ config_schema:
     publication:
       type: string
       default: "blog"
+
+example_input:
+  topic: "Sample topic for content generation"
+  author_name: "René Rivera"
+  author_facts: "Author and engineer with 10+ years of experience."
+  voice_style: "Direct, opinionated, builder-focused. E.g.: 'This is broken. Here's why.'"
+  source_material: "Interview transcript or research notes go here."
+
 phases:
   - id: research
     name: "Research & Synthesis"

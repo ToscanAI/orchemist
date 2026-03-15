@@ -56,6 +56,14 @@ config_schema:
       default: 3
       description: "Max implement→acceptance_run loop iterations (set max_iterations on implement and acceptance_run phases)"
 
+example_input:
+  issue_title: "Sample issue title"
+  issue_body: "Sample issue description and requirements."
+  repo_path: "/path/to/repo"
+  branch_name: "fix/issue-123"
+  issue_number: 123
+  repo_url: "https://github.com/ToscanAI/orchestration-engine"
+
 phases:
   # Phase 1: Spec Interpretation
   - id: spec
