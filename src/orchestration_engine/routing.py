@@ -65,8 +65,13 @@ class RoutingTier:
         # Normalize types — frozen dataclass requires object.__setattr__
         object.__setattr__(self, "min_score", float(self.min_score))
         object.__setattr__(self, "max_score", float(self.max_score))
-        # Clamp max_retries to 0 if negative
-        object.__setattr__(self, "max_retries", max(0, int(self.max_retries)))
+        # Normalize max_retries: None → 1 (safe default), float → truncate,
+        # non-numeric string → 0, negative → 0 (clamped by max(0, ...)).
+        try:
+            _mr = int(float(self.max_retries)) if self.max_retries is not None else 1
+        except (TypeError, ValueError):
+            _mr = 0
+        object.__setattr__(self, "max_retries", max(0, _mr))
         if self.requires is None:
             object.__setattr__(self, "requires", [])
         if self.notify is None:

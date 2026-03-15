@@ -111,6 +111,44 @@ def is_process_alive(pid: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Retry cap helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_effective_max_retries(template: Any) -> int:
+    """Compute the effective max_retries cap from the template's routing config.
+
+    Reads all routing tiers with ``strategy == 'retry'`` and applies the
+    lowest non-zero cap across all such tiers. Returns:
+
+    - ``0`` if all retry tiers explicitly set ``max_retries=0`` (no retries).
+    - ``1`` if no retry tiers are defined at all (safe default).
+    - The lowest non-zero cap among all retry tiers otherwise.
+
+    Falls back to ``DEFAULT_ROUTING_CONFIG`` when the template has no
+    ``routing_config`` attribute or it is ``None``.
+
+    Args:
+        template: A loaded pipeline template object.
+
+    Returns:
+        Integer effective max_retries cap (>= 0).
+    """
+    _DEFAULT = 1
+    routing_config = getattr(template, "routing_config", None)
+    if routing_config is None:
+        routing_config = DEFAULT_ROUTING_CONFIG
+    retry_tiers = [t for t in routing_config.tiers if t.strategy == "retry"]
+    if not retry_tiers:
+        return _DEFAULT
+    caps = [t.max_retries for t in retry_tiers]
+    nonzero = [c for c in caps if c > 0]
+    if not nonzero:
+        return 0  # All tiers explicitly cap retries at 0
+    return min(nonzero)
+
+
+# ---------------------------------------------------------------------------
 # Core daemon function
 # ---------------------------------------------------------------------------
 
@@ -525,7 +563,8 @@ def run_daemon(run_id: str, db_path: str) -> None:
             try:
                 from .adaptive_retry import AdaptiveRetryEngine
                 _retry_engine = AdaptiveRetryEngine(db=db, db_path=db_path)
-                _retry_engine.plan_and_execute(_diagnosis, run, run_id)
+                _max_retries = _get_effective_max_retries(template)
+                _retry_engine.plan_and_execute(_diagnosis, run, run_id, max_retries=_max_retries)
             except Exception as _retry_exc:
                 logger.warning("Adaptive retry failed (non-fatal): %s", _retry_exc)
 

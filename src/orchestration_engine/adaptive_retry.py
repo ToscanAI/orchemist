@@ -27,7 +27,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from .diagnosis import DiagnosisResult, FailureClass, Remediation
 
@@ -375,26 +375,53 @@ class AdaptiveRetryEngine:
             )
         return self._db.count_retries_for_run(original_run_id)
 
+    def _resolve_root_run_id(self, run_id: str) -> str:
+        """Walk the retry_of_run_id chain in the DB until the root is found.
+
+        Iterates via ``db.get_pipeline_run()`` following ``retry_of_run_id``
+        links until a row with no parent is reached. Uses a visited set to
+        prevent infinite loops on corrupt/circular data.
+
+        Args:
+            run_id: Starting run ID (may be a retry or the root itself).
+
+        Returns:
+            The root run ID (the first run in the chain with no parent).
+        """
+        visited: set = set()
+        current_id = run_id
+        while current_id not in visited:
+            visited.add(current_id)
+            row = self._db.get_pipeline_run(current_id)
+            if row is None:
+                break
+            parent_id = row.get("retry_of_run_id")
+            if not parent_id:
+                break
+            current_id = parent_id
+        return current_id
+
     def plan_and_execute(
         self,
         diagnosis: DiagnosisResult,
         run: Dict[str, Any],
         run_id: str,
-        max_retries: int = 3,
+        max_retries: Optional[Union[int, float, str]] = None,
     ) -> None:
         """End-to-end retry orchestration: plan → budget check → cap check → spawn.
 
         Steps:
         1. Resolve *original_run_id* (traces chained retries back to the root).
         2. Derive a :class:`RetryPlan` from *diagnosis* via :meth:`plan`.
-        3. Check the retry cap; escalate if *max_retries* is reached.
+        3. Check the retry cap; fail if *max_retries* is reached.
         4. Check remaining budget from ``input_json``; escalate if cost would exceed it.
         5. Build modified input via :meth:`build_retry_input`.
         6. Insert a new ``pipeline_runs`` row in the DB.
         7. Spawn a detached daemon subprocess for the new run.
 
-        Non-retryable failures and budget/cap violations all result in the
-        current run being set to ``status='escalated'`` for human review.
+        Non-retryable failures result in ``status='escalated'`` for human review.
+        Budget violations result in ``status='escalated'`` for human review.
+        Cap exhaustion results in ``status='failed'`` with "Max retries exceeded".
 
         Args:
             diagnosis:   :class:`~orchestration_engine.diagnosis.DiagnosisResult`
@@ -402,7 +429,8 @@ class AdaptiveRetryEngine:
             run:         The failed ``pipeline_runs`` DB row dict.
             run_id:      The failed run's ``run_id``.
             max_retries: Hard cap on total retry attempts per original run.
-                         Default ``3``.
+                         ``None`` → safe default of 1. Negative → treated as 0.
+                         Float → truncated to int. Non-numeric string → treated as 0.
 
         Raises:
             RuntimeError: If ``self._db`` or ``self._db_path`` are ``None``.
@@ -418,8 +446,31 @@ class AdaptiveRetryEngine:
                 "pass them to AdaptiveRetryEngine()."
             )
 
-        # 1. Resolve original run ID (handle chained retries correctly).
-        original_run_id: str = run.get("retry_of_run_id") or run_id
+        # Normalize max_retries: None → 1 (safe default), negative → 0,
+        # float → truncate, non-numeric string → 0.
+        if max_retries is None:
+            max_retries = 1
+        else:
+            try:
+                max_retries = max(0, int(float(max_retries)))
+            except (TypeError, ValueError):
+                max_retries = 0
+
+        # 1. Resolve original run ID via DB-backed chain walk (handles chained retries).
+        try:
+            original_run_id: str = self._resolve_root_run_id(run_id)
+        except Exception as exc:
+            _logger.warning(
+                "Could not resolve root run ID for %s — failing safe. Error: %s",
+                run_id,
+                exc,
+            )
+            self._db.update_pipeline_run(
+                run_id,
+                status="failed",
+                error_message="Could not resolve retry chain — failing safe",
+            )
+            return
 
         # 2. Derive the current model from input_json for escalation decisions.
         current_model: Optional[str] = None
@@ -442,15 +493,36 @@ class AdaptiveRetryEngine:
             return
 
         # 3. Check retry cap.
-        existing_count = self.count_existing_retries(original_run_id)
+        try:
+            existing_count = self.count_existing_retries(original_run_id)
+        except Exception as exc:
+            _logger.warning(
+                "Could not determine retry count for run %s — failing safe. Error: %s",
+                original_run_id,
+                exc,
+            )
+            self._db.update_pipeline_run(
+                run_id,
+                status="failed",
+                error_message="Retry count unavailable — failing safe",
+            )
+            return
+
         if existing_count >= max_retries:
             _logger.warning(
-                "Retry cap reached for run %s (%d/%d retries) — escalating to human.",
+                "Retry cap reached for run %s (%d/%d retries) — marking failed.",
                 original_run_id,
                 existing_count,
                 max_retries,
             )
-            self._db.update_pipeline_run(run_id, status="escalated")
+            self._db.update_pipeline_run(
+                run_id,
+                status="failed",
+                error_message=(
+                    f"Max retries exceeded ({existing_count}/{max_retries}) "
+                    f"for original run {original_run_id}"
+                ),
+            )
             return
 
         # 4. Check budget (read from input_json; 0 means no budget guard).
