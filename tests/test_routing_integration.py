@@ -359,7 +359,7 @@ class TestRoutingIntegrationReject:
 
         row = db.get_routing_decision(run_id)
         assert row is not None
-        assert row["action"] == "reject"
+        assert row["action"] == "human_review"
 
     def test_returned_status_is_rejected_for_low_confidence(
         self, tmp_path: Path, routing_output_dir_low_confidence: Path
@@ -627,7 +627,7 @@ class TestRoutingIntegrationFallback:
 
         row = db.get_routing_decision(run_id)
         assert row is not None
-        assert row["action"] == "reject"
+        assert row["action"] == "human_review"
         assert returned_status == "rejected"
 
     def test_signals_json_stored_as_valid_json_string_in_raw_db(

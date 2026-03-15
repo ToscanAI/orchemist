@@ -70,7 +70,7 @@ class TestContentPipelineV28:
         assert len(self.tmpl.tags) >= 3
         assert len(self.tmpl.use_cases) >= 2
         # v28 YAML has no example_input — value is absent, None, or empty dict
-        assert not getattr(self.tmpl, "example_input", None)
+        assert getattr(self.tmpl, "example_input", None)  # v28 has example_input since #589
 
     def test_validates_clean(self):
         raw = yaml.safe_load(TEMPLATE_PATH.read_text())

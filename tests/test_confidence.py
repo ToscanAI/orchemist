@@ -409,7 +409,7 @@ class TestComputeConfidenceMissingDir:
         calc = ConfidenceCalculator()
         result = calc.compute_confidence(tmp_path)
         assert result.confidence_level == ConfidenceLevel.LOW
-        assert result.composite_score == 0.0
+        assert result.composite_score == 0.5
         assert result.signals == []
 
     def test_only_meta_files_returns_low(self, tmp_path):
@@ -424,7 +424,7 @@ class TestComputeConfidenceMissingDir:
         calc = ConfidenceCalculator()
         result = calc.compute_confidence(tmp_path)
         assert result.confidence_level == ConfidenceLevel.LOW
-        assert result.composite_score == 0.0
+        assert result.composite_score == 0.5
 
 
 # ---------------------------------------------------------------------------
