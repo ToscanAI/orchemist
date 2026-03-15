@@ -22,7 +22,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .confidence import ConfidenceCalculator
 from .routing import RoutingEngine, DEFAULT_ROUTING_CONFIG
@@ -253,12 +253,30 @@ def run_daemon(run_id: str, db_path: str) -> None:
         logger.warning("CostTracker init failed (non-fatal): %s", exc)
         _cost_tracker = None
 
-    # --- Preflight: Definition of Ready (Issue #476) ---
+    # --- Preflight: Definition of Ready (Issue #476, #576) ---
     try:
         from .preflight import PreflightChecker
+
+        # Extract required_fields and category from template (Issue #576).
+        # config_schema.required overrides the hardcoded REQUIRED_INPUT_FIELDS
+        # when it is a list (may be empty []).  Any non-list value (None,
+        # string, int, …) triggers the existing default coding-field fallback.
+        _config_schema = getattr(template, 'config_schema', None) or {}
+        _schema_required = (
+            _config_schema.get('required')
+            if isinstance(_config_schema, dict)
+            else None
+        )
+        _required_fields: Optional[List[str]] = (
+            _schema_required if isinstance(_schema_required, list) else None
+        )
+        _category: str = getattr(template, 'category', '') or ''
+
         _preflight = PreflightChecker(
             initial_input,
             db=db,
+            required_fields=_required_fields,
+            category=_category,
             budget_config=template.budget,
             cost_tracker=_cost_tracker,
         )
