@@ -19,6 +19,9 @@ config_schema:
   required:
     - audit_focus
 
+example_input:
+  audit_focus: "Review user onboarding flow for usability issues"
+
 phases:
   - id: evaluate
     name: "UX Evaluation"

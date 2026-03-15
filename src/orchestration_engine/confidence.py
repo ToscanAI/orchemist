@@ -362,12 +362,49 @@ class ConfidenceCalculator:
 
         signals: list[ConfidenceSignal] = []
 
+        # ------------------------------------------------------------------
+        # Signal: acceptance_pass_rate  (Issue #528) — extracted early so it
+        # is included even when no task result files are present.
+        # This is the PRIMARY behavioral signal and must not be gated on task
+        # file presence.
+        # ------------------------------------------------------------------
+        acceptance_signal = self._extract_acceptance_pass_rate(output_dir, _eff_weights)
+        if acceptance_signal is not None:
+            signals.append(acceptance_signal)
+
+        # ------------------------------------------------------------------
+        # Signal: code_quality  (Issue #533) — also extracted early (same
+        # reasoning: independent of task result files).
+        # ------------------------------------------------------------------
+        code_quality_signal = self._extract_code_quality(output_dir, _eff_weights)
+        if code_quality_signal is not None:
+            signals.append(code_quality_signal)
+
         if not tasks:
+            # Append any caller-provided extra signals before finalising.
+            if extra_signals:
+                signals.extend(extra_signals)
+
+            if not signals:
+                # No signals at all — return a neutral score of 0.5 to distinguish
+                # "no data" from "0% pass rate".  A 0% acceptance pass rate produces
+                # a score of 0.0, which must be strictly less than the "no data"
+                # baseline so that callers can tell the difference.
+                return ConfidenceResult(
+                    signals=[],
+                    composite_score=0.5,
+                    confidence_level=ConfidenceLevel.LOW,
+                    explanation="No signals extracted -- defaulting to neutral (0.5).",
+                )
+
+            composite = self._weighted_average(signals)
+            level = _score_to_level(composite)
+            explanation = self._build_explanation(signals, composite, level)
             return ConfidenceResult(
-                signals=[],
-                composite_score=0.0,
-                confidence_level=ConfidenceLevel.LOW,
-                explanation="No signals extracted -- defaulting to LOW.",
+                signals=signals,
+                composite_score=composite,
+                confidence_level=level,
+                explanation=explanation,
             )
 
         # Partition into review/judge tasks and regular (non-review) tasks
@@ -464,25 +501,9 @@ class ConfidenceCalculator:
             source=f"{num_tasks} task file(s) in output dir",
         ))
 
-        # ------------------------------------------------------------------
-        # Signal: acceptance_pass_rate  (Issue #528)
-        # Read from {output_dir}/acceptance_results.json when present.
-        # This is the PRIMARY behavioral signal: tests written from spec before
-        # implementation, forming an immutable behavioral contract.
-        # ------------------------------------------------------------------
-        acceptance_signal = self._extract_acceptance_pass_rate(output_dir, _eff_weights)
-        if acceptance_signal is not None:
-            signals.append(acceptance_signal)
-
-        # ------------------------------------------------------------------
-        # Signal: code_quality  (Issue #533)
-        # Read from {output_dir}/code_quality_results.json when present.
-        # Represents the pass rate of automated code quality checks.
-        # Absent when the file does not exist (backward-compatible).
-        # ------------------------------------------------------------------
-        code_quality_signal = self._extract_code_quality(output_dir, _eff_weights)
-        if code_quality_signal is not None:
-            signals.append(code_quality_signal)
+        # NOTE: acceptance_pass_rate and code_quality signals are extracted
+        # earlier (before the "if not tasks" guard) to ensure they are always
+        # included regardless of task file presence.
 
         # ------------------------------------------------------------------
         # Signal: review_catch_value  (Issue #4.1.3)

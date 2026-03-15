@@ -212,10 +212,18 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
     # ------------------------------------------------------------------
 
     class LaunchRequest(BaseModel):
-        """Body for POST /api/v1/runs — launch a new pipeline run."""
+        """Body for POST /api/v1/runs — launch a new pipeline run.
 
-        template: str
+        Accepts either ``template`` or ``template_id`` as the template identifier.
+        ``template_id`` is an alias for ``template`` for API consumers that use
+        the ``template_id`` naming convention.
+        """
+
+        template: Optional[str] = None
         """Template name (resolved from search paths) or path to a .yaml file."""
+
+        template_id: Optional[str] = None
+        """Alias for ``template``.  When provided, used as the template identifier."""
 
         mode: Literal["standalone", "openclaw", "dry-run"] = "dry-run"
         """Execution mode passed to the daemon subprocess."""
@@ -231,6 +239,11 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
 
         skip_scoring: bool = False
         """Skip auto-scoring even if the template declares a scenario."""
+
+        @property
+        def resolved_template(self) -> Optional[str]:
+            """Return the effective template identifier (template or template_id)."""
+            return self.template or self.template_id
 
     class RunResponse(BaseModel):
         """Serialised pipeline run record returned by the API."""
@@ -795,9 +808,15 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                     for p in tpl.phases
                 ]
                 config_schema = tpl.config_schema or {}
+                category = tpl.category or (
+                    tpl.phases[0].task_type if tpl.phases else "general"
+                )
+                author = tpl.author or ""
             except Exception:
                 phases_summary = []
                 config_schema = {}
+                category = "general"
+                author = ""
 
             result.append(
                 {
@@ -807,6 +826,8 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                     "phases_count": t["phases"],
                     "description": t.get("description", ""),
                     "source": t.get("source", ""),
+                    "category": category,
+                    "author": author,
                     "phases": phases_summary,
                     "config_schema": config_schema,
                 }
@@ -1220,7 +1241,14 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             201 with the new run record (same shape as GET /api/v1/runs/{run_id}).
         """
         # 1. Resolve and validate template
-        template_file = _resolve_template(req.template)
+        # Support both 'template' and 'template_id' fields (template_id is an alias)
+        effective_template = req.resolved_template
+        if not effective_template:
+            raise HTTPException(
+                status_code=422,
+                detail="Either 'template' or 'template_id' must be provided",
+            )
+        template_file = _resolve_template(effective_template)
 
         engine = TemplateEngine()
         try:

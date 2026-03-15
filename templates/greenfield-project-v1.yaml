@@ -41,6 +41,11 @@ config_schema:
       default: "private"
       description: "public or private"
 
+example_input:
+  project_name: "my-new-project"
+  project_description: "A new project that solves a specific problem"
+  constraints: "Python, open source, must be deployable on a Raspberry Pi"
+
 phases:
   # Phase 1: Strategic Research
   - id: research

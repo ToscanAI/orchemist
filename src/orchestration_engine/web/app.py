@@ -99,6 +99,28 @@ def create_app():  # noqa: C901
         input: Dict[str, Any] = {}
         pause_after: Optional[List[str]] = None  # Phase IDs to pause after (#86)
 
+    class RunRequestV2(BaseModel):
+        """Request body for POST /api/runs — supports template_id alias."""
+
+        template_id: Optional[str] = None
+        """Template identifier (alias for template)."""
+
+        template: Optional[str] = None
+        """Template name (resolved from search paths) or path to a .yaml file."""
+
+        mode: Literal["dry-run", "standalone", "openclaw"] = "dry-run"
+        """Execution mode passed to the daemon subprocess."""
+
+        input: Dict[str, Any] = {}
+        """Initial pipeline input."""
+
+        pause_after: Optional[List[str]] = None
+
+        @property
+        def resolved_template(self) -> Optional[str]:
+            """Return the effective template identifier (template_id or template)."""
+            return self.template_id or self.template
+
     # ------------------------------------------------------------------ #
     # Routes                                                               #
     # ------------------------------------------------------------------ #
@@ -239,6 +261,62 @@ def create_app():  # noqa: C901
         asyncio.create_task(_execute_pipeline(run_id, template, req.mode, req.input, _active_runs))
 
         return JSONResponse({"run_id": run_id})
+
+    @app.post("/api/runs", status_code=201)
+    async def start_run_v2(req: RunRequestV2) -> JSONResponse:
+        """Launch a pipeline run via the /api/runs endpoint.
+
+        Supports ``template_id`` as the primary field (alias for ``template``).
+        Returns 201 with ``run_id`` on success, 404 when the template is not
+        found, and 422 when mode is invalid or no template identifier is provided.
+        """
+        effective_template = req.resolved_template
+        if not effective_template:
+            raise HTTPException(
+                status_code=422,
+                detail="Either 'template' or 'template_id' must be provided",
+            )
+
+        # Cleanup stale completed runs
+        cutoff = time.time() - 3600
+        to_remove = [
+            rid for rid, r in _active_runs.items()
+            if r.get("completed_at", 0) < cutoff and r["status"] == "completed"
+        ]
+        for rid in to_remove:
+            del _active_runs[rid]
+
+        engine = TemplateEngine()
+        template = _resolve_template_by_name_or_id(engine, effective_template)
+        if template is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Template '{effective_template}' not found",
+            )
+
+        run_id = str(uuid.uuid4())
+
+        run_state: Dict[str, Any] = {
+            "run_id": run_id,
+            "template": effective_template,
+            "mode": req.mode,
+            "input": req.input,
+            "status": "starting",
+            "phases_completed": [],
+            "phases_failed": [],
+            "events": [],
+            "event_queue": asyncio.Queue(),
+            "done": False,
+            "error": None,
+            "pause_after": req.pause_after or [],
+            "resume_event": threading.Event(),
+            "paused_at_phase": None,
+        }
+        _active_runs[run_id] = run_state
+
+        asyncio.create_task(_execute_pipeline(run_id, template, req.mode, req.input, _active_runs))
+
+        return JSONResponse({"run_id": run_id}, status_code=201)
 
     @app.get("/api/run/{run_id}/status")
     async def run_status_sse(run_id: str, request: Request) -> EventSourceResponse:
