@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
 TEMPLATES_DIR = REPO_ROOT / "templates"
 HELLO_YAML = EXAMPLES_DIR / "hello-pipeline.yaml"
-CONTENT_YAML = TEMPLATES_DIR / "content-pipeline.yaml"
+CONTENT_YAML = TEMPLATES_DIR / "content-pipeline-v28.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@ class TestStartWithName:
         """start content-pipeline by ID exits 0."""
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run", "--yes"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run", "--yes"],
         )
         assert result.exit_code == 0, result.output
 
@@ -241,10 +241,10 @@ class TestStartWithName:
         """start by ID shows the template's display name."""
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run", "--yes"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run", "--yes"],
         )
         assert result.exit_code == 0
-        assert "Content Pipeline v2.4" in result.output
+        assert "Content Pipeline v2.8" in result.output
 
     def test_start_by_name_hello_pipeline(self, monkeypatch):
         """start by display name 'hello-pipeline' works."""
@@ -280,7 +280,7 @@ class TestStartWithName:
             ["start", "content-pipe", "--mode", "dry-run"],
         )
         assert result.exit_code != 0
-        assert "Content Pipeline v2.4" in result.output or "content-pipeline" in result.output
+        assert "Content Pipeline v2.8" in result.output or "content-pipeline" in result.output
 
 
 class TestStartYesFlag:
@@ -290,7 +290,7 @@ class TestStartYesFlag:
         """--yes flag skips all prompts and runs immediately."""
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run", "--yes"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run", "--yes"],
         )
         assert result.exit_code == 0, result.output
         # Should NOT show the "Fill in the pipeline inputs:" prompt
@@ -307,7 +307,7 @@ class TestStartYesFlag:
         """--yes still runs the pipeline end-to-end."""
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run", "--yes"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run", "--yes"],
         )
         assert result.exit_code == 0
         assert "Pipeline" in result.output
@@ -317,7 +317,7 @@ class TestStartYesFlag:
         """--yes skips the 'Proceed?' confirmation."""
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run", "--yes"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run", "--yes"],
         )
         assert result.exit_code == 0
         assert "Proceed?" not in result.output
@@ -329,10 +329,10 @@ class TestStartInteractiveWizard:
     def test_wizard_prompts_for_config_fields(self, monkeypatch):
         """Wizard shows field names from config_schema.properties."""
         monkeypatch.chdir(REPO_ROOT)
-        # Provide inputs: topic, audience, tone, word_count, publication, confirm
-        user_input = "AI topic\n\n\n\n\ny\n"
+        # Provide inputs: topic, author_name, author_facts, voice_style, source_material, 4 optional blanks, confirm
+        user_input = "AI topic\nauthor name\nauthor facts\nvoice style\nsource material\n\n\n\n\ny\n"
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run"],
             input=user_input,
         )
         assert result.exit_code == 0, result.output
@@ -342,9 +342,9 @@ class TestStartInteractiveWizard:
     def test_wizard_shows_field_descriptions(self, monkeypatch):
         """Wizard shows field descriptions from config_schema."""
         monkeypatch.chdir(REPO_ROOT)
-        user_input = "AI topic\n\n\n\n\ny\n"
+        user_input = "AI topic\nauthor name\nauthor facts\nvoice style\nsource material\n\n\n\n\ny\n"
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run"],
             input=user_input,
         )
         assert result.exit_code == 0, result.output
@@ -354,9 +354,9 @@ class TestStartInteractiveWizard:
     def test_wizard_shows_fill_in_inputs_header(self, monkeypatch):
         """Wizard shows 'Fill in the pipeline inputs:' header."""
         monkeypatch.chdir(REPO_ROOT)
-        user_input = "AI topic\nTech audience\n\n\n\ny\n"
+        user_input = "AI topic\nThe Author\nauthor facts\nvoice style\nsource material\n\n\n\n\ny\n"
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run"],
             input=user_input,
         )
         assert result.exit_code == 0, result.output
@@ -365,9 +365,9 @@ class TestStartInteractiveWizard:
     def test_wizard_shows_summary(self, monkeypatch):
         """Wizard shows a summary of collected inputs before confirmation."""
         monkeypatch.chdir(REPO_ROOT)
-        user_input = "My article topic\nTech readers\n\n\n\ny\n"
+        user_input = "My article topic\nThe Author\nauthor facts\nvoice style\nsource material\n\n\n\n\ny\n"
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run"],
             input=user_input,
         )
         assert result.exit_code == 0, result.output
@@ -377,9 +377,9 @@ class TestStartInteractiveWizard:
     def test_wizard_shows_proceed_confirmation(self, monkeypatch):
         """Wizard shows a 'Proceed?' confirmation prompt."""
         monkeypatch.chdir(REPO_ROOT)
-        user_input = "My article topic\nTech readers\n\n\n\ny\n"
+        user_input = "My article topic\nThe Author\nauthor facts\nvoice style\nsource material\n\n\n\n\ny\n"
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run"],
             input=user_input,
         )
         assert result.exit_code == 0, result.output
@@ -388,9 +388,9 @@ class TestStartInteractiveWizard:
     def test_wizard_abort_on_no(self, monkeypatch):
         """Wizard aborts when user answers 'n' at confirmation."""
         monkeypatch.chdir(REPO_ROOT)
-        user_input = "My article topic\nTech readers\n\n\n\nn\n"
+        user_input = "My article topic\nThe Author\nauthor facts\nvoice style\nsource material\n\n\n\n\nn\n"
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run"],
             input=user_input,
         )
         assert result.exit_code == 0
@@ -401,9 +401,9 @@ class TestStartInteractiveWizard:
     def test_wizard_runs_pipeline_after_confirm(self, monkeypatch):
         """Wizard runs the pipeline after user confirms."""
         monkeypatch.chdir(REPO_ROOT)
-        user_input = "AI orchestration\nDev audience\n\n\n\ny\n"
+        user_input = "AI orchestration\nRené Rivera\nauthor facts\nvoice style\nsource material\n\n\n\n\ny\n"
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run"],
             input=user_input,
         )
         assert result.exit_code == 0, result.output
@@ -411,23 +411,23 @@ class TestStartInteractiveWizard:
         assert "completed" in result.output.lower()
 
     def test_wizard_shows_all_five_fields(self, monkeypatch):
-        """Wizard shows all 5 fields from content-pipeline config_schema."""
+        """Wizard shows all 5 required fields from content-pipeline-v28 config_schema."""
         monkeypatch.chdir(REPO_ROOT)
-        user_input = "topic value\n\n\n\n\ny\n"
+        user_input = "topic value\nauthor name\nauthor facts\nvoice style\nsource material\n\n\n\n\ny\n"
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run"],
             input=user_input,
         )
         assert result.exit_code == 0, result.output
-        for field in ("topic", "audience", "tone", "word_count", "publication"):
+        for field in ("topic", "author_name", "author_facts", "voice_style", "source_material"):
             assert field in result.output, f"Expected field '{field}' in wizard output"
 
     def test_wizard_collected_input_in_summary(self, monkeypatch):
         """Wizard summary shows the actual collected values."""
         monkeypatch.chdir(REPO_ROOT)
-        user_input = "UNIQUE_BRIEF_VALUE\nUnique audience\n\n\n\ny\n"
+        user_input = "UNIQUE_BRIEF_VALUE\nUnique Author\nauthor facts\nvoice style\nsource material\n\n\n\n\ny\n"
         result = _invoke(
-            ["start", "content-pipeline", "--mode", "dry-run"],
+            ["start", "content-pipeline-v28", "--mode", "dry-run"],
             input=user_input,
         )
         assert result.exit_code == 0, result.output

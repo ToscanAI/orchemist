@@ -265,22 +265,22 @@ class TestConfigSchema:
 # ---------------------------------------------------------------------------
 
 class TestTemplateVersion:
-    """Template version must be bumped to 1.3.0."""
+    """Template version must be bumped to 1.6.0."""
 
     def test_version_bumped(self):
-        """Template version is 1.5.0 (bumped by #546 from 1.4.0)."""
+        """Template version is 1.6.0 (bumped to reflect current coding-pipeline-v1.yaml)."""
         template = load_template()
         version = template.get("version")
-        assert version == "1.5.0", (
-            f"Expected version '1.5.0', got {version!r}"
+        assert version == "1.6.0", (
+            f"Expected version '1.6.0', got {version!r}"
         )
 
     def test_name_updated(self):
         """Template name reflects the current version."""
         template = load_template()
         name = template.get("name", "")
-        assert "1.5" in name, (
-            f"Template name should reference v1.5, got {name!r}"
+        assert "1.6" in name, (
+            f"Template name should reference v1.6, got {name!r}"
         )
 
 

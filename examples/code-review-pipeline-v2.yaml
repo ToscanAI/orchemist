@@ -2,7 +2,7 @@
 # An automated code review pipeline that parses a code diff, then runs
 # complexity, style, and security checks in parallel before synthesising
 # a unified review report.
-# v2: Removed ghost scenario reference (file did not exist).
+# v2: scenario now references scenarios/code-development-smoke.yaml (file now exists).
 #
 # Run with: orch run examples/code-review-pipeline-v2.yaml --input '{"diff":"<diff text>"}'
 # Validate:  orch validate examples/code-review-pipeline-v2.yaml
@@ -17,6 +17,7 @@ description: >
   review report with actionable recommendations.
 author: "Toscan"
 category: "code"
+scenario: scenarios/code-development-smoke.yaml
 tags:
   - code-review
   - security

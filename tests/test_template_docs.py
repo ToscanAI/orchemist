@@ -560,7 +560,7 @@ class TestBundledTemplatesCompliance:
 
         assert not failures, "Bundled templates failed validation:\n\n".join(failures)
 
-    @pytest.mark.parametrize("template_name", ["content-pipeline.yaml", "hello-pipeline.yaml"])
+    @pytest.mark.parametrize("template_name", ["content-pipeline-v28.yaml", "hello-pipeline.yaml"])
     def test_specific_bundled_template_has_author(self, template_name):
         """Specific bundled templates must have a non-empty author field."""
         repo_root = Path(__file__).parent.parent
@@ -579,7 +579,7 @@ class TestBundledTemplatesCompliance:
         template = engine.load_template(found)
         assert template.author, f"{template_name} must have a non-empty 'author' field"
 
-    @pytest.mark.parametrize("template_name", ["content-pipeline.yaml", "hello-pipeline.yaml"])
+    @pytest.mark.parametrize("template_name", ["content-pipeline-v28.yaml", "hello-pipeline.yaml"])
     def test_specific_bundled_template_has_use_cases(self, template_name):
         """Specific bundled templates must have at least one use case."""
         repo_root = Path(__file__).parent.parent

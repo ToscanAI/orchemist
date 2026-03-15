@@ -975,7 +975,7 @@ class TestGlobPatternEdgeCases:
     def test_all_example_template_names_are_known(self):
         """Sanity check: ALL_TEMPLATES contains the 6 expected template filenames."""
         expected_stems = {
-            "content-pipeline",
+            "content-pipeline-v28",
             "code-development-pipeline",
             "code-review-pipeline",
             "content-pipeline-v2",
