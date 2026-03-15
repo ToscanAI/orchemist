@@ -98,7 +98,7 @@ class TestTemplateList:
     def test_includes_content_pipeline(self, client):
         data = client.get("/api/v1/templates").json()
         ids = [t["id"] for t in data]
-        assert "content-pipeline-v24" in ids
+        assert "content-pipeline-v28" in ids
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ class TestTemplateList:
 
 class TestTemplateDetail:
     def test_returns_200_for_existing(self, client):
-        res = client.get("/api/v1/templates/content-pipeline-v24")
+        res = client.get("/api/v1/templates/content-pipeline-v28")
         assert res.status_code == 200
 
     def test_returns_404_for_nonexistent(self, client):
@@ -115,18 +115,18 @@ class TestTemplateDetail:
         assert res.status_code == 404
 
     def test_detail_has_phases(self, client):
-        data = client.get("/api/v1/templates/content-pipeline-v24").json()
+        data = client.get("/api/v1/templates/content-pipeline-v28").json()
         assert "phases" in data
         assert len(data["phases"]) > 0
 
     def test_phase_has_required_keys(self, client):
-        data = client.get("/api/v1/templates/content-pipeline-v24").json()
+        data = client.get("/api/v1/templates/content-pipeline-v28").json()
         phase = data["phases"][0]
         for key in ("id", "name", "model_tier", "thinking_level", "depends_on"):
             assert key in phase, f"Phase missing key '{key}'"
 
     def test_top_level_fields(self, client):
-        data = client.get("/api/v1/templates/content-pipeline-v24").json()
+        data = client.get("/api/v1/templates/content-pipeline-v28").json()
         for key in ("id", "name", "version", "description", "phases", "config_schema"):
             assert key in data, f"Missing key '{key}' in template detail"
 
@@ -143,7 +143,7 @@ class TestLaunchRun:
             res = client.post(
                 "/api/v1/runs",
                 json={
-                    "template": "content-pipeline-v24",
+                    "template": "content-pipeline-v28",
                     "mode": "dry-run",
                     "input": {"brief": "AI safety"},
                     "output_dir": str(tmp_path / "run-output"),
@@ -156,7 +156,7 @@ class TestLaunchRun:
             data = client.post(
                 "/api/v1/runs",
                 json={
-                    "template": "content-pipeline-v24",
+                    "template": "content-pipeline-v28",
                     "mode": "dry-run",
                     "output_dir": str(tmp_path / "run-output2"),
                 },
@@ -169,7 +169,7 @@ class TestLaunchRun:
             data = client.post(
                 "/api/v1/runs",
                 json={
-                    "template": "content-pipeline-v24",
+                    "template": "content-pipeline-v28",
                     "mode": "dry-run",
                     "output_dir": str(tmp_path / "run-output3"),
                 },
@@ -182,7 +182,7 @@ class TestLaunchRun:
             data = client.post(
                 "/api/v1/runs",
                 json={
-                    "template": "content-pipeline-v24",
+                    "template": "content-pipeline-v28",
                     "mode": "dry-run",
                     "output_dir": str(tmp_path / "run-output4"),
                 },
@@ -199,7 +199,7 @@ class TestLaunchRun:
     def test_invalid_mode_returns_422(self, client):
         res = client.post(
             "/api/v1/runs",
-            json={"template": "content-pipeline-v24", "mode": "invalid-mode"},
+            json={"template": "content-pipeline-v28", "mode": "invalid-mode"},
         )
         assert res.status_code == 422
 
@@ -208,12 +208,12 @@ class TestLaunchRun:
             data = client.post(
                 "/api/v1/runs",
                 json={
-                    "template": "content-pipeline-v24",
+                    "template": "content-pipeline-v28",
                     "mode": "dry-run",
                     "output_dir": str(tmp_path / "run-output5"),
                 },
             ).json()
-        assert data["template_id"] == "content-pipeline-v24"
+        assert data["template_id"] == "content-pipeline-v28"
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ class TestGetRun:
             return client.post(
                 "/api/v1/runs",
                 json={
-                    "template": "content-pipeline-v24",
+                    "template": "content-pipeline-v28",
                     "mode": "dry-run",
                     "output_dir": str(tmp_path / "run-out"),
                 },
@@ -266,7 +266,7 @@ class TestListRuns:
             return client.post(
                 "/api/v1/runs",
                 json={
-                    "template": "content-pipeline-v24",
+                    "template": "content-pipeline-v28",
                     "mode": "dry-run",
                     "output_dir": str(tmp_path / f"run-out{suffix}"),
                 },
@@ -303,9 +303,9 @@ class TestListRuns:
 
     def test_template_id_filter(self, client, tmp_path):
         self._launch(client, tmp_path, suffix="b")
-        data = client.get("/api/v1/runs?template_id=content-pipeline-v24").json()
+        data = client.get("/api/v1/runs?template_id=content-pipeline-v28").json()
         for item in data["items"]:
-            assert item["template_id"] == "content-pipeline-v24"
+            assert item["template_id"] == "content-pipeline-v28"
 
     def test_pagination_limit(self, client, tmp_path):
         # Launch 3 runs
@@ -343,7 +343,7 @@ class TestRunLogs:
             return client.post(
                 "/api/v1/runs",
                 json={
-                    "template": "content-pipeline-v24",
+                    "template": "content-pipeline-v28",
                     "mode": "dry-run",
                     "output_dir": str(out_dir),
                 },
@@ -399,7 +399,7 @@ class TestCancelRun:
             return client.post(
                 "/api/v1/runs",
                 json={
-                    "template": "content-pipeline-v24",
+                    "template": "content-pipeline-v28",
                     "mode": "dry-run",
                     "output_dir": str(tmp_path / f"cancel-out{suffix}"),
                 },
