@@ -73,7 +73,15 @@ class PreflightChecker:
     db : optional
         Database instance for dedup checks.
     required_fields : list[str] | None
-        Override default required fields. Pass empty list to skip field check.
+        Override default required fields. Pass ``[]`` to skip field validation
+        entirely. Pass ``None`` to fall back to ``REQUIRED_INPUT_FIELDS``
+        (default 7 coding fields). Pass an explicit list to validate against
+        those fields only (Issue #576).
+    category : str
+        Pipeline template category (e.g. ``"code"``, ``"content"``,
+        ``"research"``). Controls severity of git checks for non-code
+        pipelines: a non-git directory is an *error* for ``"code"`` (or unset)
+        but only a *warning* for ``"content"`` / ``"research"`` (Issue #576).
     budget_config : BudgetConfig | None
         Optional budget configuration from the pipeline template.  When
         provided along with ``cost_tracker``, a daily-cap check is added
@@ -87,6 +95,7 @@ class PreflightChecker:
         input_data: Dict[str, Any],
         db: Any = None,
         required_fields: Optional[List[str]] = None,
+        category: str = "",
         budget_config: Optional[Any] = None,
         cost_tracker: Optional[Any] = None,
     ):
@@ -96,6 +105,7 @@ class PreflightChecker:
             required_fields if required_fields is not None
             else REQUIRED_INPUT_FIELDS
         )
+        self.category = category or ""
         self.budget_config = budget_config
         self.cost_tracker = cost_tracker
 
@@ -113,7 +123,22 @@ class PreflightChecker:
         return result
 
     def _check_input_fields(self, result: PreflightResult) -> None:
-        """Verify all required input fields are present and non-empty."""
+        """Verify all required input fields are present and non-empty.
+
+        When ``self.required_fields`` is an empty list, the check passes
+        immediately with a message indicating no fields are declared. When it
+        is ``None`` at construction time the fallback ``REQUIRED_INPUT_FIELDS``
+        list is used (stored in ``self.required_fields`` by ``__init__``).
+        """
+        # Explicit empty list → no validation required (Issue #576)
+        if isinstance(self.required_fields, list) and len(self.required_fields) == 0:
+            result.add_check(CheckItem(
+                name="input_fields_present",
+                passed=True,
+                message="No required fields declared",
+            ))
+            return
+
         missing = []
         empty = []
         for field_name in self.required_fields:
@@ -163,9 +188,19 @@ class PreflightChecker:
             ))
 
     def _check_git_readiness(self, result: PreflightResult) -> None:
-        """Check git state: repo exists, working tree clean, main up to date."""
-        repo_path = self.input_data.get('repo_path', '')
-        if not repo_path:
+        """Check git state: repo exists, working tree clean, main up to date.
+
+        Null, empty, and whitespace-only ``repo_path`` values are all treated
+        identically to a missing key — the check is skipped with a warning.
+
+        For non-git directories, severity is category-dependent (Issue #576):
+        - category="" or "code" → severity="error", result.passed=False
+        - category="content" or "research" → severity="warning", result.passed
+          is NOT set to False (non-blocking warning only).
+        """
+        # Unify absent, None/null, empty-string, and whitespace-only repo_path
+        repo_path = self.input_data.get('repo_path') or ''
+        if not str(repo_path).strip():
             result.add_check(CheckItem(
                 name="git_readiness",
                 passed=True,
@@ -184,10 +219,17 @@ class PreflightChecker:
             return
 
         if not (repo / '.git').exists():
+            # Non-code categories (content, research) treat missing .git as a
+            # warning only — non-git output dirs are a normal use case.
+            is_non_code_category = (
+                bool(self.category)
+                and self.category.lower() not in ("code", "")
+            )
             result.add_check(CheckItem(
                 name="git_readiness",
                 passed=False,
                 message=f"Not a git repository: {repo_path}",
+                severity="warning" if is_non_code_category else "error",
             ))
             return
 
