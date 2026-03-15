@@ -266,7 +266,14 @@ class DiagnosisEngine:
         """
         logger = logging.getLogger(__name__)
         try:
-            data = json.loads(response_text.strip())
+            text = response_text.strip()
+            # Extract JSON from between markdown code fences if present.
+            # Handles: ```json\n{...}\n```, ```\n{...}\n```,
+            # and responses with preamble prose before the fence.
+            fence_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+            if fence_match:
+                text = fence_match.group(1).strip()
+            data = json.loads(text)
             failure_class = FailureClass(data["failure_class"])
             remediation = Remediation(data["remediation"])
             confidence = float(data["confidence"])
