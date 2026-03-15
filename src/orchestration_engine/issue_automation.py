@@ -61,6 +61,7 @@ __all__ = [
     "remove_github_label",
     "add_github_label",
     "get_github_issue_labels",
+    "create_content_pr",
     # Re-exports from github_fetcher (Issue #507)
     "GitHubIssueData",
     "GitHubIssueFetcher",
@@ -1096,7 +1097,12 @@ def create_pr_for_issue(
     """
     import subprocess
 
-    pr_body = f"{body}\n\nCloses #{issue_number}"
+    # Only append "Closes #N" if not already present to avoid duplication.
+    _closes_marker = f"Closes #{issue_number}"
+    if _closes_marker not in body:
+        pr_body = f"{body}\n\n{_closes_marker}"
+    else:
+        pr_body = body
     try:
         result = subprocess.run(
             [
@@ -1122,6 +1128,73 @@ def create_pr_for_issue(
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         logger.warning("create_pr_for_issue: error creating PR: %s", exc)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# create_content_pr — open a content/docs pull request (Issue #578)
+# ---------------------------------------------------------------------------
+
+
+def create_content_pr(
+    repo: str,
+    branch_name: str,
+    topic: str,
+    body: str,
+    run_id: str,
+) -> Optional[str]:
+    """Open a content pull request on *repo* for *branch_name*.
+
+    Unlike :func:`create_pr_for_issue`, this function:
+
+    - Does NOT require an issue number.
+    - Uses the content-appropriate title format ``content: {topic}``.
+    - Does NOT append ``Closes #N`` to the body.
+
+    Used for content-category and docs-category pipelines (Issue #578).
+
+    Args:
+        repo:        Repository slug (e.g. ``"owner/repo"``).
+        branch_name: Source branch name for the PR head.
+        topic:       Content topic — used in the PR title (truncated to 80 chars).
+        body:        PR description body (Markdown).
+        run_id:      Pipeline run ID appended as a footer for traceability.
+
+    Returns:
+        The PR HTML URL string on success, ``None`` on any failure — errors
+        are logged as warnings so callers can continue without a PR.
+    """
+    import subprocess
+
+    topic_truncated = (topic[:80].strip()) if topic else 'content'
+    title = f"content: {topic_truncated}"
+    pr_body = f"{body}\n\n---\n*Run ID: `{run_id}`*"
+
+    try:
+        result = subprocess.run(
+            [
+                "gh", "pr", "create",
+                "--repo", repo,
+                "--base", "main",
+                "--head", branch_name,
+                "--title", title,
+                "--body", pr_body,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+        logger.warning(
+            "create_content_pr: gh pr create failed (rc=%d): %s",
+            result.returncode,
+            result.stderr.strip(),
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.warning("create_content_pr: error creating content PR: %s", exc)
 
     return None
 

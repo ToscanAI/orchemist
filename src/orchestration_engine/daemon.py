@@ -596,6 +596,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
             error_message=msg,
             diagnosis=_diagnosis,
             output_dir=output_dir,
+            template_category=_category,  # Issue #578
         )
 
         _remove_pid_file(pid_path)
@@ -706,26 +707,42 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # Non-fatal: all errors are caught inside _compute_and_dispatch_routing.
     # Pass the primary executor so AuditPhase and dynamic weight calibration
     # can run with live LLM access (Issue #4.1.6).
-    _routing_executor = runner.executors[0] if runner.executors else None
-    # _compute_and_dispatch_routing returns (final_status, merge_intent).
-    # merge_intent is non-None when routing selected auto_merge — execution is
-    # deferred until after _post_github_result_hook so the PR exists first
-    # (Issue #499).
-    _final_status, _merge_intent = _compute_and_dispatch_routing(
-        run_id=run_id,
-        output_dir=output_dir,
-        db=db,
-        auto_merge_config=getattr(template, "auto_merge", None),
-        routing_config=getattr(template, "routing_config", None),
-        scoring_passed=_scoring_passed,
-        scoring_score=_scoring_score_val,
-        phase_outputs=phase_outputs,
-        final_status=_final_status,
-        executor=_routing_executor,
-        repo=_trust_repo,
-        template_id=_trust_template_id,
-        task_type=_trust_task_type,
-    )
+    #
+    # Gate routing/auto-merge by template category (Issue #578).
+    # Content, research, and docs pipelines must never be auto-merged —
+    # routing is irrelevant for these categories.
+    _NON_CODE_CATEGORIES_ROUTING = frozenset({'content', 'research', 'docs'})
+    _normalised_category_routing = (_category or '').lower().strip()
+
+    if _normalised_category_routing in _NON_CODE_CATEGORIES_ROUTING:
+        logger.info(
+            "Routing skipped for run '%s': template category=%r is non-code "
+            "(Issue #578); final_status set to 'pending_review'.",
+            run_id, _category,
+        )
+        _final_status = 'pending_review'
+        _merge_intent = None
+    else:
+        # _compute_and_dispatch_routing returns (final_status, merge_intent).
+        # merge_intent is non-None when routing selected auto_merge — execution is
+        # deferred until after _post_github_result_hook so the PR exists first
+        # (Issue #499).
+        _routing_executor = runner.executors[0] if runner.executors else None
+        _final_status, _merge_intent = _compute_and_dispatch_routing(
+            run_id=run_id,
+            output_dir=output_dir,
+            db=db,
+            auto_merge_config=getattr(template, "auto_merge", None),
+            routing_config=getattr(template, "routing_config", None),
+            scoring_passed=_scoring_passed,
+            scoring_score=_scoring_score_val,
+            phase_outputs=phase_outputs,
+            final_status=_final_status,
+            executor=_routing_executor,
+            repo=_trust_repo,
+            template_id=_trust_template_id,
+            task_type=_trust_task_type,
+        )
 
     db.update_pipeline_run(
         run_id,
@@ -746,6 +763,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
         error_message=None,
         diagnosis=None,
         output_dir=output_dir,
+        template_category=_category,  # Issue #578
     )
 
     # --- Deferred auto-merge (Issue #499) ---
@@ -2022,39 +2040,136 @@ def _post_github_result_hook(
     error_message: Optional[str],
     diagnosis: Any,
     output_dir: Any,
+    template_category: str = "",
 ) -> None:
     """Post pipeline results back to the originating GitHub issue (Issue #5.1.4).
 
     Resolves the triggering issue context from *initial_input* and the DB,
     then dispatches to the appropriate :mod:`issue_automation` function based
-    on *final_status* and the pipeline's ``classification_type``:
+    on *final_status*, *template_category*, and the pipeline's
+    ``classification_type``.
+
+    For non-code template categories (Issue #578):
+
+    - ``content`` / ``docs`` success → :func:`~orchestration_engine.issue_automation.create_content_pr`
+      (no issue_number required; PR title uses ``content: {topic}`` format)
+    - ``content`` / ``docs`` failure → skipped (no orphan comments)
+    - ``research`` → always skipped (no PR, no comment)
+
+    For code / empty / unrecognised categories (backward-compatible):
 
     - ``failed`` → :func:`~orchestration_engine.issue_automation.post_failure_summary_comment`
     - ``bug`` / ``feature`` / ``refactor`` (success) → :func:`~orchestration_engine.issue_automation.create_pr_for_issue`
-    - ``content`` / ``docs`` / ``research`` (success) → :func:`~orchestration_engine.issue_automation.post_pipeline_result_comment`
+    - ``content`` / ``docs`` / ``research`` classification (success) → :func:`~orchestration_engine.issue_automation.post_pipeline_result_comment`
 
     All exceptions are caught and logged as warnings so this hook is
     completely non-fatal — the pipeline run has already been persisted with
     its final status before this function is called.
 
     Args:
-        run_id:        Pipeline run ID.
-        db:            Open :class:`~orchestration_engine.db.Database` instance.
-        initial_input: Parsed ``input_json`` for the run (issue_number, repo, …).
-        phase_outputs: Phase output dict keyed by phase ID.
-        final_status:  Terminal status string (e.g. ``"success"``, ``"failed"``).
-        error_message: Error/abort message string, or ``None`` on success.
-        diagnosis:     Diagnosis result object/dict, or ``None``.
-        output_dir:    Pipeline output directory (:class:`pathlib.Path`).
+        run_id:            Pipeline run ID.
+        db:                Open :class:`~orchestration_engine.db.Database` instance.
+        initial_input:     Parsed ``input_json`` for the run (issue_number, repo, …).
+        phase_outputs:     Phase output dict keyed by phase ID.
+        final_status:      Terminal status string (e.g. ``"success"``, ``"failed"``).
+        error_message:     Error/abort message string, or ``None`` on success.
+        diagnosis:         Diagnosis result object/dict, or ``None``.
+        output_dir:        Pipeline output directory (:class:`pathlib.Path`).
+        template_category: Template ``category`` field value (Issue #578).
+                           Defaults to ``""`` (backward-compatible coding path).
     """
     try:
         from .issue_automation import (
             create_pr_for_issue,
+            create_content_pr,
             post_pipeline_result_comment,
             post_failure_summary_comment,
         )
 
-        # --- Resolve issue context ---
+        # --- Non-code category dispatch (Issue #578) ---
+        # Must run BEFORE the issue_number guard so content/docs pipelines
+        # without an issue_number are not silently dropped.
+        _NON_CODE_CATEGORIES = frozenset({'content', 'research', 'docs'})
+        _CONTENT_PR_CATEGORIES = frozenset({'content', 'docs'})
+        _normalised_category = (template_category or '').lower().strip()
+
+        if _normalised_category in _NON_CODE_CATEGORIES:
+            # Research pipelines: no PR, no comment — always skip.
+            if _normalised_category == 'research':
+                logger.debug(
+                    "_post_github_result_hook: research pipeline run='%s' — "
+                    "skipping postflight (no PR, no comment)",
+                    run_id,
+                )
+                return
+
+            # Content / docs failure: no orphan comments, no PR.
+            if final_status == 'failed':
+                logger.debug(
+                    "_post_github_result_hook: %s pipeline run='%s' failed — "
+                    "skipping postflight (no comment)",
+                    _normalised_category, run_id,
+                )
+                return
+
+            # Content / docs success: create a PR (no issue_number needed).
+            _content_repo: str = _extract_repo_slug(
+                initial_input.get('repo_url', '') or initial_input.get('repo', '')
+            )
+            _content_branch: str = (
+                initial_input.get('branch_name')
+                or initial_input.get('branch')
+                or ''
+            )
+            if not _content_repo or not _content_branch:
+                logger.debug(
+                    "_post_github_result_hook: %s pipeline run='%s' missing "
+                    "repo=%r or branch_name=%r — skipping PR",
+                    _normalised_category, run_id, _content_repo, _content_branch,
+                )
+                return
+
+            _content_topic: str = (
+                initial_input.get('topic')
+                or initial_input.get('title')
+                or 'content'
+            )
+            _last_text = ""
+            if phase_outputs:
+                _last_phase = list(phase_outputs.values())[-1]
+                _last_text = (
+                    _last_phase.get('output', '')
+                    or _last_phase.get('text', '')
+                    or ''
+                )[:500]
+            _pr_body = _last_text or f"Automated content pipeline run `{run_id}`."
+
+            try:
+                url = create_content_pr(
+                    repo=_content_repo,
+                    branch_name=_content_branch,
+                    topic=_content_topic,
+                    body=_pr_body,
+                    run_id=run_id,
+                )
+                if url:
+                    logger.info(
+                        "_post_github_result_hook: content PR created → %s", url
+                    )
+                else:
+                    logger.warning(
+                        "_post_github_result_hook: content PR creation returned None"
+                        " for run='%s'", run_id,
+                    )
+            except Exception as _pr_exc:
+                logger.warning(
+                    "_post_github_result_hook: content PR creation failed (non-fatal)"
+                    " for run='%s': %s", run_id, _pr_exc,
+                )
+            return
+
+        # --- Existing code path (category is empty / 'code' / unrecognised) ---
+        # Resolve issue context.
         issue_number: Optional[int] = initial_input.get('issue_number')
         repo: str = _extract_repo_slug(
             initial_input.get('repo_url', '') or initial_input.get('repo', '')
@@ -2123,7 +2238,9 @@ def _post_github_result_hook(
                     or _last_phase.get('text', '')
                     or ''
                 )[:500]
-            pr_body = _last_text or f"Automated result from pipeline run `{run_id}`."
+            _base_body = _last_text or f"Automated result from pipeline run `{run_id}`."
+            # Include Closes #N so GitHub auto-links the issue (Issue #578).
+            pr_body = f"{_base_body}\n\nCloses #{issue_number}"
 
             # --- Safety net: ensure branch exists on remote before PR creation ---
             # Sub-agents sometimes commit locally without pushing.  Push now so
