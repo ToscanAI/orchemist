@@ -68,11 +68,11 @@ def engine(templates_dir):
 
 @pytest.fixture
 def content_pipeline_yaml(templates_dir):
-    """Write the project's real content-pipeline.yaml into the temp dir."""
+    """Write the project's real content-pipeline-v28.yaml into the temp dir."""
     repo_template = (
-        Path(__file__).parent.parent / "templates" / "content-pipeline.yaml"
+        Path(__file__).parent.parent / "templates" / "content-pipeline-v28.yaml"
     )
-    dest = templates_dir / "content-pipeline.yaml"
+    dest = templates_dir / "content-pipeline-v28.yaml"
     dest.write_text(repo_template.read_text())
     return dest
 
@@ -113,23 +113,22 @@ class TestTemplateLoading:
     """Tests for TemplateEngine.load_template()."""
 
     def test_load_real_content_pipeline(self, engine, content_pipeline_yaml):
-        """Loading the real content-pipeline.yaml succeeds."""
+        """Loading the real content-pipeline-v28.yaml succeeds."""
         tpl = engine.load_template(content_pipeline_yaml)
 
-        assert tpl.id == "content-pipeline-v24"
-        assert tpl.name == "Content Pipeline v2.4"
-        assert tpl.version == "2.4.0"
-        assert len(tpl.phases) == 10
+        assert tpl.id == "content-pipeline-v28"
+        assert tpl.name == "Content Pipeline v2.8"
+        assert tpl.version == "2.8.0"
+        assert len(tpl.phases) == 7
 
     def test_load_phase_fields(self, engine, content_pipeline_yaml):
         """Each phase has all required fields populated correctly."""
         tpl = engine.load_template(content_pipeline_yaml)
         phase_ids = [p.id for p in tpl.phases]
         assert "research" in phase_ids
-        assert "outline" in phase_ids
         assert "draft" in phase_ids
-        assert "red-team" in phase_ids
-        assert "select-best" in phase_ids
+        assert "red_team" in phase_ids
+        assert "final_polish" in phase_ids
 
     def test_load_phase_depends_on(self, engine, content_pipeline_yaml):
         """depends_on is correctly parsed from YAML lists."""
@@ -278,11 +277,10 @@ class TestExecutionOrder:
 
         # Flatten for easy checking
         flat = [pid for wave in order for pid in wave]
-        assert flat.index("research") < flat.index("outline")
-        assert flat.index("outline") < flat.index("draft")
-        assert flat.index("draft") < flat.index("red-team")
-        assert flat.index("red-team") < flat.index("final-7b")
-        assert flat.index("final-7b") < flat.index("select-best")
+        assert flat.index("research") < flat.index("draft")
+        assert flat.index("draft") < flat.index("red_team")
+        assert flat.index("red_team") < flat.index("apply_fixes")
+        assert flat.index("apply_fixes") < flat.index("final_polish")
 
     def test_cycle_produces_incomplete_order(self, engine):
         """A cycle means not all phases appear in the execution order."""
@@ -512,25 +510,23 @@ class TestPhaseSequencerExecution:
         assert result["final_output"] == result["phase_outputs"]["b"]
 
     def test_all_phases_present_in_output(self, fast_runner):
-        """All five content-pipeline phases appear in phase_outputs."""
-        repo_template = Path(__file__).parent.parent / "templates" / "content-pipeline.yaml"
+        """All seven content-pipeline v28 phases appear in phase_outputs."""
+        repo_template = Path(__file__).parent.parent / "templates" / "content-pipeline-v28.yaml"
         engine = TemplateEngine()
         tpl = engine.load_template(repo_template)
 
         seq = PhaseSequencer(tpl, fast_runner, config={
-            "author": "Test Author",
+            "topic": "The future of AI",
+            "author_name": "Test Author",
+            "author_facts": "Test author background.",
+            "voice_style": "Direct and witty.",
+            "source_material": "Test source material.",
         })
-        result = seq.execute({
-            "brief": "The future of AI",
-            "target_audience": "tech professionals",
-            "word_count_range": "800-1200 words",
-            "tone": "professional",
-            "author": "Test Author",
-        })
+        result = seq.execute({})
 
         assert set(result["phase_outputs"].keys()) == {
-            "research", "outline", "draft", "flow-review", "red-team",
-            "consistency", "final-7a", "final-7b", "final-7c", "select-best"
+            "research", "draft", "fact_check", "red_team",
+            "apply_fixes", "voice_check", "final_polish"
         }
 
     def test_phase_output_forwarded_to_next(self, fast_runner):
