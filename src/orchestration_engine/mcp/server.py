@@ -59,9 +59,11 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
         print("MCP server started", file=sys.stderr)
         _check_api_key()
         from mcp.server.fastmcp import FastMCP
+        from .tools import register_tools
         version = _read_version()
         mcp = FastMCP(name="orchemist")
         mcp._mcp_server.version = version
+        register_tools(mcp)
         import asyncio
         asyncio.run(mcp.run_stdio_async())
 
@@ -88,9 +90,11 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
             _check_sock.close()
 
         from mcp.server.fastmcp import FastMCP
+        from .tools import register_tools
         version = _read_version()
         mcp = FastMCP(name="orchemist", host="0.0.0.0", port=port)
         mcp._mcp_server.version = version
+        register_tools(mcp)
         import asyncio
         try:
             asyncio.run(mcp.run_sse_async())

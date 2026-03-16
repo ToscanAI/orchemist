@@ -28,6 +28,7 @@ dependencies = [
     "toml>=0.10.0",
     "rich>=13.0",
     "mcp>=1.0.0",
+    "httpx>=0.24.0",
 ]
 
 [project.optional-dependencies]
@@ -39,7 +40,6 @@ dev = [
     "isort",
     "flake8",
     "mypy",
-    "httpx>=0.24.0",
     "PyJWT[cryptography]>=2.8.0",
 ]
 web = [
