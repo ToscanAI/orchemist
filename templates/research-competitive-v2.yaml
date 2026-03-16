@@ -1,8 +1,8 @@
 id: research-competitive-v2
 name: "Competitive Research Pipeline"
-description: "Focused research pipeline for competitive landscape analysis. Three phases: market scan, competitive deep-dive, synthesis with positioning recommendations."
+description: "Focused research pipeline for competitive landscape analysis. Three phases: market scan, competitive deep-dive, synthesis with positioning recommendations. Uses file-handoff via {output_dir} to avoid output truncation."
 author: "Toscan"
-version: "2.0.0"
+version: "2.1.0"
 category: "research"
 tags: [research, competitive-analysis, market-research]
 use_cases:
@@ -67,7 +67,13 @@ phases:
       **CRITICAL:** Every claim must include a source URL from your web search. No unsourced claims.
       Aim for 80+ sources total across all competitors and topics.
 
-      Output a structured research brief with clear sections per competitor and per additional topic.
+      ## OUTPUT INSTRUCTIONS
+      **CRITICAL:** Write your COMPLETE output to the file: {output_dir}/market_scan.md
+      Use the write tool / file write to save the full research brief to that path.
+      Do NOT truncate. Write the entire document — every competitor, every source URL, every data point.
+      After writing, confirm the file was saved and report the file size.
+
+      Also return a brief summary (5-10 lines) as your response text confirming what was researched.
     model_tier: sonnet
 
 
@@ -81,7 +87,7 @@ phases:
       **Focus areas:** {config[focus_areas]}
 
       ## Research Data
-      {market_scan.output}
+      Read the full market scan from: {output_dir}/market_scan.md
 
       ## Analysis Required:
 
@@ -106,6 +112,14 @@ phases:
       How do the additional research findings (e.g., humor frameworks, communication strategies) apply to our product positioning and content strategy?
 
       **Be rigorous.** If a competitor does something better than us, say so. Credibility comes from honesty.
+
+      ## OUTPUT INSTRUCTIONS
+      **CRITICAL:** Write your COMPLETE output to the file: {output_dir}/competitive_analysis.md
+      Use the write tool / file write to save the full analysis to that path.
+      Do NOT truncate. Write the entire document — every comparison, every gap, every positioning insight.
+      After writing, confirm the file was saved and report the file size.
+
+      Also return a brief summary (5-10 lines) as your response text confirming what was analyzed.
     model_tier: sonnet
 
 
@@ -115,11 +129,9 @@ phases:
     prompt_template: |
       You are a senior strategist. Synthesize the market scan and competitive analysis into an actionable brief.
 
-      ## Market Scan
-      {market_scan.output}
-
-      ## Competitive Analysis
-      {competitive_analysis.output}
+      ## Source Files
+      Read the full market scan from: {output_dir}/market_scan.md
+      Read the full competitive analysis from: {output_dir}/competitive_analysis.md
 
       ## Deliverable:
       Produce a **Research Synthesis Brief** with:
@@ -148,4 +160,12 @@ phases:
          - Each with supporting evidence from the research
 
       Keep it dense. No filler. Every sentence should carry information.
+
+      ## OUTPUT INSTRUCTIONS
+      **CRITICAL:** Write your COMPLETE output to the file: {output_dir}/synthesis.md
+      Use the write tool / file write to save the full synthesis brief to that path.
+      Do NOT truncate. Write the entire document.
+      After writing, confirm the file was saved and report the file size.
+
+      Also return a brief summary (5-10 lines) as your response text confirming what was synthesized.
     model_tier: sonnet
