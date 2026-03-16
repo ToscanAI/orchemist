@@ -32,9 +32,11 @@ config_schema:
     focus_areas:
       type: string
       description: "Key dimensions to compare on"
+      default: "architecture, ease of use, production readiness, quality gates, extensibility"
     additional_research:
       type: string
       description: "Any additional research topics to include"
+      default: "none"
 
 phases:
   - id: market_scan
@@ -71,6 +73,7 @@ phases:
 
   - id: competitive_analysis
     name: "Competitive Deep-Dive"
+    depends_on: [market_scan]
     prompt_template: |
       You are a competitive strategy analyst. Using the market research below, produce a deep competitive analysis.
 
@@ -108,6 +111,7 @@ phases:
 
   - id: synthesis
     name: "Research Synthesis"
+    depends_on: [competitive_analysis]
     prompt_template: |
       You are a senior strategist. Synthesize the market scan and competitive analysis into an actionable brief.
 
