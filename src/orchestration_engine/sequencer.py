@@ -29,7 +29,7 @@ import yaml
 
 from .file_guard import compute_hash, FileGuardError
 from .output_parser import extract_and_write, parse_output
-from .review_parser import parse_review_output, ReviewOutcome
+from .review_parser import parse_review_output, ReviewOutcome, extract_verdict as extract_review_verdict
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
 from .transitions import PhaseOutcome, determine_outcome, extract_verdict
@@ -2665,13 +2665,38 @@ class StateMachineSequencer(PhaseSequencer):
             if not output_text:
                 output_text = result.get("text", "") or ""
 
-            verdict = extract_verdict(output_text)
+            # Use review_parser.extract_verdict (4-layer cascade) for content routing —
+            # it is more robust than transitions.extract_verdict for Opus-formatted text.
+            # Issue #600: transitions.extract_verdict returned None when verdict was buried
+            # after preamble, causing fallback to success→test instead of request_changes→fix.
+            # Note: review_parser.extract_verdict returns uppercase; normalise to lowercase
+            # to match transition keys (which are always lowercase by convention).
+            _raw_verdict = extract_review_verdict(output_text)
+            verdict = _raw_verdict.lower() if _raw_verdict is not None else None
+
+            # Fallback to transitions.extract_verdict for verdicts not covered by
+            # review_parser (e.g. "abort") — it already returns lowercase.
+            if verdict is None:
+                verdict = extract_verdict(output_text)
+
             if verdict is not None and verdict in effective:
-                logger.debug(
+                logger.info(
                     f"Pipeline {self.template.id}: phase '{phase.id}' "
-                    f"content-routed via verdict '{verdict}'"
+                    f"content-routed via verdict '{verdict}' → '{effective[verdict]}'"
                 )
                 return effective[verdict]
+
+            # Conservative fallback (Issue #600): when verdict cannot be parsed and
+            # the phase has a request_changes transition, default to request_changes
+            # rather than falling through to the supervisor-approved success→test path.
+            # An uncertain verdict should NOT skip fixes — triggering fix is safer.
+            if verdict is None and "request_changes" in effective:
+                logger.warning(
+                    f"Pipeline {self.template.id}: phase '{phase.id}' verdict could not "
+                    f"be parsed from output — defaulting to 'request_changes' transition "
+                    f"(conservative fallback, Issue #600)."
+                )
+                return effective["request_changes"]
 
         return effective.get(outcome.value)
 

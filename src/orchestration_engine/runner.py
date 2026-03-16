@@ -101,12 +101,16 @@ class DryRunExecutor(TaskExecutor):
             )
         
         # Success case
+        # Include an APPROVE verdict in the text so verdict-based routing phases
+        # (review, spec_adversary) take the approve→next transition in dry-run mode
+        # rather than triggering the Issue #600 conservative fallback.
         return TaskResult(
             task_id=task.id if hasattr(task, 'id') else str(uuid4()),
             task_type=task.type,
             state=TaskState.SUCCESS,
             confidence=0.85,
             result={
+                "text": "APPROVE\nDry-run mock execution — all checks pass.",
                 "message": f"Mock execution of {task.type.value} task",
                 "model_used": model_tier or "dry-run",
                 "worker_id": worker_id,
