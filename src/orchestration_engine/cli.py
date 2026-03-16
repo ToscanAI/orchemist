@@ -5124,5 +5124,37 @@ def reviews_reject(run_id: str, reason: str, reviewed_by: Optional[str],
         sys.exit(1)
 
 
+@main.command("mcp")
+@click.option(
+    "--transport",
+    default="stdio",
+    help="Transport protocol: stdio or sse",
+)
+@click.option(
+    "--port",
+    default=8000,
+    type=int,
+    show_default=True,
+    help="Port for SSE transport (default: 8000)",
+)
+def mcp_server(transport: str, port: int) -> None:
+    """Start the MCP server for IDE integration (Claude Code, Cursor)."""
+    supported = ["stdio", "sse"]
+    if transport not in supported:
+        click.echo(
+            f"Unsupported transport: {transport}. Supported: stdio, sse",
+            err=True,
+        )
+        sys.exit(1)
+    if not (1 <= port <= 65535):
+        click.echo(
+            f"Invalid port: {port}. Port must be between 1 and 65535",
+            err=True,
+        )
+        sys.exit(1)
+    from .mcp import run_mcp_server
+    run_mcp_server(transport=transport, port=port)
+
+
 if __name__ == '__main__':
     main()
