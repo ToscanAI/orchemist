@@ -1,10 +1,10 @@
 id: editorial_rewrite
 name: "Editorial Rewrite Pipeline"
-description: "Takes an existing article and editorial brief, rewrites with new material, then runs through fact-check, red team, consistency, parallel final drafts, and best-selection. Starts at phase 2 (writing) — research is pre-provided."
+description: "Takes an existing article and editorial brief, rewrites with new material, then runs through sequential quality gates: flow review → red team → consistency → final polish. Each phase fixes issues from the previous, building toward truth. Uses file-handoff via {output_dir} to avoid output truncation."
 author: "Toscan"
-version: "1.0.0"
+version: "2.0.0"
 category: "content"
-tags: [content, editorial, rewrite, fact-checking, red-team]
+tags: [content, editorial, rewrite, fact-checking, red-team, file_handoff]
 use_cases:
   - "Expanding an existing article with new themes"
   - "Editorial revision with quality pipeline"
@@ -90,35 +90,53 @@ phases:
       - If the editorial brief asks for humor, make it organic, not forced
       - The article should feel like a natural evolution, not a Frankenstein
 
-      Output the complete rewritten article.
+      ## OUTPUT INSTRUCTIONS
+      **CRITICAL:** Write your COMPLETE rewritten article to: {output_dir}/editorial_rewrite.md
+      Do NOT truncate. Write the entire article.
+      After writing, confirm the file was saved and return a brief summary of changes made.
 
   - id: flow_review
-    name: "Flow Review"
-    description: "Check logical flow and readability"
+    name: "Flow Review & Fix"
+    description: "Review logical flow and readability, then apply fixes"
     depends_on: [editorial_rewrite]
     model_tier: sonnet
     prompt_template: |
-      Review this article for logical flow and readability:
+      You are an editor reviewing for logical flow and readability.
 
-      {editorial_rewrite.output}
+      Read the article from: {output_dir}/editorial_rewrite.md
 
-      Check: argument progression, paragraph transitions, section coherence, conclusion strength, humor integration (does it land naturally or feel forced?).
-      List specific issues with suggested fixes.
+      ## Review Checklist
+      - Argument progression — does each section build on the previous?
+      - Paragraph transitions — smooth or jarring?
+      - Section coherence — does each section have a clear purpose?
+      - Conclusion strength — does it land?
+      - Humor integration — does it land naturally or feel forced?
+      - Pacing — any sections that drag or rush?
+
+      ## Task
+      1. List every flow issue you find with specific locations
+      2. Apply ALL fixes to the article
+      3. Write the CORRECTED version — not just the issues list
+
+      ## OUTPUT INSTRUCTIONS
+      Write your COMPLETE corrected article to: {output_dir}/flow_fixed.md
+      The article should read better than the input. Preserve voice and content, fix the flow.
+      After writing, return a brief summary of issues found and fixes applied.
 
   - id: red_team
-    name: "Red Team"
-    description: "Adversarial review for claims, tone, and biographical accuracy"
-    depends_on: [editorial_rewrite]
+    name: "Red Team Review & Fix"
+    description: "Adversarial review for claims, tone, and biographical accuracy — then fix"
+    depends_on: [flow_review]
     model_tier: opus
     prompt_template: |
-      You are an adversarial reviewer. Critically analyze this article:
+      You are an adversarial reviewer. Your job is to find every weakness, then fix it.
 
-      {editorial_rewrite.output}
+      Read the current article from: {output_dir}/flow_fixed.md
 
       ## Author-Provided Facts (ground truth)
       {config[author_facts]}
 
-      Check for:
+      ## Review Checklist
       1. Unsupported claims — every factual statement needs a source citation
       2. Logical fallacies
       3. Tone issues and potential backlash from practitioners in ANY domain mentioned
@@ -128,22 +146,32 @@ phases:
       7. Competitive claims — are comparisons with other tools fair and accurate?
       8. Humor — does it enhance or undermine credibility?
 
-      Score backlash risk 0-100. List every problematic phrase.
+      ## Task
+      1. Score backlash risk 0-100
+      2. List every problematic phrase with explanation
+      3. Apply ALL fixes to the article — soften problematic claims, add nuance, remove unsupported statements
+      4. Write the CORRECTED version
+
+      Keep the core argument and humor intact. Do NOT water down the article's personality — fix the problems, not the voice.
+
+      ## OUTPUT INSTRUCTIONS
+      Write your COMPLETE corrected article to: {output_dir}/red_team_fixed.md
+      After writing, return the backlash score and a summary of issues found and fixes applied.
 
   - id: consistency
-    name: "Consistency Check"
-    description: "Verify factual consistency and citation compliance"
-    depends_on: [editorial_rewrite]
+    name: "Consistency Check & Fix"
+    description: "Verify factual consistency and citation compliance — then fix"
+    depends_on: [red_team]
     model_tier: sonnet
     prompt_template: |
-      Check this article for factual consistency and citation compliance:
+      You are a fact-checker and consistency editor.
 
-      {editorial_rewrite.output}
+      Read the current article from: {output_dir}/red_team_fixed.md
 
       ## Author-Provided Facts (ground truth)
       {config[author_facts]}
 
-      Verify:
+      ## Review Checklist
       1. Numbers match across sections
       2. Claims align with cited sources
       3. No contradictions between paragraphs
@@ -153,73 +181,43 @@ phases:
       7. Competitive comparisons are fair and sourced
       8. No fabricated quotes or statistics
 
-      List any issues found.
+      ## Task
+      1. List every inconsistency found
+      2. Apply ALL fixes to the article
+      3. Write the CORRECTED version
 
-  - id: final_flow
-    name: "Final Draft - Flow Fixes"
-    description: "Apply flow review fixes"
-    depends_on: [editorial_rewrite, flow_review]
-    model_tier: haiku
-    prompt_template: |
-      Apply these flow fixes to the article:
+      ## OUTPUT INSTRUCTIONS
+      Write your COMPLETE corrected article to: {output_dir}/consistency_fixed.md
+      After writing, return a summary of inconsistencies found and fixes applied.
 
-      Original:
-      {editorial_rewrite.output}
-
-      Flow issues:
-      {flow_review.output}
-
-      Rewrite incorporating all flow fixes. Preserve the original voice, humor, and content.
-
-  - id: final_redteam
-    name: "Final Draft - Red Team Fixes"
-    description: "Apply red team fixes with editorial judgment"
-    depends_on: [editorial_rewrite, red_team]
+  - id: final_polish
+    name: "Final Polish"
+    description: "Final read-through — voice, personality, and publication readiness"
+    depends_on: [consistency]
     model_tier: sonnet
     prompt_template: |
-      Apply these red team fixes to the article:
+      You are the senior editor doing the final read before publication.
 
-      Original:
-      {editorial_rewrite.output}
+      Read the article from: {output_dir}/consistency_fixed.md
 
-      Red team issues:
-      {red_team.output}
+      This article has been through:
+      1. Editorial rewrite (new material incorporated)
+      2. Flow review and fix (readability improved)
+      3. Red team review and fix (claims hardened, backlash risks addressed)
+      4. Consistency check and fix (facts verified, citations confirmed)
 
-      Address all concerns. Soften problematic claims, add nuance, remove unsupported statements. Keep the core argument and humor intact. Do NOT water down the article's personality.
+      ## Final Pass Checklist
+      - Does the opening hook grab attention?
+      - Does the voice feel authentic to {config[author_name]}?
+      - Is the humor effective or should any jokes be cut?
+      - Are there any remaining weak spots?
+      - Is it ready for {config[publication]}?
+      - Word count within 10% of {config[word_count]}?
 
-  - id: final_consistency
-    name: "Final Draft - Consistency Fixes"
-    description: "Apply consistency fixes"
-    depends_on: [editorial_rewrite, consistency]
-    model_tier: haiku
-    prompt_template: |
-      Apply these consistency fixes to the article:
+      ## Task
+      Make final adjustments only. Do NOT rewrite — the hard work is done. Polish, tighten, ensure it reads as one cohesive piece.
 
-      Original:
-      {editorial_rewrite.output}
-
-      Consistency issues:
-      {consistency.output}
-
-      Fix all inconsistencies. Ensure numbers, terms, and claims are consistent throughout. Preserve voice and humor.
-
-  - id: select_best
-    name: "Select Best Draft"
-    description: "Compare three final drafts and produce the best version"
-    depends_on: [final_flow, final_redteam, final_consistency]
-    model_tier: opus
-    prompt_template: |
-      Compare these three final drafts and produce the best version:
-
-      Draft A (flow-focused):
-      {final_flow.output}
-
-      Draft B (red-team-hardened):
-      {final_redteam.output}
-
-      Draft C (consistency-fixed):
-      {final_consistency.output}
-
-      Evaluate each on: accuracy, readability, tone, argument strength, humor effectiveness, competitive claim fairness, backlash risk.
-
-      Select the best and output it in full. If the best version can be improved by cherry-picking specific passages from other drafts, do so. Explain your choice briefly at the top.
+      ## OUTPUT INSTRUCTIONS
+      **CRITICAL:** Write the FINAL publication-ready article to: {output_dir}/final_article.md
+      This is the deliverable. Do NOT truncate.
+      After writing, return a brief editorial note: what's strong, any remaining concerns, publication readiness score (0-100).
