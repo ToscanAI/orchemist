@@ -10,6 +10,9 @@ As a [role], I want [capability] so that [value].
 
 ## Context
 <!-- Why now? What does the system currently do (or not do)? -->
+<!-- IMPORTANT: Describe the behavior fully in this issue. Do NOT rely on other issue numbers for context. -->
+<!-- The pipeline agent reads ONLY this issue body — it cannot look up #123 or other references. -->
+<!-- Related issues can be linked for tracking, but all behavioral context must be self-contained here. -->
 
 ## Behavioral Contracts
 <!-- Explicit input→output contracts. Each must be testable in isolation. -->
