@@ -130,13 +130,13 @@ class TestExtractVerdict:
 
     # -- First non-blank line only ----------------------------------------
 
-    def test_keyword_on_first_line_wins(self):
-        """APPROVE on first line is returned even if REQUEST_CHANGES appears later."""
+    def test_highest_priority_verdict_wins(self):
+        """REQUEST_CHANGES beats APPROVE regardless of line order (Issue #600)."""
         text = "APPROVE\nREQUEST_CHANGES: nitpick\nSome body text"
-        assert extract_verdict(text) == "approve"
+        assert extract_verdict(text) == "request_changes"
 
     def test_keyword_after_first_line_found_by_full_scan(self):
-        """A keyword on a later line IS found by the full-scan fallback.
+        """A keyword on a later line IS found by the full scan.
 
         This supports streaming output (partial_output) where preamble
         text appears before the verdict.
