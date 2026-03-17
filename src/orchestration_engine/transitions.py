@@ -92,22 +92,20 @@ def determine_outcome(result: Dict[str, Any]) -> PhaseOutcome:
 # ---------------------------------------------------------------------------
 
 _VERDICT_KEYWORDS = ("APPROVE", "REQUEST_CHANGES", "ABORT")
+# Priority ordering: lower index = higher priority (Issue #600)
+_VERDICT_PRIORITY_ORDER = ("REQUEST_CHANGES", "ABORT", "APPROVE")
 
 
 def extract_verdict(text: str) -> Optional[str]:
-    """Extract a verdict keyword from *text*.
+    """Extract the highest-priority verdict keyword from *text*.
 
-    Uses a two-pass strategy:
+    Scans ALL lines of the input, collecting every verdict keyword found
+    at the start of a line (case-insensitive). After scanning, applies
+    priority ordering: REQUEST_CHANGES > ABORT > APPROVE.
 
-    1. **First-line check:** If the first non-blank line starts with a verdict
-       keyword, return it immediately.  This is the fast path for well-formatted
-       review output where the verdict is on line 1.
-
-    2. **Full-scan fallback:** If the first line doesn't match, scan all lines
-       for a line that starts with a verdict keyword.  This handles streaming
-       output (``partial_output``) where preamble text appears before the
-       verdict.  Only matches lines where the keyword is at the start of the
-       line (not buried mid-sentence) to avoid false positives.
+    This ensures that reasoning prose such as "APPROVE would be premature"
+    on one line does not shadow an actual REQUEST_CHANGES verdict on a
+    later line.
 
     Args:
         text: Phase output text (may be multi-line).
@@ -117,13 +115,10 @@ def extract_verdict(text: str) -> Optional[str]:
         ``"abort"``), or ``None`` if no verdict keyword is found.
 
     Examples:
-        >>> extract_verdict("APPROVE\\nSome explanation here")
-        'approve'
-
-        >>> extract_verdict("  REQUEST_CHANGES: fix the auth bug")
+        >>> extract_verdict("APPROVE would be premature\\nREQUEST_CHANGES\\n...")
         'request_changes'
 
-        >>> extract_verdict("Some preamble\\n\\nAPPROVE\\nDetails here")
+        >>> extract_verdict("APPROVE\\nCode looks good")
         'approve'
 
         >>> extract_verdict("")
@@ -132,8 +127,8 @@ def extract_verdict(text: str) -> Optional[str]:
         return None
 
     lines = text.splitlines()
+    found: set = set()
 
-    # Pass 1: check first non-blank line (fast path)
     for line in lines:
         stripped = line.strip()
         if not stripped:
@@ -141,18 +136,11 @@ def extract_verdict(text: str) -> Optional[str]:
         upper = stripped.upper()
         for keyword in _VERDICT_KEYWORDS:
             if upper.startswith(keyword):
-                return keyword.lower()
-        # First non-blank line didn't match — fall through to pass 2
-        break
+                found.add(keyword)
 
-    # Pass 2: scan all lines for a standalone verdict keyword at line start
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        upper = stripped.upper()
-        for keyword in _VERDICT_KEYWORDS:
-            if upper.startswith(keyword):
-                return keyword.lower()
+    # Apply priority: REQUEST_CHANGES > ABORT > APPROVE
+    for keyword in _VERDICT_PRIORITY_ORDER:
+        if keyword in found:
+            return keyword.lower()
 
     return None
