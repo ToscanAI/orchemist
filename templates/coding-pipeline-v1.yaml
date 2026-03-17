@@ -74,6 +74,7 @@ phases:
     max_iterations: 4
     transitions:
       success: spec_adversary
+      failed: spec
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the SPEC phase (1/8) of an automated coding pipeline. Your output feeds the spec_adversary phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
 
@@ -133,6 +134,7 @@ phases:
     transitions:
       approve: acceptance_test
       request_changes: spec
+      failed: spec_adversary
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the SPEC_ADVERSARY phase of an automated coding pipeline. Your verdict determines whether behavioral contracts are strong enough to drive acceptance tests. Do not ask questions or send messages. Deliver a structured verdict. [/PIPELINE CONTEXT]
 
@@ -182,6 +184,7 @@ phases:
     thinking_level: high
     transitions:
       success: implement
+      failed: acceptance_test
     protected_outputs:
       - acceptance_tests.py
     prompt_template: |
@@ -243,6 +246,7 @@ phases:
     max_iterations: 3
     transitions:
       success: acceptance_run
+      failed: implement
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the IMPLEMENT phase (3/5) of an automated coding pipeline. Your output feeds the review phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
 
@@ -320,6 +324,7 @@ phases:
       request_changes: fix
       abort: fix
       success: test
+      failed: review
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the REVIEW phase (4/5) of an automated coding pipeline. Your verdict determines whether the code proceeds to testing or goes back for fixes. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete review as structured text following the format below. [/PIPELINE CONTEXT]
 
@@ -397,6 +402,7 @@ phases:
     max_iterations: 3
     transitions:
       success: acceptance_run
+      failed: fix
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the FIX phase of an automated coding pipeline. Your output feeds a re-review — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
 
