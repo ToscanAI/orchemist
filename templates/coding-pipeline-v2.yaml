@@ -118,10 +118,9 @@ phases:
       - What calls the affected code? (callers/consumers)
       - What patterns does the codebase use? (error handling, logging, typing)
 
-      ### Step 4: Write the Context File
-      Write your findings to {output_dir}/codebase_context.md with this structure:
+      ### Step 4: Output the Context
+      After exploring, output your findings as your text reply using this structure:
 
-      ```markdown
       # Codebase Context for #{config[issue_number]}
 
       ## Files to Modify
@@ -148,16 +147,14 @@ phases:
       ## Dependencies
       - What the new code will need to import
       - What existing code calls/consumes the affected modules
-      ```
 
       IMPORTANT:
       - Read actual files. Do not guess or describe from memory.
       - Copy exact signatures, not paraphrases.
       - Keep it focused — only code relevant to THIS issue.
-      - This file will be the ONLY codebase reference for all downstream phases.
+      - This context will be the ONLY codebase reference for all downstream phases.
       - Do NOT write implementation plans, specs, or code changes.
-
-      Write your complete output to {output_dir}/codebase_context.md
+      - Do NOT write to files. Output everything as your text reply. The orchestrator saves it automatically.
 
   # Phase 1: Spec Interpretation
   - id: spec
@@ -189,8 +186,8 @@ phases:
       **Language:** {config[language]}
 
       ## Codebase Context (extracted by prepare phase)
-      Read the full codebase context at: {output_dir}/codebase_context.md
-      This contains all relevant interfaces, signatures, and patterns. Do NOT explore the repository yourself — use this file as your primary reference.
+      Read the full codebase context at: {output_dir}/prepare.md
+      This contains all relevant interfaces, signatures, and patterns extracted from the actual codebase. Do NOT explore the repository yourself — use this file as your primary reference.
 
       ## Additional Context
       {config[files_context]}
