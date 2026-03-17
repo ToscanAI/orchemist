@@ -236,7 +236,15 @@ def register_tools(mcp) -> None:
                     return "(no logs available)"
                 return log_path.read_text(encoding="utf-8", errors="replace")
             else:
+                # Validate phase to prevent path traversal attacks
+                if not phase or "/" in phase or "\\" in phase or ".." in phase:
+                    return f"Invalid phase name: {phase}"
                 phase_path = output_dir / f"{phase}.md"
+                # Ensure resolved path is within output_dir
+                try:
+                    phase_path.resolve().relative_to(output_dir.resolve())
+                except ValueError:
+                    return f"Invalid phase name: {phase}"
                 if not phase_path.exists():
                     return f"Phase not found: {phase} in run {run_id}"
                 return phase_path.read_text(encoding="utf-8", errors="replace")
