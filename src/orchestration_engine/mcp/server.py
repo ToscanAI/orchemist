@@ -8,6 +8,8 @@ import os
 import sys
 from pathlib import Path
 
+from orchestration_engine.mcp.tools import register_tools
+
 
 def _read_version() -> str:
     """Read the package version from importlib.metadata or pyproject.toml.
@@ -61,6 +63,7 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
         from mcp.server.fastmcp import FastMCP
         version = _read_version()
         mcp = FastMCP(name="orchemist")
+        register_tools(mcp)
         mcp._mcp_server.version = version
         import asyncio
         asyncio.run(mcp.run_stdio_async())
@@ -90,6 +93,7 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
         from mcp.server.fastmcp import FastMCP
         version = _read_version()
         mcp = FastMCP(name="orchemist", host="0.0.0.0", port=port)
+        register_tools(mcp)
         mcp._mcp_server.version = version
         import asyncio
         try:

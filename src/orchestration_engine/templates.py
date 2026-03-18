@@ -596,10 +596,10 @@ class PipelineTemplate:
 class TemplateNotFoundError(FileNotFoundError):
     """Raised when a template name cannot be resolved in any search path."""
 
-    def __init__(self, name: str, searched: List[Path]) -> None:
+    def __init__(self, name: str, searched: Optional[List[Path]] = None) -> None:
         self.name = name
-        self.searched = searched
-        paths_str = ", ".join(str(p) for p in searched)
+        self.searched = searched or []
+        paths_str = ", ".join(str(p) for p in self.searched)
         super().__init__(
             f"Template '{name}' not found. Searched: [{paths_str}]"
         )
