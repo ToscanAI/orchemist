@@ -137,11 +137,13 @@ Each use case is a template. Browse them with `orch templates list` or search wi
 
 **Three execution modes:**
 
-| Mode | How it runs | API key? |
-|------|-------------|----------|
-| `standalone` | Direct Anthropic API (zero framework deps) | Yes |
-| `openclaw` | Sub-agent spawning via OpenClaw gateway | No |
-| `dry-run` | Mock executor for testing / CI | No |
+| Mode | How it runs | API key? | Start here? |
+|------|-------------|----------|-------------|
+| `standalone` | Direct Anthropic API (zero framework deps) | Yes — `ANTHROPIC_API_KEY` | ✅ Yes — simplest setup |
+| `dry-run` | Mock executor for testing / CI | No | ✅ Yes — no credentials needed |
+| `openclaw` | Sub-agent spawning via OpenClaw gateway | No (uses gateway token) | Requires separate [OpenClaw](https://github.com/openclaw/openclaw) setup |
+
+> **New here?** Start with `--mode standalone` (bring your own API key) or `--mode dry-run` (no credentials). OpenClaw mode is for production deployments with the OpenClaw gateway.
 
 ---
 
@@ -255,6 +257,16 @@ pytest
 - 🧪 **Scenarios & rubrics** — improve grading quality for existing templates
 - 🔌 **Executors** — add support for new model providers (Gemini, Mistral, local models)
 - 📖 **Documentation** — improve examples, add tutorials, translate docs
+
+**Filing issues:** Use the right template for the right pipeline:
+
+| Issue type | Template | Pipeline |
+|------------|----------|----------|
+| Bug | Bug Report | `coding-pipeline-v1` |
+| Feature / code change | Feature Request | `coding-pipeline-v1` |
+| Documentation | Documentation Request | `docs-pipeline-v1` |
+| Article / blog post | Content Request | `content-pipeline-v28` |
+| Research / analysis | Research Request | `research-competitive-v2` |
 
 Please read CONTRIBUTING.md for code style and PR guidelines.
 
