@@ -55,6 +55,8 @@ Write the following content to whichever file you chose:
 
 **What this does:** Claude Code will launch `orch mcp --transport stdio` as a child process and communicate with it over standard input/output. The `--transport stdio` flag is explicit but technically redundant — `stdio` is the default transport. It is included here for clarity.
 
+> **Schema note:** The `mcpServers` JSON schema above follows the format documented at [https://docs.anthropic.com/en/docs/claude-code/mcp](https://docs.anthropic.com/en/docs/claude-code/mcp). Both project-scope (`.claude/mcp.json`) and global scope (`~/.claude/mcp.json`) locations are supported by Claude Code.
+
 > **SSE transport:** `orch mcp` also supports `--transport sse` (with an optional `--port` flag, default `8000`) for networked or remote access. SSE transport is out of scope for this guide.
 
 ### Step 3 — Restart Claude Code
@@ -81,11 +83,13 @@ Cursor exposes MCP configuration through its settings UI.
 
 1. Open **Settings** (`Cmd+,` / `Ctrl+,`)
 2. Navigate to **Features → MCP**
-3. Click **Add Server**
+3. Click **Add new global MCP server** (the button label may vary by Cursor release — it may also appear as **+ Add Server**)
+
+> **Server type:** If Cursor prompts you to select a server type, choose **Command** (stdio) — not SSE or HTTP.
 
 ### Step 2 — Enter the server command
 
-In the "Command" field, enter:
+In the **Command** field, enter:
 
 ```
 orch mcp --transport stdio
@@ -117,13 +121,14 @@ You can also confirm the server starts from the terminal:
 orch mcp --transport stdio
 ```
 
-Expected output to stderr:
+Expected output to stderr (verified by running on a system with `orchemist` installed):
 
 ```
 MCP server started
+No API key configured — running without auth
 ```
 
-The process will remain running, waiting for MCP messages on stdin. Press `Ctrl+C` to stop it.
+The second line appears only when `ANTHROPIC_API_KEY` is not set in the environment; it is a warning, not an error. The server starts normally regardless. The process will remain running, waiting for MCP messages on stdin. Press `Ctrl+C` to stop it.
 
 ---
 
