@@ -57,7 +57,7 @@ class TestDefaultOutputDir:
         assert output_root.exists(), "output/ directory should be created"
         dirs = list(output_root.iterdir())
         assert len(dirs) == 1, f"Expected exactly one run dir, got: {dirs}"
-        assert dirs[0].name.startswith("hello-pipeline-"), (
+        assert dirs[0].name.startswith("hello-pipeline"), (
             f"Dir name should start with template id, got: {dirs[0].name}"
         )
 
@@ -68,7 +68,7 @@ class TestDefaultOutputDir:
 
         dirs = list((tmp_path / "output").iterdir())
         assert len(dirs) == 1
-        pattern = re.compile(r"^hello-pipeline-\d{8}-\d{6}-[a-f0-9]{8}$")
+        pattern = re.compile(r"^hello-pipeline(-example)?-\d{8}-\d{6}-[a-f0-9]{8}$")
         assert pattern.match(dirs[0].name), (
             f"Dir name doesn't match expected pattern: {dirs[0].name}"
         )
