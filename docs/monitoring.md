@@ -136,7 +136,7 @@ To approve or reject a review:
 
 ```bash
 orch reviews approve abc123
-orch reviews reject abc123
+orch reviews reject abc123 "reason text"
 ```
 
 ---
@@ -176,7 +176,7 @@ orch chain --active
 | `orch logs abc123 --follow` | Tail the log file in real time |
 | `orch reviews list` | Show pending human review queue |
 | `orch reviews approve abc123` | Approve a run pending review |
-| `orch reviews reject abc123` | Reject a run pending review |
+| `orch reviews reject abc123 "reason"` | Reject a run pending review |
 | `orch chain abc123` | Show full chain status for a run |
 | `orch chain --active` | List all currently active chains |
 
