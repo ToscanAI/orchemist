@@ -123,7 +123,9 @@ def classify_http_error(status_code: int, body: str, headers=None) -> GatewayHTT
     Returns:
         The appropriate :class:`GatewayHTTPError` subclass instance.
     """
-    if status_code == 429:
+    if status_code in (429, 529):
+        # Both HTTP 429 (Too Many Requests) and HTTP 529 (Overloaded/custom) are
+        # treated identically as rate-limit conditions (contract 8).
         retry_after: Optional[int] = None
         if headers is not None:
             raw = None
@@ -134,8 +136,14 @@ def classify_http_error(status_code: int, body: str, headers=None) -> GatewayHTT
                 pass
             if raw is not None:
                 try:
-                    retry_after = int(raw)
+                    parsed = int(raw)
+                    # Reject non-positive values — a negative or zero delay is
+                    # non-sensical and treated as a malformed header (contract 9).
+                    if parsed > 0:
+                        retry_after = parsed
                 except (ValueError, TypeError):
+                    # Non-numeric (e.g. HTTP-date, float, garbage) — treat as
+                    # absent (contract 9).
                     pass
         return RateLimitError(body=body, retry_after=retry_after)
 

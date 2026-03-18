@@ -84,7 +84,7 @@ class TestEmitStallEvent:
                 "session_key": "agent:main:subagent:test",
                 "stall_seconds": 65.0,
                 "last_tokens": 1500,
-                "message": "No token progress for 65s — possible rate limit",
+                "message": "No token progress for 65s",
             },
         )
 
@@ -98,7 +98,9 @@ class TestEmitStallEvent:
         meta = json.loads(stall_events[0]["metadata_json"])
         assert meta["stall_seconds"] == 65.0
         assert meta["last_tokens"] == 1500
-        assert "rate limit" in meta["message"]
+        assert "possible rate limit" not in meta["message"]
+        assert "No token progress for" in meta["message"]
+        assert "65" in meta["message"]
 
     def test_emit_stall_event_no_running_run(self):
         """No crash when no running pipeline exists."""
@@ -216,7 +218,7 @@ class TestCLIStallWarning:
             event_type="stall_detected",
             phase_id="review",
             metadata={
-                "message": "No token progress for 90s — possible rate limit",
+                "message": "No token progress for 90s",
             },
         )
 
@@ -224,4 +226,5 @@ class TestCLIStallWarning:
         stall_events = [e for e in events if e["event_type"] == "stall_detected"]
         assert len(stall_events) == 1
         meta = json.loads(stall_events[0]["metadata_json"])
-        assert "rate limit" in meta["message"]
+        assert "possible rate limit" not in meta["message"]
+        assert "No token progress for" in meta["message"]

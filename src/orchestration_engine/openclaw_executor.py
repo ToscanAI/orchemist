@@ -519,7 +519,7 @@ class OpenClawExecutor(TaskExecutor):
                         last_error_msg = str(exc)
                         retry_hint = (
                             f" retry after {exc.retry_after}s"
-                            if exc.retry_after is not None else ""
+                            if exc.retry_after is not None else " (no retry-after header)"
                         )
                         logger.warning(
                             "Rate limited (429) —%s for task %s (attempt %d)",
@@ -1083,7 +1083,8 @@ class OpenClawExecutor(TaskExecutor):
         try:
             from .db import Database
 
-            db = Database()
+            # Use injected _db if set (e.g., for testing), otherwise create a new instance.
+            db = getattr(self, "_db", None) or Database()
             # Find the active pipeline run for this session (if any)
             runs = db.list_pipeline_runs(limit=5)
             for run in runs:
@@ -1097,8 +1098,7 @@ class OpenClawExecutor(TaskExecutor):
                             "stall_seconds": round(stall_seconds, 1),
                             "last_tokens": last_tokens,
                             "message": (
-                                f"No token progress for {stall_seconds:.0f}s — "
-                                "possible rate limit"
+                                f"No token progress for {stall_seconds:.0f}s"
                             ),
                         },
                     )
@@ -1245,7 +1245,7 @@ class OpenClawExecutor(TaskExecutor):
         had_messages: bool = False
 
         # ── Rate limit / stall detection (#413) ─────────────────────────
-        # Track token progress to detect stalls (possible rate limiting).
+        # Track token progress to detect stalls (model may be thinking, initializing, or provider may be degraded).
         _last_token_count: int = 0
         _last_token_change_time: float = loop_start
         _stall_warned: bool = False
@@ -1349,7 +1349,7 @@ class OpenClawExecutor(TaskExecutor):
 
             # ── Stall detection (#413) ───────────────────────────────────
             # Extract total token count from the last assistant message's
-            # usage data to detect stalls (possible rate limiting).
+            # usage data to detect stalls (model may be thinking, initializing, or provider may be degraded).
             _current_tokens = 0
             for _msg in reversed(messages):
                 if _msg.get("role") == "assistant":
@@ -1375,8 +1375,7 @@ class OpenClawExecutor(TaskExecutor):
                 stall_seconds = time.monotonic() - _last_token_change_time
                 if stall_seconds >= _STALL_THRESHOLD_SECONDS and not _stall_warned:
                     logger.warning(
-                        "Session %s: no token progress for %.0fs — "
-                        "possible rate limit (last tokens: %d)",
+                        "Session %s: no token progress for %.0fs (last tokens: %d)",
                         session_key, stall_seconds, _last_token_count,
                     )
                     _stall_warned = True

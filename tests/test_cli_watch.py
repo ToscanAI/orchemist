@@ -105,12 +105,12 @@ class TestPrintWatchEvent:
             "tokens_consumed": None,
             "state": None,
             "metadata_json": json.dumps({
-                "message": "No token progress for 90s — possible rate limit",
+                "message": "No token progress for 90s",
             }),
         }, json_mode=False)
 
         output = capsys.readouterr().out
-        assert "rate limit" in output
+        assert "No token progress for" in output
 
     def test_json_mode_output(self, capsys):
         """JSON mode outputs valid JSON."""
