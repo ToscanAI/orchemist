@@ -1,0 +1,39 @@
+id: hello-pipeline
+name: "Hello Pipeline"
+description: "Minimal single-phase pipeline for testing, demos, and E2E integration tests. Accepts a 'message' input and echoes it back. No external dependencies, no API calls in dry-run mode."
+author: "Toscan"
+version: "1.0.0"
+category: "example"
+tags: [example, testing, demo, hello-world, e2e]
+use_cases:
+  - "E2E integration tests (MCP, API, CLI)"
+  - "Verifying pipeline infrastructure works"
+  - "Getting started demo"
+
+config_schema:
+  type: object
+  properties:
+    message:
+      type: string
+      default: "Hello from Orchemist!"
+      description: "Message to echo back in the pipeline output"
+
+example_input:
+  message: "Hello from Orchemist!"
+
+phases:
+  - id: hello
+    name: "Hello"
+    description: "Echo the input message back as output"
+    model_tier: haiku
+    thinking_level: none
+    transitions:
+      failed: hello
+    prompt_template: |
+      You are running a hello-world pipeline phase.
+
+      Input message: {config[message]}
+
+      Reply with exactly: Hello from Orchemist! Pipeline is working.
+
+      Nothing else.
