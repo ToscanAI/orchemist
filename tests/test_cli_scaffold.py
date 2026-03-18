@@ -381,15 +381,20 @@ class TestInvalidPhaseCount:
 
 class TestForceFlag:
     def test_existing_file_errors_without_force(self, tmp_path):
-        """Running twice without --force should fail on the second run."""
+        """Running twice without --force or --yes should fail on the second run.
+
+        Updated (Issue #573): --yes now suppresses the file-exists check, so only
+        the case where neither --force nor --yes is given should produce an error.
+        Interactive mode (no --yes) without --force must still reject existing files.
+        """
         out = tmp_path / "out.yaml"
         # First run — should succeed
         r1 = _invoke(["new", "--yes", "--output", str(out)])
         assert r1.exit_code == 0
 
-        # Second run — should fail
+        # --yes on an existing file must now succeed (suppresses all confirmations).
         r2 = _invoke(["new", "--yes", "--output", str(out)])
-        assert r2.exit_code != 0
+        assert r2.exit_code == 0
 
     def test_existing_file_overwritten_with_force(self, tmp_path):
         """--force should overwrite an existing file."""

@@ -4340,7 +4340,7 @@ def new_template(
     if output_path is None:
         output_path = Path("templates") / f"{template_id}.yaml"
 
-    if output_path.exists() and not force:
+    if output_path.exists() and not force and not yes:
         click.echo(
             f"✗ Output file already exists: {output_path}\n"
             f"  Use --force to overwrite.",
