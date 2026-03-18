@@ -443,7 +443,7 @@ def _print_run_detail(run: Dict[str, Any]) -> None:
             if _recent_stalls:
                 _last_stall = _recent_stalls[-1]
                 _stall_meta = _json.loads(_last_stall.get('metadata_json', '{}'))
-                _stall_msg = _stall_meta.get('message', 'possible rate limit')
+                _stall_msg = _stall_meta.get('message', 'No token progress detected')
                 click.echo(f"├─ Warning:    ⚠️  {_stall_msg}")
         except Exception:
             pass
@@ -937,7 +937,7 @@ def _print_watch_event(evt: dict, json_mode: bool) -> None:
         state_str = f" — {state}" if state else ""
         click.echo(f"  [{ts}] ✓ {phase} completed{tokens_str}{state_str}")
     elif event_type == 'stall_detected':
-        msg = meta.get('message', 'possible rate limit')
+        msg = meta.get('message', 'No token progress detected')
         click.echo(f"  [{ts}] ⚠️  {msg}")
     elif event_type == 'status_changed':
         new_status = meta.get('new_status') or state or '?'
