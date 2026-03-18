@@ -1,0 +1,342 @@
+id: docs-pipeline-v1
+name: "Documentation Pipeline v1"
+description: "6-phase documentation pipeline: spec → spec_adversary → write → review → fix → test. Designed for technical documentation — no acceptance tests or test runners. Opus review checks accuracy, completeness, and consistency. Git integration produces a feature branch and PR."
+author: "Toscan"
+version: "1.0.0"
+category: "docs"
+tags: [docs, documentation, markdown, reference, tutorial]
+use_cases:
+  - "Technical reference documentation"
+  - "README updates and improvements"
+  - "Tutorial and quickstart guides"
+  - "API and CLI documentation"
+  - "Template authoring guides"
+
+config_schema:
+  type: object
+  required: [doc_title, doc_goal, repo_path, branch_name, repo_url]
+  properties:
+    doc_title:
+      type: string
+      description: "Title of the documentation to write"
+    doc_goal:
+      type: string
+      description: "What the doc should achieve — who reads it, what they should be able to do after"
+    doc_requirements:
+      type: string
+      default: ""
+      description: "Specific requirements, sections to cover, accuracy constraints"
+    output_file:
+      type: string
+      default: ""
+      description: "Target file path relative to repo root (e.g. docs/mcp-setup.md). If empty, agent decides based on doc_title."
+    files_context:
+      type: string
+      default: ""
+      description: "Existing files, code signatures, or context the writer needs to reference for accuracy"
+    repo_path:
+      type: string
+      description: "Absolute path to the repository"
+    branch_name:
+      type: string
+      description: "Git branch name to create"
+    repo_url:
+      type: string
+      description: "GitHub repo URL (e.g. https://github.com/ToscanAI/orchestration-engine)"
+    style_guide:
+      type: string
+      default: "Clear and direct. Short sentences. Code examples for every concept. Assume the reader is a developer."
+      description: "Writing style and tone guidelines"
+    issue_number:
+      type: integer
+      description: "GitHub issue number — auto-injected into PR body as 'Closes #N'"
+
+example_input:
+  doc_title: "MCP Integration Guide"
+  doc_goal: "Help developers connect Claude Code and Cursor to Orchemist via MCP"
+  output_file: "docs/mcp-setup.md"
+  repo_path: "/path/to/repo"
+  branch_name: "docs/mcp-setup-guide"
+  repo_url: "https://github.com/ToscanAI/orchestration-engine"
+  issue_number: 471
+
+phases:
+  # Phase 1: Documentation Spec
+  - id: spec
+    name: "Documentation Spec"
+    description: "Plan the documentation: structure, sections, accuracy requirements, what to cover and what to skip"
+    model_tier: sonnet
+    thinking_level: high
+    max_iterations: 4
+    transitions:
+      success: spec_adversary
+      failed: spec
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the SPEC phase (1/6) of a documentation pipeline. Your output feeds the spec_adversary phase — not a human. Do not ask questions or send messages. Deliver your complete output as structured text. [/PIPELINE CONTEXT]
+
+      You are a technical writer planning a documentation task.
+
+      ## Previous Work
+      {phase_summary}
+
+      If a prior adversary review exists at {output_dir}/spec_adversary.md, read it and address ALL findings before producing your updated spec.
+
+      ## Documentation Task
+      **Title:** {config[doc_title]}
+      **Goal:** {config[doc_goal]}
+      **Requirements:** {config[doc_requirements]}
+      **Output file:** {config[output_file]}
+      **Style guide:** {config[style_guide]}
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+
+      ## Reference Material
+      {config[files_context]}
+
+      ## Your Task
+      Produce a documentation spec with TWO sections:
+
+      ### Section A: Behavioral Contract (REQUIRED)
+      Describe WHAT the documentation achieves, not HOW it's written. Use this format:
+      - "Given a reader who [starting state], after reading this doc they can [outcome]"
+      - "When the doc covers [topic], it includes [required element]"
+      - "When the doc shows [example], the example is [accurate/complete/runnable]"
+
+      Each contract must be verifiable. A reviewer should be able to check each one independently.
+
+      DO NOT specify sentence structure, word choice, or prose style in behavioral contracts.
+
+      ### Section B: Writing Plan
+      1. **Document structure** — ordered list of sections with one-line purpose each
+      2. **Key accuracy requirements** — facts, code examples, or commands that must be verified correct
+      3. **What to exclude** — scope boundaries (what this doc deliberately doesn't cover)
+      4. **Reference files to read** — specific files from the repo the writer must read for accuracy
+      5. **Target file path** — where the file will be written
+
+      Write your FULL spec to {output_dir}/spec.md
+      ALSO write Section A ONLY to {output_dir}/spec-behavioral.md
+
+  # Phase 1b: Adversarial Spec Review
+  - id: spec_adversary
+    name: "Spec Adversary Review"
+    description: "Adversarially review the documentation spec for vague contracts, missing sections, accuracy gaps, and scope creep before writing begins"
+    model_tier: sonnet
+    thinking_level: high
+    max_iterations: 4
+    transitions:
+      approve: write
+      request_changes: spec
+      failed: spec_adversary
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the SPEC_ADVERSARY phase of a documentation pipeline. Your verdict determines whether the doc plan is strong enough to drive accurate writing. Do not ask questions or send messages. Deliver a structured verdict. [/PIPELINE CONTEXT]
+
+      You are an adversarial documentation reviewer. Find weaknesses in the doc plan BEFORE writing begins.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the behavioral contracts at: {output_dir}/spec-behavioral.md
+      Read the full spec at: {output_dir}/spec.md
+
+      ## Your Checks (all mandatory)
+
+      **1. Verifiability** — Can each contract be checked by a reviewer without running the software?
+      - Flag any contract that requires subjective judgment without criteria
+      - Flag any contract that says "good", "clear", "easy" without defining what that means
+
+      **2. Completeness** — Are the core use cases covered?
+      - Does the spec address the doc goal fully?
+      - Are there obvious sections or scenarios missing?
+
+      **3. Accuracy requirements** — Are the code examples and commands verifiable?
+      - Flag any contract that references code, commands, or configs without specifying they must be tested
+      - Flag missing "verify it works" requirements
+
+      **4. Scope** — Is the scope appropriate?
+      - Flag scope creep (spec trying to cover more than the doc goal requires)
+      - Flag gaps (spec missing core parts of the doc goal)
+
+      **5. Reference alignment** — Does the writing plan reference the right source material?
+      - Are the right files listed for the writer to read?
+      - Would a writer produce accurate output from this plan?
+
+      ## Output Format
+      Start with APPROVE or REQUEST_CHANGES on the first line.
+
+      If REQUEST_CHANGES:
+      For each finding use: [category] description
+      Categories: [vague] [missing] [inaccurate] [scope_creep] [missing_reference]
+
+      Write your full review to {output_dir}/spec_adversary.md
+
+  # Phase 2: Write Documentation
+  - id: write
+    name: "Write Documentation"
+    description: "Write the complete documentation following the approved spec"
+    model_tier: sonnet
+    thinking_level: medium
+    max_iterations: 3
+    transitions:
+      success: review
+      failed: write
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the WRITE phase (2/6) of a documentation pipeline. Your output feeds the Opus review phase — not a human. Do not ask questions or send messages. Write complete, accurate documentation. [/PIPELINE CONTEXT]
+
+      You are a technical writer producing documentation.
+
+      ## Previous Work
+      {phase_summary}
+
+      ## Approved Spec
+      Read the full approved spec at: {output_dir}/spec.md
+      The behavioral contracts are at: {output_dir}/spec-behavioral.md
+
+      ## Documentation Task
+      **Title:** {config[doc_title]}
+      **Goal:** {config[doc_goal]}
+      **Style guide:** {config[style_guide]}
+      **Output file:** {config[output_file]}
+
+      ## Repository
+      **Path:** {config[repo_path]}
+
+      ## Reference Material
+      {config[files_context]}
+
+      ## Instructions
+      1. Read the spec — follow the structure and accuracy requirements exactly
+      2. Read the reference files listed in the spec's Writing Plan
+      3. Write the complete documentation in markdown
+      4. Verify every code example, command, and config snippet is accurate (read the actual source if needed)
+      5. Write the complete document to the target file at: {config[repo_path]}/{config[output_file]}
+         If output_file is empty, choose an appropriate path under docs/ and note it in your output.
+
+      After writing the file:
+      - Commit to branch: {config[branch_name]} (create if it doesn't exist)
+      - Use commit message: "docs: add {config[doc_title]}"
+      - Summarize what you wrote (sections, line count, key decisions)
+
+  # Phase 3: Opus Documentation Review
+  - id: review
+    name: "Opus Documentation Review"
+    description: "Senior technical review — accuracy, completeness, clarity, and consistency with existing docs"
+    model_tier: opus
+    thinking_level: low
+    max_iterations: 3
+    transitions:
+      approve: test
+      request_changes: fix
+      abort: fix
+      success: test
+      failed: review
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the REVIEW phase (3/6) of a documentation pipeline. Your verdict determines whether the documentation is accurate and complete. Do not ask questions or send messages. Deliver a structured review. [/PIPELINE CONTEXT]
+
+      You are a senior technical reviewer checking documentation quality.
+
+      ## Previous Work
+      {phase_summary}
+
+      ## Original Spec
+      Read the behavioral contracts at: {output_dir}/spec-behavioral.md
+      Read the full spec at: {output_dir}/spec.md
+
+      ## Repository
+      **Path:** {config[repo_path]}
+
+      ## Review Checklist
+      Check each behavioral contract from spec-behavioral.md:
+      - [ ] Is the contract satisfied by the written doc?
+      - [ ] Are all code examples accurate (match actual source code)?
+      - [ ] Are all commands runnable as written?
+      - [ ] Are all config examples syntactically correct?
+      - [ ] Are cross-references to other docs/files correct?
+      - [ ] Is the structure logical for the target audience?
+      - [ ] Are there missing sections the goal requires?
+
+      ## Output Format
+      Start with APPROVE or REQUEST_CHANGES on the first line.
+
+      If APPROVE: brief summary of what was verified.
+
+      If REQUEST_CHANGES: For each issue use:
+      - **[accuracy]** — wrong fact, broken command, incorrect config
+      - **[missing]** — required section or example not present
+      - **[clarity]** — ambiguous explanation that will confuse the reader
+      - **[consistency]** — contradicts existing docs or conventions
+
+      Be specific: quote the problematic text and explain the correction needed.
+
+      Write your review to {output_dir}/review.md
+
+  # Phase 4: Fix
+  - id: fix
+    name: "Fix Documentation"
+    description: "Address review feedback and rewrite sections as needed"
+    model_tier: sonnet
+    thinking_level: low
+    max_iterations: 3
+    transitions:
+      success: review
+      failed: fix
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the FIX phase of a documentation pipeline. Your output feeds a re-review — not a human. Do not ask questions or send messages. Address all review feedback precisely. [/PIPELINE CONTEXT]
+
+      You are a technical writer addressing review feedback.
+
+      ## Previous Work
+      {phase_summary}
+
+      ## Review Feedback
+      Read the full review at: {output_dir}/review.md
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+      **Output file:** {config[output_file]}
+
+      ## Instructions
+      1. Read the review feedback carefully
+      2. Read the current state of the documentation file
+      3. Fix every issue flagged — accuracy errors, missing sections, clarity problems
+      4. Do NOT change sections that were not flagged
+      5. Commit the fixed version to branch {config[branch_name]}
+      6. Summarize each fix made
+
+  # Phase 5: Validation
+  - id: test
+    name: "Documentation Validation"
+    description: "Validate markdown structure and YAML examples if present"
+    task_type: command
+    command: "python3 -c \"
+import sys, re
+from pathlib import Path
+
+output_file = '{config[output_file]}'
+repo_path = '{config[repo_path]}'
+
+if not output_file:
+    print('No output_file configured — skipping validation')
+    sys.exit(0)
+
+doc_path = Path(repo_path) / output_file
+if not doc_path.exists():
+    print(f'ERROR: Documentation file not found: {doc_path}')
+    sys.exit(1)
+
+content = doc_path.read_text()
+print(f'File exists: {doc_path} ({len(content)} chars)')
+
+# Check for common markdown issues
+if '# ' not in content:
+    print('WARNING: No headings found in document')
+
+lines = content.split('\\n')
+print(f'Lines: {len(lines)}')
+print(f'Code blocks: {content.count(chr(96)*3)}')
+print('Validation passed')
+\""
+    working_dir: "{config[repo_path]}"
+    allowed_commands: ["python3", "python"]
