@@ -1764,6 +1764,18 @@ def _get_persistent_db_path() -> str:
     ),
 )
 @click.option(
+    '--branch',
+    'branch_name_override',
+    default=None,
+    help='Override the auto-generated branch name (Issue #591).',
+)
+@click.option(
+    '--test-command',
+    'test_command_override',
+    default=None,
+    help='Override the default test command for the pipeline (Issue #591).',
+)
+@click.option(
     '--output-dir',
     type=click.Path(path_type=Path),
     default=None,
@@ -1774,6 +1786,11 @@ def _get_persistent_db_path() -> str:
     default=None,
     envvar='OPENCLAW_GATEWAY_URL',
     help='OpenClaw gateway URL for openclaw mode.',
+)
+@click.option(
+    '--gateway-token',
+    default=None,
+    help='OpenClaw gateway bearer token for openclaw mode (or set OPENCLAW_GATEWAY_TOKEN).',
 )
 @click.option(
     '--skip-scoring',
@@ -1793,8 +1810,11 @@ def pipeline_launch(
     input_file: Optional[Path],
     issue_number: Optional[int],
     repo: Optional[str],
+    branch_name_override: Optional[str],
+    test_command_override: Optional[str],
     output_dir: Optional[Path],
     gateway_url: Optional[str],
+    gateway_token: Optional[str],
     skip_scoring: bool,
     db_path: Optional[str],
 ) -> None:
@@ -1807,6 +1827,7 @@ def pipeline_launch(
     Examples:
       orch launch content-pipeline --mode openclaw --input '{"brief": "AI"}'
       orch launch coding-pipeline-v1 --issue 42 --repo owner/repo
+      orch launch coding-pipeline-v1 --issue 42 --branch my-feature
       orch status <run-id>
       orch logs <run-id> --follow
       orch wait <run-id>
@@ -1815,8 +1836,13 @@ def pipeline_launch(
 
     from .templates import TemplateEngine
 
-    # --- Resolve template ---
-    template_file = _resolve_template_arg(template_name_or_file)
+    # --- Validate issue_number (Issue #591): must be positive integer ---
+    if issue_number is not None and issue_number <= 0:
+        click.echo("Error: Issue number must be a positive integer.", err=True)
+        sys.exit(1)
+
+    # --- Resolve template (with launch_fmt error messages) ---
+    template_file = _resolve_template_arg(template_name_or_file, launch_fmt=True)
 
     try:
         engine = TemplateEngine()
@@ -1853,39 +1879,104 @@ def pipeline_launch(
             click.echo(f"✗ Invalid JSON in --input: {exc}", err=True)
             sys.exit(1)
 
-    # --- Auto-fetch GitHub issue data (#507) ---
+    # --- Issue #591: Auto-infer git context + strict issue fetch ---
     if issue_number is not None:
-        if not repo:
+        repo_path_inferred, repo_url_inferred = _infer_git_context()
+
+        # Determine effective_repo for the GitHub API call
+        effective_repo = repo  # from --repo flag if provided
+        if not effective_repo:
+            if repo_url_inferred:
+                # Extract owner/repo from the normalized HTTPS URL
+                m = re.match(r'https://[^/]+/(.+)', repo_url_inferred)
+                effective_repo = m.group(1) if m else None
+
+        if not effective_repo:
+            # No --repo flag and no origin remote to infer from
+            # The main cause: not inside a git repo (repo_path_inferred is None)
             click.echo(
-                "⚠ --issue requires --repo (or GITHUB_REPOSITORY env var). "
-                "Skipping issue fetch.",
+                "Error: Not inside a git repository. Use --repo to specify the path.",
                 err=True,
             )
-        else:
-            from .github_fetcher import fetch_github_issue
+            sys.exit(1)
 
-            click.echo(f"  Fetching issue #{issue_number} from {repo}…")
-            issue_data = fetch_github_issue(repo=repo, issue_number=issue_number)
-            if issue_data is None:
-                click.echo(
-                    f"⚠ Could not fetch issue #{issue_number} from {repo}. "
-                    "Continuing with provided --input / --input-file data.",
-                    err=True,
-                )
-            else:
-                # GitHub data fills missing keys; canonical fields always from GitHub.
-                initial_input = issue_data.merge_into(initial_input)
-                click.echo(f"  ✓ Issue #{issue_number} fetched: {issue_data.title!r}")
+        # Fetch issue with strict error handling
+        issue_raw = _fetch_issue_strict(effective_repo, issue_number)
 
-    # --- Validate required config fields (#411) ---
+        # Inject canonical fields (always overwrite, never from --input-file)
+        issue_fields = {
+            'issue_number': issue_raw['number'],
+            'issue_title': issue_raw['title'],
+            'issue_body': issue_raw.get('body', ''),
+        }
+        initial_input.update(issue_fields)
+
+        # Inject repo_path from git root if not already in input
+        if repo_path_inferred is not None and 'repo_path' not in initial_input:
+            initial_input['repo_path'] = repo_path_inferred
+        # Note: if --repo provided and CWD is outside git, repo_path_inferred is None
+        # repo_path is simply omitted (missing-fields validation catches it if required)
+
+        # Determine repo_url for pipeline input
+        if repo:
+            # --repo explicitly given → construct HTTPS URL from slug
+            initial_input.setdefault('repo_url', f"https://github.com/{repo}")
+        elif repo_url_inferred and 'repo_url' not in initial_input:
+            initial_input['repo_url'] = repo_url_inferred
+
+        # Generate branch_name as default (--branch override applied later)
+        if 'branch_name' not in initial_input:
+            slug = _slugify_title(issue_raw['title'])
+            initial_input['branch_name'] = f"fix/{issue_number}-{slug}"
+
+        # --test-command injection
+        if test_command_override:
+            initial_input['test_command'] = test_command_override
+
+    # --- --branch always wins (over --input-file, auto-generated, issue-inferred) ---
+    # This runs unconditionally — not gated on issue_number — so --branch works
+    # both with and without --issue (Issue #591).
+    if branch_name_override:
+        initial_input['branch_name'] = branch_name_override
+
+    # If --test-command was provided without --issue, inject it now
+    if test_command_override and issue_number is None:
+        initial_input['test_command'] = test_command_override
+
+    # --- Dry-run defaults: fill initial_input with template's example_input (Issue #591) ---
+    # In dry-run mode the pipeline won't actually execute, but we still validate required fields
+    # so that the validation code path (and mock) can be exercised.  Example_input provides
+    # safe placeholder values for any fields not already in initial_input.
+    if mode == 'dry-run':
+        example = getattr(template, 'example_input', None) or {}
+        for k, v in example.items():
+            if k not in initial_input:
+                initial_input[k] = v
+
+    # --- Gateway token auto-read for openclaw mode (Issue #591) ---
+    # NOTE: This runs BEFORE missing-fields validation so that "No gateway token found"
+    # is the error shown when mode=openclaw and no token is available — not a fields error.
+    if mode == 'openclaw':
+        effective_token = (
+            gateway_token
+            or os.environ.get('OPENCLAW_GATEWAY_TOKEN')
+            or _read_openclaw_token()
+        )
+        if not effective_token:
+            click.echo(
+                "No gateway token found. Set OPENCLAW_GATEWAY_TOKEN or check "
+                "~/.openclaw/openclaw.json",
+                err=True,
+            )
+            sys.exit(1)
+        os.environ['OPENCLAW_GATEWAY_TOKEN'] = effective_token
+
+    # --- Validate required config fields (#411) with new single-line format (#591) ---
     missing = _validate_required_config(template, initial_input)
     if missing:
-        click.echo(f"✗ Missing {len(missing)} required config field(s):", err=True)
-        for field in missing:
-            click.echo(f"  • {field}", err=True)
+        sorted_missing = sorted(missing)
         click.echo(
-            "\nThese fields are required by the template's config_schema. "
-            "Add them to your --input or --input-file JSON.",
+            f"Error: Missing required fields: {', '.join(sorted_missing)}",
             err=True,
         )
         sys.exit(1)
@@ -2689,7 +2780,141 @@ def _validate_required_config(template, initial_input: Dict[str, Any]) -> List[s
     return [field for field in required if field not in initial_input]
 
 
-def _resolve_template_arg(name_or_path: str) -> Path:
+def _slugify_title(title: str) -> str:
+    """Slugify an issue title for branch name generation (Issue #591).
+
+    Algorithm: lowercase → replace runs of non-alphanumeric chars with hyphen
+    → strip leading/trailing hyphens → truncate to 50 chars → strip trailing
+    hyphen after truncation → fallback to 'untitled' if empty.
+    """
+    slug = title.lower()
+    slug = re.sub(r'[^a-z0-9]+', '-', slug)
+    slug = slug.strip('-')
+    slug = slug[:49]
+    slug = slug.rstrip('-')
+    return slug or 'untitled'
+
+
+def _read_openclaw_token() -> Optional[str]:
+    """Read gateway token from ~/.openclaw/openclaw.json (Issue #591).
+
+    Returns None if the file is missing, invalid JSON, or the key path
+    gateway.auth.token is absent or null.
+    """
+    config_path = Path.home() / ".openclaw" / "openclaw.json"
+    try:
+        data = json.loads(config_path.read_text())
+        return data.get("gateway", {}).get("auth", {}).get("token") or None
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+        return None
+
+
+def _normalize_git_url(url: str) -> str:
+    """Normalize git remote URL to HTTPS form (Issue #591).
+
+    Handles:
+      - SCP-style SSH:   git@github.com:owner/repo.git → https://github.com/owner/repo
+      - RFC 3986 SSH:    ssh://git@github.com/owner/repo.git → https://github.com/owner/repo
+      - HTTPS:           https://github.com/owner/repo.git → https://github.com/owner/repo
+    """
+    # SCP-style: git@host:path
+    scp_match = re.match(r'git@([^:]+):(.+?)(?:\.git)?$', url)
+    if scp_match:
+        host, path = scp_match.groups()
+        return f"https://{host}/{path}"
+    # RFC 3986 SSH: ssh://git@host/path
+    ssh2_match = re.match(r'ssh://git@([^/]+)/(.+?)(?:\.git)?$', url)
+    if ssh2_match:
+        host, path = ssh2_match.groups()
+        return f"https://{host}/{path}"
+    # HTTPS: strip trailing .git
+    if url.endswith('.git'):
+        url = url[:-4]
+    return url
+
+
+def _infer_git_context() -> tuple:
+    """Return (repo_path, repo_url) inferred from CWD (Issue #591).
+
+    repo_url is None when no remote named 'origin' exists.
+    Both are None when CWD is not inside a git repository.
+    """
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--show-toplevel'],
+            capture_output=True, text=True, check=True
+        )
+        repo_path = result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return None, None
+
+    try:
+        result = subprocess.run(
+            ['git', 'remote', 'get-url', 'origin'],
+            capture_output=True, text=True, check=True
+        )
+        repo_url = _normalize_git_url(result.stdout.strip())
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        repo_url = None
+
+    return repo_path, repo_url
+
+
+def _fetch_issue_strict(repo: str, issue_number: int) -> dict:
+    """Fetch a GitHub issue or exit with a precise error message (Issue #591).
+
+    Distinguishes: missing credentials (no-token message, exit 1) from
+    issue-not-found (not-found message, exit 1).
+    """
+    # Detect missing credentials before API call
+    has_env_token = bool(os.environ.get('GITHUB_TOKEN'))
+    if not has_env_token:
+        try:
+            auth_result = subprocess.run(
+                ['gh', 'auth', 'status'],
+                capture_output=True, text=True, timeout=10
+            )
+            if auth_result.returncode != 0:
+                click.echo(
+                    "Error: No GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'.",
+                    err=True
+                )
+                sys.exit(1)
+        except FileNotFoundError:
+            click.echo(
+                "Error: No GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'.",
+                err=True
+            )
+            sys.exit(1)
+
+    # Fetch issue via GitHub API
+    result = subprocess.run(
+        ['gh', 'api', f'repos/{repo}/issues/{issue_number}'],
+        capture_output=True, text=True, timeout=15
+    )
+    if result.returncode != 0:
+        combined = (result.stderr + result.stdout).lower()
+        if '404' in combined or 'not found' in combined:
+            click.echo(
+                f"Error: Issue #{issue_number} not found. "
+                "Check the issue number and your GITHUB_TOKEN.",
+                err=True
+            )
+        else:
+            click.echo(
+                "Error: No GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'.",
+                err=True
+            )
+        sys.exit(1)
+
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        click.echo(f"✗ Invalid JSON from GitHub API: {exc}", err=True)
+        sys.exit(1)
+
+
+def _resolve_template_arg(name_or_path: str, launch_fmt: bool = False) -> Path:
     """Resolve a CLI template argument to a :class:`Path`.
 
     Accepts:
@@ -2698,6 +2923,9 @@ def _resolve_template_arg(name_or_path: str) -> Path:
     * A direct file path string (absolute or relative) → existence-checked.
     * A bare template name (e.g. ``content-pipeline``) → resolved via
       :meth:`TemplateEngine.resolve_template`.
+
+    When *launch_fmt* is True (used by ``orch launch``), uses the exact error
+    format required by Issue #591: single-line, no tip suffix.
 
     Exits with an error message on failure.
     """
@@ -2722,7 +2950,14 @@ def _resolve_template_arg(name_or_path: str) -> Path:
     if looks_like_path:
         p = Path(name_or_path)
         if not p.exists():
-            click.echo(f"✗ Template file not found: {name_or_path}", err=True)
+            if launch_fmt:
+                click.echo(
+                    f"Error: Template not found: {name_or_path}. "
+                    "Run 'orch templates list' to see available templates.",
+                    err=True,
+                )
+            else:
+                click.echo(f"✗ Template file not found: {name_or_path}", err=True)
             sys.exit(1)
         return p
 
@@ -2731,11 +2966,18 @@ def _resolve_template_arg(name_or_path: str) -> Path:
     try:
         return engine.resolve_template(name_or_path)
     except TemplateNotFoundError as exc:
-        click.echo(f"✗ {exc}", err=True)
-        click.echo(
-            "\nTip: run 'orch templates list' to see all available templates.",
-            err=True,
-        )
+        if launch_fmt:
+            click.echo(
+                f"Error: Template not found: {name_or_path}. "
+                "Run 'orch templates list' to see available templates.",
+                err=True,
+            )
+        else:
+            click.echo(f"✗ {exc}", err=True)
+            click.echo(
+                "\nTip: run 'orch templates list' to see all available templates.",
+                err=True,
+            )
         sys.exit(1)
 
 
