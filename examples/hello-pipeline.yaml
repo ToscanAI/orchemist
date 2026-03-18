@@ -1,6 +1,6 @@
 # hello-pipeline.yaml — Minimal two-phase example for testing orch run E2E
-id: hello-pipeline
-name: "Hello Pipeline"
+id: hello-pipeline-example
+name: "Hello Pipeline (Example)"
 version: "1.0.0"
 description: "Two-phase example: Greet → Summarize. Good for smoke-testing orch run."
 author: "Orchestration Engine Team"
