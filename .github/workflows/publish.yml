@@ -1,0 +1,50 @@
+name: Publish to PyPI
+
+# NOTE: This workflow triggers on any v*.*.* tag push (branch-agnostic).
+# Convention: only create version tags from the main branch.
+# See: https://github.com/ToscanAI/orchestration-engine/blob/main/CONTRIBUTING.md
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-and-publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-latest
+    environment: pypi  # optional GitHub environment for approval gate
+    permissions:
+      id-token: write  # required for OIDC Trusted Publisher
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build distribution
+        run: python -m build
+
+      - name: Validate metadata
+        # Fails with non-zero exit code if metadata is malformed.
+        # Workflow does NOT proceed to publish if this step fails.
+        run: twine check dist/*
+
+      - name: Publish to PyPI (Trusted Publisher / OIDC)
+        # Requires Trusted Publisher configured at https://pypi.org/manage/account/publishing/
+        # Link this GitHub repo + workflow filename as the trusted publisher source.
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      # --- ALTERNATIVE: API Token (if Trusted Publisher is not configured) ---
+      # Replace the above step with:
+      # - name: Publish to PyPI (API Token)
+      #   env:
+      #     TWINE_USERNAME: __token__
+      #     TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+      #   run: twine upload dist/*
