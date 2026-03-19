@@ -148,6 +148,26 @@ phases:
       - What the new code will need to import
       - What existing code calls/consumes the affected modules
 
+      ### Step 5: Pre-answer Behavioral Contract Questions
+      Answer these 5 questions from the codebase — the spec agent will use them to write tight behavioral contracts that pass adversary review on round 1:
+
+      ## Behavioral Contract Pre-answers
+
+      **1. Exact success state**
+      What does success look like precisely? Not "returns one template" but "returns the entry with `source='project'`". Include exact field names, string constants, and return values pulled from the actual code.
+
+      **2. All edge cases**
+      List every edge case the spec must cover: empty inputs, missing files/dirs, malformed data, duplicate ids, zero-length collections, None values. Pull these from existing tests and error handling in the codebase.
+
+      **3. Exact observable values**
+      List the exact string constants, enum values, field names, and error messages the new code produces. Copy them verbatim from the source — do not paraphrase.
+
+      **4. Ordering and ambiguity rules**
+      When multiple results are possible, what determines the order or winner? Alphabetical? First-found? Priority tier? Find the actual sort/precedence logic in the code.
+
+      **5. Failure modes**
+      What does failure look like? Exception type? Empty list? Warning log + fallback? Log message? Pull the exact exception classes and error strings from the codebase.
+
       IMPORTANT:
       - Read actual files. Do not guess or describe from memory.
       - Copy exact signatures, not paraphrases.
