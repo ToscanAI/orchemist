@@ -749,11 +749,19 @@ class TemplateEngine:
         * ``path``      — absolute path as ``str``
 
         A template file is included **only once** — the first time it is
-        encountered (first-wins rule mirrors ``resolve_template``).  Files in
-        later directories with the same *stem* are silently skipped.
+        encountered (first-wins rule mirrors ``resolve_template``).  Deduplication
+        is performed by **template id** (not filename stem), so two files with the
+        same ``id`` field but different names are correctly treated as the same
+        logical template.  Files in later directories with the same id are silently
+        skipped (custom > project > user > bundled precedence order).
+
+        Templates with a ``null`` or empty ``id`` field are skipped with a
+        ``WARNING``-level log message.  Intra-directory duplicates (same ``id``
+        in the same directory) are also silently skipped; alphabetical filename
+        ordering determines which entry wins.
         """
         results: List[Dict[str, Any]] = []
-        seen_stems: Dict[str, str] = {}  # stem → first source
+        seen_ids: Dict[str, str] = {}  # template id → first source label
 
         for directory, source_label in self.get_search_paths():
             if not directory.exists():
@@ -761,21 +769,29 @@ class TemplateEngine:
             for filepath in sorted(directory.glob("*.yaml")) + sorted(
                 directory.glob("*.yml")
             ):
-                stem = filepath.stem
-                if stem in seen_stems:
-                    logger.debug(
-                        "list_templates: skipping %s (shadowed by %s)",
-                        filepath,
-                        seen_stems[stem],
-                    )
-                    continue
                 try:
                     template = self.load_template(filepath)
                 except Exception as exc:
                     logger.warning("list_templates: skipping %s — %s", filepath, exc)
                     continue
 
-                seen_stems[stem] = source_label
+                if not template.id:
+                    logger.warning(
+                        "list_templates: skipping %s — template id is null or empty",
+                        filepath,
+                    )
+                    continue
+
+                if template.id in seen_ids:
+                    logger.debug(
+                        "list_templates: skipping %s (id %r shadowed by %s)",
+                        filepath,
+                        template.id,
+                        seen_ids[template.id],
+                    )
+                    continue
+
+                seen_ids[template.id] = source_label
                 results.append(
                     {
                         "name": template.name,
