@@ -255,8 +255,10 @@ phases:
 
       You are an adversarial spec reviewer. Your job is to find weaknesses in behavioral contracts BEFORE acceptance tests are written against them.
 
-      ## Previous Work
+      ## Previous Work (for context only — do NOT re-raise findings already addressed)
       {phase_summary}
+
+      **IMPORTANT:** The spec agent may have updated the files on disk since the last round. Always read the files below as the authoritative source. If a finding from a prior adversary round is no longer present in the current `spec-behavioral.md`, do NOT repeat it — treat it as resolved. Only raise findings that exist in the CURRENT version of the files.
 
       Read the behavioral contracts at: {output_dir}/spec-behavioral.md
       Read the full spec at: {output_dir}/spec.md
