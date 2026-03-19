@@ -6,6 +6,8 @@
 
 This tutorial uses the `hello-pipeline` template — a minimal, single-phase pipeline that accepts a message and echoes it back. No API key required for the first run (we start with dry-run mode).
 
+Each step includes both a CLI path and an **IDE Alternative (MCP)** showing how to perform the same action from Claude Code or Cursor using natural language. For the IDE path, you'll need an Anthropic API key and a working MCP setup — see [docs/mcp-setup.md](mcp-setup.md) before starting.
+
 For topics already covered in the [Getting Started guide](GETTING_STARTED.md) — Raspberry Pi setup, OpenClaw mode, advanced YAML authoring, and troubleshooting — this tutorial links out rather than repeating them.
 
 ---
@@ -75,6 +77,8 @@ This scaffolds a template with sensible defaults at the path you specify — no 
 
 > **Cloned the repo?** You already have `templates/hello-pipeline.yaml`. Skip this step — we'll use that template directly.
 
+**IDE Alternative (MCP):** Template scaffolding is a one-time CLI operation with no direct MCP equivalent. Run `orch new --yes --output templates/my-first-pipeline.yaml` from your terminal, then use the IDE for launching and monitoring. Once a template exists (including the built-in templates like `coding-pipeline-standard` and `content-pipeline-v28`), you can launch it from the IDE without any CLI scaffolding step.
+
 ---
 
 ## Step 3: Run in Dry-Run Mode
@@ -98,6 +102,14 @@ Final output saved to: ./output/hello-pipeline-YYYYMMDD-HHMMSS/
 If the command exits without error and reports a completed pipeline, dry-run mode is working.
 
 **What dry-run mode does:** It validates your pipeline structure and passes mock data between phases — exactly what a real run would do, but without calling any AI model. Phases still execute and pass outputs to downstream phases; you're testing the plumbing, not the AI.
+
+**IDE Alternative (MCP):** Dry-run mode has no direct MCP equivalent through `orchemist_launch`. The `orchemist_launch` tool always executes the pipeline for real (in standalone or openclaw mode). If you want to validate your pipeline YAML structure before spending API credits, use the CLI dry-run command above first:
+
+```bash
+orch run templates/hello-pipeline.yaml --mode dry-run
+```
+
+Once you've confirmed the structure is valid from the CLI, switch to the IDE for live runs.
 
 ---
 
@@ -123,6 +135,12 @@ Final output saved to: ./output/hello-pipeline-YYYYMMDD-HHMMSS/
 
 **What standalone mode does:** It calls the Anthropic API for each phase and returns real model outputs. Unlike dry-run, this costs API credits and requires your key to be valid.
 
+**IDE Alternative (MCP):** You can launch a live standalone pipeline directly from your IDE. After configuring MCP (see [docs/mcp-setup.md](mcp-setup.md)), type a natural language prompt into your IDE's chat — for example:
+
+> Launch the coding pipeline in standalone mode. The repo is at /home/user/my-project, branch is feature/my-feature, issue title is "Add login timeout fix", issue number is 42, issue body: [paste body], and repo URL is https://github.com/myorg/my-project.
+
+The IDE calls `orchemist_launch` with `template_id: "coding-pipeline-standard"` and `mode: "standalone"` automatically. You'll get a run ID back that you can use to check status.
+
 ---
 
 ## Step 5: Read Your Results
@@ -140,6 +158,16 @@ After a run completes, the output directory contains everything from the run:
 Open `final_output.md` to see the pipeline result. For the hello pipeline, it contains the model's response to your input message.
 
 `run_summary.md` shows timing, token usage, and cost per phase — useful when tuning model tiers.
+
+**IDE Alternative (MCP):** After launching a pipeline from the IDE, check its progress and read results using natural language:
+
+> What is the status of run abc12345?
+
+> Show me the logs for run abc12345.
+
+> Show me the output from the write phase of run abc12345.
+
+The IDE calls `orchemist_status` to get current phase, progress, elapsed time, and score — and `orchemist_logs` (with an optional phase name) to retrieve output content. You never need to open the output directory manually.
 
 ---
 
@@ -163,11 +191,16 @@ This is the standard way to run issue-driven pipelines (the coding pipeline, con
 
 ## Command Summary
 
-| Command | What it does |
-|---------|-------------|
+| Command / Tool | What it does |
+|----------------|-------------|
 | `orch new --yes --output <path>` | Scaffold a new pipeline template with defaults |
 | `orch run <template> --mode dry-run` | Validate pipeline structure without API calls |
 | `orch run <template> --mode standalone --input '{...}'` | Run pipeline with live API calls |
 | `orch launch <template-id> --issue <n>` | Run pipeline tied to a GitHub issue |
+| MCP: `orchemist_launch` | Launch a pipeline run by template ID from your IDE |
+| MCP: `orchemist_status` | Get current status and progress of a pipeline run |
+| MCP: `orchemist_logs` | Retrieve logs or phase output for a pipeline run |
 
 For monitoring commands, see [docs/monitoring.md](monitoring.md).
+
+For IDE setup and MCP configuration, see [docs/mcp-setup.md](mcp-setup.md).
