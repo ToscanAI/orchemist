@@ -1254,9 +1254,9 @@ def run_template(
     from uuid import uuid4
     run_id = str(uuid4())[:8]
     if output_dir is None:
-        output_dir = Path(
-            f"./output/{re.sub(r'[^\w\-]', '_', template.id)}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{run_id}"
-        )
+        _safe_id = re.sub(r'[^\w\-]', '_', template.id)
+        _ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+        output_dir = Path(f"./output/{_safe_id}-{_ts}-{run_id}")
 
     # --- 2. Resolve pipeline input ------------------------------------
     if input_file and input_json:
@@ -1990,10 +1990,9 @@ def pipeline_launch(
     # --- Build run_id and output_dir ---
     run_id = str(uuid.uuid4())[:8]
     if output_dir is None:
-        output_dir = Path(
-            f"./output/{re.sub(r'[^\\w\\-]', '_', template.id)}"
-            f"-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{run_id}"
-        )
+        _safe_id = re.sub(r'[^\w\-]', '_', template.id)
+        _ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+        output_dir = Path(f"./output/{_safe_id}-{_ts}-{run_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Persist run record to DB ---
