@@ -208,6 +208,25 @@ orch status <task-id>         # Show details for a specific task
 
 ---
 
+## IDE Quickstart
+
+Prefer to launch pipelines from Claude Code or Cursor instead of the terminal? Here's the fast path:
+
+1. **Install Orchemist** — follow the [Install](#install) section above.
+
+2. **Get your Anthropic API key** — go to [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys), create an account if needed, and copy your key.
+
+3. **Configure MCP** — follow [docs/mcp-setup.md](mcp-setup.md) to add Orchemist as an MCP server in Claude Code or Cursor. Include your `ANTHROPIC_API_KEY` in the server's `env` block (Claude Code) or env field (Cursor) so pipelines run in standalone mode.
+
+4. **Launch your first pipeline from the IDE** — open the IDE's chat or composer and type a natural language request, for example:
+   > Start a content pipeline. Topic: How AI agents work. Author is your name. Voice style: direct and clear. Source material: paste your notes here.
+
+   The IDE calls `orchemist_launch` automatically. Use `orchemist_status` to check progress and `orchemist_logs` to view output — all from plain English prompts.
+
+See [docs/mcp-setup.md](mcp-setup.md) for the full MCP configuration reference, IDE-specific steps, and pipeline launch examples.
+
+---
+
 ## Next Steps
 
 Once your first pipeline is working, here's where to go next:
