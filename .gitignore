@@ -60,3 +60,4 @@ input-intent-*.json
 frontend/node_modules/
 frontend/.next/
 frontend/out/
+.claude/
