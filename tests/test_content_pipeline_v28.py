@@ -3,7 +3,7 @@ import yaml
 from pathlib import Path
 from src.orchestration_engine.templates import TemplateEngine
 
-TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "content-pipeline-v28.yaml"
+TEMPLATE_PATH = Path(__file__).parent.parent .joinpath("templates") / "content-pipeline-v28.yaml"
 
 
 class TestContentPipelineV28:

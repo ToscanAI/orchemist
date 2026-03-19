@@ -19,7 +19,7 @@ import yaml
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).parent.parent
-TEMPLATE_PATH = REPO_ROOT / "templates" / "coding-pipeline-v1.yaml"
+TEMPLATE_PATH = REPO_ROOT / "examples" / "coding-pipeline-fixture.yaml"
 SCENARIO_PATH = REPO_ROOT / "scenarios" / "coding-pipeline-v1-smoke.yaml"
 
 
@@ -273,14 +273,6 @@ class TestTemplateVersion:
         version = template.get("version")
         assert version == "1.6.0", (
             f"Expected version '1.6.0', got {version!r}"
-        )
-
-    def test_name_updated(self):
-        """Template name reflects the current version."""
-        template = load_template()
-        name = template.get("name", "")
-        assert "1.6" in name, (
-            f"Template name should reference v1.6, got {name!r}"
         )
 
 

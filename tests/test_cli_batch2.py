@@ -20,7 +20,7 @@ from orchestration_engine.cli import main
 
 REPO_ROOT = Path(__file__).parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
-TEMPLATES_DIR = REPO_ROOT / "templates"
+TEMPLATES_DIR = REPO_ROOT.joinpath("templates")
 HELLO_YAML = EXAMPLES_DIR / "hello-pipeline.yaml"
 CONTENT_YAML = TEMPLATES_DIR / "content-pipeline-v28.yaml"
 

@@ -166,11 +166,11 @@ from src.orchestration_engine.templates import (
 
 REPO_ROOT = Path(__file__).parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
-TEMPLATES_DIR = REPO_ROOT / "templates"
+TEMPLATES_DIR = REPO_ROOT .joinpath("templates")
 
 ALL_TEMPLATES: List[str] = sorted(
-    glob.glob(str(REPO_ROOT / "templates" / "*.yaml"))
-    + glob.glob(str(REPO_ROOT / "templates" / "*.yml"))
+    glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yaml"))
+    + glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yml"))
     + glob.glob(str(REPO_ROOT / "examples" / "*.yaml"))
     + glob.glob(str(REPO_ROOT / "examples" / "*.yml"))
 )
@@ -283,7 +283,7 @@ class TestIsWithinDir:
 
     def test_iw05_similar_prefix_directory_not_matched(self, tmp_path):
         """IW-05: '/foo/bar' is NOT within '/foo/ba' (no prefix confusion)."""
-        target = tmp_path / "templates"
+        target = tmp_path .joinpath("templates")
         outside = tmp_path / "templates-extra" / "file.txt"
         assert _is_within_dir(outside, target) is False
 
@@ -411,13 +411,13 @@ class TestTemplateEngineConstructor:
     def test_ec04_default_project_dir_is_cwd_templates(self):
         """EC-04: default _project_dir is cwd/templates."""
         engine = TemplateEngine()
-        expected = Path.cwd() / "templates"
+        expected = Path.cwd() .joinpath("templates")
         assert engine._project_dir == expected
 
     def test_ec04_default_user_dir_is_home_orch(self):
         """EC-04: default _user_dir is ~/.orch/templates."""
         engine = TemplateEngine()
-        expected = Path.home() / ".orch" / "templates"
+        expected = (Path.home() / ".orch").joinpath("templates")
         assert engine._user_dir == expected
 
     def test_ec05_bundled_dir_is_repo_root_templates(self):
@@ -1103,7 +1103,7 @@ class TestListTemplates:
 
     def test_ls01_malformed_template_skipped_no_exception(self, tmp_path):
         """LS-01: malformed template (missing id) is skipped; engine doesn't crash."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         # Good template
         _write(tdir / "good.yaml", _minimal("good", "Good"))
@@ -1125,7 +1125,7 @@ class TestListTemplates:
     def test_ls03_result_has_required_keys(self, tmp_path):
         """LS-03: each list_templates entry has all required keys."""
         required_keys = {"name", "id", "version", "phases", "description", "source", "path"}
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         _write(tdir / "sample.yaml", _minimal("sample", "Sample"))
         engine = TemplateEngine(project_dir=tdir)
@@ -1137,7 +1137,7 @@ class TestListTemplates:
 
     def test_ls04_source_label_correct_for_project_dir(self, tmp_path):
         """LS-04: templates from project_dir get source='project'."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         _write(tdir / "proj.yaml", _minimal("proj", "Proj"))
         engine = TemplateEngine(project_dir=tdir)
@@ -1150,7 +1150,7 @@ class TestListTemplates:
 
     def test_ls05_empty_directory_returns_empty_list(self, tmp_path):
         """LS-05: empty project_dir returns empty list."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         engine = TemplateEngine(project_dir=tdir, user_dir=tmp_path / "nouser")
         result = engine.list_templates()
@@ -1160,7 +1160,7 @@ class TestListTemplates:
 
     def test_ls_phases_count_is_int(self, tmp_path):
         """list_templates 'phases' field is an int matching actual phase count."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         _write(tdir / "two-phase.yaml", textwrap.dedent("""\
             id: two-phase
@@ -1200,14 +1200,14 @@ class TestDiscoveryDeterminism:
     def test_dd01_repeated_discovery_gives_same_list(self):
         """DD-01: running the same glob twice produces identical lists."""
         first = sorted(
-            glob.glob(str(REPO_ROOT / "templates" / "*.yaml"))
-            + glob.glob(str(REPO_ROOT / "templates" / "*.yml"))
+            glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yaml"))
+            + glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yml"))
             + glob.glob(str(REPO_ROOT / "examples" / "*.yaml"))
             + glob.glob(str(REPO_ROOT / "examples" / "*.yml"))
         )
         second = sorted(
-            glob.glob(str(REPO_ROOT / "templates" / "*.yaml"))
-            + glob.glob(str(REPO_ROOT / "templates" / "*.yml"))
+            glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yaml"))
+            + glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yml"))
             + glob.glob(str(REPO_ROOT / "examples" / "*.yaml"))
             + glob.glob(str(REPO_ROOT / "examples" / "*.yml"))
         )
@@ -1216,8 +1216,8 @@ class TestDiscoveryDeterminism:
     def test_dd02_discovery_with_explicit_sort_equals_all_templates(self):
         """DD-02: ALL_TEMPLATES (sorted) equals a freshly-sorted re-discovery."""
         fresh = sorted(
-            glob.glob(str(REPO_ROOT / "templates" / "*.yaml"))
-            + glob.glob(str(REPO_ROOT / "templates" / "*.yml"))
+            glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yaml"))
+            + glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yml"))
             + glob.glob(str(REPO_ROOT / "examples" / "*.yaml"))
             + glob.glob(str(REPO_ROOT / "examples" / "*.yml"))
         )
@@ -1288,7 +1288,7 @@ class TestResolveTemplateWithExtension:
 
     def test_rt01_name_with_yaml_extension_resolves_correctly(self, tmp_path):
         """RT-01: resolve_template('foo.yaml') strips extension and finds foo.yaml."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         target = _write(tdir / "myflow.yaml", _minimal("myflow", "My Flow"))
         engine = TemplateEngine(project_dir=tdir)
@@ -1297,7 +1297,7 @@ class TestResolveTemplateWithExtension:
 
     def test_rt02_name_with_yml_extension_resolves_correctly(self, tmp_path):
         """RT-02: resolve_template('bar.yml') strips extension and finds bar.yml."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         target = _write(tdir / "bar.yml", _minimal("bar", "Bar"))
         engine = TemplateEngine(project_dir=tdir)
@@ -1306,7 +1306,7 @@ class TestResolveTemplateWithExtension:
 
     def test_rt02_yaml_name_finds_yml_file(self, tmp_path):
         """RT-02: resolve_template('baz') finds baz.yml (not just baz.yaml)."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         target = _write(tdir / "baz.yml", _minimal("baz", "Baz"))
         engine = TemplateEngine(project_dir=tdir)

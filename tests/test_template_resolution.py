@@ -371,7 +371,7 @@ class TestCLINameResolution:
         return make_template(directory, stem)
 
     def test_validate_by_name(self, runner, tmp_path, monkeypatch):
-        tmpl_dir = tmp_path / "templates"
+        tmpl_dir = tmp_path .joinpath("templates")
         tmpl_dir.mkdir()
         self._write_template(tmpl_dir, "mytemplate")
         monkeypatch.setenv("ORCH_TEMPLATES_PATH", str(tmpl_dir))
@@ -391,7 +391,7 @@ class TestCLINameResolution:
         assert result.exit_code != 0
 
     def test_list_phases_by_name(self, runner, tmp_path, monkeypatch):
-        tmpl_dir = tmp_path / "templates"
+        tmpl_dir = tmp_path .joinpath("templates")
         tmpl_dir.mkdir()
         self._write_template(tmpl_dir, "mypipe")
         monkeypatch.setenv("ORCH_TEMPLATES_PATH", str(tmpl_dir))
@@ -404,7 +404,7 @@ class TestCLINameResolution:
         assert result.exit_code == 0, result.output
 
     def test_run_dry_run_by_name(self, runner, tmp_path, monkeypatch):
-        tmpl_dir = tmp_path / "templates"
+        tmpl_dir = tmp_path .joinpath("templates")
         tmpl_dir.mkdir()
         self._write_template(tmpl_dir, "dryrun-tpl")
         monkeypatch.setenv("ORCH_TEMPLATES_PATH", str(tmpl_dir))

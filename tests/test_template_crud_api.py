@@ -500,10 +500,10 @@ class TestUpdateTemplate:
         assert res.status_code == 404
 
     def test_update_bundled_template_returns_403(self, crud_client):
-        """Project/bundled templates (e.g. coding-pipeline-v1) must be protected."""
+        """Project/bundled templates (e.g. coding-pipeline-standard) must be protected."""
         client, _user_dir = crud_client
         res = client.put(
-            "/api/v1/templates/coding-pipeline-v1",
+            "/api/v1/templates/coding-pipeline-standard",
             json={"content": UPDATED_TEMPLATE},
         )
         assert res.status_code == 403
@@ -576,9 +576,9 @@ class TestDeleteTemplate:
         assert res.status_code == 404
 
     def test_delete_bundled_template_returns_403(self, crud_client):
-        """Project/bundled templates (e.g. coding-pipeline-v1) must be protected."""
+        """Project/bundled templates (e.g. coding-pipeline-standard) must be protected."""
         client, _user_dir = crud_client
-        res = client.delete("/api/v1/templates/coding-pipeline-v1")
+        res = client.delete("/api/v1/templates/coding-pipeline-standard")
         assert res.status_code == 403
 
     def test_delete_leaves_bundled_file_intact(self, crud_client):
@@ -589,11 +589,11 @@ class TestDeleteTemplate:
 
         # The bundled_dir is always relative to the templates.py source file,
         # so we can compute it directly without an engine instance.
-        bundled_dir = Path(__file__).parent.parent / "templates"
-        bundled_path = bundled_dir / "coding-pipeline-v1.yaml"
-        assert bundled_path.exists(), "Precondition: coding-pipeline-v1.yaml must exist"
+        bundled_dir = Path(__file__).parent.parent .joinpath("templates")
+        bundled_path = bundled_dir / "coding-pipeline-standard.yaml"
+        assert bundled_path.exists(), "Precondition: coding-pipeline-standard.yaml must exist"
 
         client, _user_dir = crud_client
-        client.delete("/api/v1/templates/coding-pipeline-v1")
+        client.delete("/api/v1/templates/coding-pipeline-standard")
 
         assert bundled_path.exists(), "Template file must not be deleted"

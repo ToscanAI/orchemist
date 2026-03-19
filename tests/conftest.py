@@ -5,7 +5,29 @@ between test cases (e.g. the module-level circuit-breaker registry introduced
 in issue #346).
 """
 
+import os
+from pathlib import Path
+
 import pytest
+
+# Repository root resolved from this conftest location.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture
+def examples_on_path(monkeypatch):
+    """Add examples/ to ORCH_TEMPLATES_PATH so fixture templates are resolvable.
+
+    Use this in test methods that invoke CLI or webhook with 'coding-pipeline-fixture'
+    or any other template that lives in examples/ rather than templates/.
+
+    Issue #632: tests must not depend on production templates in templates/ by
+    filesystem path. Stable fixtures live in examples/.
+    """
+    existing = os.environ.get("ORCH_TEMPLATES_PATH", "")
+    examples = str(_REPO_ROOT / "examples")
+    new_val = f"{examples}:{existing}" if existing else examples
+    monkeypatch.setenv("ORCH_TEMPLATES_PATH", new_val)
 
 
 @pytest.fixture(autouse=True)

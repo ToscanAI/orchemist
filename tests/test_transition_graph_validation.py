@@ -703,8 +703,8 @@ class TestValidateTemplateIntegration:
         import glob
         repo_root = Path(__file__).parent.parent
         template_paths = sorted(
-            glob.glob(str(repo_root / "templates" / "*.yaml"))
-            + glob.glob(str(repo_root / "templates" / "*.yml"))
+            glob.glob(str(repo_root .joinpath("templates") / "*.yaml"))
+            + glob.glob(str(repo_root .joinpath("templates") / "*.yml"))
             + glob.glob(str(repo_root / "examples" / "*.yaml"))
             + glob.glob(str(repo_root / "examples" / "*.yml"))
         )

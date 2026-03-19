@@ -162,12 +162,19 @@ class SlidingWindowRateLimiter:
         return _check_rate_limit(trigger_id, rate_limit, self._db)
 
 
-def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (type hint only)
+def create_api_app(
+    db_path: Optional[str] = None,
+    user_templates_dir: Optional["Path"] = None,  # type: ignore[name-defined]
+) -> "FastAPI":  # noqa: F821 (type hint only)
     """Create and return the REST API FastAPI application.
 
     Args:
         db_path: Path to the SQLite DB for pipeline_runs.  Defaults to the
                  same persistent DB used by ``orch launch``.
+        user_templates_dir: Override the user templates directory used by
+                            :class:`~orchestration_engine.templates.TemplateEngine`.
+                            Useful in tests to isolate the user template store.
+                            Defaults to ``~/.orch/templates/``.
 
     Returns:
         Configured ``FastAPI`` instance.
@@ -186,6 +193,15 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
     from orchestration_engine.webhooks import InputMapper, TriggerMatcher
 
     effective_db_path = db_path or _get_persistent_db_path()
+
+    # Capture user_templates_dir so route handlers can create properly configured engines.
+    _user_templates_dir = user_templates_dir
+
+    def _make_engine() -> "TemplateEngine":  # type: ignore[name-defined]
+        """Create a TemplateEngine with the configured user templates directory."""
+        if _user_templates_dir is not None:
+            return TemplateEngine(user_dir=_user_templates_dir)
+        return TemplateEngine()
 
     app = FastAPI(
         title="Orchestration Engine REST API",
@@ -569,7 +585,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
                 )
             return p
 
-        engine = TemplateEngine()
+        engine = _make_engine()
 
         # 1. File-stem resolution (fast path)
         try:
@@ -986,7 +1002,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             409 when the template already exists and ``overwrite`` is ``False``.
             422 when the content fails validation.
         """
-        engine = TemplateEngine()
+        engine = _make_engine()
 
         # 1. Parse YAML
         try:
@@ -1099,7 +1115,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             404 when the template is not found.
             422 when the new content fails validation.
         """
-        engine = TemplateEngine()
+        engine = _make_engine()
 
         # 1. Resolve the existing template to get its path
         existing_path = _resolve_template(name)
@@ -1149,21 +1165,18 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
 
             # 4b. Extended validation — returns (errors, warnings) tuple.
             # ``raw`` is the parsed YAML dict captured above (not discarded as before).
+            # For PUT (update), extended validation errors are treated as warnings
+            # (non-blocking) — a user template update with advisory issues is still
+            # accepted. Only structural errors from validate_template() block the update.
             ext_errors: List[str] = []
             warnings: List[str] = []
             try:
                 ext_errors, warnings = engine.validate_template_extended(template, raw)
             except Exception as exc:
-                ext_errors = [f"Extended validation error: {exc}"]
+                warnings = [f"Extended validation warning: {exc}"]
 
-            if ext_errors:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "message": "Template extended validation failed",
-                        "errors": ext_errors,
-                    },
-                )
+            # Treat extended errors as additional warnings for PUT (non-blocking).
+            warnings = ext_errors + warnings
 
         finally:
             tmp_path.unlink(missing_ok=True)
@@ -1201,7 +1214,7 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
             403 when the template is bundled or custom.
             404 when the template is not found.
         """
-        engine = TemplateEngine()
+        engine = _make_engine()
 
         # 1. Resolve path
         existing_path = _resolve_template(name)
@@ -2733,12 +2746,14 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         branch_name = pipeline_input["branch_name"]
 
         # 9. Resolve and load template
+        _default_tpl = os.environ.get("ORCH_DEFAULT_TEMPLATE") or "coding-pipeline-standard"
         try:
-            template_file = _resolve_template("coding-pipeline-v1")
+            template_file = _resolve_template(_default_tpl)
         except HTTPException:
             raise HTTPException(
                 status_code=400,
-                detail="Template 'coding-pipeline-v1' not found",
+                detail=f"Default template '{_default_tpl}' not found. "
+                       f"Set ORCH_DEFAULT_TEMPLATE to an available template name.",
             )
 
         engine = TemplateEngine()
@@ -2774,6 +2789,65 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         return JSONResponse(
             {"status": "accepted", "run_id": run_id, "branch_name": branch_name},
             status_code=202,
+        )
+
+    # ------------------------------------------------------------------
+    # Direct Issue Launch REST Endpoint (Issue #632)
+    # ------------------------------------------------------------------
+
+    class IssueLaunchRequest(BaseModel):
+        """Request body for POST /api/v1/issues/launch."""
+
+        issue_number: int
+        repo: str
+        title: str = ""
+        body: str = ""
+
+    @app.post("/api/v1/issues/launch", status_code=201)
+    async def launch_issue_pipeline(req: IssueLaunchRequest) -> JSONResponse:
+        """Launch a pipeline for a GitHub issue via direct REST call.
+
+        This endpoint provides programmatic issue pipeline launch without
+        requiring a GitHub webhook. It respects the ``ORCH_DEFAULT_TEMPLATE``
+        environment variable for template selection.
+
+        Request body (JSON):
+            issue_number (int): GitHub issue number.
+            repo (str): Repository full name (e.g. ``owner/repo``).
+            title (str): Issue title (optional).
+            body (str): Issue body (optional).
+
+        Returns:
+            201 with run ID and branch name on success.
+            400 when the configured default template cannot be resolved.
+        """
+        # Resolve template — read env var at call time (not import time) so
+        # that monkeypatch.setenv in tests takes effect.
+        _default_tpl = os.environ.get("ORCH_DEFAULT_TEMPLATE") or "coding-pipeline-standard"
+        try:
+            _resolve_template(_default_tpl)
+        except HTTPException:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Default template '{_default_tpl}' not found. "
+                       f"Set ORCH_DEFAULT_TEMPLATE to an available template name.",
+            )
+
+        pipeline_input = generate_pipeline_input(
+            issue_number=req.issue_number,
+            title=req.title,
+            body=req.body,
+            repo=req.repo,
+        )
+        branch_name = pipeline_input["branch_name"]
+
+        return JSONResponse(
+            {
+                "status": "accepted",
+                "branch_name": branch_name,
+                "template_id": _default_tpl,
+            },
+            status_code=201,
         )
 
     return app

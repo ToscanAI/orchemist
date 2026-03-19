@@ -21,6 +21,7 @@ Issue: #329.5
 import hashlib
 import hmac
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -35,8 +36,26 @@ TestClient = pytest.importorskip("starlette.testclient").TestClient
 from orchestration_engine.db import Database  # noqa: E402
 from orchestration_engine.web.api import create_api_app  # noqa: E402
 
-# A real bundled template — no mocking needed for template resolution.
-_TEMPLATE_ID = "coding-pipeline-v1"
+# A stable fixture template — no mocking needed for template resolution.
+_TEMPLATE_ID = "coding-pipeline-fixture"
+
+REPO_ROOT = Path(__file__).parent.parent
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _add_examples_to_templates_path():
+    """Add examples/ to ORCH_TEMPLATES_PATH so the fixture template is resolvable."""
+    old = os.environ.get("ORCH_TEMPLATES_PATH", "")
+    examples = str(REPO_ROOT / "examples")
+    os.environ["ORCH_TEMPLATES_PATH"] = f"{examples}:{old}" if old else examples
+    yield
+    try:
+        if old:
+            os.environ["ORCH_TEMPLATES_PATH"] = old
+        else:
+            os.environ.pop("ORCH_TEMPLATES_PATH", None)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

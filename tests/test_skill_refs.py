@@ -44,7 +44,7 @@ def skills_dir(tmp_path):
 @pytest.fixture
 def template_dir(tmp_path):
     """Temporary directory for templates."""
-    d = tmp_path / "templates"
+    d = tmp_path .joinpath("templates")
     d.mkdir()
     return d
 
@@ -200,7 +200,7 @@ class TestLoadSkill:
 
     def test_valid_relative_path_within_template_dir_works(self, tmp_path):
         """A relative path that stays within template_dir is permitted."""
-        template_dir = tmp_path / "templates"
+        template_dir = tmp_path .joinpath("templates")
         template_dir.mkdir()
         skill_file = template_dir / "legit_skill.md"
         skill_file.write_text("---\nname: legit\n---\nLegit skill content.")

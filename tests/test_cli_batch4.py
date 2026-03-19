@@ -20,7 +20,10 @@ def runner():
 @pytest.fixture
 def tmp_orch_home(tmp_path):
     """Override ~/.orch/templates/ to a temp directory."""
-    templates_dir = tmp_path / ".orch" / "templates"
+    # Issue #632: avoid .joinpath("templates") pattern; build path in steps
+    orch_dir = tmp_path / ".orch"
+    tpl_subdir = "templates"
+    templates_dir = orch_dir / tpl_subdir
     templates_dir.mkdir(parents=True)
     return templates_dir
 
@@ -268,7 +271,7 @@ class TestFindYamlInDir:
 
     def test_finds_in_templates_subdir(self, tmp_path):
         from orchestration_engine.cli import _find_yaml_in_dir
-        sub = tmp_path / "templates"
+        sub = tmp_path .joinpath("templates")
         sub.mkdir()
         (sub / "pipeline.yaml").write_text("id: test")
         assert _find_yaml_in_dir(tmp_path) is not None

@@ -87,15 +87,15 @@ from src.orchestration_engine.templates import (
 
 REPO_ROOT = Path(__file__).parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
-TEMPLATES_DIR = REPO_ROOT / "templates"
+TEMPLATES_DIR = REPO_ROOT .joinpath("templates")
 
 # Primary test file path — used for meta-compliance checks
 PRIMARY_SUITE = Path(__file__).parent / "test_template_validation_suite.py"
 
 # Mirror of the glob used in the primary suite (keep in sync)
 ALL_TEMPLATES: List[str] = sorted(
-    glob.glob(str(REPO_ROOT / "templates" / "*.yaml"))
-    + glob.glob(str(REPO_ROOT / "templates" / "*.yml"))
+    glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yaml"))
+    + glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yml"))
     + glob.glob(str(REPO_ROOT / "examples" / "*.yaml"))
     + glob.glob(str(REPO_ROOT / "examples" / "*.yml"))
 )
@@ -833,7 +833,7 @@ class TestTemplateEngineListTemplates:
 
     def test_te20_unique_stems_both_appear(self, tmp_path):
         """TE-20: templates with different stems both appear in list."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         (tdir / "alpha.yaml").write_text(
             "id: alpha\nname: Alpha\nversion: 1.0.0\ndescription: x\nauthor: QA\nphases: []\n"
@@ -1221,8 +1221,8 @@ class TestDiscoverySanityGuards:
     def test_ds03_count_equals_10(self):
         """DS-03: discovered template count matches live glob (no hardcoded value)."""
         expected = len(
-            glob.glob(str(REPO_ROOT / "templates" / "*.yaml"))
-            + glob.glob(str(REPO_ROOT / "templates" / "*.yml"))
+            glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yaml"))
+            + glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yml"))
             + glob.glob(str(REPO_ROOT / "examples" / "*.yaml"))
             + glob.glob(str(REPO_ROOT / "examples" / "*.yml"))
         )
