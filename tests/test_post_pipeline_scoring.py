@@ -444,8 +444,7 @@ class TestScoreOnlyFlag:
     def test_score_only_requires_output_dir(self, minimal_yaml, tmp_path, monkeypatch):
         """--score-only without --output-dir should exit with code 1."""
         monkeypatch.chdir(tmp_path)
-        # mix_stderr=True so error messages appear in result.output
-        result = CliRunner(mix_stderr=True).invoke(
+        result = CliRunner().invoke(
             main,
             ["run", str(minimal_yaml), "--mode", "dry-run", "--score-only"],
             env={},
@@ -459,8 +458,7 @@ class TestScoreOnlyFlag:
     ):
         """--score-only on a template without 'scenario:' should exit with code 1."""
         monkeypatch.chdir(tmp_path)
-        # mix_stderr=True so error messages appear in result.output
-        result = CliRunner(mix_stderr=True).invoke(
+        result = CliRunner().invoke(
             main,
             [
                 "run", str(minimal_yaml),
