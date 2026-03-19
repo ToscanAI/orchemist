@@ -1880,14 +1880,14 @@ class TestOrchTemplatesTestSmoke:
 
     def test_command_does_not_write_stderr_on_clean_run(self):
         """Clean run writes nothing to stderr (no warnings/errors)."""
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         result = runner.invoke(main, ["templates", "test"])
         assert result.exit_code == 0
         # stderr should be empty or minimal on a clean run
-        if hasattr(result, "stderr"):
-            assert "error" not in (result.stderr or "").lower(), (
-                f"Unexpected error in stderr:\n{result.stderr}"
-            )
+        # With default CliRunner() (stderr merged into output), check result.output.
+        assert "error" not in (result.output or "").lower(), (
+            f"Unexpected error in output:\n{result.output}"
+        )
 
 
 # ===========================================================================

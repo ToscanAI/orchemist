@@ -625,10 +625,9 @@ def create_api_app(db_path: Optional[str] = None) -> "FastAPI":  # noqa: F821 (t
         if output_dir_override:
             output_dir = Path(output_dir_override)
         else:
-            output_dir = Path(
-                f"./output/{re.sub(r'[^\\w\\-]', '_', template.id)}"
-                f"-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{run_id}"
-            )
+            _safe_id = re.sub(r'[^\w\-]', '_', template.id)
+            _ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+            output_dir = Path(f"./output/{_safe_id}-{_ts}-{run_id}")
         output_dir.mkdir(parents=True, exist_ok=True)
 
         db.insert_pipeline_run(

@@ -1263,7 +1263,7 @@ class TestCliDeep:
     """Deep CLI coverage for the orch rubric generate command."""
 
     def _runner(self) -> CliRunner:
-        return CliRunner(mix_stderr=False)
+        return CliRunner()
 
     def test_rubric_group_in_main_help(self) -> None:
         """AC-1: 'orch --help' lists the rubric group."""
@@ -1330,7 +1330,8 @@ class TestCliDeep:
         from orchestration_engine.cli import main
         missing = tmp_path / "nonexistent.md"
         result = self._runner().invoke(main, ["rubric", "generate", str(missing)])
-        combined = (result.output or "") + (result.stderr or "")
+        # With default CliRunner() (mix_stderr=True), stderr is merged into output.
+        combined = result.output or ""
         assert "nonexistent.md" in combined
 
     def test_no_output_file_created_on_error(self, tmp_path: Path) -> None:

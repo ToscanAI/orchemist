@@ -283,6 +283,7 @@ class TestGatewayTokenResolution:
 class TestGitAutoInference:
     def test_not_in_git_repo_without_repo_flag_exits_1(self, monkeypatch):
         """When --issue provided but not in git repo and no --repo, exit 1."""
+        monkeypatch.delenv('GITHUB_REPOSITORY', raising=False)
         runner = CliRunner()
 
         with patch("orchestration_engine.cli._infer_git_context", return_value=(None, None)):
@@ -296,6 +297,7 @@ class TestGitAutoInference:
 
     def test_inside_git_no_origin_shows_distinct_error(self, monkeypatch):
         """When inside git but no origin, show 'Cannot determine GitHub repository' error."""
+        monkeypatch.delenv('GITHUB_REPOSITORY', raising=False)
         runner = CliRunner()
 
         # repo_path exists (inside git), but repo_url is None (no origin)
