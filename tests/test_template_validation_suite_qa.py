@@ -793,13 +793,16 @@ class TestTemplateEngineListTemplates:
     """TE-20: list_templates deduplicates same stem across directories."""
 
     def test_te20_same_stem_in_two_dirs_appears_once(self, tmp_path):
-        """TE-20: duplicate stems across directories are deduplicated (first wins)."""
+        """TE-20: templates with the same filename stem but DIFFERENT ids both appear
+        in list_templates() — deduplication is by template id, not by filename stem.
+        When the same id appears in two directories, first-wins (project > user) applies.
+        """
         dir1 = tmp_path / "d1"
         dir2 = tmp_path / "d2"
         dir1.mkdir()
         dir2.mkdir()
 
-        # Write valid templates with DISTINCT IDs so we know which one wins
+        # Same filename stem, DISTINCT IDs → both should appear (A2: uniqueness by id)
         content1 = (
             "id: pipeline-v1\n"
             'name: "Pipeline v1"\n'
@@ -821,11 +824,12 @@ class TestTemplateEngineListTemplates:
 
         engine = TemplateEngine(project_dir=dir1, user_dir=dir2)
         templates = engine.list_templates()
-        # First-wins: only dir1's copy (id=pipeline-v1) should appear
+        # Both distinct ids should appear: deduplication is by id, not filename stem
         ids = [t["id"] for t in templates]
-        assert "pipeline-v1" in ids, "First-wins: dir1's copy should appear"
-        assert "pipeline-v2" not in ids, "Second copy should be shadowed"
-        assert ids.count("pipeline-v1") == 1, "Should appear exactly once"
+        assert "pipeline-v1" in ids, "dir1's template (distinct id) should appear"
+        assert "pipeline-v2" in ids, "dir2's template (distinct id) should also appear"
+        assert ids.count("pipeline-v1") == 1, "pipeline-v1 should appear exactly once"
+        assert ids.count("pipeline-v2") == 1, "pipeline-v2 should appear exactly once"
 
     def test_te20_unique_stems_both_appear(self, tmp_path):
         """TE-20: templates with different stems both appear in list."""
