@@ -1435,3 +1435,108 @@ class TestNonLoopCycleGuard:
         # Loop ran 3 times without triggering the cycle guard
         assert run_index[0] == 3
         assert not result.get("aborted")
+
+
+class TestExhaustedRouting:
+    """Issue #615: Tests for PhaseOutcome.EXHAUSTED routing in StateMachineSequencer."""
+
+    def test_exhausted_routes_to_next_phase(self) -> None:
+        """When a loop phase exceeds max_iterations and has an 'exhausted' transition,
+        the sequencer routes to the named phase instead of aborting."""
+        # Phase A: max_iterations=1, always succeeds (loops back to itself via success)
+        # On 2nd visit, MAX_ITERATIONS_EXCEEDED fires → routes to phase B via 'exhausted'
+        phase_a = _make_phase(
+            "phase_a",
+            max_iterations=1,
+            transitions={"success": "phase_a", "exhausted": "phase_b"},
+        )
+        phase_b = _make_phase("phase_b")
+        template = _make_template([phase_a, phase_b])
+
+        executed: List[str] = []
+
+        def execute_fn(task_spec, **kwargs):
+            executed.append(task_spec.payload["phase_id"])
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        # phase_a ran once (2nd visit triggers exhausted → routes to phase_b)
+        assert executed.count("phase_a") == 1
+        assert executed.count("phase_b") == 1
+        # Final status is failed (aborted=True, abort_reason=EXHAUSTED_ROUTE)
+        assert result.get("aborted") is True
+        assert result.get("abort_reason") == "EXHAUSTED_ROUTE"
+
+    def test_exhausted_fallback_to_failed_transition(self) -> None:
+        """When a loop phase exceeds max_iterations and has no 'exhausted' transition
+        but has a 'failed' transition, EXHAUSTED falls back to 'failed' route (backward compat)."""
+        phase_a = _make_phase(
+            "phase_a",
+            max_iterations=1,
+            transitions={"success": "phase_a", "failed": "error_phase"},
+        )
+        phase_error = _make_phase("error_phase")
+        template = _make_template([phase_a, phase_error])
+
+        executed: List[str] = []
+
+        def execute_fn(task_spec, **kwargs):
+            executed.append(task_spec.payload["phase_id"])
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        # Without 'exhausted' key, _resolve_next_phase falls back to 'failed' → error_phase.
+        # error_phase runs and pipeline completes via exhausted route.
+        assert executed.count("phase_a") == 1
+        assert executed.count("error_phase") == 1
+        # Stamped as EXHAUSTED_ROUTE because we routed via exhausted fallback
+        assert result.get("aborted") is True
+        assert result.get("abort_reason") == "EXHAUSTED_ROUTE"
+
+    def test_exhausted_no_transition_aborts(self) -> None:
+        """When a loop phase exceeds max_iterations and has no 'exhausted' or 'failed'
+        transition, the sequencer returns aborted=True, abort_reason=MAX_ITERATIONS_EXCEEDED."""
+        phase_a = _make_phase(
+            "phase_a",
+            max_iterations=1,
+            transitions={"success": "phase_a"},
+        )
+        template = _make_template([phase_a])
+
+        executed: List[str] = []
+
+        def execute_fn(task_spec, **kwargs):
+            executed.append(task_spec.payload["phase_id"])
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        assert result.get("aborted") is True
+        assert result.get("abort_reason") == "MAX_ITERATIONS_EXCEEDED"
+
+    def test_exhausted_route_sets_failed_status_after_postmortem(self) -> None:
+        """When routing via exhausted and the destination phase completes successfully,
+        the pipeline final result still has aborted=True (run is recorded as failed)."""
+        phase_loop = _make_phase(
+            "loop_phase",
+            max_iterations=1,
+            transitions={"success": "loop_phase", "exhausted": "postmortem"},
+        )
+        phase_postmortem = _make_phase("postmortem", transitions={})
+        template = _make_template([phase_loop, phase_postmortem])
+
+        def execute_fn(task_spec, **kwargs):
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        # Postmortem completed successfully, but run is stamped as failed
+        assert result.get("aborted") is True
+        assert result.get("abort_reason") == "EXHAUSTED_ROUTE"
+        assert "postmortem" in result.get("phase_outputs", {})

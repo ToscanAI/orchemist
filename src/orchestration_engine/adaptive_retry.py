@@ -119,7 +119,11 @@ class RetryPlan:
         """
         d = json.loads(raw)
         d["strategy"] = RetryStrategy(d["strategy"])
-        return cls(**d)
+        # Filter to known fields for forward compatibility — unknown fields in
+        # newer JSON are silently ignored rather than raising TypeError.
+        import dataclasses as _dc
+        known = {f.name for f in _dc.fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in known})
 
 
 # ---------------------------------------------------------------------------
