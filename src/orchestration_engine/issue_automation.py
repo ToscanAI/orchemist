@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -88,9 +89,9 @@ VALID_CLASSIFICATION_TYPES: frozenset = frozenset(
 
 #: Maps a classification type to its recommended pipeline template.
 CLASSIFICATION_TEMPLATE_MAP: Dict[str, str] = {
-    "bug":      "coding-pipeline-v1",
-    "feature":  "coding-pipeline-v1",
-    "refactor": "coding-pipeline-v1",
+    "bug":      "coding-pipeline-standard",
+    "feature":  "coding-pipeline-standard",
+    "refactor": "coding-pipeline-standard",
     "docs":     "content-pipeline-v27",
     "research": "research-competitive",
     "content":  "content-pipeline-v27",
@@ -306,7 +307,8 @@ class IssueClassifier:
         raw_output = self._call_executor(prompt)
         classification_type, confidence, reasoning = self._parse_output(raw_output)
         template_id = CLASSIFICATION_TEMPLATE_MAP.get(
-            classification_type, "coding-pipeline-v1"
+            classification_type,
+            os.environ.get("ORCH_DEFAULT_TEMPLATE") or "coding-pipeline-standard",
         )
 
         result = IssueClassification(

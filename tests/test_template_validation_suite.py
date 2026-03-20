@@ -45,8 +45,8 @@ from src.orchestration_engine.templates import TemplateEngine
 REPO_ROOT = Path(__file__).parent.parent
 
 ALL_TEMPLATES: List[str] = sorted(
-    glob.glob(str(REPO_ROOT / "templates" / "*.yaml"))
-    + glob.glob(str(REPO_ROOT / "templates" / "*.yml"))
+    glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yaml"))
+    + glob.glob(str(REPO_ROOT .joinpath("templates") / "*.yml"))
     + glob.glob(str(REPO_ROOT / "examples" / "*.yaml"))
     + glob.glob(str(REPO_ROOT / "examples" / "*.yml"))
 )
@@ -159,7 +159,7 @@ class TestTemplateDiscovery:
 
     def test_templates_dir_is_included(self):
         """Templates from templates/ directory are present in ALL_TEMPLATES."""
-        templates_paths = [p for p in ALL_TEMPLATES if str(REPO_ROOT / "templates") in p]
+        templates_paths = [p for p in ALL_TEMPLATES if str(REPO_ROOT .joinpath("templates")) in p]
         assert templates_paths, "No templates from templates/ directory found"
 
     def test_examples_dir_is_included(self):
@@ -228,7 +228,7 @@ class TestTemplateDiscovery:
 
     def test_discovery_survives_zero_templates_in_isolated_dir(self, tmp_path):
         """Edge case: zero templates in a dir returns empty list without raising."""
-        empty_dir = tmp_path / "templates"
+        empty_dir = tmp_path .joinpath("templates")
         empty_dir.mkdir()
         discovered = sorted(
             glob.glob(str(empty_dir / "*.yaml")) + glob.glob(str(empty_dir / "*.yml"))
@@ -637,7 +637,7 @@ class TestNewTemplateAutoDiscovery:
 
     def test_new_yaml_file_discovered_by_glob(self, tmp_path):
         """AC-07: a new .yaml file placed in a dir is discovered by glob."""
-        templates_dir = tmp_path / "templates"
+        templates_dir = tmp_path .joinpath("templates")
         templates_dir.mkdir()
 
         new_file = templates_dir / "new-pipeline.yaml"
@@ -648,7 +648,7 @@ class TestNewTemplateAutoDiscovery:
 
     def test_new_yml_file_discovered_by_glob(self, tmp_path):
         """AC-07 edge: a new .yml file is also discoverable."""
-        templates_dir = tmp_path / "templates"
+        templates_dir = tmp_path .joinpath("templates")
         templates_dir.mkdir()
 
         new_file = templates_dir / "new-pipeline.yml"
@@ -662,7 +662,7 @@ class TestNewTemplateAutoDiscovery:
 
     def test_glob_does_not_discover_sibling_dirs(self, tmp_path):
         """Glob anchored to templates/ does NOT pick up community-templates/ files."""
-        templates_dir = tmp_path / "templates"
+        templates_dir = tmp_path .joinpath("templates")
         community_dir = tmp_path / "community-templates"
         templates_dir.mkdir()
         community_dir.mkdir()
@@ -689,7 +689,7 @@ class TestNewTemplateAutoDiscovery:
 
     def test_multiple_new_templates_all_discovered(self, tmp_path):
         """Adding multiple templates to a dir; all are found by one glob call."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         stems = {"alpha", "beta", "gamma"}
         for stem in stems:
@@ -701,7 +701,7 @@ class TestNewTemplateAutoDiscovery:
 
     def test_new_template_discovered_before_sort(self, tmp_path):
         """After sorting, the newly discovered template appears in correct order."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         names = ["zebra", "apple", "mango"]
         for n in names:
@@ -919,7 +919,7 @@ class TestGlobPatternEdgeCases:
         """Edge case: symlinked files appear once per path (no double-counting)."""
         import os
 
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         real = tdir / "real.yaml"
         real.write_text(_minimal_template_yaml("real"))
@@ -935,7 +935,7 @@ class TestGlobPatternEdgeCases:
 
     def test_non_yaml_files_not_in_discovery(self, tmp_path):
         """Only .yaml/.yml files are discovered — .json, .txt, etc. are skipped."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         tdir.mkdir()
         (tdir / "template.yaml").write_text(_minimal_template_yaml("good"))
         (tdir / "notes.txt").write_text("just notes")
@@ -951,7 +951,7 @@ class TestGlobPatternEdgeCases:
 
     def test_glob_does_not_recurse_into_subdirs(self, tmp_path):
         """*.yaml glob does NOT recurse into nested subdirectories."""
-        tdir = tmp_path / "templates"
+        tdir = tmp_path .joinpath("templates")
         subdir = tdir / "nested"
         subdir.mkdir(parents=True)
 

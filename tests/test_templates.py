@@ -70,7 +70,7 @@ def engine(templates_dir):
 def content_pipeline_yaml(templates_dir):
     """Write the project's real content-pipeline-v28.yaml into the temp dir."""
     repo_template = (
-        Path(__file__).parent.parent / "templates" / "content-pipeline-v28.yaml"
+        Path(__file__).parent.parent .joinpath("templates") / "content-pipeline-v28.yaml"
     )
     dest = templates_dir / "content-pipeline-v28.yaml"
     dest.write_text(repo_template.read_text())
@@ -511,7 +511,7 @@ class TestPhaseSequencerExecution:
 
     def test_all_phases_present_in_output(self, fast_runner):
         """All seven content-pipeline v28 phases appear in phase_outputs."""
-        repo_template = Path(__file__).parent.parent / "templates" / "content-pipeline-v28.yaml"
+        repo_template = Path(__file__).parent.parent .joinpath("templates") / "content-pipeline-v28.yaml"
         engine = TemplateEngine()
         tpl = engine.load_template(repo_template)
 

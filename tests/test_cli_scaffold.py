@@ -334,7 +334,7 @@ class TestOutputPath:
         monkeypatch.chdir(tmp_path)
         result = _invoke(["new", "--yes"])
         assert result.exit_code == 0, result.output
-        expected = tmp_path / "templates" / "my-pipeline.yaml"
+        expected = tmp_path .joinpath("templates") / "my-pipeline.yaml"
         assert expected.exists(), f"Expected {expected}"
 
     def test_output_in_result_message(self, tmp_path):
