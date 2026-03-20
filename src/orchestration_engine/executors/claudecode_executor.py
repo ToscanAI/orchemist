@@ -210,7 +210,7 @@ class ClaudeCodeExecutor(TaskExecutor):
                 )
             ],
             started_at=start_time,
-            completed_at=datetime.now(),
+            completed_at=(completed_at := datetime.now()),
             model_used="claude-code-session",
-            execution_time_seconds=(datetime.now() - start_time).total_seconds(),
+            execution_time_seconds=(completed_at - start_time).total_seconds(),
         )
