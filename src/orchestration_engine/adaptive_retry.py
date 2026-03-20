@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import subprocess
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Dict, Optional, Union
@@ -87,10 +88,11 @@ class RetryPlan:
     """
 
     strategy: RetryStrategy
-    original_run_id: str
+    original_run_id: Optional[str] = None
     model_override: Optional[str] = None
     extra_context: Optional[str] = None
     timeout_multiplier: float = 1.0
+    reason: Optional[str] = None  # Issue #615: human-readable reason for this retry plan
 
     def to_json(self) -> str:
         """Serialize this plan to a JSON string for DB storage.
@@ -751,25 +753,60 @@ class AdaptiveRetryEngine:
         strategy = plan.strategy
 
         if strategy == RetryStrategy.RETRY_UNCHANGED:
-            return self._apply_retry_unchanged(plan, input_json)
+            retry_input = self._apply_retry_unchanged(plan, input_json)
 
-        if strategy == RetryStrategy.ESCALATE_MODEL:
-            return self._apply_escalate_model(plan, input_json)
+        elif strategy == RetryStrategy.ESCALATE_MODEL:
+            retry_input = self._apply_escalate_model(plan, input_json)
 
-        if strategy == RetryStrategy.INCREASE_TIMEOUT:
-            return self._apply_increase_timeout(plan, input_json)
+        elif strategy == RetryStrategy.INCREASE_TIMEOUT:
+            retry_input = self._apply_increase_timeout(plan, input_json)
 
-        if strategy in (RetryStrategy.REPHRASE_PROMPT, RetryStrategy.ADD_CONTEXT):
+        elif strategy in (RetryStrategy.REPHRASE_PROMPT, RetryStrategy.ADD_CONTEXT):
             if diagnosis is None:
                 raise ValueError(
                     f"strategy={strategy.value!r} requires a DiagnosisResult; "
                     "pass diagnosis= to build_retry_input()"
                 )
-            return self._apply_rephrase_prompt(plan, input_json, diagnosis)
+            retry_input = self._apply_rephrase_prompt(plan, input_json, diagnosis)
 
-        # SPLIT_TASK is deferred to a future issue; fall back to unchanged.
-        _logger.warning(
-            "Strategy %s has no executor implementation yet; falling back to RETRY_UNCHANGED.",
-            strategy.value,
-        )
-        return self._apply_retry_unchanged(plan, input_json)
+        else:
+            # SPLIT_TASK is deferred to a future issue; fall back to unchanged.
+            _logger.warning(
+                "Strategy %s has no executor implementation yet; falling back to RETRY_UNCHANGED.",
+                strategy.value,
+            )
+            retry_input = self._apply_retry_unchanged(plan, input_json)
+
+        # ── Issue #615: Re-fetch issue body on retry ──────────────────────────
+        # If the original run had issue_number (truthy), fetch the current issue
+        # body from GitHub so that postmortem enrichments are picked up by the
+        # retry.  On any failure (network, auth, empty body), log a warning and
+        # preserve the original input unchanged — non-fatal by design.
+        issue_number = retry_input.get("issue_number")
+        if issue_number:  # falsy check: handles 0, None, "", False
+            try:
+                repo_url = retry_input.get("repo_url", "") or ""
+                cmd = ["gh", "issue", "view", str(issue_number), "--json", "body", "--jq", ".body"]
+                # Only pass --repo when repo_url is a GitHub HTTPS URL
+                if repo_url.startswith("https://github.com/"):
+                    repo_arg = repo_url.replace("https://github.com/", "").rstrip("/")
+                    if repo_arg:
+                        cmd += ["--repo", repo_arg]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode == 0 and result.stdout.strip():
+                    retry_input["issue_body"] = result.stdout.strip()
+                    _logger.info(
+                        "Re-fetched issue body for #%s on retry run.", issue_number
+                    )
+                else:
+                    _logger.warning(
+                        "Warning: could not re-fetch issue #%s — using original input.",
+                        issue_number,
+                    )
+            except Exception:
+                _logger.warning(
+                    "Warning: could not re-fetch issue #%s — using original input.",
+                    issue_number,
+                )
+
+        return retry_input

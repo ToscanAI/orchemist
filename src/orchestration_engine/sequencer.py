@@ -2673,6 +2673,16 @@ class StateMachineSequencer(PhaseSequencer):
                 )
                 return effective[verdict]
 
+        # ── Exhausted fallback to failed (Issue #615) ────────────────────────
+        # When the outcome is EXHAUSTED and there is no 'exhausted' key in
+        # the effective transitions, fall back to the 'failed' transition.
+        # This preserves backward compatibility: pipelines without an
+        # 'exhausted' transition continue to route via 'failed' unchanged.
+        if outcome == PhaseOutcome.EXHAUSTED:
+            if "exhausted" in effective:
+                return effective["exhausted"]
+            return effective.get("failed")
+
         return effective.get(outcome.value)
 
     # ------------------------------------------------------------------

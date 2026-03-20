@@ -197,14 +197,22 @@ class TestDetermineOutcomeEdgeCases:
         assert isinstance(outcome, PhaseOutcome)
 
     def test_all_outcomes_reachable(self):
-        """All four PhaseOutcome values can be produced by determine_outcome."""
+        """All task-derived PhaseOutcome values can be produced by determine_outcome.
+
+        Note: PhaseOutcome.EXHAUSTED is intentionally excluded — it is
+        sequencer-internal (Issue #615) and is never returned by determine_outcome().
+        determine_outcome() maps task result states only; EXHAUSTED is produced
+        directly by the sequencer when a phase exceeds its max_iterations.
+        """
         outcomes = {
             determine_outcome({"state": "success"}),
             determine_outcome({"state": "failed"}),
             determine_outcome({"state": "cancelled"}),
             determine_outcome({"state": "failed", "errors": [{"code": "timeout"}]}),
         }
-        assert outcomes == set(PhaseOutcome)
+        # EXHAUSTED is sequencer-internal — not reachable via determine_outcome()
+        task_derived_outcomes = {o for o in PhaseOutcome if o != PhaseOutcome.EXHAUSTED}
+        assert outcomes == task_derived_outcomes
 
 
 # ---------------------------------------------------------------------------
