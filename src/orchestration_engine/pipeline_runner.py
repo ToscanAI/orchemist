@@ -83,6 +83,7 @@ class PipelineRunner:
         max_tokens: int = 4096,
         db_path: str = ":memory:",
         fallback_config: Optional[dict] = None,
+        executor_type: Optional[str] = None,
     ) -> "PipelineRunner":
         """Create a PipelineRunner using AnthropicExecutor (direct API calls).
 
@@ -94,6 +95,8 @@ class PipelineRunner:
                              for retriable errors (rate_limit, timeout, overloaded).
                              Passed directly to :class:`~openai_executor.OpenAICompatibleExecutor`.
                              Keys: ``base_url``, ``model``, ``api_key``, ``timeout_seconds``.
+            executor_type:  Forwarded from --executor CLI flag. Stored for future use
+                            when ClaudeCodeExecutor is wired (see Issue #635 parent epic).
 
         Raises:
             ValueError: If no API key is found anywhere.
