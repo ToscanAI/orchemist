@@ -26,6 +26,7 @@ import copy
 import json
 import logging
 import subprocess
+import dataclasses
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Dict, Optional, Union
@@ -121,8 +122,7 @@ class RetryPlan:
         d["strategy"] = RetryStrategy(d["strategy"])
         # Filter to known fields for forward compatibility — unknown fields in
         # newer JSON are silently ignored rather than raising TypeError.
-        import dataclasses as _dc
-        known = {f.name for f in _dc.fields(cls)}
+        known = {f.name for f in dataclasses.fields(cls)}
         return cls(**{k: v for k, v in d.items() if k in known})
 
 

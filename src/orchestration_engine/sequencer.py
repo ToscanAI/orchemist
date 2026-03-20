@@ -2682,6 +2682,17 @@ class StateMachineSequencer(PhaseSequencer):
             **phase.transitions,
         }
 
+        # ── Exhausted fallback to failed (Issue #615) ────────────────────────
+        # EXHAUSTED is a sequencer-internal outcome and must never be subject
+        # to content-based verdict extraction. Check this BEFORE the
+        # content-routing block so that phases with both verdict keys
+        # (e.g. spec_adversary with request_changes) and an exhausted
+        # transition always route via exhausted, not via the verdict.
+        if outcome == PhaseOutcome.EXHAUSTED:
+            if "exhausted" in effective:
+                return effective["exhausted"]
+            return effective.get("failed")
+
         # ── Content-based routing (opt-in via verdict keys in transitions) ───
         # Only attempt verdict extraction when at least one verdict keyword
         # appears as a transition key — this keeps the common path fast and
@@ -2705,16 +2716,6 @@ class StateMachineSequencer(PhaseSequencer):
                     f"content-routed via verdict '{verdict}'"
                 )
                 return effective[verdict]
-
-        # ── Exhausted fallback to failed (Issue #615) ────────────────────────
-        # When the outcome is EXHAUSTED and there is no 'exhausted' key in
-        # the effective transitions, fall back to the 'failed' transition.
-        # This preserves backward compatibility: pipelines without an
-        # 'exhausted' transition continue to route via 'failed' unchanged.
-        if outcome == PhaseOutcome.EXHAUSTED:
-            if "exhausted" in effective:
-                return effective["exhausted"]
-            return effective.get("failed")
 
         return effective.get(outcome.value)
 
