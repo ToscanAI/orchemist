@@ -8,6 +8,7 @@ class PhaseOutcome(str, Enum):
     FAILED = "failed"
     TIMEOUT = "timeout"
     SKIPPED = "skipped"
+    EXHAUSTED = "exhausted"
 
 
 def determine_outcome(result: Dict[str, Any]) -> PhaseOutcome:

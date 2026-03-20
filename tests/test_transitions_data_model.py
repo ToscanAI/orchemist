@@ -80,7 +80,9 @@ class TestPhaseOutcome:
 
     def test_all_members(self):
         members = {m.value for m in PhaseOutcome}
-        assert members == {"success", "failed", "timeout", "skipped"}
+        # EXHAUSTED added in Issue #615 — sequencer-internal outcome for
+        # max_iterations exceeded with REQUEST_CHANGES, enabling postmortem routing.
+        assert members == {"success", "failed", "timeout", "skipped", "exhausted"}
 
     def test_from_string(self):
         """Can construct from string value."""

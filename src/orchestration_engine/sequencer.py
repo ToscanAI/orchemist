@@ -2359,6 +2359,13 @@ class StateMachineSequencer(PhaseSequencer):
 
         final_result: dict = {}
 
+        # ── Exhausted-route flag (Issue #615) ─────────────────────────────────
+        # Set to True when the sequencer routes via PhaseOutcome.EXHAUSTED.
+        # After the while loop, this causes final_result to be stamped with
+        # aborted=True so the daemon records the run as failed even when
+        # the postmortem phase itself completes successfully.
+        self._exhausted_route: bool = False
+
         try:
             while current_phase_id is not None:
                 # ── Phase lookup ──────────────────────────────────────────────
@@ -2377,6 +2384,24 @@ class StateMachineSequencer(PhaseSequencer):
                     # Explicit loop phase: enforce the phase-level max_iterations cap.
                     # When the count would exceed the limit, abort the pipeline.
                     if current_iter > phase.max_iterations:
+                        # ── Issue #615: Route via EXHAUSTED before aborting ───
+                        # Give templates a chance to handle exhaustion gracefully
+                        # (e.g. route to a postmortem phase) instead of always aborting.
+                        _exhausted_next = self._resolve_next_phase(
+                            phase,
+                            PhaseOutcome.EXHAUSTED,
+                            self.phase_outputs.get(current_phase_id, {}),
+                        )
+                        if _exhausted_next is not None:
+                            logger.info(
+                                f"Pipeline {self.template.id}: MAX_ITERATIONS_EXCEEDED "
+                                f"for phase '{current_phase_id}' — routing via 'exhausted' "
+                                f"to phase '{_exhausted_next}'."
+                            )
+                            self._exhausted_route = True
+                            current_phase_id = _exhausted_next
+                            continue
+                        # No exhausted transition — fall through to abort as before.
                         logger.error(
                             f"Pipeline {self.template.id}: MAX_ITERATIONS_EXCEEDED "
                             f"for phase '{current_phase_id}' "
@@ -2598,6 +2623,14 @@ class StateMachineSequencer(PhaseSequencer):
             )
             raise
 
+        # ── Issue #615: Stamp aborted=True when routed via exhausted ─────────
+        # Even if the postmortem phase completed "successfully", the pipeline
+        # run must be recorded as failed.  The daemon treats aborted=True as
+        # a failed run, so we inject it here after normal completion.
+        if self._exhausted_route:
+            final_result["aborted"] = True
+            final_result["abort_reason"] = "EXHAUSTED_ROUTE"
+
         # ── Pipeline-complete hook (success path) ─────────────────────────────
         self._safe_call_hook(
             self.on_pipeline_complete,
@@ -2648,6 +2681,17 @@ class StateMachineSequencer(PhaseSequencer):
             **self.template.default_transitions,
             **phase.transitions,
         }
+
+        # ── Exhausted fallback to failed (Issue #615) ────────────────────────
+        # EXHAUSTED is a sequencer-internal outcome and must never be subject
+        # to content-based verdict extraction. Check this BEFORE the
+        # content-routing block so that phases with both verdict keys
+        # (e.g. spec_adversary with request_changes) and an exhausted
+        # transition always route via exhausted, not via the verdict.
+        if outcome == PhaseOutcome.EXHAUSTED:
+            if "exhausted" in effective:
+                return effective["exhausted"]
+            return effective.get("failed")
 
         # ── Content-based routing (opt-in via verdict keys in transitions) ───
         # Only attempt verdict extraction when at least one verdict keyword

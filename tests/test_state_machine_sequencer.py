@@ -1435,3 +1435,187 @@ class TestNonLoopCycleGuard:
         # Loop ran 3 times without triggering the cycle guard
         assert run_index[0] == 3
         assert not result.get("aborted")
+
+
+class TestExhaustedRouting:
+    """Issue #615: Tests for PhaseOutcome.EXHAUSTED routing in StateMachineSequencer."""
+
+    def test_exhausted_routes_to_next_phase(self) -> None:
+        """When a loop phase exceeds max_iterations and has an 'exhausted' transition,
+        the sequencer routes to the named phase instead of aborting."""
+        # Phase A: max_iterations=1, always succeeds (loops back to itself via success)
+        # On 2nd visit, MAX_ITERATIONS_EXCEEDED fires → routes to phase B via 'exhausted'
+        phase_a = _make_phase(
+            "phase_a",
+            max_iterations=1,
+            transitions={"success": "phase_a", "exhausted": "phase_b"},
+        )
+        phase_b = _make_phase("phase_b")
+        template = _make_template([phase_a, phase_b])
+
+        executed: List[str] = []
+
+        def execute_fn(task_spec, **kwargs):
+            executed.append(task_spec.payload["phase_id"])
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        # phase_a ran once (2nd visit triggers exhausted → routes to phase_b)
+        assert executed.count("phase_a") == 1
+        assert executed.count("phase_b") == 1
+        # Final status is failed (aborted=True, abort_reason=EXHAUSTED_ROUTE)
+        assert result.get("aborted") is True
+        assert result.get("abort_reason") == "EXHAUSTED_ROUTE"
+
+    def test_exhausted_fallback_to_failed_transition(self) -> None:
+        """When a loop phase exceeds max_iterations and has no 'exhausted' transition
+        but has a 'failed' transition, EXHAUSTED falls back to 'failed' route (backward compat)."""
+        phase_a = _make_phase(
+            "phase_a",
+            max_iterations=1,
+            transitions={"success": "phase_a", "failed": "error_phase"},
+        )
+        phase_error = _make_phase("error_phase")
+        template = _make_template([phase_a, phase_error])
+
+        executed: List[str] = []
+
+        def execute_fn(task_spec, **kwargs):
+            executed.append(task_spec.payload["phase_id"])
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        # Without 'exhausted' key, _resolve_next_phase falls back to 'failed' → error_phase.
+        # error_phase runs and pipeline completes via exhausted route.
+        assert executed.count("phase_a") == 1
+        assert executed.count("error_phase") == 1
+        # Stamped as EXHAUSTED_ROUTE because we routed via exhausted fallback
+        assert result.get("aborted") is True
+        assert result.get("abort_reason") == "EXHAUSTED_ROUTE"
+
+    def test_exhausted_no_transition_aborts(self) -> None:
+        """When a loop phase exceeds max_iterations and has no 'exhausted' or 'failed'
+        transition, the sequencer returns aborted=True, abort_reason=MAX_ITERATIONS_EXCEEDED."""
+        phase_a = _make_phase(
+            "phase_a",
+            max_iterations=1,
+            transitions={"success": "phase_a"},
+        )
+        template = _make_template([phase_a])
+
+        executed: List[str] = []
+
+        def execute_fn(task_spec, **kwargs):
+            executed.append(task_spec.payload["phase_id"])
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        assert result.get("aborted") is True
+        assert result.get("abort_reason") == "MAX_ITERATIONS_EXCEEDED"
+
+    def test_exhausted_route_sets_failed_status_after_postmortem(self) -> None:
+        """When routing via exhausted and the destination phase completes successfully,
+        the pipeline final result still has aborted=True (run is recorded as failed)."""
+        phase_loop = _make_phase(
+            "loop_phase",
+            max_iterations=1,
+            transitions={"success": "loop_phase", "exhausted": "postmortem"},
+        )
+        phase_postmortem = _make_phase("postmortem", transitions={})
+        template = _make_template([phase_loop, phase_postmortem])
+
+        def execute_fn(task_spec, **kwargs):
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({})
+
+        # Postmortem completed successfully, but run is stamped as failed
+        assert result.get("aborted") is True
+        assert result.get("abort_reason") == "EXHAUSTED_ROUTE"
+        assert "postmortem" in result.get("phase_outputs", {})
+
+    def test_exhausted_routes_via_exhausted_not_verdict_when_both_present(
+        self,
+    ) -> None:
+        """Regression: EXHAUSTED outcome must not be hijacked by content-based routing.
+
+        When a phase has both verdict keys (request_changes, approve) AND an
+        exhausted transition — the exact production layout for spec_adversary —
+        and the phase output contains "REQUEST_CHANGES" text, the sequencer
+        must still route via `exhausted`, not via `request_changes`.
+        """
+        # Phase that loops back to itself on request_changes (like spec_adversary)
+        # and routes to postmortem when exhausted.
+        adversary_phase = _make_phase(
+            "spec_adversary",
+            max_iterations=1,
+            transitions={
+                "approve": "implement",
+                "request_changes": "spec",
+                "exhausted": "postmortem",
+            },
+        )
+        spec_phase = _make_phase("spec", transitions={"success": "spec_adversary"})
+        postmortem_phase = _make_phase("postmortem", transitions={})
+        implement_phase = _make_phase("implement", transitions={})
+        template = _make_template(
+            [adversary_phase, spec_phase, postmortem_phase, implement_phase]
+        )
+
+        call_count: dict[str, int] = {}
+
+        def execute_fn(task_spec, **kwargs) -> TaskResult:
+            phase_id = task_spec.payload.get("phase_id", task_spec.id)
+            call_count[phase_id] = call_count.get(phase_id, 0) + 1
+            # spec_adversary outputs REQUEST_CHANGES text — mimics production
+            if phase_id == "spec_adversary":
+                return TaskResult(
+                    task_id=task_spec.id,
+                    task_type=task_spec.type,
+                    state=TaskState.SUCCESS,
+                    confidence=0.9,
+                    result={"text": "REQUEST_CHANGES\nNeeds more work."},
+                )
+            return _success_result(task_spec)
+
+        seq = _make_sequencer(template, execute_fn)
+        result = seq.execute({"phase_id": "spec_adversary"})
+
+        phase_outputs = result.get("phase_outputs", {})
+        iteration_counts = result.get("iteration_counts", {})
+
+        # spec_adversary must have been called twice (1st: request_changes → spec;
+        # 2nd: exhausted → postmortem) — confirming content routing on 1st pass is fine
+        # but EXHAUSTED on the 2nd pass must NOT be hijacked by the verdict.
+        assert iteration_counts.get("spec_adversary") == 2, (
+            f"Expected spec_adversary to run twice, got: {iteration_counts}"
+        )
+
+        # postmortem must have been reached via the exhausted transition
+        assert "postmortem" in phase_outputs, (
+            "Expected routing to postmortem via exhausted, "
+            "but postmortem was not executed. "
+            f"Phase outputs: {list(phase_outputs.keys())}"
+        )
+
+        # implement must NOT have been reached (that's the approve branch)
+        assert "implement" not in phase_outputs, (
+            "Sequencer incorrectly routed via approve instead of exhausted"
+        )
+
+        # spec must NOT have been called a second time (exhausted must not re-route
+        # via request_changes on the 2nd spec_adversary iteration)
+        assert iteration_counts.get("spec", 0) <= 1, (
+            "Sequencer incorrectly routed via request_changes on exhausted iteration; "
+            f"iteration_counts: {iteration_counts}"
+        )
+
+        # Run is still stamped as failed
+        assert result.get("aborted") is True
