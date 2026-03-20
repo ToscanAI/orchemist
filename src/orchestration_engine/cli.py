@@ -1113,6 +1113,13 @@ def workers(detailed: bool) -> None:
     default=None,
     help='GitHub repository slug (e.g. owner/repo) for --issue lookup.',
 )
+@click.option(
+    '--executor',
+    type=click.Choice(['api', 'claudecode', 'auto']),
+    default='auto',
+    show_default=True,
+    help='Executor backend for standalone mode: api (ANTHROPIC_API_KEY), claudecode, or auto.',
+)
 def run_template(
     template_name_or_file: str,
     mode: str,
@@ -1128,6 +1135,7 @@ def run_template(
     score_only: bool,
     issue_number: Optional[int],
     repo: Optional[str],
+    executor: str,
 ) -> None:
     """Execute a pipeline template end-to-end.
 
@@ -1156,6 +1164,11 @@ def run_template(
       orch run pipeline.yaml --mode dry-run
     """
     import json as _json
+
+    # --executor is only valid with --mode standalone (dry-run ignores it; openclaw is incompatible)
+    if mode == 'openclaw' and executor != 'auto':
+        click.echo("Error: --executor is only valid with --mode standalone", err=True)
+        sys.exit(1)
 
     from rich.console import Console
     from rich.table import Table
@@ -1317,7 +1330,7 @@ def run_template(
     # --- 3. Build PipelineRunner based on mode -----------------------
     try:
         if mode == 'standalone':
-            runner = PipelineRunner.standalone(api_key=api_key)
+            runner = PipelineRunner.standalone(api_key=api_key, executor_type=executor)
         elif mode == 'openclaw':
             # Read env vars only when actually needed (avoid leaking in dry-run tracebacks)
             import os as _os_env
@@ -1803,6 +1816,13 @@ def _get_persistent_db_path() -> str:
     default=None,
     help='Override path to the persistent pipeline-runs DB.',
 )
+@click.option(
+    '--executor',
+    type=click.Choice(['api', 'claudecode', 'auto']),
+    default='auto',
+    show_default=True,
+    help='Executor backend for standalone mode: api (ANTHROPIC_API_KEY), claudecode, or auto.',
+)
 def pipeline_launch(
     template_name_or_file: str,
     mode: str,
@@ -1817,6 +1837,7 @@ def pipeline_launch(
     gateway_token: Optional[str],
     skip_scoring: bool,
     db_path: Optional[str],
+    executor: str,
 ) -> None:
     """Launch a pipeline in the background and return immediately.
 
@@ -1839,6 +1860,11 @@ def pipeline_launch(
     # --- Validate issue_number (Issue #591): must be positive integer ---
     if issue_number is not None and issue_number <= 0:
         click.echo("Error: Issue number must be a positive integer.", err=True)
+        sys.exit(1)
+
+    # --executor is only valid with --mode standalone (openclaw is incompatible)
+    if mode == 'openclaw' and executor != 'auto':
+        click.echo("Error: --executor is only valid with --mode standalone", err=True)
         sys.exit(1)
 
     # --- Resolve template (with launch_fmt error messages) ---
@@ -1948,6 +1974,11 @@ def pipeline_launch(
     # If --test-command was provided without --issue, inject it now
     if test_command_override and issue_number is None:
         initial_input['test_command'] = test_command_override
+
+    # --- Persist executor_type so the daemon can forward it to the runner factory ---
+    # Only stored when non-default to avoid polluting input for the common case.
+    if executor != 'auto':
+        initial_input['_executor_type'] = executor
 
     # --- Dry-run defaults: fill initial_input with template's example_input (Issue #591) ---
     # In dry-run mode the pipeline won't actually execute, but we still validate required fields

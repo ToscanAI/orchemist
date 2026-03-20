@@ -212,7 +212,11 @@ def run_daemon(run_id: str, db_path: str) -> None:
 
         if mode == 'standalone':
             api_key = _os.environ.get('ANTHROPIC_API_KEY')
-            runner = PipelineRunner.standalone(api_key=api_key)
+            # Read executor_type stored in input_json (set by pipeline_launch CLI).
+            # Falls back to 'auto' for runs created before this feature was added.
+            _raw_input = json.loads(run['input_json']) if run.get('input_json') else {}
+            executor_type = _raw_input.pop('_executor_type', 'auto')
+            runner = PipelineRunner.standalone(api_key=api_key, executor_type=executor_type)
         elif mode == 'openclaw':
             gateway_url = run.get('gateway_url') or _os.environ.get('OPENCLAW_GATEWAY_URL')
             gateway_token = _os.environ.get('OPENCLAW_GATEWAY_TOKEN')
