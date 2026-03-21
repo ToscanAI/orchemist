@@ -83,7 +83,11 @@ phases:
       ## Previous Work
       {phase_summary}
 
-      If a prior adversary review exists at {output_dir}/spec_adversary.md, read it and address ALL findings before producing your updated spec.
+      ## Prior Rounds
+      {iteration_history}
+
+      ## Iteration Context
+      If prior rounds exist above, address ALL unresolved findings from prior rounds. Do not re-address findings already resolved.
 
       ## Issue
       **Title:** {config[issue_title]}
@@ -143,7 +147,13 @@ phases:
       ## Previous Work (for context only — do NOT re-raise findings already addressed)
       {phase_summary}
 
-      **IMPORTANT:** The spec agent may have updated the files on disk since the last round. Always read the files below as the authoritative source. If a finding from a prior adversary round is no longer present in the current `spec-behavioral.md`, do NOT repeat it — treat it as resolved. Only raise findings that exist in the CURRENT version of the files.
+      ## Prior Rounds
+      {iteration_history}
+
+      ## Iteration Context
+      If prior rounds exist above, do NOT repeat findings that the spec has already addressed. Only raise findings that are STILL present in the current spec files.
+
+      **IMPORTANT:** The spec agent may have updated the files on disk since the last round. Always read the files below as the authoritative source. Only raise findings that exist in the CURRENT version of the files.
 
       Read the behavioral contracts at: {output_dir}/spec-behavioral.md
       Read the full spec at: {output_dir}/spec.md
@@ -335,6 +345,12 @@ phases:
       ## Previous Work
       {phase_summary}
 
+      ## Prior Rounds
+      {iteration_history}
+
+      ## Iteration Context
+      If prior rounds exist above, focus on: (1) verifying that prior fixes were applied, (2) finding NEW issues not raised before. Do NOT re-raise issues that were already fixed.
+
       Read the implementation summary at: {output_dir}/implement.md
       Read the spec at: {output_dir}/spec.md
 
@@ -412,6 +428,12 @@ phases:
 
       ## Previous Work
       {phase_summary}
+
+      ## Prior Rounds
+      {iteration_history}
+
+      ## Iteration Context
+      If prior rounds exist above, do NOT re-apply fixes already committed. Focus only on NEW issues from the latest review.
 
       Read the code review at: {output_dir}/review.md
       Read the original spec at: {output_dir}/spec.md
