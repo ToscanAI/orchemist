@@ -361,13 +361,12 @@ phases:
       ## Task
       1. Checkout the feature branch: `git checkout {config[branch_name]}`
       2. Run `git diff main...{config[branch_name]}` to see all changes
-      2. Review EVERY changed file for:
+      3. Review EVERY changed file for:
          - **Correctness** — Does it do what the spec says?
          - **Security** — Injection, path traversal, unsafe operations?
          - **Edge cases** — Missing error handling, boundary conditions?
          - **Backward compatibility** — Does it break existing behavior?
          - **Test coverage** — Are the changes adequately tested?
-      3. Run the tests: `{config[test_command]}`
 
       ## Output
       Write your review to {output_dir}/review.md.
