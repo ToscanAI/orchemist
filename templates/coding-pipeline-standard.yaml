@@ -139,6 +139,7 @@ phases:
       approve: acceptance_test
       request_changes: spec
       failed: spec_adversary
+      success: spec           # fallback when verdict extraction fails
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the SPEC_ADVERSARY phase of an automated coding pipeline. Your verdict determines whether behavioral contracts are strong enough to drive acceptance tests. Do not ask questions or send messages. Deliver a structured verdict. [/PIPELINE CONTEXT]
 
