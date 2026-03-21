@@ -370,14 +370,46 @@ def run_daemon(run_id: str, db_path: str) -> None:
         completed_phases.append(phase_id)
         phase_outputs[phase_id] = phase_result
 
-        # Write phase output to disk
+        # Write phase output to disk (iteration-aware — Issue #648a)
         try:
             safe_pid = re.sub(r'[^\w\-]', '_', phase_id)
             phase_text = _extract_output_text(phase_result)
             if phase_text:
                 out_path = output_dir / f"{safe_pid}.md"
                 new_content = f"# Phase: {phase_id}\n\n{phase_text}\n"
+
+                # Determine iteration number from metadata (BC-1 through BC-7)
+                iteration_num = phase_result.get('metadata', {}).get('iteration', 1)
+                if not isinstance(iteration_num, int) or iteration_num < 1:
+                    iteration_num = 1
+
+                # BC-3 / BC-3b: copy primary → round1 before first overwrite
+                if iteration_num == 2 and out_path.exists():
+                    round1_path = output_dir / f"{safe_pid}_round1.md"
+                    if not round1_path.exists():
+                        try:
+                            round1_path.write_text(out_path.read_text())
+                        except Exception as _exc:
+                            logger.warning(
+                                "Failed to copy round1 file for phase '%s': %s",
+                                phase_id, _exc,
+                            )
+
+                # BC-1 / BC-2: write primary file (existing size-check behaviour preserved)
                 _safe_write_phase_output(out_path, new_content, phase_id)
+
+                # BC-2: write round-indexed snapshot for N > 1 (always fresh, bypasses size check)
+                if iteration_num > 1:
+                    try:
+                        round_path = output_dir / f"{safe_pid}_round{iteration_num}.md"
+                        round_path.write_text(new_content)
+                    except Exception as _exc:
+                        logger.warning(
+                            "Failed to write round-indexed file for phase '%s' "
+                            "iteration %d: %s",
+                            phase_id, iteration_num, _exc,
+                        )
+
             # Write JSON
             (output_dir / f"{safe_pid}.json").write_text(
                 json.dumps(phase_result, indent=2, default=str)

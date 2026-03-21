@@ -1292,7 +1292,7 @@ class PhaseSequencer:
                 return phase
         raise KeyError(f"Phase '{phase_id}' not found in template '{self.template.id}'")
 
-    def _build_phase_input(self, phase: PhaseDefinition, initial_input: dict, failure_context: str = "") -> str:
+    def _build_phase_input(self, phase: PhaseDefinition, initial_input: dict, failure_context: str = "", iteration_history: str = "") -> str:
         """Build the prompt string for a phase.
 
         Uses Python's ``str.format()`` to interpolate:
@@ -1454,6 +1454,7 @@ class PhaseSequencer:
                 failure_context=escaped_failure_context,
                 output_dir=output_dir_str,
                 phase_summary=phase_summary,
+                iteration_history=iteration_history,
                 **phase_kwargs,
             )
         except (KeyError, IndexError, AttributeError) as exc:
@@ -2299,6 +2300,167 @@ class StateMachineSequencer(PhaseSequencer):
         ``phase_outputs``.  Reset on each :meth:`execute` call."""
         self.iteration_counts: Dict[str, int] = defaultdict(int)
         """Total execution count per phase.  Reset on each :meth:`execute` call."""
+        self._loop_partners: Dict[str, Optional[str]] = {}
+        """Loop partner map built at the start of execute(). Empty until execute() runs."""
+        self._current_build_iter: int = 1
+        """Current iteration being built; set by execute() before _build_phase_input call."""
+
+    # ------------------------------------------------------------------
+    # Loop detection and iteration history helpers
+    # ------------------------------------------------------------------
+
+    def _reachable(self, start_id: Optional[str], target_id: str, visited: set) -> bool:
+        """BFS reachability check through success transitions only.
+
+        Args:
+            start_id:  ID of the phase to start from (may be None).
+            target_id: ID of the phase we want to reach.
+            visited:   Mutable set of already-visited phase IDs (cycle guard).
+
+        Returns:
+            True if ``target_id`` is reachable from ``start_id`` via success
+            transitions; False otherwise.
+        """
+        if start_id is None:
+            return False
+        if start_id == target_id:
+            return True
+        if start_id in visited:
+            return False
+        visited.add(start_id)
+        phase = self._phase_map.get(start_id)
+        if phase is None:
+            return False
+        effective = {**self.template.default_transitions, **phase.transitions}
+        return self._reachable(effective.get("success"), target_id, visited)
+
+    def _detect_loop_partners(self) -> Dict[str, Optional[str]]:
+        """Detect loop partner pairs from the transition graph.
+
+        A phase A is considered to have B as its loop partner when:
+        - A transitions to B on ``request_changes``
+        - B transitions back to A (directly or indirectly) on ``success``
+
+        Returns:
+            Dict mapping phase_id → partner_phase_id (or None if no loop partner).
+        """
+        partners: Dict[str, Optional[str]] = {}
+        for phase in self.template.phases:
+            effective = {**self.template.default_transitions, **phase.transitions}
+            rc_target = effective.get("request_changes")
+            if rc_target is None:
+                partners[phase.id] = None
+                continue
+            partner_phase = self._phase_map.get(rc_target)
+            if partner_phase is None:
+                partners[phase.id] = None
+                continue
+            partner_effective = {**self.template.default_transitions, **partner_phase.transitions}
+            success_target = partner_effective.get("success")
+            if self._reachable(success_target, phase.id, visited=set()):
+                partners[phase.id] = rc_target
+            else:
+                partners[phase.id] = None
+        return partners
+
+    # Maximum characters per section in {iteration_history} (BC-14)
+    _MAX_SECTION_CHARS: int = 4000
+
+    def _build_iteration_history(self, phase_id: str, current_iter: int) -> str:
+        """Build the ``{iteration_history}`` string for a phase at the given iteration.
+
+        Args:
+            phase_id:     ID of the current phase.
+            current_iter: Current iteration number (1-based).  At iteration 1 the
+                          method returns an empty string (BC-8).
+
+        Returns:
+            Formatted history block (BC-13 through BC-16, BC-19), or ``""`` when
+            ``current_iter <= 1`` or no prior history exists.
+        """
+        if current_iter <= 1:
+            return ""
+
+        partner_id = self._loop_partners.get(phase_id)  # None for non-loop phases
+        output_dir_str = str(self.output_dir) if self.output_dir else None
+        sections = []
+
+        for round_num in range(1, current_iter):
+            # ── Current phase section ────────────────────────────────────────
+            phase_prior = self.iteration_history.get(phase_id, [])
+            if round_num > len(phase_prior):
+                # Defensive guard — shouldn't happen in normal execution
+                continue
+
+            text = _extract_phase_text(phase_prior[round_num - 1])
+            if text is None:
+                text = ""
+            if len(text) > self._MAX_SECTION_CHARS:
+                if output_dir_str:
+                    safe_pid = re.sub(r'[^\w\-]', '_', phase_id)
+                    suffix = (
+                        f"\n[...truncated, full output at "
+                        f"{output_dir_str}/{safe_pid}_round{round_num}.md]"
+                    )
+                else:
+                    suffix = "\n[...truncated]"
+                text = text[:self._MAX_SECTION_CHARS] + suffix
+            sections.append(f"--- Round {round_num}: {phase_id} ---\n{text}")
+
+            # ── Partner section (BC-9, BC-19) ────────────────────────────────
+            if partner_id is not None:
+                partner_prior = self.iteration_history.get(partner_id, [])
+                if round_num <= len(partner_prior):
+                    # Partner ran this round — include its section (BC-16: even empty output)
+                    ptext = _extract_phase_text(partner_prior[round_num - 1])
+                    if ptext is None:
+                        ptext = ""
+                    if len(ptext) > self._MAX_SECTION_CHARS:
+                        if output_dir_str:
+                            safe_ppid = re.sub(r'[^\w\-]', '_', partner_id)
+                            suffix = (
+                                f"\n[...truncated, full output at "
+                                f"{output_dir_str}/{safe_ppid}_round{round_num}.md]"
+                            )
+                        else:
+                            suffix = "\n[...truncated]"
+                        ptext = ptext[:self._MAX_SECTION_CHARS] + suffix
+                    sections.append(f"--- Round {round_num}: {partner_id} ---\n{ptext}")
+                # else: partner hasn't run this round → omit partner section only (BC-19)
+
+        return "\n\n".join(sections) if sections else ""
+
+    # ------------------------------------------------------------------
+    # Prompt building — override to inject {iteration_history}
+    # ------------------------------------------------------------------
+
+    def _build_phase_input(
+        self,
+        phase: PhaseDefinition,
+        initial_input: dict,
+        failure_context: str = "",
+    ) -> str:
+        """Build the prompt string, injecting ``{iteration_history}`` for loop phases.
+
+        This override computes the ``{iteration_history}`` value from
+        :meth:`_build_iteration_history` using :attr:`_current_build_iter`,
+        then delegates all other formatting to the parent implementation.
+
+        .. note::
+            ``StateMachineSequencer`` runs phases sequentially (single-threaded
+            execution loop), so :attr:`_current_build_iter`` is always consistent
+            when this method is called from :meth:`execute`.  Do NOT call this
+            method from a parallel wave worker without setting
+            ``_current_build_iter`` under ``_phase_outputs_lock`` first.
+        """
+        current_iter = getattr(self, '_current_build_iter', 1)
+        history_str = self._build_iteration_history(phase.id, current_iter)
+        return super()._build_phase_input(
+            phase,
+            initial_input,
+            failure_context,
+            iteration_history=history_str,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -2339,6 +2501,9 @@ class StateMachineSequencer(PhaseSequencer):
         # ── Reset per-execution tracking (supports re-use of the sequencer) ───
         self.iteration_history = defaultdict(list)
         self.iteration_counts = defaultdict(int)
+
+        # ── Detect loop partners for {iteration_history} variable (Issue #648a) ──
+        self._loop_partners = self._detect_loop_partners()
 
         # ── Pipeline-start hook (e.g. git branch creation) ────────────────────
         if self.on_pipeline_start is not None:
@@ -2474,6 +2639,9 @@ class StateMachineSequencer(PhaseSequencer):
                 )
 
                 # ── Build prompt and submit task ──────────────────────────────
+                # Set current iteration so _build_phase_input override can inject
+                # the correct {iteration_history} value (Issue #648a).
+                self._current_build_iter = current_iter
                 phase_input = self._build_phase_input(phase, initial_input)
                 preferred_model = self._resolve_model_tier(phase.model_tier)
 
