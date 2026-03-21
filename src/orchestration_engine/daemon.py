@@ -587,7 +587,9 @@ def run_daemon(run_id: str, db_path: str) -> None:
 
     if aborted or (result and result.get('aborted')):
         failed_phase = (result or {}).get('failed_phase', 'unknown') if result else 'unknown'
-        msg = error_message or f"Pipeline aborted at phase '{failed_phase}'"
+        base_msg = error_message or f"Pipeline aborted at phase '{failed_phase}'"
+        _finding_analysis = (result or {}).get('finding_analysis', '') if result else ''
+        msg = f"{base_msg} {_finding_analysis}".strip() if _finding_analysis else base_msg
         logger.error("Pipeline FAILED: %s", msg)
         db.update_pipeline_run(
             run_id,
