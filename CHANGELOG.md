@@ -163,6 +163,25 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 #### Output & File Handling
 - Write FILE blocks to disk (#189) — parse and persist `FILE:` blocks from phase output to disk
 
+#### Executors & Integrations (continued)
+- Claude Code executor (#637, PR #644) — native `claude --print` executor for local Claude Code pipelines
+- `--executor` CLI flag (#636, PR #643) — override executor at launch/run time without editing templates
+- MCP server scaffold + transport layer (#467, PR #598) — foundation for Model Context Protocol integration
+
+#### Templates (continued)
+- `coding-pipeline-v2` with codebase preparation phase (#605, PR #606) — dedicated prepare phase for context loading
+- Renamed coding pipelines to intent-based names (PR #5168199) — `coding-pipeline-standard`, `coding-pipeline-with-prep`; v1/v2 kept as backward-compat aliases
+- `coding-pipeline-standard` template (#646) — stable production coding pipeline template
+- `docs-pipeline-v1` for technical documentation (#608, PR #609) — 3-phase doc workflow (research → draft → review)
+- `hello-pipeline` for E2E testing and demos — minimal pipeline for smoke tests and quickstart
+- Enriched prepare phase with behavioral contract pre-answers — reduces adversary round-trips
+- Adversary phase skips re-raising resolved findings from prior rounds — prevents false regressions
+
+#### Testing & Scenarios (continued)
+- MCP E2E integration test for full tool chain (#471, PR #612) — end-to-end test covering MCP server lifecycle
+- Behavioral E2E integration tests for full trust chain (#534, PR #547)
+- CI fixture decoupling (#632, PR #634) — `coding-pipeline-fixture.yaml` in `examples/`; `ORCH_DEFAULT_TEMPLATE` env-var support; lint enforcement test
+
 ### Fixed
 
 #### Orchestration
@@ -210,6 +229,20 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 - Poll timeout raised from 600s to 1200s (#240) — prevent premature timeout on long-running sessions
 - Session cleanup detection (#241) — detect and handle externally cleaned-up OpenClaw sessions
 
+#### Templates & Validation (continued)
+- Deduplicated `list_templates()` by template id instead of filename stem (#614, PR #627) — prevents ghost entries for aliased templates
+- Fixed 4 independent CI bugs across all Python versions (#628, PR #629)
+- Rewrote f-string backslash expressions for Python 3.10/3.11 compatibility (#618, PR #626)
+- Removed misleading "possible rate limit" from stall warnings (#581, PR #621)
+- Priority ordering in `extract_verdict()` to prevent APPROVE shadowing REQUEST_CHANGES (#600, PR #604)
+- Added failed transitions to all pipeline phases (#602, PR #603) — prevents stuck runs on unexpected output
+- Added file-handoff to research + editorial templates (#596, PR #597)
+- Fixed `depends_on` and config defaults in `research-competitive-v2` (#594, PR #595)
+- Stripped markdown fences before JSON parse in diagnosis module (#579, PR #582)
+- Enforced max_retries cap in adaptive retry engine (#580, PR #583)
+- Gated postflight routing and GitHub hooks by template category (#578, PR #586)
+- Fixed prepare phase to output text reply, not file write (PR #320976f)
+
 ### Documentation
 - `CONTRIBUTING.md` + Template Authoring Guide (#112, #113) — YAML reference, field docs, cookbook patterns
 - nohup instructions for long-running OpenClaw pipelines (#150)
@@ -225,3 +258,11 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 - Issue automation documentation — classification, webhooks, sprint chain
 - Forensics audit (8 reports) — docs-vs-implementation gap analysis and remediation plan
 - Post-remediation operational advisory for non-technical operators
+- Standalone Mode Guide — Claude Code + Cursor with `ANTHROPIC_API_KEY` (#631)
+- Tutorial and monitoring guide (#574, PR #622) — end-to-end walkthrough and ops reference
+- MCP integration guide (#611, PR #620) — Claude Code + Cursor setup with Orchemist MCP server
+- GitHub issue templates for docs/content/research pipeline types (#575, PR #610)
+- Troubleshooting guide with stale output dir lesson
+- `CONTEXT_GUIDE.md` for writing effective `files_context` entries
+- Trust hardening risks added to `ROADMAP.md` (#569)
+- PyPI publish workflow (#573, PR #623) — automated release to PyPI on version tag; PyPI badge in README
