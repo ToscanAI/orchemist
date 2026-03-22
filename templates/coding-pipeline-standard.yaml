@@ -140,6 +140,7 @@ phases:
       4. Do NOT rewrite, reorganize, or rephrase sections the adversary did NOT flag
       5. Contracts the adversary previously approved MUST remain byte-identical
       6. Write the updated files back to {output_dir}/spec.md and {output_dir}/spec-behavioral.md
+      7. **SYNC RULE:** Any change to Section A in spec.md MUST be identically reflected in spec-behavioral.md. The adversary reviews ONLY spec-behavioral.md — if you fix something in spec.md but not spec-behavioral.md, the adversary will flag it again.
 
       Think of this as a code review fix: apply the minimum targeted edit to resolve each finding. Do not refactor the whole file.
 
