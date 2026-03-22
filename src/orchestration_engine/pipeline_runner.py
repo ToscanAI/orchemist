@@ -10,7 +10,7 @@ Used exclusively by the `orch run` CLI command.
 import tempfile
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from .db import Database
 from .queue import TaskQueue
@@ -198,6 +198,35 @@ class PipelineRunner:
             failure_rate=failure_rate,
         )
         return cls(executors=[executor], db_path=db_path)
+
+    @classmethod
+    def claudecode(
+        cls,
+        mcp_server: Any,
+        db_path: str = ":memory:",
+        fallback_config: Optional[dict] = None,
+    ) -> "PipelineRunner":
+        """Create a PipelineRunner using ClaudeCodeExecutor (MCP session routing).
+
+        Routes task execution through the active Claude Code MCP session using
+        the sampling capability. No Anthropic API key required — uses the user's
+        Claude Code subscription.
+
+        Args:
+            mcp_server:      A FastMCP server instance with an active session.
+                             Must not be None and must expose get_context().
+            db_path:         SQLite path (":memory:" for no-disk, "temp" for temp file).
+            fallback_config: Optional fallback configuration dict, stored on the
+                             runner instance (same as standalone() behavior).
+
+        Raises:
+            ValueError: If mcp_server is None or lacks get_context.
+                        Propagated directly from ClaudeCodeExecutor.__init__.
+        """
+        from .executors.claudecode_executor import ClaudeCodeExecutor
+
+        executor = ClaudeCodeExecutor(mcp_server=mcp_server)
+        return cls(executors=[executor], db_path=db_path, fallback_config=fallback_config)
 
     # ------------------------------------------------------------------
     # Context manager support
