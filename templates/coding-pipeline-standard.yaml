@@ -75,6 +75,7 @@ phases:
     transitions:
       success: spec_adversary
       failed: spec
+      exhausted: postmortem_spec
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the SPEC phase (1/8) of an automated coding pipeline. Your output feeds the spec_adversary phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
 
@@ -87,7 +88,8 @@ phases:
       {iteration_history}
 
       ## Iteration Context
-      If prior rounds exist above, address ALL unresolved findings from prior rounds. Do not re-address findings already resolved.
+      If prior rounds exist above, this is a REVISION round. Follow the revision instructions below.
+      If no prior rounds exist, this is round 1. Follow the initial generation instructions below.
 
       ## Issue
       **Title:** {config[issue_title]}
@@ -101,8 +103,8 @@ phases:
       ## Codebase Context
       {config[files_context]}
 
-      ## Task
-      Produce a clear implementation spec with TWO sections: behavioral and implementation.
+      ## Task — Round 1 (no prior rounds above)
+      If this is the FIRST round (no prior rounds listed above), produce a clear implementation spec with TWO sections:
 
       ### Section A: Behavioral Contract (REQUIRED — this drives acceptance tests)
       Describe WHAT the system should do, not HOW. Use this format:
@@ -128,6 +130,19 @@ phases:
       Write your FULL spec to {output_dir}/spec.md
       ALSO write Section A ONLY to {output_dir}/spec-behavioral.md (just the behavioral contracts, no implementation details)
 
+      ## Task — Round 2+ (prior rounds exist above)
+      If prior rounds exist above, this is a REVISION round. The adversary flagged specific issues.
+
+      **CRITICAL INSTRUCTIONS FOR REVISION:**
+      1. Read the EXISTING files at {output_dir}/spec.md and {output_dir}/spec-behavioral.md
+      2. Identify ONLY the sections flagged by the adversary in the most recent round above
+      3. Edit ONLY those flagged sections — fix the specific issues raised
+      4. Do NOT rewrite, reorganize, or rephrase sections the adversary did NOT flag
+      5. Contracts the adversary previously approved MUST remain byte-identical
+      6. Write the updated files back to {output_dir}/spec.md and {output_dir}/spec-behavioral.md
+
+      Think of this as a code review fix: apply the minimum targeted edit to resolve each finding. Do not refactor the whole file.
+
   # Phase 1b: Adversarial Spec Review
   - id: spec_adversary
     name: "Spec Adversary Review"
@@ -138,6 +153,7 @@ phases:
     transitions:
       approve: acceptance_test
       request_changes: spec
+      exhausted: postmortem_spec
       failed: spec_adversary
       success: spec           # fallback when verdict extraction fails
     prompt_template: |
@@ -188,6 +204,99 @@ phases:
 
       If APPROVE: write only APPROVE (optionally followed by brief rationale).
       Write your full adversary review to {output_dir}/spec_adversary.md
+
+  # Phase 1c: Postmortem (runs only on exhausted — spec/adversary could not agree)
+  # Phase 1c: Spec Postmortem (runs only on exhausted — spec/adversary could not agree)
+  - id: postmortem_spec
+    name: "Spec Exhaustion Postmortem"
+    description: "When spec and adversary exhaust iterations without agreement, extract adversary findings and propose issue improvements for the next attempt."
+    model_tier: sonnet
+    thinking_level: medium
+    transitions: {}
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the POSTMORTEM phase of an automated coding pipeline. The spec and adversary phases exhausted their iteration limit without reaching agreement. Your job is to extract the adversary's unresolved findings and produce actionable improvements for the GitHub issue. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      You are a technical analyst performing a postmortem on a failed spec review cycle.
+
+      ## Pipeline Context
+      **Issue:** {config[issue_title]} (#{config[issue_number]})
+      **Repository:** {config[repo_path]}
+      **What happened:** The spec agent and adversary reviewer went through multiple rounds without the adversary approving the behavioral contracts.
+
+      ## Current Spec Files
+      Read the latest spec at: {output_dir}/spec.md
+      Read the latest behavioral contracts at: {output_dir}/spec-behavioral.md
+      Read the latest adversary review at: {output_dir}/spec_adversary.md
+
+      ## Round History
+      Read ALL round files from {output_dir}/ to understand the full evolution:
+      - spec_round1.md, spec_adversary_round1.md, spec_round2.md, spec_adversary_round2.md, etc.
+      - These files contain the complete spec/adversary exchange across all rounds
+
+      ## Your Task
+
+      1. **Identify persistent findings** — Which adversary findings appeared in multiple rounds and were never resolved?
+      2. **Root cause analysis** — For each persistent finding, explain WHY the spec agent failed to resolve it. Common causes:
+         - The issue body contains an architectural contradiction (spec can't fix a design problem)
+         - The finding requires domain knowledge not in the issue or codebase context
+         - The finding is about verbatim strings/values missing from the issue body
+         - The spec agent misunderstood the adversary's request
+      3. **Proposed issue improvements** — For each persistent finding, write the EXACT text that should be added to or changed in the GitHub issue body to resolve it. Use the format:
+         - **Finding:** [what the adversary flagged]
+         - **Root cause:** [why the spec agent couldn't fix it]
+         - **Issue fix:** [exact text to add/change in the issue body]
+
+      Write your full postmortem to {output_dir}/postmortem_spec.md
+
+      The pipeline ends here. The enriched issue will be picked up by the next pipeline launch.
+
+  # Phase 5b: Review Postmortem (runs only on exhausted — review/fix could not converge)
+  - id: postmortem_review
+    name: "Review Loop Exhaustion Postmortem"
+    description: "When the review/fix loop exhausts iterations without approval, extract persistent review findings and diagnose why fixes failed to satisfy the reviewer."
+    model_tier: sonnet
+    thinking_level: medium
+    transitions: {}
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the POSTMORTEM phase of an automated coding pipeline. The review and fix phases exhausted their iteration limit without the reviewer approving the implementation. Your job is to extract the reviewer's unresolved findings and diagnose why the fix agent could not satisfy them. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      You are a technical analyst performing a postmortem on a failed review/fix cycle.
+
+      ## Pipeline Context
+      **Issue:** {config[issue_title]} (#{config[issue_number]})
+      **Repository:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+      **What happened:** The reviewer and fix agent went through multiple rounds without the reviewer approving the implementation.
+
+      ## Current Files
+      Read the latest review at: {output_dir}/review.md
+      Read the latest fix notes at: {output_dir}/fix.md
+      Read the implementation spec at: {output_dir}/spec.md
+      Read the behavioral contracts at: {output_dir}/spec-behavioral.md
+
+      ## Round History
+      Read ALL round files from {output_dir}/ to understand the full evolution:
+      - review_round1.md, fix_round1.md, review_round2.md, fix_round2.md, etc.
+      - These files contain the complete review/fix exchange across all rounds
+
+      ## Your Task
+
+      1. **Identify persistent findings** — Which review findings appeared in multiple rounds and were never resolved?
+      2. **Root cause analysis** — For each persistent finding, explain WHY the fix agent failed to resolve it. Common causes:
+         - The fix is cosmetic but the reviewer wants a structural change
+         - The fix introduces a new issue while solving the flagged one
+         - The fix agent lacks context about architectural constraints
+         - The review finding is subjective or contradicts the spec
+         - The acceptance tests pass but the reviewer wants changes beyond the spec
+      3. **Assessment** — For each persistent finding, classify it:
+         - **Spec gap:** The behavioral contracts don't cover this — needs a spec update
+         - **Implementation gap:** The code doesn't satisfy an existing contract — needs a better fix
+         - **Scope creep:** The reviewer is asking for changes beyond the issue scope — document and defer
+         - **Contradiction:** The reviewer's request conflicts with the spec or acceptance tests — escalate
+
+      Write your full postmortem to {output_dir}/postmortem_review.md
+
+      The pipeline ends here. The findings should inform the next pipeline run or a manual intervention.
 
   # Phase 2: Behavioral Acceptance Tests
   - id: acceptance_test
@@ -316,6 +425,7 @@ phases:
     transitions:
       success: review
       failed: implement
+      exhausted: postmortem_review
 
   # Phase 4: Code Review (Opus + Supervisor)
   - id: review
@@ -421,6 +531,7 @@ phases:
     transitions:
       success: acceptance_run
       failed: fix
+      exhausted: postmortem_review
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the FIX phase of an automated coding pipeline. Your output feeds a re-review — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
 
