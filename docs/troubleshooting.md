@@ -4,6 +4,33 @@ Common issues, their root causes, and how to fix them.
 
 ---
 
+## Preflight Fails: "Working tree has N uncommitted change(s)"
+
+**Symptoms:**
+- Pipeline fails immediately on launch with `Preflight FAILED (Definition of Ready not met)`
+- Error: `[git_clean] Working tree has 1 uncommitted change(s)`
+- `git status --short` shows clean when checked manually
+
+**Root Cause:**
+The daemon writes `.orch-daemon.pid` and `.orch-daemon.log` to `output_dir` **before** running the preflight `git_clean` check. When `output_dir` is set to the same path as the repo being checked, these daemon artifacts appear as uncommitted changes to `git status --porcelain`. The PID file is cleaned up on daemon exit, so checking manually after the failure shows a clean tree — making this hard to diagnose.
+
+**Fix:**
+- **Never set `output_dir` to the repo path.** Use `/tmp/output-{issue}` or a unique directory outside the repo.
+- This is the same principle as "Stale Output Directory Contamination" below — `output_dir` should always be a fresh, isolated directory.
+
+**Example:**
+```bash
+# BAD — output_dir equals repo_path, daemon artifacts trip preflight
+orch launch template.yaml --output-dir /home/user/my-repo
+
+# GOOD — output_dir is separate from repo
+orch launch template.yaml --output-dir /tmp/output-638
+```
+
+**History:** This caused 4 consecutive preflight failures on 2026-03-22. Every previous successful coding pipeline had used `/tmp/output-*` as the output directory. The bug was latent — it only triggers when `output_dir == repo_path`.
+
+---
+
 ## Stale Output Directory Contamination
 
 **Symptoms:**
