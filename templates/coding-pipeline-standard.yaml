@@ -134,7 +134,17 @@ phases:
 
       Be specific. Reference actual file paths and function names from the codebase context.
 
-      **On revision rounds:** Read the adversary's findings from the prior round. If findings relate to implementation details leaking into behavioral contracts, adjust your spec to clearly separate observable outcomes from internal implementation. If findings relate to missing edge cases, add implementation steps for those cases and describe their observable outcomes.
+      **CRITICAL INSTRUCTIONS FOR REVISION ROUNDS:**
+      1. Read the EXISTING file at {output_dir}/spec.md
+      2. Read the adversary's findings from the most recent round above
+      3. Fix ONLY the sections related to adversary findings — do not rewrite unflagged sections
+      4. Implementation steps the adversary did NOT flag MUST remain byte-identical
+      5. If findings relate to implementation details leaking into behavioral contracts, adjust your spec to clearly separate observable outcomes from internal implementation
+      6. If findings relate to missing edge cases, add implementation steps for those cases and describe their observable outcomes
+      7. If findings relate to divergence between spec and behavioral contracts, update your spec to match
+
+      Think of this as a code review fix: apply the minimum targeted edit. Do not refactor the whole file.
+      A full rewrite wastes tokens and loses adversary-approved content. Surgical edits only.
 
       Write your implementation spec to {output_dir}/spec.md
 
@@ -197,12 +207,18 @@ phases:
 
       A contract that only specifies an exit code without observable output is TRIVIALLY satisfiable. Always include what the user can SEE or RECEIVE.
 
-      ### On revision rounds
-      1. Read the adversary's findings from the prior round
-      2. Fix ONLY the flagged contracts — do not rewrite unflagged ones
-      3. Contracts the adversary previously approved MUST remain byte-identical
-      4. If the adversary flagged a "missing edge case", add a new contract for it
-      5. If the adversary flagged "leakage", remove the internal reference and describe the observable outcome instead
+      ### CRITICAL INSTRUCTIONS FOR REVISION ROUNDS
+      1. Read the EXISTING file at {output_dir}/behavioral.md
+      2. Read the adversary's findings from the most recent round above
+      3. Fix ONLY the flagged contracts — do not rewrite unflagged ones
+      4. Contracts the adversary previously approved MUST remain byte-identical
+      5. If the adversary flagged a "missing edge case", add a new contract for it
+      6. If the adversary flagged "leakage", remove the internal reference and describe the observable outcome instead
+      7. If the adversary flagged "vague", make the contract concrete with specific observable values (exit codes, exact strings, regex patterns)
+      8. If the adversary flagged "divergence", align the contract with what the implementation spec describes
+
+      Think of this as a code review fix: apply the minimum targeted edit. Do not refactor the whole file.
+      A full rewrite wastes tokens and loses adversary-approved content. Surgical edits only.
 
       Write your behavioral contracts to {output_dir}/behavioral.md
 
