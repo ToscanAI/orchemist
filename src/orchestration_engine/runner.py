@@ -58,6 +58,44 @@ class TaskExecutor(ABC):
         pass
 
 
+def _dry_run_synthetic_text(task_type: "TaskType") -> str:
+    """Return a deterministic synthetic text string for dry-run phase output.
+
+    The returned string satisfies all downstream consumers:
+    - First non-blank line is exactly ``APPROVE`` (passes verdict parsers and
+      spec-adversary output consumers).
+    - Contains ``(dry-run)`` so observers can distinguish synthetic from real output.
+    - Is deterministic: given the same task_type, always returns the same string.
+
+    Args:
+        task_type: The TaskType enum value for the phase being simulated.
+
+    Returns:
+        A synthetic plain-prose string safe for all routing consumers.
+    """
+    # Task-type-specific body text (makes logs more readable without affecting routing)
+    _BODY_MAP = {
+        "content": "Synthetic content output generated in dry-run mode. The requested content has been produced according to the provided instructions.",
+        "code": "Synthetic code output generated in dry-run mode. The implementation matches the specification and all edge cases are handled.",
+        "research": "Synthetic research output generated in dry-run mode. The topic has been researched and relevant findings are documented.",
+        "translation": "Synthetic translation output generated in dry-run mode. The source text has been accurately translated into the target language.",
+        "review": "Synthetic review output generated in dry-run mode. All submitted materials have been reviewed and feedback is incorporated.",
+        "analysis": "Synthetic analysis output generated in dry-run mode. The data has been analysed and key insights are documented.",
+        "triage": "Synthetic triage output generated in dry-run mode. Issues have been categorised and prioritised appropriately.",
+        "compliance": "Synthetic compliance output generated in dry-run mode. All regulatory requirements have been verified and documented.",
+        "financial": "Synthetic financial output generated in dry-run mode. The financial data has been processed and results are accurate.",
+        "sales": "Synthetic sales output generated in dry-run mode. Customer requirements have been addressed and next steps are clear.",
+        "support": "Synthetic support output generated in dry-run mode. The support request has been resolved satisfactorily.",
+        "command": "Synthetic command output generated in dry-run mode. The requested command has been executed and output captured.",
+        "acceptance_run": "Synthetic acceptance-run output generated in dry-run mode. All acceptance tests have been executed and results recorded.",
+    }
+    # Resolve body from map; fall back to a generic body for unknown/future types
+    type_value = task_type.value if hasattr(task_type, "value") else str(task_type)
+    body = _BODY_MAP.get(type_value, "Synthetic output generated in dry-run mode. The task has been executed successfully.")
+
+    return f"APPROVE\n\n{body} (dry-run)"
+
+
 class DryRunExecutor(TaskExecutor):
     """Dry run executor for testing - returns mock results."""
     
@@ -107,10 +145,12 @@ class DryRunExecutor(TaskExecutor):
             state=TaskState.SUCCESS,
             confidence=0.85,
             result={
+                "text": _dry_run_synthetic_text(task.type),
                 "message": f"Mock execution of {task.type.value} task",
                 "model_used": model_tier or "dry-run",
                 "worker_id": worker_id,
-                "payload_size": len(str(task.payload))
+                "payload_size": len(str(task.payload)),
+                "dry_run": True,
             },
             started_at=start_time,
             completed_at=datetime.now(),

@@ -1317,15 +1317,24 @@ def run_template(
     # --- 2c. Validate required config fields (#411) ---
     missing = _validate_required_config(template, initial_input)
     if missing:
-        click.echo(f"✗ Missing {len(missing)} required config field(s):", err=True)
-        for field in missing:
-            click.echo(f"  • {field}", err=True)
-        click.echo(
-            "\nThese fields are required by the template's config_schema. "
-            "Add them to your --input or --input-file JSON.",
-            err=True,
-        )
-        sys.exit(1)
+        if mode == 'dry-run':
+            # In dry-run mode, missing required fields are non-fatal: phases run with
+            # synthetic output anyway, so warn but continue (issue #659).
+            click.echo(
+                f"⚠ Dry-run: {len(missing)} required field(s) not provided "
+                f"({', '.join(missing)}) — continuing with synthetic output.",
+                err=True,
+            )
+        else:
+            click.echo(f"✗ Missing {len(missing)} required config field(s):", err=True)
+            for field in missing:
+                click.echo(f"  • {field}", err=True)
+            click.echo(
+                "\nThese fields are required by the template's config_schema. "
+                "Add them to your --input or --input-file JSON.",
+                err=True,
+            )
+            sys.exit(1)
 
     # --- 3. Build PipelineRunner based on mode -----------------------
     try:
