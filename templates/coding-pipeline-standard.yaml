@@ -135,14 +135,18 @@ phases:
 
       **CRITICAL INSTRUCTIONS FOR REVISION:**
       1. Read the EXISTING files at {output_dir}/spec.md and {output_dir}/spec-behavioral.md
-      2. Identify ONLY the sections flagged by the adversary in the most recent round above
-      3. Edit ONLY those flagged sections — fix the specific issues raised
+      2. Read the adversary's findings from the most recent round above
+      3. Fix ONLY the flagged issues — do not rewrite unflagged sections
       4. Do NOT rewrite, reorganize, or rephrase sections the adversary did NOT flag
-      5. Contracts the adversary previously approved MUST remain byte-identical
-      6. Write the updated files back to {output_dir}/spec.md and {output_dir}/spec-behavioral.md
-      7. **SYNC RULE:** Any change to Section A in spec.md MUST be identically reflected in spec-behavioral.md. The adversary reviews ONLY spec-behavioral.md — if you fix something in spec.md but not spec-behavioral.md, the adversary will flag it again.
+      5. Contracts and implementation steps the adversary previously approved MUST remain byte-identical
+      6. If the adversary flagged a "missing edge case", add a new contract or implementation step for it
+      7. If the adversary flagged "leakage" in Section A, remove the internal reference and describe the observable outcome instead
+      8. If the adversary flagged a "divergence" between Section A and Section B, update whichever section is wrong to match the other
+      9. Write the updated files back to {output_dir}/spec.md and {output_dir}/spec-behavioral.md
+      10. **SYNC RULE:** Any change to Section A in spec.md MUST be identically reflected in spec-behavioral.md. The adversary reviews ONLY spec-behavioral.md — if you fix something in spec.md but not spec-behavioral.md, the adversary will flag it again.
 
       Think of this as a code review fix: apply the minimum targeted edit to resolve each finding. Do not refactor the whole file.
+      A full rewrite wastes tokens and loses adversary-approved content. Surgical edits only.
 
   # Phase 1b: Adversarial Spec Review
   - id: spec_adversary
