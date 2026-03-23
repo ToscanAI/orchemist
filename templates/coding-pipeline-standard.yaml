@@ -1,8 +1,8 @@
 id: coding-pipeline-standard
 name: "Coding Pipeline Standard"
-description: "8-phase coding pipeline: spec → spec_adversary → acceptance_tests → implement → acceptance_run → Opus review → fix → acceptance_run → review loop → test. Adversarial spec review. Engine-verified behavioral validation after EVERY code change (implement and fix)."
+description: "10-phase coding pipeline with 3-phase spec loop: spec → behavioral → adversary. Each agent writes ONE file, eliminating the bifurcation bug where secondary artifacts (spec-behavioral.md) were never written to disk. Adversarial spec review, engine-verified behavioral validation after EVERY code change."
 author: "Toscan"
-version: "1.6.0"
+version: "2.0.0"
 scenario: scenarios/coding-pipeline-v1-smoke.yaml
 category: "code"
 tags: [code, development, review, testing, pipeline]
@@ -65,21 +65,39 @@ example_input:
   repo_url: "https://github.com/ToscanAI/orchestration-engine"
 
 phases:
-  # Phase 1: Spec Interpretation
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # SPEC LOOP: spec → behavioral → adversary (3-phase, each writes ONE file)
+  #
+  # Design rationale (v2.0):
+  # The v1.x 2-phase loop (spec → adversary) had a structural bug: the spec
+  # agent was asked to write TWO files (spec.md + spec-behavioral.md) but the
+  # OUTPUT_CAPTURE_INSTRUCTION told it not to write files. The daemon only
+  # persists the main phase output as {phase_id}.md — so spec-behavioral.md
+  # was never written to disk. The adversary read a stale/missing file every
+  # round, wasting iterations.
+  #
+  # The 3-phase loop fixes this: each agent writes exactly ONE artifact.
+  # The daemon persists it automatically. No bifurcation, no sync issues.
+  #
+  # Loop: spec → behavioral → adversary → [APPROVE] → acceptance_test
+  #                                      → [REQUEST_CHANGES] → spec (round 2)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Phase 1a: Implementation Spec (Section B only)
   - id: spec
-    name: "Spec Interpretation"
-    description: "Understand the issue and produce a clear implementation plan"
+    name: "Implementation Spec"
+    description: "Interpret the issue into an implementation plan (Section B). Does NOT write behavioral contracts — that's the behavioral agent's job."
     model_tier: sonnet
     thinking_level: high
     max_iterations: 4
     transitions:
-      success: spec_adversary
+      success: behavioral
       failed: spec
       exhausted: postmortem_spec
     prompt_template: |
-      [PIPELINE CONTEXT] You are executing the SPEC phase (1/8) of an automated coding pipeline. Your output feeds the spec_adversary phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
+      [PIPELINE CONTEXT] You are executing the SPEC phase (1a/3) of the spec loop. Your output feeds the BEHAVIORAL phase — not the adversary directly. Write implementation guidance only. Do not write behavioral contracts. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
-      You are a senior developer interpreting a GitHub issue into an implementation spec.
+      You are a senior developer interpreting a GitHub issue into an implementation plan.
 
       ## Previous Work
       {phase_summary}
@@ -88,8 +106,8 @@ phases:
       {iteration_history}
 
       ## Iteration Context
-      If prior rounds exist above, this is a REVISION round. Follow the revision instructions below.
-      If no prior rounds exist, this is round 1. Follow the initial generation instructions below.
+      If prior rounds exist above, this is a REVISION round. The adversary flagged issues with the behavioral contracts AND/OR the implementation plan. Read the adversary's findings and adjust your implementation guidance to support any tightened contracts.
+      If no prior rounds exist, this is round 1.
 
       ## Issue
       **Title:** {config[issue_title]}
@@ -103,51 +121,95 @@ phases:
       ## Codebase Context
       {config[files_context]}
 
-      ## Task — Round 1 (no prior rounds above)
-      If this is the FIRST round (no prior rounds listed above), produce a clear implementation spec with TWO sections:
+      ## Task
+      Produce an implementation spec containing ONLY Section B (implementation guidance). Do NOT write behavioral contracts — a separate agent handles that.
 
-      ### Section A: Behavioral Contract (REQUIRED — this drives acceptance tests)
-      Describe WHAT the system should do, not HOW. Use this format:
-      - "When [action/input], the system [expected behavior]"
-      - "Given [precondition], calling [operation] produces [outcome]"
-      - "If [edge case], the system [graceful behavior]"
-
-      DO NOT name internal functions, private methods, or class names in behavioral contracts.
-      DO NOT specify data structures, variable names, or implementation patterns.
-      ❌ Wrong: "Add _extract_code_quality() method that reads pass_rate from JSON"
-      ✅ Right: "When code quality results are available, the composite score includes them proportionally"
-
-      ### Section B: Implementation Guidance (for the implementing agent)
+      ### Section B: Implementation Guidance
       1. **Problem Statement** — What exactly needs to change and why
       2. **Files to Modify** — List each file with what changes are needed
       3. **Files to Create** — Any new files with their purpose
       4. **Implementation Steps** — Ordered steps, specific enough to code from
       5. **Risk Assessment** — What could break, backward compatibility concerns
+      6. **Observable Outcomes** — For each change, describe what a user/caller can observe (exit codes, stdout content, return values, error messages). The behavioral agent will use these to write tight contracts.
 
-      Be specific in Section B. Reference actual file paths and function names from the codebase context.
-      Keep Section A strictly behavioral — it will be extracted and given to the acceptance test agent in isolation. Section B will NOT be visible to that agent.
+      Be specific. Reference actual file paths and function names from the codebase context.
 
-      Write your FULL spec to {output_dir}/spec.md
-      ALSO write Section A ONLY to {output_dir}/spec-behavioral.md (just the behavioral contracts, no implementation details)
+      **On revision rounds:** Read the adversary's findings from the prior round. If findings relate to implementation details leaking into behavioral contracts, adjust your spec to clearly separate observable outcomes from internal implementation. If findings relate to missing edge cases, add implementation steps for those cases and describe their observable outcomes.
 
-      ## Task — Round 2+ (prior rounds exist above)
-      If prior rounds exist above, this is a REVISION round. The adversary flagged specific issues.
+      Write your implementation spec to {output_dir}/spec.md
 
-      **CRITICAL INSTRUCTIONS FOR REVISION:**
-      1. Read the EXISTING files at {output_dir}/spec.md and {output_dir}/spec-behavioral.md
-      2. Identify ONLY the sections flagged by the adversary in the most recent round above
-      3. Edit ONLY those flagged sections — fix the specific issues raised
-      4. Do NOT rewrite, reorganize, or rephrase sections the adversary did NOT flag
-      5. Contracts the adversary previously approved MUST remain byte-identical
-      6. Write the updated files back to {output_dir}/spec.md and {output_dir}/spec-behavioral.md
-      7. **SYNC RULE:** Any change to Section A in spec.md MUST be identically reflected in spec-behavioral.md. The adversary reviews ONLY spec-behavioral.md — if you fix something in spec.md but not spec-behavioral.md, the adversary will flag it again.
+  # Phase 1b: Behavioral Contracts (Section A only)
+  - id: behavioral
+    name: "Behavioral Contracts"
+    description: "Write behavioral contracts (Section A) from the issue + implementation spec. Reads spec.md but outputs ONLY observable behavior — no implementation details."
+    model_tier: sonnet
+    thinking_level: high
+    max_iterations: 4
+    transitions:
+      success: spec_adversary
+      failed: behavioral
+      exhausted: postmortem_spec
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the BEHAVIORAL phase (1b/3) of the spec loop. Your output feeds the adversary. Write behavioral contracts only — describe WHAT the system does, not HOW. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
-      Think of this as a code review fix: apply the minimum targeted edit to resolve each finding. Do not refactor the whole file.
+      You are a behavioral contract specialist. Your job is to translate an implementation spec into precise, testable behavioral contracts.
 
-  # Phase 1b: Adversarial Spec Review
+      ## Previous Work
+      {phase_summary}
+
+      ## Prior Rounds
+      {iteration_history}
+
+      ## Iteration Context
+      If prior rounds exist above, this is a REVISION round. The adversary flagged specific weaknesses in the behavioral contracts. Fix ONLY the flagged issues. Do NOT rewrite contracts the adversary did not flag.
+      If no prior rounds exist, this is round 1.
+
+      ## Issue
+      **Title:** {config[issue_title]}
+      **Body:** {config[issue_body]}
+
+      ## Implementation Spec
+      Read the implementation spec at: {output_dir}/spec.md
+      This describes HOW the feature will be built. Use it to understand the system,
+      but DO NOT copy implementation details into your behavioral contracts.
+
+      ## Task
+      Write behavioral contracts describing WHAT the system should do. Use this format:
+      - "When [action/input], the system [expected behavior]"
+      - "Given [precondition], calling [operation] produces [outcome]"
+      - "If [edge case], the system [graceful behavior]"
+
+      ### Rules
+      - DO NOT name internal functions, private methods, or class names
+      - DO NOT specify data structures, variable names, or implementation patterns
+      - DO reference exact observable values: exit codes, stdout content, stderr messages, return formats
+      - ❌ Wrong: "The system calls `PipelineRunner.dry_run()`"
+      - ✅ Right: "When `--mode dry-run` is specified, no API calls are made and phase names are printed to stdout"
+      - ❌ Wrong: "Add `_extract_code_quality()` method"
+      - ✅ Right: "When code quality results are available, the composite score includes them"
+
+      ### Coverage checklist (mandatory)
+      For EACH feature path described in the implementation spec, ensure you have contracts covering:
+      1. **Happy path** — what happens when everything works (include observable output: stdout, return value, exit code)
+      2. **Error paths** — what happens on each failure mode (include exact error messages or required substrings)
+      3. **Edge cases** — boundary conditions, empty inputs, invalid values
+      4. **Interactions** — what happens when features combine (e.g., flags + modes)
+
+      A contract that only specifies an exit code without observable output is TRIVIALLY satisfiable. Always include what the user can SEE or RECEIVE.
+
+      ### On revision rounds
+      1. Read the adversary's findings from the prior round
+      2. Fix ONLY the flagged contracts — do not rewrite unflagged ones
+      3. Contracts the adversary previously approved MUST remain byte-identical
+      4. If the adversary flagged a "missing edge case", add a new contract for it
+      5. If the adversary flagged "leakage", remove the internal reference and describe the observable outcome instead
+
+      Write your behavioral contracts to {output_dir}/behavioral.md
+
+  # Phase 1c: Adversarial Spec Review
   - id: spec_adversary
     name: "Spec Adversary Review"
-    description: "Adversarially review behavioral contracts before acceptance tests are written. Checks for vague contracts, trivial satisfaction, missing edge cases, implementation leakage, and divergence."
+    description: "Adversarially review behavioral contracts AND implementation spec. Checks for vague contracts, trivial satisfaction, missing edge cases, implementation leakage, and divergence between spec and contracts."
     model_tier: sonnet
     thinking_level: high
     max_iterations: 4
@@ -156,9 +218,8 @@ phases:
       request_changes: spec
       exhausted: postmortem_spec
       failed: spec_adversary
-      success: spec           # fallback when verdict extraction fails
     prompt_template: |
-      [PIPELINE CONTEXT] You are executing the SPEC_ADVERSARY phase of an automated coding pipeline. Your verdict determines whether behavioral contracts are strong enough to drive acceptance tests. Do not ask questions or send messages. Deliver a structured verdict. [/PIPELINE CONTEXT]
+      [PIPELINE CONTEXT] You are executing the ADVERSARY phase (1c/3) of the spec loop. Your verdict determines whether behavioral contracts are strong enough to drive acceptance tests. On REQUEST_CHANGES, both the spec and behavioral agents will see your findings. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
       You are an adversarial spec reviewer. Your job is to find weaknesses in behavioral contracts BEFORE acceptance tests are written against them.
 
@@ -169,20 +230,18 @@ phases:
       {iteration_history}
 
       ## Iteration Context
-      If prior rounds exist above, do NOT repeat findings that the spec has already addressed. Only raise findings that are STILL present in the current spec files.
+      If prior rounds exist above, do NOT repeat findings that have been addressed. Only raise findings that are STILL present in the current files.
 
-      **IMPORTANT:** The spec agent may have updated the files on disk since the last round. Always read the files below as the authoritative source. Only raise findings that exist in the CURRENT version of the files.
-
-      Read the behavioral contracts at: {output_dir}/spec-behavioral.md
-      Read the full spec at: {output_dir}/spec.md
+      Read the behavioral contracts at: {output_dir}/behavioral.md
+      Read the implementation spec at: {output_dir}/spec.md
 
       ## Your Checks (all mandatory)
 
       1. **Specificity** — Are contracts concrete? "System should work" → REJECT. "When input is empty list, returns empty dict" → PASS
-      2. **Trivial satisfaction** — Could a no-op or stub function pass all contracts? If yes → REJECT
-      3. **Edge case coverage** — Do contracts cover: error handling, boundary conditions, empty inputs, malformed data? Missing → REJECT
-      4. **Leakage** — Does spec-behavioral.md name internal methods, class names, or implementation details? If yes → REJECT
-      5. **Alignment** — Do behavioral contracts match what spec.md actually describes? Divergence → REJECT
+      2. **Trivial satisfaction** — Could a no-op or stub function pass all contracts? If yes → REJECT. Every success-path contract MUST include observable output (stdout content, return value, side effect) beyond just an exit code.
+      3. **Edge case coverage** — Do contracts cover: error handling, boundary conditions, empty inputs, malformed data, feature interactions? Missing → REJECT
+      4. **Leakage** — Does behavioral.md name internal methods, class names, or implementation details from spec.md? If yes → REJECT. (You must read spec.md to detect what constitutes "internal details".)
+      5. **Alignment** — Do behavioral contracts match what spec.md describes? Are there implementation paths in spec.md with no corresponding behavioral contract? Divergence → REJECT
 
       ## Output Format
 
@@ -197,112 +256,61 @@ phases:
 
       Example:
         REQUEST_CHANGES
-        [vague] "The system handles errors gracefully" — no error condition or expected output specified
-        [trivial] All contracts pass if the implementation returns empty dict for every input
-        [missing_edge_case] No contract covers what happens when the input file does not exist
-        [leakage] Behavioral contract references "_parse_verdict" which is an implementation method name
-        [divergence] Behavioral contracts describe a REST API but spec.md describes a CLI tool
+        [vague] "The system handles errors gracefully" — no observable outcome specified
+        [trivial] CLI success contract only checks exit code 0 — a stub that exits 0 passes without executing anything
+        [missing_edge_case] No contract covers what happens when flags --foo and --bar conflict
+        [leakage] Behavioral contract references "_parse_verdict" which is an internal method in spec.md
+        [divergence] spec.md describes an MCP return format but behavioral.md has no contract for it
 
       If APPROVE: write only APPROVE (optionally followed by brief rationale).
       Write your full adversary review to {output_dir}/spec_adversary.md
 
-  # Phase 1c: Postmortem (runs only on exhausted — spec/adversary could not agree)
-  # Phase 1c: Spec Postmortem (runs only on exhausted — spec/adversary could not agree)
+  # Phase 1d: Spec Postmortem (runs only on exhausted)
   - id: postmortem_spec
     name: "Spec Exhaustion Postmortem"
-    description: "When spec and adversary exhaust iterations without agreement, extract adversary findings and propose issue improvements for the next attempt."
+    description: "When the spec loop exhausts iterations without agreement, extract unresolved findings and propose issue improvements for the next attempt."
     model_tier: sonnet
     thinking_level: medium
     transitions: {}
     prompt_template: |
-      [PIPELINE CONTEXT] You are executing the POSTMORTEM phase of an automated coding pipeline. The spec and adversary phases exhausted their iteration limit without reaching agreement. Your job is to extract the adversary's unresolved findings and produce actionable improvements for the GitHub issue. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+      [PIPELINE CONTEXT] You are executing the POSTMORTEM phase. The spec loop exhausted its iteration limit without the adversary approving. Extract unresolved findings and propose exact issue body improvements. [/PIPELINE CONTEXT]
 
       You are a technical analyst performing a postmortem on a failed spec review cycle.
 
       ## Pipeline Context
       **Issue:** {config[issue_title]} (#{config[issue_number]})
       **Repository:** {config[repo_path]}
-      **What happened:** The spec agent and adversary reviewer went through multiple rounds without the adversary approving the behavioral contracts.
+      **What happened:** The spec, behavioral, and adversary agents went through multiple rounds without agreement.
 
-      ## Current Spec Files
-      Read the latest spec at: {output_dir}/spec.md
-      Read the latest behavioral contracts at: {output_dir}/spec-behavioral.md
+      ## Current Files
+      Read the latest implementation spec at: {output_dir}/spec.md
+      Read the latest behavioral contracts at: {output_dir}/behavioral.md
       Read the latest adversary review at: {output_dir}/spec_adversary.md
 
       ## Round History
       Read ALL round files from {output_dir}/ to understand the full evolution:
-      - spec_round1.md, spec_adversary_round1.md, spec_round2.md, spec_adversary_round2.md, etc.
-      - These files contain the complete spec/adversary exchange across all rounds
+      - spec_round1.md, behavioral_round1.md, spec_adversary_round1.md, etc.
 
       ## Your Task
 
       1. **Identify persistent findings** — Which adversary findings appeared in multiple rounds and were never resolved?
-      2. **Root cause analysis** — For each persistent finding, explain WHY the spec agent failed to resolve it. Common causes:
-         - The issue body contains an architectural contradiction (spec can't fix a design problem)
-         - The finding requires domain knowledge not in the issue or codebase context
-         - The finding is about verbatim strings/values missing from the issue body
-         - The spec agent misunderstood the adversary's request
-      3. **Proposed issue improvements** — For each persistent finding, write the EXACT text that should be added to or changed in the GitHub issue body to resolve it. Use the format:
-         - **Finding:** [what the adversary flagged]
-         - **Root cause:** [why the spec agent couldn't fix it]
-         - **Issue fix:** [exact text to add/change in the issue body]
+      2. **Root cause analysis** — For each, explain WHY it persisted:
+         - Architectural contradiction in the issue body?
+         - Missing domain knowledge?
+         - Spec agent and behavioral agent talking past each other?
+         - Design decision the agents cannot make without human input?
+      3. **Proposed issue improvements** — For each persistent finding, write the EXACT text to add/change in the GitHub issue body.
 
       Write your full postmortem to {output_dir}/postmortem_spec.md
 
-      The pipeline ends here. The enriched issue will be picked up by the next pipeline launch.
-
-  # Phase 5b: Review Postmortem (runs only on exhausted — review/fix could not converge)
-  - id: postmortem_review
-    name: "Review Loop Exhaustion Postmortem"
-    description: "When the review/fix loop exhausts iterations without approval, extract persistent review findings and diagnose why fixes failed to satisfy the reviewer."
-    model_tier: sonnet
-    thinking_level: medium
-    transitions: {}
-    prompt_template: |
-      [PIPELINE CONTEXT] You are executing the POSTMORTEM phase of an automated coding pipeline. The review and fix phases exhausted their iteration limit without the reviewer approving the implementation. Your job is to extract the reviewer's unresolved findings and diagnose why the fix agent could not satisfy them. Do not ask questions or send messages. [/PIPELINE CONTEXT]
-
-      You are a technical analyst performing a postmortem on a failed review/fix cycle.
-
-      ## Pipeline Context
-      **Issue:** {config[issue_title]} (#{config[issue_number]})
-      **Repository:** {config[repo_path]}
-      **Branch:** {config[branch_name]}
-      **What happened:** The reviewer and fix agent went through multiple rounds without the reviewer approving the implementation.
-
-      ## Current Files
-      Read the latest review at: {output_dir}/review.md
-      Read the latest fix notes at: {output_dir}/fix.md
-      Read the implementation spec at: {output_dir}/spec.md
-      Read the behavioral contracts at: {output_dir}/spec-behavioral.md
-
-      ## Round History
-      Read ALL round files from {output_dir}/ to understand the full evolution:
-      - review_round1.md, fix_round1.md, review_round2.md, fix_round2.md, etc.
-      - These files contain the complete review/fix exchange across all rounds
-
-      ## Your Task
-
-      1. **Identify persistent findings** — Which review findings appeared in multiple rounds and were never resolved?
-      2. **Root cause analysis** — For each persistent finding, explain WHY the fix agent failed to resolve it. Common causes:
-         - The fix is cosmetic but the reviewer wants a structural change
-         - The fix introduces a new issue while solving the flagged one
-         - The fix agent lacks context about architectural constraints
-         - The review finding is subjective or contradicts the spec
-         - The acceptance tests pass but the reviewer wants changes beyond the spec
-      3. **Assessment** — For each persistent finding, classify it:
-         - **Spec gap:** The behavioral contracts don't cover this — needs a spec update
-         - **Implementation gap:** The code doesn't satisfy an existing contract — needs a better fix
-         - **Scope creep:** The reviewer is asking for changes beyond the issue scope — document and defer
-         - **Contradiction:** The reviewer's request conflicts with the spec or acceptance tests — escalate
-
-      Write your full postmortem to {output_dir}/postmortem_review.md
-
-      The pipeline ends here. The findings should inform the next pipeline run or a manual intervention.
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # IMPLEMENTATION PHASES (unchanged from v1.6)
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   # Phase 2: Behavioral Acceptance Tests
   - id: acceptance_test
     name: "Behavioral Acceptance Tests"
-    description: "Write behavioral tests from spec ONLY — never from implementation. These become immutable constraints for the implementing agent. Behavioral contracts have been adversarially reviewed before reaching this phase."
+    description: "Write behavioral tests from contracts ONLY — never from implementation. These become immutable constraints for the implementing agent. Behavioral contracts have been adversarially reviewed before reaching this phase."
     model_tier: sonnet
     thinking_level: high
     transitions:
@@ -311,7 +319,7 @@ phases:
     protected_outputs:
       - acceptance_tests.py
     prompt_template: |
-      [PIPELINE CONTEXT] You are executing the ACCEPTANCE_TEST phase (2/5) of an automated coding pipeline. Your output feeds the implement phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
+      [PIPELINE CONTEXT] You are executing the ACCEPTANCE_TEST phase. Write tests from behavioral contracts only. You have NO access to implementation details — this is by design. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
       You are a QA engineer writing behavioral acceptance tests from a spec.
       You have NOT seen any implementation — you are writing tests BEFORE the code exists.
@@ -319,16 +327,16 @@ phases:
       ## Previous Work
       {phase_summary}
 
-      Read the behavioral contract at: {output_dir}/spec-behavioral.md
+      Read the behavioral contracts at: {output_dir}/behavioral.md
       This file contains ONLY the behavioral contracts — what the system should do.
       You have no access to implementation details. This is by design.
 
       ## Task
-      1. Read Section A of the spec carefully — behavioral contracts ONLY
+      1. Read the behavioral contracts carefully
       2. Write a Python test file `{output_dir}/acceptance_tests.py` that:
          - Contains pytest tests expressing behavioral contracts of the form:
            "when I call X with Y, it produces Z"
-         - Tests are derived ONLY from Section A — do not assume implementation details
+         - Tests are derived ONLY from behavioral.md — do not assume implementation details
          - DO NOT test for specific method names, private functions, or class internals
          - DO NOT test that a specific function exists — test that a BEHAVIOR works
          - ❌ Wrong: "assert hasattr(obj, '_extract_code_quality')"
@@ -371,7 +379,7 @@ phases:
       success: acceptance_run
       failed: implement
     prompt_template: |
-      [PIPELINE CONTEXT] You are executing the IMPLEMENT phase (3/5) of an automated coding pipeline. Your output feeds the review phase — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
+      [PIPELINE CONTEXT] You are executing the IMPLEMENT phase. Your output feeds the review phase — not a human. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
       You are a developer implementing changes based on a spec.
 
@@ -428,7 +436,7 @@ phases:
       failed: implement
       exhausted: postmortem_review
 
-  # Phase 4: Code Review (Opus + Supervisor)
+  # Phase 4: Code Review (Opus)
   - id: review
     name: "Opus Code Review"
     description: "Senior code review by Opus — quality gate with APPROVE/REQUEST_CHANGES verdict"
@@ -450,7 +458,7 @@ phases:
       success: test
       failed: review
     prompt_template: |
-      [PIPELINE CONTEXT] You are executing the REVIEW phase (4/5) of an automated coding pipeline. Your verdict determines whether the code proceeds to testing or goes back for fixes. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete review as structured text following the format below. [/PIPELINE CONTEXT]
+      [PIPELINE CONTEXT] You are executing the REVIEW phase. Your verdict determines whether the code proceeds to testing or goes back for fixes. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
       You are a senior code reviewer (Opus-tier). Your job is to catch bugs, security issues, and design problems.
 
@@ -522,7 +530,7 @@ phases:
       Do NOT use any other tag format. Do NOT add extra headers or sections
       between the verdict line and the issue lines.
 
-  # Phase 4: Fix Review Feedback
+  # Phase 4b: Fix Review Feedback
   - id: fix
     name: "Apply Review Fixes"
     description: "Address code review feedback, then re-verify behavioral contracts before re-review"
@@ -561,7 +569,7 @@ phases:
       4. If REQUEST_CHANGES — apply ALL fixes mentioned:
          - Address every blocker and major issue
          - Address minor issues where practical
-         - IMPORTANT: Only modify code directly related to the reviewer's feedback. Do not refactor, reorganize, or rewrite code that wasn't flagged. Minimal diff — if the reviewer flagged 1 issue, your diff should touch ~1 area.
+         - IMPORTANT: Only modify code directly related to the reviewer's feedback. Minimal diff.
       5. Run tests: `{config[test_command]}`
       6. Commit fixes on this branch: `fix: address code review feedback`
       7. Push your branch to remote: `git push origin {config[branch_name]}`
@@ -572,6 +580,54 @@ phases:
       - Any issues intentionally deferred and why
       - Updated test results
       - Commit hash
+
+  # Phase 5b: Review Postmortem (runs only on exhausted — review/fix could not converge)
+  - id: postmortem_review
+    name: "Review Loop Exhaustion Postmortem"
+    description: "When the review/fix loop exhausts iterations without approval, extract persistent review findings and diagnose why fixes failed to satisfy the reviewer."
+    model_tier: sonnet
+    thinking_level: medium
+    transitions: {}
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the POSTMORTEM phase of an automated coding pipeline. The review and fix phases exhausted their iteration limit without the reviewer approving the implementation. Your job is to extract the reviewer's unresolved findings and diagnose why the fix agent could not satisfy them. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      You are a technical analyst performing a postmortem on a failed review/fix cycle.
+
+      ## Pipeline Context
+      **Issue:** {config[issue_title]} (#{config[issue_number]})
+      **Repository:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+      **What happened:** The reviewer and fix agent went through multiple rounds without the reviewer approving the implementation.
+
+      ## Current Files
+      Read the latest review at: {output_dir}/review.md
+      Read the latest fix notes at: {output_dir}/fix.md
+      Read the implementation spec at: {output_dir}/spec.md
+      Read the behavioral contracts at: {output_dir}/behavioral.md
+
+      ## Round History
+      Read ALL round files from {output_dir}/ to understand the full evolution:
+      - review_round1.md, fix_round1.md, review_round2.md, fix_round2.md, etc.
+      - These files contain the complete review/fix exchange across all rounds
+
+      ## Your Task
+
+      1. **Identify persistent findings** — Which review findings appeared in multiple rounds and were never resolved?
+      2. **Root cause analysis** — For each persistent finding, explain WHY the fix agent failed to resolve it. Common causes:
+         - The fix is cosmetic but the reviewer wants a structural change
+         - The fix introduces a new issue while solving the flagged one
+         - The fix agent lacks context about architectural constraints
+         - The review finding is subjective or contradicts the spec
+         - The acceptance tests pass but the reviewer wants changes beyond the spec
+      3. **Assessment** — For each persistent finding, classify it:
+         - **Spec gap:** The behavioral contracts don't cover this — needs a spec update
+         - **Implementation gap:** The code doesn't satisfy an existing contract — needs a better fix
+         - **Scope creep:** The reviewer is asking for changes beyond the issue scope — document and defer
+         - **Contradiction:** The reviewer's request conflicts with the spec or acceptance tests — escalate
+
+      Write your full postmortem to {output_dir}/postmortem_review.md
+
+      The pipeline ends here. The findings should inform the next pipeline run or a manual intervention.
 
   # Phase 5: Test Verification (Command Phase)
   - id: test
