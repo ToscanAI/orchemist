@@ -33,7 +33,7 @@ from orchestration_engine.regression import register_regression_trigger  # noqa:
 from orchestration_engine.web.api import create_api_app  # noqa: E402
 
 # Use the coding pipeline as a stand-in template (bundled, always present).
-_TEMPLATE_ID = "coding-pipeline-v1"
+_TEMPLATE_ID = "coding-pipeline-standard"
 _TRIGGER_ID = "regression-ci-trigger"
 _WEBHOOK_SECRET = "test-hmac-secret-for-regression-trigger"
 

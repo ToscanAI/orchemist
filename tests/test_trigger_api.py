@@ -31,7 +31,7 @@ from orchestration_engine.web.api import SlidingWindowRateLimiter  # noqa: E402
 # ---------------------------------------------------------------------------
 
 # A real bundled template ID for tests that need template resolution.
-_TEMPLATE_ID = "coding-pipeline-v1"
+_TEMPLATE_ID = "coding-pipeline-standard"
 
 # Valid trigger IDs matching the required pattern.
 _TRIGGER_ID = "trig-testcrud0001"

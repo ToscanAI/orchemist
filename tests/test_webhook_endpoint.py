@@ -38,7 +38,7 @@ from orchestration_engine.web.api import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 # A real bundled template ID — used so template resolution works without mocks.
-_TEMPLATE_ID = "coding-pipeline-v1"
+_TEMPLATE_ID = "coding-pipeline-standard"
 
 # A valid trigger ID matching the required pattern.
 _TRIGGER_ID = "trig-webhook0001"
