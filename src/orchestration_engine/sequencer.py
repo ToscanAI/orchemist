@@ -32,7 +32,7 @@ from .output_parser import extract_and_write, parse_output
 from .review_parser import parse_review_output, ReviewOutcome
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
-from .transitions import PhaseOutcome, determine_outcome, extract_verdict
+from .transitions import PhaseOutcome, determine_outcome, extract_verdict, _VERDICT_KEYWORDS
 
 logger = logging.getLogger(__name__)
 
@@ -2599,8 +2599,9 @@ class StateMachineSequencer(PhaseSequencer):
         ``phase_outputs``.  Reset on each :meth:`execute` call."""
         self.iteration_counts: Dict[str, int] = defaultdict(int)
         """Total execution count per phase.  Reset on each :meth:`execute` call."""
-        self._loop_partners: Dict[str, Optional[str]] = {}
-        """Loop partner map built at the start of execute(). Empty until execute() runs."""
+        self._loop_groups: Dict[str, List[str]] = {}
+        """Loop group map built at the start of execute(). Empty until execute() runs.
+        Maps each phase_id in a loop cycle to the ordered list of ALL phases in that cycle."""
         self._current_build_iter: int = 1
         """Current iteration being built; set by execute() before _build_phase_input call."""
 
@@ -2633,40 +2634,126 @@ class StateMachineSequencer(PhaseSequencer):
         effective = {**self.template.default_transitions, **phase.transitions}
         return self._reachable(effective.get("success"), target_id, visited)
 
-    def _detect_loop_partners(self) -> Dict[str, Optional[str]]:
-        """Detect loop partner pairs from the transition graph.
+    def _detect_loop_groups(self) -> Dict[str, List[str]]:
+        """Detect loop groups from the transition graph.
 
-        A phase A is considered to have B as its loop partner when:
-        - A transitions to B on ``request_changes``
-        - B transitions back to A (directly or indirectly) on ``success``
+        A loop group is the ordered list of phases that form a cycle via a
+        ``request_changes`` backward edge and a ``success`` forward path,
+        OR a self-loop where a phase's ``success`` transition points to itself
+        (with ``max_iterations > 0``).
+
+        For a cycle like ``A →[success]→ B →[success]→ C →[request_changes]→ A``,
+        the loop group is ``["A", "B", "C"]`` (ordered by execution sequence within
+        one cycle iteration).
+
+        For a self-loop ``A →[success]→ A`` with ``max_iterations > 0``,
+        the loop group is ``["A"]``.
 
         Returns:
-            Dict mapping phase_id → partner_phase_id (or None if no loop partner).
+            Dict mapping each phase_id in a loop to its ordered group list.
+            Phases not in any loop are absent from the dict.
         """
-        partners: Dict[str, Optional[str]] = {}
+        groups: Dict[str, List[str]] = {}
+
         for phase in self.template.phases:
+            if phase.id in groups:
+                continue  # Already assigned to a group
+
             effective = {**self.template.default_transitions, **phase.transitions}
+
+            # Detect self-loop via success transition (phase → itself)
+            success_target = effective.get("success")
+            if (success_target == phase.id
+                    and phase.max_iterations > 0):
+                groups[phase.id] = [phase.id]
+                continue
+
             rc_target = effective.get("request_changes")
             if rc_target is None:
-                partners[phase.id] = None
                 continue
-            partner_phase = self._phase_map.get(rc_target)
-            if partner_phase is None:
-                partners[phase.id] = None
+
+            # Self-loop via request_changes (phase → itself): single-member group
+            if rc_target == phase.id:
+                groups[phase.id] = [phase.id]
                 continue
-            partner_effective = {**self.template.default_transitions, **partner_phase.transitions}
-            success_target = partner_effective.get("success")
-            if self._reachable(success_target, phase.id, visited=set()):
-                partners[phase.id] = rc_target
-            else:
-                partners[phase.id] = None
-        return partners
+
+            # Verify forward reachability: rc_target →[success*]→ phase.id
+            if not self._reachable(rc_target, phase.id, visited=set()):
+                continue
+
+            # Walk the success chain from rc_target to phase.id to collect the group
+            group: List[str] = []
+            cursor: Optional[str] = rc_target
+            seen: set = set()
+            while cursor is not None and cursor not in seen:
+                if cursor == phase.id and len(group) > 0:
+                    # Completed the cycle
+                    break
+                seen.add(cursor)
+                group.append(cursor)
+                cursor_phase = self._phase_map.get(cursor)
+                if cursor_phase is None:
+                    break
+                cursor_effective = {
+                    **self.template.default_transitions,
+                    **cursor_phase.transitions,
+                }
+                cursor = cursor_effective.get("success")
+
+            group.append(phase.id)  # The closer of the cycle (has request_changes)
+
+            # Deduplicate: guard against self-loop producing [A, A]
+            seen_pids: set = set()
+            deduped_group: List[str] = []
+            for pid in group:
+                if pid not in seen_pids:
+                    seen_pids.add(pid)
+                    deduped_group.append(pid)
+
+            # Assign every member to this group
+            for pid in deduped_group:
+                groups[pid] = deduped_group
+
+        return groups
+
+    def _get_member_history(self, member_id: str, current_phase_id: str) -> List[dict]:
+        """Return the full result history for a loop group member.
+
+        For ALL group members (including the current phase), this method returns
+        ``iteration_history[member_id]`` combined with ``phase_outputs[member_id]``
+        when needed.
+
+        **Key timing detail:** ``iteration_history[phase_id]`` is only appended
+        *after* a phase runs (the append happens in ``execute()`` post-result).
+        This means when building history for round N, the current phase's round
+        N-1 result is in ``phase_outputs[phase_id]``, not yet in
+        ``iteration_history[phase_id]``.  The same logic applies equally to all
+        group members — we always check ``phase_outputs`` as a supplement.
+
+        The identity check (``is not``) is intentional: the same dict object is
+        stored in both ``iteration_history`` and ``phase_outputs``.
+
+        Args:
+            member_id:        ID of the loop group member whose history to return.
+            current_phase_id: ID of the phase currently being built (unused here,
+                              kept for API symmetry and future overrides).
+        """
+        history = list(self.iteration_history.get(member_id, []))
+        if member_id in self.phase_outputs:
+            current_output = self.phase_outputs[member_id]
+            # Avoid double-counting if it's already the last entry (identity check)
+            if not history or history[-1] is not current_output:
+                history.append(current_output)
+        return history
 
     # Maximum characters per section in {iteration_history} (BC-14)
     _MAX_SECTION_CHARS: int = 4000
 
     def _build_iteration_history(self, phase_id: str, current_iter: int) -> str:
         """Build the ``{iteration_history}`` string for a phase at the given iteration.
+
+        For phases in a loop group, includes prior outputs from ALL group members
+        (not just a single partner), ordered by execution sequence within each round.
 
         Args:
             phase_id:     ID of the current phase.
@@ -2680,52 +2767,44 @@ class StateMachineSequencer(PhaseSequencer):
         if current_iter <= 1:
             return ""
 
-        partner_id = self._loop_partners.get(phase_id)  # None for non-loop phases
+        group = self._loop_groups.get(phase_id, [])
+        if not group:
+            return ""
+
         output_dir_str = str(self.output_dir) if self.output_dir else None
-        sections = []
+        sections: List[str] = []
 
         for round_num in range(1, current_iter):
-            # ── Current phase section ────────────────────────────────────────
-            phase_prior = self.iteration_history.get(phase_id, [])
-            if round_num > len(phase_prior):
-                # Defensive guard — shouldn't happen in normal execution
-                continue
+            for member_id in group:
+                member_history = self._get_member_history(member_id, phase_id)
+                if round_num > len(member_history):
+                    # This member hasn't run in this round yet — omit section
+                    continue
 
-            text = _extract_phase_text(phase_prior[round_num - 1])
-            if text is None:
-                text = ""
-            if len(text) > self._MAX_SECTION_CHARS:
-                if output_dir_str:
-                    safe_pid = re.sub(r'[^\w\-]', '_', phase_id)
-                    suffix = (
-                        f"\n[...truncated, full output at "
-                        f"{output_dir_str}/{safe_pid}_round{round_num}.md]"
-                    )
-                else:
-                    suffix = "\n[...truncated]"
-                text = text[:self._MAX_SECTION_CHARS] + suffix
-            sections.append(f"--- Round {round_num}: {phase_id} ---\n{text}")
-
-            # ── Partner section (BC-9, BC-19) ────────────────────────────────
-            if partner_id is not None:
-                partner_prior = self.iteration_history.get(partner_id, [])
-                if round_num <= len(partner_prior):
-                    # Partner ran this round — include its section (BC-16: even empty output)
-                    ptext = _extract_phase_text(partner_prior[round_num - 1])
-                    if ptext is None:
-                        ptext = ""
-                    if len(ptext) > self._MAX_SECTION_CHARS:
-                        if output_dir_str:
-                            safe_ppid = re.sub(r'[^\w\-]', '_', partner_id)
-                            suffix = (
-                                f"\n[...truncated, full output at "
-                                f"{output_dir_str}/{safe_ppid}_round{round_num}.md]"
-                            )
-                        else:
-                            suffix = "\n[...truncated]"
-                        ptext = ptext[:self._MAX_SECTION_CHARS] + suffix
-                    sections.append(f"--- Round {round_num}: {partner_id} ---\n{ptext}")
-                # else: partner hasn't run this round → omit partner section only (BC-19)
+                text = _extract_phase_text(member_history[round_num - 1])
+                if text is None:
+                    text = ""
+                # Strip verdict prefix lines (e.g. REQUEST_CHANGES, APPROVE,
+                # ABORT) — these are routing metadata, not content (BC-7.3).
+                stripped_lines: List[str] = []
+                past_verdict = False
+                for line in text.split('\n'):
+                    if not past_verdict and line.strip().upper() in _VERDICT_KEYWORDS:
+                        continue  # skip verdict-only line at start
+                    past_verdict = True
+                    stripped_lines.append(line)
+                text = '\n'.join(stripped_lines)
+                if len(text) > self._MAX_SECTION_CHARS:
+                    if output_dir_str:
+                        safe_mid = re.sub(r'[^\w\-]', '_', member_id)
+                        suffix = (
+                            f"\n[...truncated, full output at "
+                            f"{output_dir_str}/{safe_mid}_round{round_num}.md]"
+                        )
+                    else:
+                        suffix = "\n[...truncated]"
+                    text = text[:self._MAX_SECTION_CHARS] + suffix
+                sections.append(f"--- Round {round_num}: {member_id} ---\n{text}")
 
         return "\n\n".join(sections) if sections else ""
 
@@ -2812,8 +2891,17 @@ class StateMachineSequencer(PhaseSequencer):
         self.iteration_history = defaultdict(list)
         self.iteration_counts = defaultdict(int)
 
-        # ── Detect loop partners for {iteration_history} variable (Issue #648a) ──
-        self._loop_partners = self._detect_loop_partners()
+        # ── Detect loop groups for {iteration_history} variable (Issue #667) ──
+        self._loop_groups = self._detect_loop_groups()
+        if self._loop_groups:
+            unique_groups = {tuple(g) for g in self._loop_groups.values()}
+            for group_tuple in unique_groups:
+                logger.info(
+                    "Pipeline %s: detected loop group: %s → %s",
+                    self.template.id,
+                    " → ".join(group_tuple),
+                    group_tuple[0],
+                )
 
         # ── Pipeline-start hook (e.g. git branch creation) ────────────────────
         if self.on_pipeline_start is not None:
