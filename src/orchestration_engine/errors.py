@@ -34,6 +34,10 @@ class OrchestratorError(Exception):
     """Base exception for all orchestration engine errors."""
 
 
+class GitHandoffError(OrchestratorError):
+    """Raised when a git handoff operation fails (non-fatal — triggers file-based fallback)."""
+
+
 class ValidationError(OrchestratorError):
     """Raised when a pipeline template fails structural validation."""
 

@@ -251,6 +251,11 @@ phases:
       Read the behavioral contracts at: {output_dir}/behavioral.md
       Read the implementation spec at: {output_dir}/spec.md
 
+      ## Changes Since Last Round
+      {phase_diff}
+
+      If the above section is non-empty, focus your review on what CHANGED. Do not re-raise findings on unchanged sections.
+
       ## Your Checks (all mandatory)
 
       1. **Specificity** — Are contracts concrete? "System should work" → REJECT. "When input is empty list, returns empty dict" → PASS

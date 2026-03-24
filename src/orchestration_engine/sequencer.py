@@ -1292,7 +1292,7 @@ class PhaseSequencer:
                 return phase
         raise KeyError(f"Phase '{phase_id}' not found in template '{self.template.id}'")
 
-    def _build_phase_input(self, phase: PhaseDefinition, initial_input: dict, failure_context: str = "", iteration_history: str = "") -> str:
+    def _build_phase_input(self, phase: PhaseDefinition, initial_input: dict, failure_context: str = "", iteration_history: str = "", **extra_format_vars) -> str:
         """Build the prompt string for a phase.
 
         Uses Python's ``str.format()`` to interpolate:
@@ -1455,6 +1455,7 @@ class PhaseSequencer:
                 output_dir=output_dir_str,
                 phase_summary=phase_summary,
                 iteration_history=iteration_history,
+                **extra_format_vars,
                 **phase_kwargs,
             )
         except (KeyError, IndexError, AttributeError) as exc:
@@ -2587,6 +2588,8 @@ class StateMachineSequencer(PhaseSequencer):
             ``Dict[str, int]`` — total execution count per phase (including the
             current run).  Reset at the start of each :meth:`execute` call.
         """
+        # Extract git_handoff before forwarding to parent (Issue #674)
+        _git_handoff = kwargs.pop('git_handoff', None)
         # If runner is a plain callable, wrap it in a minimal runner shim
         # so that unit tests can pass a bare function.
         if "runner" in kwargs and callable(kwargs["runner"]) and not hasattr(kwargs["runner"], "queue"):
@@ -2604,6 +2607,8 @@ class StateMachineSequencer(PhaseSequencer):
         Maps each phase_id in a loop cycle to the ordered list of ALL phases in that cycle."""
         self._current_build_iter: int = 1
         """Current iteration being built; set by execute() before _build_phase_input call."""
+        self._git_handoff = _git_handoff
+        """Optional GitHandoff instance for commit-based phase tracking (Issue #674)."""
 
     # ------------------------------------------------------------------
     # Loop detection and iteration history helpers
@@ -2771,6 +2776,11 @@ class StateMachineSequencer(PhaseSequencer):
         if not group:
             return ""
 
+        # ── Git-based compact history (Issue #674) ──
+        if self._git_handoff is not None and self._git_handoff.is_active():
+            return self._build_git_iteration_history(phase_id, current_iter, group)
+
+        # ── File-based inline history (existing behavior) ──
         output_dir_str = str(self.output_dir) if self.output_dir else None
         sections: List[str] = []
 
@@ -2808,6 +2818,30 @@ class StateMachineSequencer(PhaseSequencer):
 
         return "\n\n".join(sections) if sections else ""
 
+    def _build_git_iteration_history(
+        self, phase_id: str, current_iter: int, group: List[str]
+    ) -> str:
+        """Build compact iteration history using git commit references and diffs."""
+        sections: List[str] = []
+
+        for round_num in range(1, current_iter):
+            for member_id in group:
+                commit_sha = self._git_handoff.get_commit(member_id, round_num)
+                if commit_sha is None:
+                    continue
+                short_sha = commit_sha[:8]
+                header = f"--- Round {round_num}: {member_id} (commit {short_sha}) ---"
+
+                diff = self._git_handoff.get_diff_for_member(member_id, round_num)
+                if diff:
+                    body = f"Changes from round {round_num - 1}:\n```diff\n{diff}\n```"
+                else:
+                    body = f"[Initial output — see commit {short_sha}]"
+
+                sections.append(f"{header}\n{body}")
+
+        return "\n\n".join(sections) if sections else ""
+
     # ------------------------------------------------------------------
     # Prompt building — override to inject {iteration_history}
     # ------------------------------------------------------------------
@@ -2833,11 +2867,32 @@ class StateMachineSequencer(PhaseSequencer):
         """
         current_iter = getattr(self, '_current_build_iter', 1)
         history_str = self._build_iteration_history(phase.id, current_iter)
+
+        # ── Git handoff variables (Issue #674) ──
+        previous_commit = ""
+        phase_diff = ""
+        if self._git_handoff is not None and self._git_handoff.is_active():
+            group = self._loop_groups.get(phase.id, [])
+            if group and current_iter > 1:
+                for member_id in reversed(group):
+                    prev_sha = self._git_handoff.get_commit(member_id, current_iter - 1)
+                    if prev_sha:
+                        previous_commit = prev_sha[:8]
+                        break
+                all_diffs = []
+                for member_id in group:
+                    d = self._git_handoff.get_diff_for_member(member_id, current_iter - 1)
+                    if d:
+                        all_diffs.append(f"### {member_id}\n```diff\n{d}\n```")
+                phase_diff = "\n\n".join(all_diffs)
+
         return super()._build_phase_input(
             phase,
             initial_input,
             failure_context,
             iteration_history=history_str,
+            previous_commit=previous_commit,
+            phase_diff=phase_diff,
         )
 
     # ------------------------------------------------------------------
@@ -2902,6 +2957,16 @@ class StateMachineSequencer(PhaseSequencer):
                     " → ".join(group_tuple),
                     group_tuple[0],
                 )
+
+        # ── Git handoff initialization (Issue #674) ──────────────────────────
+        if self._git_handoff is not None and self._loop_groups:
+            try:
+                if not self._git_handoff.initialize():
+                    logger.warning("Git handoff initialization failed — falling back to file-based")
+                    self._git_handoff = None
+            except Exception as exc:
+                logger.warning("Git handoff initialization error: %s — falling back to file-based", exc)
+                self._git_handoff = None
 
         # ── Pipeline-start hook (e.g. git branch creation) ────────────────────
         if self.on_pipeline_start is not None:
@@ -3119,6 +3184,16 @@ class StateMachineSequencer(PhaseSequencer):
                     result.setdefault("metadata", {})["iteration"] = current_iter
                     self.phase_outputs[current_phase_id] = result
 
+                # ── Git handoff: commit phase output (Issue #674) ─────────────
+                if (self._git_handoff is not None
+                        and self._git_handoff.is_active()
+                        and current_phase_id in self._loop_groups):
+                    phase_text = _extract_phase_text(result)
+                    if phase_text is not None:
+                        self._git_handoff.commit_phase_output(
+                            current_phase_id, current_iter, phase_text
+                        )
+
                 # ── Hash capture — record protected_outputs from THIS phase for future verification (#531)
                 if result.get('state') == 'success' and getattr(phase, 'protected_outputs', []):
                     self._store_protected_hashes(phase)
@@ -3194,6 +3269,20 @@ class StateMachineSequencer(PhaseSequencer):
                 pipeline_id=self.template.id,
             )
             raise
+
+        # ── Git handoff finalize + cleanup (Issue #674) ──────────────────────
+        if self._git_handoff is not None:
+            pipeline_failed = final_result.get("aborted", False)
+            if not pipeline_failed and self._git_handoff.is_active():
+                try:
+                    target_branch = self._git_handoff.original_branch
+                    self._git_handoff.finalize(self.output_dir, target_branch)
+                except Exception as exc:
+                    logger.warning(
+                        "Git handoff finalize failed: %s — final files remain in %s",
+                        exc, self.output_dir,
+                    )
+            self._git_handoff.cleanup(preserve=pipeline_failed)
 
         # ── Issue #615: Stamp aborted=True when routed via exhausted ─────────
         # Even if the postmortem phase completed "successfully", the pipeline
