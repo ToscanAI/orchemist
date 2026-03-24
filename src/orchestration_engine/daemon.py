@@ -520,6 +520,23 @@ def run_daemon(run_id: str, db_path: str) -> None:
     error_message: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
 
+    # ── Git handoff for spec loop (Issue #674) ──────────────────────────
+    _git_handoff = None
+    _repo_path = initial_input.get('repo_path') if initial_input else None
+    if _repo_path and output_dir:
+        try:
+            from .git_handoff import GitHandoff
+            _git_handoff = GitHandoff(repo_path=Path(_repo_path), run_id=run_id)
+            logger.info("GitHandoff created for run_id=%s", run_id)
+        except Exception as exc:
+            logger.warning("GitHandoff creation failed (non-fatal): %s", exc)
+            _git_handoff = None
+
+    # Only pass git_handoff to StateMachineSequencer (PhaseSequencer doesn't support it)
+    _extra_kwargs = {}
+    if _git_handoff is not None and _SequencerClass is StateMachineSequencer:
+        _extra_kwargs["git_handoff"] = _git_handoff
+
     with runner:
         sequencer = _SequencerClass(
             template, runner, config=initial_input,
@@ -528,6 +545,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
             output_dir=output_dir,
             run_id=run_id,  # Issue #4.1.6: enables _record_review_outcome hook
             db=db,          # Issue #4.1.6: required alongside run_id for DB writes
+            **_extra_kwargs,
         )
 
         try:
