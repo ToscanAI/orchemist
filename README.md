@@ -17,7 +17,7 @@
 
 **Orchemist** is a YAML-first orchestration engine for multi-agent AI pipelines.
 
-You declare your pipeline — phases, dependencies, model tiers, and acceptance criteria — in a single YAML file. The engine handles phase sequencing, dependency resolution, output forwarding, automatic retries, fallback executors, and scenario grading. No boilerplate. No vendor lock-in. Works standalone with the Anthropic API or via OpenClaw sub-agent spawning.
+You declare your pipeline — phases, dependencies, model tiers, and acceptance criteria — in a single YAML file. The engine handles phase sequencing, dependency resolution, output forwarding, automatic retries, fallback executors, and scenario grading. No boilerplate. Works standalone with the Anthropic API or via OpenClaw sub-agent spawning. Git-native pipeline handoff for reliable multi-phase execution.
 
 > **Note:** The YAML below is simplified for illustration. Orchemist's template format is evolving to support an expanding range of workloads — from content pipelines to coding, research, compliance, and beyond. See [Template Authoring](docs/template-authoring.md) for the full schema and working examples.
 
@@ -237,7 +237,24 @@ orch --help
 | **Orchemist** | Pipeline templates, phase sequencing, quality gates | Application Framework |
 | **Scenario Runner** | Outcome-based testing, LLM judges, grading | Test Framework |
 
-The engine works **standalone** (direct API) or **with OpenClaw** (sub-agent spawning). No vendor lock-in.
+The engine works **standalone** (direct API) or **with OpenClaw** (sub-agent spawning). No vendor lock-in on the model provider side.
+
+---
+
+## Git as Runtime Dependency
+
+Orchemist uses **git commits as the source of truth** for multi-phase pipeline handoff. Each pipeline phase commits its output, and the next phase reads from a specific commit hash — making stale reads structurally impossible and providing a full audit trail of every pipeline run.
+
+**What this means in practice:**
+
+- **Pipeline execution** (coding pipelines, spec loops) requires a git repository
+- **Dry-run mode** does NOT require git — works anywhere
+- **Standalone mode** with simple linear pipelines works without git
+- **Git-based features:** commit-based phase handoff, diff-based adversary review, immutable test references
+
+This is a deliberate architectural choice: git provides immutability, diffing, and audit trails that would otherwise require custom infrastructure. The trade-off is that production pipeline execution is coupled to git — which is already a prerequisite for coding pipelines (branch creation, commits, PRs).
+
+> **Future:** Pluggable VCS backends are on the roadmap but not prioritized for initial release. If you need non-git support, open an issue.
 
 ---
 
@@ -291,4 +308,4 @@ See [LICENSE](LICENSE) for the full text.
 
 ---
 
-**Orchemist — Tests passing. 3 execution modes. Zero vendor lock-in.**
+**Orchemist — Tests passing. 3 execution modes. Git-native pipeline handoff.**
