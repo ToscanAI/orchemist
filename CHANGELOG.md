@@ -20,6 +20,11 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 - Loop / iteration support (#235) — phases can declare loop conditions for iterative execution
 - Content-based verdict extraction / routing (#301) — verdict keywords parsed from phase output to drive transitions
 - `orch run` E2E wiring — `PipelineRunner` + CLI integration + tests (closes #36)
+- Iteration-indexed file writing and `{iteration_history}` template variable (#649, PR #653) — phases write output to iteration-specific files; history of prior iterations available via template variable
+- `{iteration_history}` in all looping phase prompts (#650, PR #655) — ensures all looping phases have full iteration context
+- 3-phase spec loop v2.0 — spec → behavioral → adversary (#666) — restructured coding pipeline spec loop with adversarial review
+- Incremental spec editing + postmortem phase (#663, #652, PR #665) — spec edits applied incrementally; postmortem phase for failure analysis
+- Git-based phase handoff for spec-loop iterations (#674, PR #675) — phase outputs handed off via git commits for reliable iteration state
 
 #### Templates
 - Content Pipeline v2.5/v2.6 — heartbeat module + updated bundled templates
@@ -167,6 +172,8 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 - Claude Code executor (#637, PR #644) — native `claude --print` executor for local Claude Code pipelines
 - `--executor` CLI flag (#636, PR #643) — override executor at launch/run time without editing templates
 - MCP server scaffold + transport layer (#467, PR #598) — foundation for Model Context Protocol integration
+- `PipelineRunner.claudecode()` factory method (#638) — convenient constructor for Claude Code executor pipelines
+- Immutable acceptance test store (#541) — append-only test result store for acceptance run tracking
 
 #### Templates (continued)
 - `coding-pipeline-v2` with codebase preparation phase (#605, PR #606) — dedicated prepare phase for context loading
@@ -176,6 +183,8 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 - `hello-pipeline` for E2E testing and demos — minimal pipeline for smoke tests and quickstart
 - Enriched prepare phase with behavioral contract pre-answers — reduces adversary round-trips
 - Adversary phase skips re-raising resolved findings from prior rounds — prevents false regressions
+- Success fallback transition added to `spec_adversary` in all coding templates (#645) — prevents stuck runs when adversary approves
+- Strengthened spec revision discipline in coding pipeline template (#670) — spec agent follows stricter edit rules
 
 #### Testing & Scenarios (continued)
 - MCP E2E integration test for full tool chain (#471, PR #612) — end-to-end test covering MCP server lifecycle
@@ -242,6 +251,10 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 - Enforced max_retries cap in adaptive retry engine (#580, PR #583)
 - Gated postflight routing and GitHub hooks by template category (#578, PR #586)
 - Fixed prepare phase to output text reply, not file write (PR #320976f)
+- `MAX_ITERATIONS` error now distinguishes repeated vs new findings (#651, PR #656) — clearer error messaging at iteration limit
+- Spec agent syncs edits to both `spec.md` and `spec-behavioral.md` (#668) — prevents spec drift between files
+- `DryRunExecutor` result now includes `text` key; skip required field validation in dry-run mode (#659)
+- Updated webhook/trigger test template refs after legacy template removal (#659)
 
 ### Documentation
 - `CONTRIBUTING.md` + Template Authoring Guide (#112, #113) — YAML reference, field docs, cookbook patterns
@@ -266,3 +279,6 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 - `CONTEXT_GUIDE.md` for writing effective `files_context` entries
 - Trust hardening risks added to `ROADMAP.md` (#569)
 - PyPI publish workflow (#573, PR #623) — automated release to PyPI on version tag; PyPI badge in README
+- Preflight `git_clean` troubleshooting entry added to troubleshooting guide
+- Git documented as runtime dependency for pipeline execution
+- GitHub auto-link warning added to issue templates
