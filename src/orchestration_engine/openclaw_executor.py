@@ -138,10 +138,11 @@ OUTPUT_CAPTURE_INSTRUCTION = (
     "\n\n---\n"
     "ORCHESTRATOR INSTRUCTION (do not remove):\n"
     "You are running as a sub-agent inside an orchestration pipeline.\n"
-    "Return your COMPLETE output as text in your final response.\n"
-    "Do NOT write output to workspace files — the orchestrator reads your\n"
-    "text reply directly and cannot access files you write.\n"
-    "Your final assistant message is what gets passed to the next pipeline phase.\n"
+    "Write your COMPLETE output to the file path specified in the task above.\n"
+    "The orchestrator reads your output from that file — not from chat.\n"
+    "After writing the file, also return a brief summary (1-2 sentences) as\n"
+    "your final message so the orchestrator can confirm completion.\n"
+    "Your file output is what gets passed to the next pipeline phase.\n"
     "---"
 )
 
