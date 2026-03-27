@@ -3378,6 +3378,17 @@ class StateMachineSequencer(PhaseSequencer):
                 )
                 return effective[verdict]
 
+            # Verdict extraction failed (or returned a verdict not in transitions).
+            # Log a warning so the fallback is observable — silent fallthrough
+            # previously caused misleading "SUCCESS: N phases completed" messages.
+            if outcome == PhaseOutcome.SUCCESS:
+                fallback = effective.get("success")
+                logger.warning(
+                    f"Pipeline {self.template.id}: phase '{phase.id}' is verdict-routed "
+                    f"but verdict extraction returned {verdict!r} — falling through to "
+                    f"'success' fallback '{fallback}' (issue #680)"
+                )
+
         return effective.get(outcome.value)
 
     # ------------------------------------------------------------------

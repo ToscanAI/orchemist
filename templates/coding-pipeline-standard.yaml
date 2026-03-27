@@ -234,6 +234,7 @@ phases:
       request_changes: spec
       exhausted: postmortem_spec
       failed: spec_adversary
+      success: spec  # fallback: if verdict extraction fails, loop back conservatively (issue #680)
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the ADVERSARY phase (1c/3) of the spec loop. Your verdict determines whether behavioral contracts are strong enough to drive acceptance tests. On REQUEST_CHANGES, both the spec and behavioral agents will see your findings. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
