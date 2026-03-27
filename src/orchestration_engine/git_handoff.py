@@ -252,9 +252,22 @@ class GitHandoff:
         try:
             # Copy final files from run_dir to output_dir
             output_dir = Path(output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            for md_file in self.run_dir.glob("*.md"):
-                shutil.copy2(md_file, output_dir / md_file.name)
+            if not output_dir.exists():
+                logger.warning(
+                    "finalize: output_dir does not exist, skipping copy: %s",
+                    output_dir,
+                )
+                return
+            for src_file in self.run_dir.glob("*.md"):
+                dest_file = output_dir / src_file.name
+                if dest_file.exists() and dest_file.stat().st_size > src_file.stat().st_size:
+                    logger.info(
+                        f"finalize: keeping larger agent file {dest_file.name} "
+                        f"({dest_file.stat().st_size} bytes) over git version "
+                        f"({src_file.stat().st_size} bytes)"
+                    )
+                    continue  # skip — keep the larger agent-written file
+                shutil.copy2(src_file, dest_file)
 
             # Checkout target branch
             self._git("checkout", target_branch)
