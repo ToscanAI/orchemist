@@ -516,6 +516,7 @@ phases:
       **IMPORTANT:** Your response MUST start with one of these verdicts on the very first line:
       - `APPROVE` — code is ready to merge (no blockers, at most minor issues)
       - `REQUEST_CHANGES` — one or more blockers or major issues found
+      - `ABORT` — fatal issue discovered, pipeline cannot continue safely
 
       **DO NOT** write any preamble, commentary, or "thinking out loud" text before the verdict.
       The very first line of review.md must be the verdict word and nothing else.
@@ -523,7 +524,7 @@ phases:
       ## Structured Output Format
       Your review.md MUST follow this exact structure:
 
-      Line 1: APPROVE  -or-  REQUEST_CHANGES  (nothing else on this line)
+      Line 1: APPROVE  -or-  REQUEST_CHANGES  -or-  ABORT  (nothing else on this line)
 
       Then for each issue found, one line per issue using this tag format:
         [SEVERITY][category] description of the issue

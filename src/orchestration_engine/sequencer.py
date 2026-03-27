@@ -3360,6 +3360,14 @@ class StateMachineSequencer(PhaseSequencer):
         # avoids any text-parsing overhead for non-review phases.
         _verdict_keys = {"approve", "request_changes", "abort"}
         if result is not None and _verdict_keys.intersection(effective):
+            # Build the output file path for file-based verdict reading (#678)
+            output_file: str | None = None
+            if self.output_dir:
+                safe_pid = phase.id.replace("-", "_")
+                _candidate = Path(self.output_dir) / f"{safe_pid}.md"
+                if _candidate.exists():
+                    output_file = str(_candidate)
+
             output_text: str = ""
             raw_result = result.get("result", {})
             if isinstance(raw_result, dict):
@@ -3370,7 +3378,7 @@ class StateMachineSequencer(PhaseSequencer):
             if not output_text:
                 output_text = result.get("text", "") or ""
 
-            verdict = extract_verdict(output_text)
+            verdict = extract_verdict(text=output_text, file_path=output_file)
             if verdict is not None and verdict in effective:
                 logger.debug(
                     f"Pipeline {self.template.id}: phase '{phase.id}' "
