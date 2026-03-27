@@ -89,59 +89,9 @@ def determine_outcome(result: Dict[str, Any]) -> PhaseOutcome:
 
 
 # ---------------------------------------------------------------------------
-# Content-based verdict extraction (Issue #301)
+# Content-based verdict extraction (Issue #301, refactored in #678)
 # ---------------------------------------------------------------------------
 
 _VERDICT_KEYWORDS = ("APPROVE", "REQUEST_CHANGES", "ABORT")
-# Priority ordering: lower index = higher priority (Issue #600)
-_VERDICT_PRIORITY_ORDER = ("REQUEST_CHANGES", "ABORT", "APPROVE")
 
-
-def extract_verdict(text: str) -> Optional[str]:
-    """Extract the highest-priority verdict keyword from *text*.
-
-    Scans ALL lines of the input, collecting every verdict keyword found
-    at the start of a line (case-insensitive). After scanning, applies
-    priority ordering: REQUEST_CHANGES > ABORT > APPROVE.
-
-    This ensures that reasoning prose such as "APPROVE would be premature"
-    on one line does not shadow an actual REQUEST_CHANGES verdict on a
-    later line.
-
-    Args:
-        text: Phase output text (may be multi-line).
-
-    Returns:
-        Lowercase keyword string (e.g. ``"approve"``, ``"request_changes"``,
-        ``"abort"``), or ``None`` if no verdict keyword is found.
-
-    Examples:
-        >>> extract_verdict("APPROVE would be premature\\nREQUEST_CHANGES\\n...")
-        'request_changes'
-
-        >>> extract_verdict("APPROVE\\nCode looks good")
-        'approve'
-
-        >>> extract_verdict("")
-    """
-    if not text:
-        return None
-
-    lines = text.splitlines()
-    found: set = set()
-
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        upper = stripped.upper()
-        for keyword in _VERDICT_KEYWORDS:
-            if upper.startswith(keyword):
-                found.add(keyword)
-
-    # Apply priority: REQUEST_CHANGES > ABORT > APPROVE
-    for keyword in _VERDICT_PRIORITY_ORDER:
-        if keyword in found:
-            return keyword.lower()
-
-    return None
+from .verdict_parser import extract_verdict  # noqa: E402

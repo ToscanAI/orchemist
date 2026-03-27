@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
+from .verdict_parser import extract_verdict as _extract_verdict
+
 __all__ = [
     "AdversaryFinding",
     "AdversaryVerdict",
@@ -142,17 +144,11 @@ def parse_adversary_output(text) -> AdversaryVerdict:
 
     lines = raw_text.splitlines()
 
-    # ── Verdict extraction (first non-blank line whose first word is a verdict)
-    verdict: str | None = None
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        # Check if the first whitespace-delimited token is a verdict keyword
-        first_token = stripped.split()[0].upper()
-        if first_token in _VALID_VERDICTS:
-            verdict = first_token
-            break
+    # ── Verdict extraction via shared parser (Issue #678) ───────────────────
+    _parsed_verdict = _extract_verdict(
+        text=raw_text, allowed_verdicts={"approve", "request_changes"}
+    )
+    verdict: str | None = _parsed_verdict.upper() if _parsed_verdict else None
 
     # ── Finding extraction (all lines matching [category] description) ────────
     findings: List[AdversaryFinding] = []

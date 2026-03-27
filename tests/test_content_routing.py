@@ -171,8 +171,8 @@ class TestExtractVerdict:
         assert extract_verdict("   \n   \n   ") is None
 
     def test_partial_match_not_approved(self):
-        """'APPROVED' starts with 'APPROVE' — verify this is caught."""
-        assert extract_verdict("APPROVED: looks great") == "approve"
+        """'APPROVED' must not match as 'approve' — trailing boundary rejects it (#678)."""
+        assert extract_verdict("APPROVED: looks great") is None
 
     def test_request_changes_with_colon(self):
         assert extract_verdict("REQUEST_CHANGES: fix indentation") == "request_changes"

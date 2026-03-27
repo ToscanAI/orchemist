@@ -139,10 +139,11 @@ OUTPUT_CAPTURE_INSTRUCTION = (
     "ORCHESTRATOR INSTRUCTION (do not remove):\n"
     "You are running as a sub-agent inside an orchestration pipeline.\n"
     "Write your COMPLETE output to the file path specified in the task above.\n"
-    "The orchestrator reads your output from that file — not from chat.\n"
     "After writing the file, also return a brief summary (1-2 sentences) as\n"
     "your final message so the orchestrator can confirm completion.\n"
     "Your file output is what gets passed to the next pipeline phase.\n"
+    "For verdict-producing phases (review, adversary): end the output file\n"
+    "with a VERDICT: / COMMENT: block so the orchestrator can route correctly.\n"
     "---"
 )
 
