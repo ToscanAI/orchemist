@@ -321,6 +321,20 @@ class PhaseSequencer:
                     "aborted": True,
                 }
 
+            # ── Result enrichment from disk (Issue #681) ─────────────────
+            self._enrich_result_from_disk(phase_id, result)
+
+            # ── Git handoff: commit phase output (Issue #681 / #674) ─────────
+            _git_handoff = getattr(self, '_git_handoff', None)
+            _loop_groups = getattr(self, '_loop_groups', None)
+            if (_git_handoff is not None
+                    and _git_handoff.is_active()
+                    and _loop_groups is not None
+                    and phase_id in _loop_groups):
+                phase_text = _extract_phase_text(result)
+                if phase_text is not None:
+                    _git_handoff.commit_phase_output(phase_id, 0, phase_text)
+
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
 
@@ -488,6 +502,9 @@ class PhaseSequencer:
                 self._invoke_on_phase_complete(phase_id, result)
                 return result
 
+            # ── Result enrichment from disk (Issue #681) ─────────────────
+            self._enrich_result_from_disk(phase_id, result)
+
             # Write result under lock — prevents lost updates on shared dict
             with self._phase_outputs_lock:
                 self.phase_outputs[phase_id] = result
@@ -654,6 +671,32 @@ class PhaseSequencer:
                 self.on_phase_complete(phase_id, result)
             except Exception:
                 pass  # Never let a callback crash the pipeline
+
+    def _enrich_result_from_disk(self, phase_id: str, result: dict) -> None:
+        """Enrich result["result"]["text"] with disk file content if larger.
+
+        If the agent wrote a larger file to {output_dir}/{phase_id}.md during
+        execution, update result["result"]["text"] in-place so all downstream
+        consumers (_extract_phase_text, git handoff, iteration history,
+        phase summary) automatically get the full content.
+
+        Mutates result in-place. No return value.
+        """
+        if not self.output_dir:
+            return
+        disk_path = Path(self.output_dir) / f"{phase_id}.md"
+        if not disk_path.exists():
+            return
+        disk_text = disk_path.read_text()
+        if not disk_text:
+            return
+        chat_text = result.get("result", {}).get("text") or ""
+        if len(disk_text) > len(chat_text):
+            result.setdefault("result", {})["text"] = disk_text
+            logger.info(
+                f"Phase '{phase_id}': enriched result text from disk "
+                f"({len(disk_text)} bytes > {len(chat_text)} bytes)"
+            )
 
     def _record_spec_adversary_outcome(self, phase: PhaseDefinition, result: dict) -> None:
         """Parse adversary verdict and persist reward score when output_dir is available.
@@ -3170,6 +3213,9 @@ class StateMachineSequencer(PhaseSequencer):
                         "iteration_history": dict(self.iteration_history),
                         "iteration_counts": dict(self.iteration_counts),
                     }
+
+                # ── Result enrichment from disk (Issue #681) ─────────────────
+                self._enrich_result_from_disk(current_phase_id, result)
 
                 with self._phase_outputs_lock:
                     # Save the previous result to iteration_history before overwriting.
