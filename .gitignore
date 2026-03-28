@@ -62,3 +62,6 @@ frontend/.next/
 frontend/out/
 .claude/
 .orch-daemon.log
+
+# Pipeline run artifacts
+.orchemist/runs/
