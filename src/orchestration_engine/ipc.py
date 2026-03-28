@@ -441,9 +441,16 @@ def deserialize_response(line: str) -> Union[ValidationResult, HealthResult, IPC
     # --- Error response ---
     if "error" in obj and "result" not in obj:
         err = obj["error"]
+        try:
+            code = err["code"]
+            message = err["message"]
+        except (KeyError, TypeError) as exc:
+            raise IPCProtocolError(
+                f"invalid JSON-RPC error object: missing required field: {exc}"
+            ) from exc
         return IPCError(
-            code=err["code"],
-            message=err["message"],
+            code=code,
+            message=message,
             data=err.get("data", None),
         )
 
@@ -483,16 +490,26 @@ def _parse_validation_result(result: dict) -> ValidationResult:
         )
 
     pass_rate = result["pass_rate"]
+    if not isinstance(pass_rate, (int, float)):
+        raise IPCProtocolError(
+            f"pass_rate must be a number, got {type(pass_rate).__name__}: {pass_rate!r}"
+        )
     if not (0.0 <= pass_rate <= 1.0):
         raise IPCProtocolError(
             f"pass_rate out of range: {pass_rate} — must be between 0.0 and 1.0"
+        )
+
+    tests_total = result["tests_total"]
+    if not isinstance(tests_total, int):
+        raise IPCProtocolError(
+            f"tests_total must be an integer, got {type(tests_total).__name__}: {tests_total!r}"
         )
 
     details = _parse_test_details(result["details"])
 
     return ValidationResult(
         verdict=verdict,
-        tests_total=result["tests_total"],
+        tests_total=tests_total,
         tests_passed=result.get("tests_passed", 0),
         tests_failed=result.get("tests_failed", 0),
         tests_errored=result.get("tests_errored", 0),
