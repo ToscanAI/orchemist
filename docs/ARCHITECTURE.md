@@ -12,88 +12,325 @@ The key idea is that no single AI call does everything. Instead, one model resea
 
 ---
 
-## The Big Picture
+## System Context — Where Orchemist Fits
 
-Here's the full flow from your YAML file to a finished result:
+The following C4 System Context diagram shows Orchemist and the external actors and systems it interacts with:
 
+```mermaid
+C4Context
+    title System Context — Orchemist Orchestration Engine
+
+    Person(dev, "Developer / Operator", "Defines pipeline templates, launches runs, reviews results")
+    System(orchemist, "Orchemist", "AI pipeline orchestration engine — breaks tasks into phases, dispatches to LLMs, validates results, manages state")
+
+    System_Ext(github, "GitHub", "Issues, PRs, branches, CI/CD via GitHub Actions")
+    System_Ext(llm_anthropic, "Anthropic API", "Claude models — Haiku, Sonnet, Opus")
+    System_Ext(llm_openai, "OpenAI-Compatible APIs", "Gemini, Ollama, LM Studio, etc.")
+    System_Ext(openclaw_gw, "OpenClaw Gateway", "Sub-agent spawning, tool access, session management")
+    System_Ext(pypi, "PyPI", "Package registry for distribution")
+    System_Ext(git_repos, "Git Repositories", "Source code under test/generation")
+
+    Rel(dev, orchemist, "Defines templates, launches & monitors pipelines", "CLI / REST API")
+    Rel(orchemist, github, "Creates branches, opens PRs, reads issues", "gh CLI / API")
+    Rel(orchemist, llm_anthropic, "Sends prompts, receives completions", "HTTPS / Messages API")
+    Rel(orchemist, llm_openai, "Sends prompts, receives completions", "HTTPS / Chat Completions API")
+    Rel(orchemist, openclaw_gw, "Spawns sub-agents for phase execution", "CLI / HTTP")
+    Rel(orchemist, git_repos, "Clones, checks out branches, commits", "git")
+    Rel(github, orchemist, "Triggers pipelines via webhooks", "HTTPS")
+
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        You write a YAML file                        │
-│                    (defines phases, prompts, models)                │
-└─────────────────────────┬───────────────────────────────────────────┘
-                          │
-               ┌──────────┴──────────┐
-               │  CLI: orch run      │  Web UI: orch serve
-               │  (terminal)         │  (browser)
-               └──────────┬──────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       Template Engine                               │
-│   • Reads and validates your YAML                                   │
-│   • Builds a dependency graph (which phases depend on which)        │
-│   • Computes execution order using topological sort                 │
-└─────────────────────────┬───────────────────────────────────────────┘
-                          │  execution plan (ordered phases)
-                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       Phase Sequencer                               │
-│   • Walks through phases in order (or in parallel within a wave)   │
-│   • Fills in the prompt for each phase (inserting previous outputs) │
-│   • Submits each phase as a Task to the runner                      │
-│   • Retries failed phases (phase.retries + retry_delay_seconds)    │
-│   • Stops the pipeline if any phase permanently fails               │
-└─────────────────────────┬───────────────────────────────────────────┘
-                          │  TaskSpec (prompt + model + timeout)
-                          │
-               ┌──────────┴──────────┐
-               │  Progress Heartbeat  │  (non-TTY: emits status every
-               │  (heartbeat.py)      │   30s to stdout for CI/cron)
-               └──────────┬──────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Task Runner                                  │
-│   • Picks the right Executor for the task type                      │
-│   • Manages retries and model escalation on failure                 │
-│   • Logs everything to SQLite                                       │
-└──┬──────────┬───────────────────────┬────────────────────┬──────────┘
-   │          │                       │                    │
-   ▼          ▼                       ▼                    ▼
-┌──────────┐ ┌────────────────┐ ┌──────────────────┐ ┌──────────────┐
-│ DryRun   │ │ Anthropic      │ │ OpenClaw         │ │ OpenAI-      │
-│ Executor │ │ Executor       │ │ Executor         │ │ Compatible   │
-│ (testing)│ │ (direct API,   │ │ (sub-agents via  │ │ Executor     │
-│          │ │  stdlib only)  │ │  CLI / file IPC) │ │ (Gemini,     │
-└──────────┘ └────────────────┘ └────────────────┬─┘ │  Ollama, …)  │
-                                                  │   └──────────────┘
-                                                  │         ▲
-                                                  │   (fallback via
-                                                  │    FallbackHandler
-                                                  │    on rate_limit/
-                                                  │    timeout)
-                                                  ▼
-                                      ┌───────────────────────────────┐
-                                      │          Sub-Agent            │
-                                      │   (Claude Haiku / Sonnet /    │
-                                      │    Opus — depends on phase)   │
-                                      └───────────────┬───────────────┘
-                                                      │  result JSON
-                                                      ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Results & Phase Outputs                         │
-│   • Each phase result is stored and passed to the next phase        │
-│   • Final output is the result of the last phase                    │
-└─────────────────────────┬───────────────────────────────────────────┘
-                          │  (optionally)
-                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                       Scenario Runner / Graders                     │
-│   • Loads acceptance criteria from a YAML scenario file             │
-│   • Assertion Grader: checks facts programmatically                 │
-│   • LLM Judge: sends the output to a model with a rubric            │
-│   • Computes weighted score, decides pass/fail                      │
-└─────────────────────────────────────────────────────────────────────┘
+
+## Container Diagram — Inside Orchemist
+
+This C4 Container diagram shows the major building blocks inside the engine:
+
+```mermaid
+C4Container
+    title Container Diagram — Orchemist Internals
+
+    Person(dev, "Developer / Operator", "")
+
+    System_Boundary(orchemist, "Orchemist Orchestration Engine") {
+        Container(cli, "CLI", "Python / Click", "orch run, launch, status, logs, wait, serve, mcp — primary user interface")
+        Container(rest_api, "REST API + Web UI", "FastAPI / Jinja2", "HTTP endpoints for launching, monitoring, SSE live events, dashboard")
+        Container(daemon, "Daemon", "Python", "Background process — executes pipeline runs, manages lifecycle, emits events")
+        Container(sequencer, "Phase Sequencer", "Python", "State machine — walks phases in topological order, handles parallel waves, retries, transitions")
+        Container(runner, "Pipeline Runner", "Python", "Dispatches TaskSpecs to executors, manages model escalation on failure")
+        Container(template_engine, "Template Engine", "Python / YAML", "Loads, validates, and resolves pipeline templates with dependency graphs")
+        Container(validator, "External Validator", "Python subprocess", "Isolated process — runs acceptance tests via pytest, communicates over JSON-RPC 2.0 stdin/stdout IPC")
+        Container(test_store, "Immutable Test Store", "Python / Filesystem", "Seals acceptance tests as read-only with SHA-256 manifest integrity")
+        Container(scoring, "Scoring & Grading", "Python", "Assertion grader, LLM judge, URL checker — computes weighted pass/fail scores")
+        Container(db, "Database", "SQLite / WAL", "22+ tables: pipeline_runs, tasks, task_runs, events, cost_tracking, trust_profiles, regressions, …")
+        Container(mcp, "MCP Server", "Python / FastMCP", "Model Context Protocol server — exposes pipeline operations as LLM-callable tools")
+
+        Container(exec_openclaw, "OpenClaw Executor", "Python", "Spawns sub-agents via OpenClaw Gateway CLI or file-based IPC")
+        Container(exec_anthropic, "Anthropic Executor", "Python / urllib", "Direct Anthropic Messages API calls, stdlib only")
+        Container(exec_claudecode, "Claude Code Executor", "Python", "Invokes Claude Code CLI for coding tasks")
+        Container(exec_openai, "OpenAI-Compatible Executor", "Python", "Calls any /v1/chat/completions endpoint")
+        Container(exec_dryrun, "DryRun Executor", "Python", "Returns mock results for testing and CI")
+        Container(exec_command, "Command Executor", "Python", "Runs allow-listed shell commands with shlex sandboxing")
+        Container(fallback, "Fallback Handler", "Python", "Wraps primary executor; retries via alternative executor on rate-limit / timeout")
+    }
+
+    System_Ext(github, "GitHub", "Issues, PRs, branches")
+    System_Ext(llm_anthropic, "Anthropic API", "Claude Haiku / Sonnet / Opus")
+    System_Ext(llm_openai, "OpenAI-Compatible APIs", "Gemini, Ollama, etc.")
+    System_Ext(openclaw_gw, "OpenClaw Gateway", "Sub-agent management")
+    System_Ext(sqlite_file, "SQLite File", "~/.orchestration-engine/engine.db")
+
+    Rel(dev, cli, "Runs commands", "Terminal")
+    Rel(dev, rest_api, "Launches & monitors", "Browser / HTTP")
+    Rel(cli, daemon, "Launches pipeline runs", "subprocess / PID file")
+    Rel(cli, db, "Reads status, logs, events", "SQL")
+    Rel(rest_api, daemon, "Launches runs", "subprocess")
+    Rel(rest_api, db, "Queries state", "SQL")
+    Rel(daemon, sequencer, "Drives phase execution", "in-process")
+    Rel(sequencer, runner, "Submits TaskSpecs", "in-process")
+    Rel(sequencer, template_engine, "Resolves templates & prompts", "in-process")
+    Rel(sequencer, validator, "Sends ValidationRequest", "JSON-RPC 2.0 / stdin-stdout")
+    Rel(validator, test_store, "Reads sealed tests, verifies hashes", "filesystem")
+    Rel(runner, exec_openclaw, "Dispatches tasks", "in-process")
+    Rel(runner, exec_anthropic, "Dispatches tasks", "in-process")
+    Rel(runner, exec_claudecode, "Dispatches tasks", "in-process")
+    Rel(runner, exec_openai, "Dispatches tasks", "in-process")
+    Rel(runner, exec_dryrun, "Dispatches tasks", "in-process")
+    Rel(runner, exec_command, "Dispatches tasks", "in-process")
+    Rel(runner, fallback, "Wraps executor with retry", "in-process")
+    Rel(daemon, scoring, "Scores pipeline output", "in-process")
+    Rel(daemon, db, "Persists state, events, costs", "SQL")
+    Rel(exec_openclaw, openclaw_gw, "Spawns sub-agents", "CLI / HTTP")
+    Rel(exec_anthropic, llm_anthropic, "Sends prompts", "HTTPS")
+    Rel(exec_openai, llm_openai, "Sends prompts", "HTTPS")
+    Rel(daemon, github, "Creates branches, opens PRs", "gh CLI")
+
+    UpdateLayoutConfig($c4ShapeInRow="4", $c4BoundaryInRow="1")
+```
+
+## The Big Picture — Pipeline Flow
+
+Here's the full flow from your YAML file to a finished result, shown as the key building blocks above working together:
+
+1. **You write a YAML template** defining phases, prompts, and models
+2. **CLI or REST API** accepts the launch command and starts a **Daemon** process
+3. **Template Engine** reads and validates the YAML, builds a dependency graph, computes execution order (topological sort)
+4. **Phase Sequencer** walks through phases in order (or in parallel within a wave), fills in prompts with previous outputs, submits each phase as a TaskSpec
+5. **Pipeline Runner** picks the right **Executor** for the task type, manages retries and model escalation
+6. **Executors** call external LLMs or spawn sub-agents — results flow back as phase outputs
+7. **External Validator** (optional) runs sealed acceptance tests in an isolated subprocess via JSON-RPC 2.0
+8. **Scoring & Grading** evaluates the final output against acceptance criteria
+9. Everything is **logged to SQLite** — every task, every retry, every cost, every event
+
+---
+
+## Data Model — Entity Relationships
+
+The following diagram shows the core data entities and their relationships, covering both the database schema and the in-memory/IPC models used by the external validator (Sprint 8):
+
+```mermaid
+erDiagram
+    PipelineRun {
+        text run_id PK
+        text template_path
+        text template_id
+        text input_json
+        text mode
+        text output_dir
+        text status "pending | running | completed | failed | budget_exceeded"
+        text current_phase
+        text completed_phases "JSON array"
+        text phase_outputs "JSON object"
+        int pid
+        text error_message
+        text gateway_url
+        int skip_scoring
+        text scoring_status
+        real scoring_score
+        text review_reason
+        text reviewed_by
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    PipelineRunEvent {
+        int id PK
+        text run_id FK
+        text event_type
+        text phase_id
+        int tokens_consumed
+        real cost_usd
+        text state
+        text metadata_json
+        timestamp created_at
+    }
+
+    Task {
+        text id PK
+        text type "content | research | review | code | translation | command"
+        int priority
+        text status "queued | running | completed | failed"
+        text orchestra_id FK
+        text orchestra_phase
+        int retry_count
+        int max_retries
+        real min_confidence
+        text preferred_model
+        int timeout_seconds
+        text created_by
+        timestamp created_at
+    }
+
+    TaskRun {
+        text id PK
+        text task_id FK
+        int attempt_number
+        text model
+        text thinking_level
+        text session_id
+        text worker_id
+        text status
+        real confidence
+        text error_message
+        text error_type
+        int tokens_used
+        int peak_memory_mb
+        timestamp started_at
+        timestamp completed_at
+    }
+
+    Orchestra {
+        text id PK
+        text template
+        text name
+        text status "running | completed | failed | cancelled"
+        int priority
+        int total_tasks
+        int completed_tasks
+        int failed_tasks
+        int cancelled_tasks
+        int time_budget_hours
+        text created_by
+        text current_phase
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    DeadLetterQueue {
+        text id PK
+        text original_task_id FK
+        text task_type
+        text failure_reason
+        int failure_count
+        timestamp created_at
+    }
+
+    CostTracking {
+        int id PK
+        text run_id FK
+        text phase_id
+        text model
+        int input_tokens
+        int output_tokens
+        real cost_usd
+        timestamp created_at
+    }
+
+    TrustProfile {
+        int id PK
+        text repo
+        text template_id
+        text task_type
+        real auto_merge_threshold
+        real human_review_threshold
+        real trust_score
+        int total_runs
+        int successful_merges
+        int regressions
+        int reverted_prs
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    RoutingDecision {
+        int id PK
+        text run_id FK
+        real confidence_score
+        text tier_name
+        text action
+        text justification
+        text signals_json
+        timestamp created_at
+    }
+
+    Trigger {
+        text id PK
+        text template_id
+        text mode
+        text secret
+        int rate_limit
+        text input_map "JSON"
+        text filters "JSON"
+        int enabled
+    }
+
+    Regression {
+        int id PK
+        text run_id
+        text sha
+        text description
+        text status
+        timestamp detected_at
+    }
+
+    TestManifest {
+        text run_id PK
+        text sealed_at "ISO 8601 UTC"
+        text test_file_hash "SHA-256"
+        text spec_hash "SHA-256"
+        text manifest_version "1.0"
+    }
+
+    ValidationRequest {
+        text run_id
+        text test_store_path
+        text repo_path
+        text branch
+        text test_command "default: pytest"
+        int timeout_seconds "default: 300"
+        text test_manifest_hash "optional"
+    }
+
+    ValidationResult {
+        text verdict "PASS | FAIL | ERROR"
+        int tests_total
+        int tests_passed
+        int tests_failed
+        int tests_errored
+        real pass_rate "0.0 to 1.0"
+        real duration_seconds
+        bool retry_recommended
+        text retry_reason
+        text test_manifest_hash
+    }
+
+    TestDetail {
+        text test_name
+        text outcome "PASS | FAIL | ERROR"
+        text message
+    }
+
+    PipelineRun ||--o{ PipelineRunEvent : "emits"
+    PipelineRun ||--o{ CostTracking : "tracks costs"
+    PipelineRun ||--o{ RoutingDecision : "records routing"
+    Orchestra ||--o{ Task : "contains"
+    Task ||--o{ TaskRun : "has attempts"
+    Task ||--o| DeadLetterQueue : "may enter"
+    Trigger ||--o{ PipelineRun : "can launch"
+    PipelineRun ||--o| Regression : "may detect"
+    PipelineRun ||--|| TestManifest : "seals tests for"
+    TestManifest ||--|| ValidationRequest : "referenced by"
+    ValidationResult ||--o{ TestDetail : "contains"
+    ValidationRequest ||--|| ValidationResult : "produces"
 ```
 
 ---
