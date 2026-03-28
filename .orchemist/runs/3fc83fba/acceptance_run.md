@@ -1,3 +1,5 @@
+# Phase: acceptance_run
+
 ## Acceptance Test Results
 
 ❌ **17/18 tests passed** (pass rate: 94.4%)
