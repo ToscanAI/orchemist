@@ -28,7 +28,6 @@ tags:
 pipeline: templates/coding-pipeline-skip-spec.yaml
 
 input:
-  issue_number: 999
   issue_title: "Test: Add email validation utility"
   issue_body: "Add a Python utility function that validates email addresses using regex."
   repo_path: "/tmp/test-repo"
