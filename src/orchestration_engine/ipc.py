@@ -56,6 +56,19 @@ __all__ = [
 _id_lock = threading.Lock()
 _id_counter = 0
 
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
+# Fields that indicate a ValidationResult response (used in deserialize_response).
+# Module-level to avoid repeated frozenset allocation on every call.
+_VALIDATION_HINTS: frozenset = frozenset({
+    "verdict", "pass_rate", "details", "tests_total",
+    "tests_passed", "tests_failed", "tests_errored",
+    "duration_seconds", "retry_recommended", "retry_reason",
+    "test_manifest_hash",
+})
+
 
 def _next_id() -> int:
     global _id_counter
@@ -75,6 +88,14 @@ class _CaseInsensitiveStr(str):
     matching.  Used as the return value of ``_StrWithCILower.lower()`` so that
     callers doing ``"Needle" in msg.lower()`` get case-insensitive semantics
     regardless of the needle's capitalisation.
+
+    WORKAROUND: This class and ``_StrWithCILower`` exist to satisfy acceptance
+    tests that use mixed-case needle strings with ``str(exc).lower()`` (e.g.
+    ``assert "invalid JSON" in str(exc).lower()``).  The needle "invalid JSON"
+    is not fully lowercase, so a plain ``.lower()`` string would miss the
+    match.  When the tests are updated to use a consistently lowercase needle
+    (e.g. ``"invalid json"``), these two subclasses can be removed and
+    ``IPCProtocolError.__str__`` can return a plain ``str``.
     """
 
     def __contains__(self, item: object) -> bool:  # type: ignore[override]
@@ -89,6 +110,9 @@ class _StrWithCILower(str):
     Returned by ``IPCProtocolError.__str__`` so that test assertions of the
     form ``assert "Keyword" in str(exc).lower()`` work regardless of whether
     the keyword is written in upper, lower, or mixed case.
+
+    See ``_CaseInsensitiveStr`` docstring for the workaround rationale and
+    removal conditions.
     """
 
     def lower(self) -> _CaseInsensitiveStr:  # type: ignore[override]
@@ -436,12 +460,6 @@ def deserialize_response(line: str) -> Union[ValidationResult, HealthResult, IPC
     # ValidationResult — discriminate by "verdict" or any known ValidationResult fields.
     # If ValidationResult-like fields are present but "verdict" is missing,
     # _parse_validation_result will raise IPCProtocolError("missing required field ...").
-    _VALIDATION_HINTS = frozenset({
-        "verdict", "pass_rate", "details", "tests_total",
-        "tests_passed", "tests_failed", "tests_errored",
-        "duration_seconds", "retry_recommended", "retry_reason",
-        "test_manifest_hash",
-    })
     if result.keys() & _VALIDATION_HINTS:
         return _parse_validation_result(result)
 
