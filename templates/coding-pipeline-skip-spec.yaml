@@ -1,0 +1,450 @@
+id: coding-pipeline-skip-spec
+name: "Coding Pipeline (Skip Spec Loop)"
+description: >
+  Implementation pipeline that skips the 3-phase spec loop (spec → behavioral → adversary).
+  Use when behavioral contracts and implementation spec have already been reviewed externally
+  (e.g. human-reviewed GitHub issues with behavioral contracts in the issue body).
+
+  Prerequisites: before launching, pre-populate the output directory with:
+    - {output_dir}/spec.md         — implementation spec (Section B)
+    - {output_dir}/behavioral.md   — behavioral contracts (Section A)
+
+  Phases: acceptance_test → implement → acceptance_run → review → fix → test
+  Loops: implement ↔ acceptance_run (max 3), review ↔ fix ↔ acceptance_run (max 3)
+author: "Toscan"
+version: "1.0.0"
+scenario: scenarios/coding-pipeline-skip-spec-smoke.yaml
+category: "code"
+tags: [code, development, review, testing, pipeline, skip-spec]
+use_cases:
+  - "Issues with pre-reviewed behavioral contracts"
+  - "Issues reviewed through external adversarial process"
+  - "Re-running implementation after spec loop completed in a prior run"
+
+config_schema:
+  type: object
+  required: [issue_title, issue_body, repo_path, branch_name, issue_number, repo_url]
+  properties:
+    issue_title:
+      type: string
+      description: "GitHub issue title"
+    issue_body:
+      type: string
+      description: "Full issue description with requirements and acceptance criteria"
+    repo_path:
+      type: string
+      description: "Absolute path to the repository"
+    branch_name:
+      type: string
+      description: "Git branch name to create/use"
+    test_command:
+      type: string
+      default: "python3 -m pytest tests/ -x -q"
+      description: "Command to run tests"
+    files_context:
+      type: string
+      default: ""
+      description: "Key files and their purpose — helps the builder understand the codebase"
+    language:
+      type: string
+      default: "python"
+    style_guide:
+      type: string
+      default: "Follow existing code style. Add docstrings. Type hints where practical."
+    acceptance_test_file:
+      type: string
+      default: ""
+      description: "Optional: path to a pre-written acceptance test file. If empty, one is generated from the spec."
+    issue_number:
+      type: integer
+      description: "GitHub issue number — auto-injected into PR body as 'Closes #N'"
+    repo_url:
+      type: string
+      description: "GitHub repo URL (e.g. https://github.com/ToscanAI/orchestration-engine)"
+    acceptance_max_retries:
+      type: integer
+      default: 3
+      description: "Max implement→acceptance_run loop iterations (set max_iterations on implement and acceptance_run phases)"
+
+example_input:
+  issue_title: "Sample issue title"
+  issue_body: "Sample issue description and requirements."
+  repo_path: "/path/to/repo"
+  branch_name: "fix/issue-123"
+  issue_number: 123
+  repo_url: "https://github.com/ToscanAI/orchestration-engine"
+
+phases:
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # SPEC LOOP SKIPPED
+  #
+  # This template assumes {output_dir}/spec.md and {output_dir}/behavioral.md
+  # were pre-populated before launch. The acceptance_test phase reads
+  # behavioral.md directly — same as the standard pipeline after the spec
+  # loop completes.
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Phase 1: Behavioral Acceptance Tests
+  - id: acceptance_test
+    name: "Behavioral Acceptance Tests"
+    description: "Write behavioral tests from contracts ONLY — never from implementation. These become immutable constraints for the implementing agent. Behavioral contracts were reviewed externally before reaching this pipeline."
+    model_tier: sonnet
+    thinking_level: high
+    transitions:
+      success: implement
+      failed: acceptance_test
+    protected_outputs:
+      - acceptance_tests.py
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the ACCEPTANCE_TEST phase. Write tests from behavioral contracts only. You have NO access to implementation details — this is by design. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      You are a QA engineer writing behavioral acceptance tests from a spec.
+      You have NOT seen any implementation — you are writing tests BEFORE the code exists.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the behavioral contracts at: {output_dir}/behavioral.md
+      This file contains ONLY the behavioral contracts — what the system should do.
+      You have no access to implementation details. This is by design.
+
+      ## Task
+      1. Read the behavioral contracts carefully
+      2. Write a Python test file `{output_dir}/acceptance_tests.py` that:
+         - Contains pytest tests expressing behavioral contracts of the form:
+           "when I call X with Y, it produces Z"
+         - Tests are derived ONLY from behavioral.md — do not assume implementation details
+         - DO NOT test for specific method names, private functions, or class internals
+         - DO NOT test that a specific function exists — test that a BEHAVIOR works
+         - ❌ Wrong: "assert hasattr(obj, '_extract_code_quality')"
+         - ✅ Right: "assert scorer.compute(with_quality_data) > scorer.compute(without_quality_data)"
+         - Each test function has a clear docstring stating the behavioral contract
+         - Tests use `pytest` and standard Python imports only
+         - Tests are runnable: they import from the actual repo path `{config[repo_path]}`
+         - Add `sys.path.insert(0, '{config[repo_path]}')` or `sys.path.insert(0, str(Path('{config[repo_path]}').parent))` at the top
+         - Cover: happy path, edge cases, error cases, and boundary conditions
+         - Aim for 5-15 focused behavioral tests
+      3. Initialize acceptance results by writing `{output_dir}/acceptance_results.json`:
+         ```json
+         {{
+           "phase": "acceptance_test",
+           "status": "tests_written",
+           "test_file": "{output_dir}/acceptance_tests.py",
+           "passed": 0,
+           "failed": 0,
+           "errors": 0,
+           "total": 0,
+           "pass_rate": 0.0,
+           "note": "Tests written pre-implementation. Run after implement phase."
+         }}
+         ```
+
+      ## Output
+      Write a summary to {output_dir}/acceptance_test.md:
+      - List of behavioral contracts (one per test)
+      - Rationale for each contract (what aspect of the spec it validates)
+      - Any ambiguities in the spec that required assumptions
+
+  # Phase 2: Implementation
+  - id: implement
+    name: "Implementation"
+    description: "Write the code changes based on the spec, constrained by acceptance tests"
+    model_tier: sonnet
+    thinking_level: high
+    max_iterations: 3
+    transitions:
+      success: acceptance_run
+      failed: implement
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the IMPLEMENT phase. Your output feeds the review phase — not a human. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      You are a developer implementing changes based on a spec.
+
+      ## IMMUTABLE CONSTRAINT — READ THIS FIRST
+      The acceptance test file at `{output_dir}/acceptance_tests.py` was written
+      BEFORE your implementation by a separate agent. It represents the behavioral
+      contract of this feature. You MUST make all tests in that file pass.
+      You MUST NOT modify, delete, or work around the acceptance tests.
+      The pass rate of those tests is the primary quality signal for this pipeline run.
+
+      ## Previous Work
+      {phase_summary}
+
+      Read the spec at: {output_dir}/spec.md
+      Read the acceptance tests at: {output_dir}/acceptance_tests.py
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+      **Style:** {config[style_guide]}
+
+      ## Task
+      1. Read the spec carefully
+      2. Read the acceptance tests — understand every behavioral contract they assert
+      3. Switch to the feature branch FIRST:
+         - Try `git checkout {config[branch_name]}` (if branch exists)
+         - If it doesn't exist: `git checkout -b {config[branch_name]}`
+         - IMPORTANT: Do NOT write any code on main. Verify you are on the correct branch before making changes.
+      4. Implement ALL changes described in the spec such that acceptance tests pass
+      5. Write clean, documented code following the style guide
+      6. If `{output_dir}/acceptance_results.json` exists and shows prior failures
+         (from the acceptance_run phase — `"phase": "acceptance_run"`), read the
+         `failure_details` field carefully and fix the code to make those tests pass.
+      7. Commit with message referencing the issue: `feat/fix(#issue): description`
+      8. Run the full test suite to verify: `{config[test_command]}`
+      9. Push your branch to remote: `git push --set-upstream origin {config[branch_name]}`
+
+      ## Output
+      Write a summary of changes to {output_dir}/implement.md including:
+      - Files changed with brief description of each change
+      - Any deviations from the spec and why
+      - Full test suite results (pass/fail count)
+      - Commit hash
+
+  # Phase 2b: Engine-executed Acceptance Test Runner
+  - id: acceptance_run
+    name: "Acceptance Test Runner"
+    description: "Engine executes pytest directly on acceptance_tests.py — no agent. Writes engine-verified results to acceptance_results.json."
+    task_type: acceptance_run
+    max_iterations: 6
+    working_dir: "{config[repo_path]}"
+    transitions:
+      success: review
+      failed: implement
+      exhausted: postmortem_review
+
+  # Phase 3: Code Review (Opus)
+  - id: review
+    name: "Opus Code Review"
+    description: "Senior code review by Opus — quality gate with APPROVE/REQUEST_CHANGES verdict"
+    model_tier: opus
+    thinking_level: high
+    max_iterations: 3
+    supervisor: true
+    supervisor_model: opus
+    supervisor_rubric: |
+      Evaluate the code review quality:
+      - Did it identify real issues vs nitpicks?
+      - Are security concerns addressed?
+      - Is backward compatibility verified?
+      - Are the suggested fixes actionable?
+    transitions:
+      approve: test
+      request_changes: fix
+      abort: fix
+      success: test
+      failed: review
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the REVIEW phase. Your verdict determines whether the code proceeds to testing or goes back for fixes. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      You are a senior code reviewer (Opus-tier). Your job is to catch bugs, security issues, and design problems.
+
+      ## Previous Work
+      {phase_summary}
+
+      ## Prior Rounds
+      {iteration_history}
+
+      ## Iteration Context
+      If prior rounds exist above, focus on: (1) verifying that prior fixes were applied, (2) finding NEW issues not raised before. Do NOT re-raise issues that were already fixed.
+
+      Read the implementation summary at: {output_dir}/implement.md
+      Read the spec at: {output_dir}/spec.md
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+
+      ## Task
+      1. Checkout the feature branch: `git checkout {config[branch_name]}`
+      2. Run `git diff main...{config[branch_name]}` to see all changes
+      3. Review EVERY changed file for:
+         - **Correctness** — Does it do what the spec says?
+         - **Security** — Injection, path traversal, unsafe operations?
+         - **Edge cases** — Missing error handling, boundary conditions?
+         - **Backward compatibility** — Does it break existing behavior?
+         - **Test coverage** — Are the changes adequately tested?
+
+      ## Output
+      Write your review to {output_dir}/review.md.
+
+      **IMPORTANT:** Your response MUST start with one of these verdicts on the very first line:
+      - `APPROVE` — code is ready to merge (no blockers, at most minor issues)
+      - `REQUEST_CHANGES` — one or more blockers or major issues found
+      - `ABORT` — fatal issue discovered, pipeline cannot continue safely
+
+      **DO NOT** write any preamble, commentary, or "thinking out loud" text before the verdict.
+      The very first line of review.md must be the verdict word and nothing else.
+
+      ## Structured Output Format
+      Your review.md MUST follow this exact structure:
+
+      Line 1: APPROVE  -or-  REQUEST_CHANGES  -or-  ABORT  (nothing else on this line)
+
+      Then for each issue found, one line per issue using this tag format:
+        [SEVERITY][category] description of the issue
+
+      Where SEVERITY is one of: BLOCKER, MAJOR, MINOR, NITPICK
+      And category is a short label such as: security, correctness, style,
+        performance, test, compatibility, design
+
+      ✅ CORRECT example:
+      Correct example:
+        REQUEST_CHANGES
+        [BLOCKER][security] SQL query in db.py:42 uses string concatenation — use parameterized queries
+        [MAJOR][correctness] parse_output() returns None instead of empty list when input is empty
+        [MINOR][style] Missing docstring on helper function _build_query()
+        [NITPICK][style] Trailing whitespace on line 18 of utils.py
+
+      ❌ WRONG — never start with preamble before the verdict:
+      WRONG — never start with preamble before the verdict:
+        Now let me run the tests first to check the implementation...
+        REQUEST_CHANGES
+        [BLOCKER][security] ...
+
+      If there are no issues (APPROVE with clean code), write only:
+        APPROVE
+
+      Do NOT use any other tag format. Do NOT add extra headers or sections
+      between the verdict line and the issue lines.
+
+  # Phase 3b: Fix Review Feedback
+  - id: fix
+    name: "Apply Review Fixes"
+    description: "Address code review feedback, then re-verify behavioral contracts before re-review"
+    model_tier: sonnet
+    thinking_level: low
+    max_iterations: 3
+    transitions:
+      success: acceptance_run
+      failed: fix
+      exhausted: postmortem_review
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the FIX phase of an automated coding pipeline. Your output feeds a re-review — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
+
+      You are a developer addressing code review feedback.
+
+      ## Previous Work
+      {phase_summary}
+
+      ## Prior Rounds
+      {iteration_history}
+
+      ## Iteration Context
+      If prior rounds exist above, do NOT re-apply fixes already committed. Focus only on NEW issues from the latest review.
+
+      Read the code review at: {output_dir}/review.md
+      Read the original spec at: {output_dir}/spec.md
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+
+      ## Task
+      1. Checkout the feature branch: `git checkout {config[branch_name]}`
+      2. Read the code review carefully
+      3. If the review says APPROVE with no blockers — write "No fixes needed" to {output_dir}/fix.md and stop
+      4. If REQUEST_CHANGES — apply ALL fixes mentioned:
+         - Address every blocker and major issue
+         - Address minor issues where practical
+         - IMPORTANT: Only modify code directly related to the reviewer's feedback. Minimal diff.
+      5. Run tests: `{config[test_command]}`
+      6. Commit fixes on this branch: `fix: address code review feedback`
+      7. Push your branch to remote: `git push origin {config[branch_name]}`
+
+      ## Output
+      Write to {output_dir}/fix.md:
+      - Each issue addressed and how
+      - Any issues intentionally deferred and why
+      - Updated test results
+      - Commit hash
+
+  # Phase 4: Review Postmortem (runs only on exhausted)
+  - id: postmortem_review
+    name: "Review Loop Exhaustion Postmortem"
+    description: "When the review/fix loop exhausts iterations without approval, extract persistent review findings and diagnose why fixes failed to satisfy the reviewer."
+    model_tier: sonnet
+    thinking_level: medium
+    transitions: {}
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the POSTMORTEM phase of an automated coding pipeline. The review and fix phases exhausted their iteration limit without the reviewer approving the implementation. Your job is to extract the reviewer's unresolved findings and diagnose why the fix agent could not satisfy them. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      You are a technical analyst performing a postmortem on a failed review/fix cycle.
+
+      ## Pipeline Context
+      **Issue:** {config[issue_title]} (#{config[issue_number]})
+      **Repository:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+      **What happened:** The reviewer and fix agent went through multiple rounds without the reviewer approving the implementation.
+
+      ## Current Files
+      Read the latest review at: {output_dir}/review.md
+      Read the latest fix notes at: {output_dir}/fix.md
+      Read the implementation spec at: {output_dir}/spec.md
+      Read the behavioral contracts at: {output_dir}/behavioral.md
+
+      ## Round History
+      Read ALL round files from {output_dir}/ to understand the full evolution:
+      - review_round1.md, fix_round1.md, review_round2.md, fix_round2.md, etc.
+      - These files contain the complete review/fix exchange across all rounds
+
+      ## Your Task
+
+      1. **Identify persistent findings** — Which review findings appeared in multiple rounds and were never resolved?
+      2. **Root cause analysis** — For each persistent finding, explain WHY the fix agent failed to resolve it. Common causes:
+         - The fix is cosmetic but the reviewer wants a structural change
+         - The fix introduces a new issue while solving the flagged one
+         - The fix agent lacks context about architectural constraints
+         - The review finding is subjective or contradicts the spec
+         - The acceptance tests pass but the reviewer wants changes beyond the spec
+      3. **Assessment** — For each persistent finding, classify it:
+         - **Spec gap:** The behavioral contracts don't cover this — needs a spec update
+         - **Implementation gap:** The code doesn't satisfy an existing contract — needs a better fix
+         - **Scope creep:** The reviewer is asking for changes beyond the issue scope — document and defer
+         - **Contradiction:** The reviewer's request conflicts with the spec or acceptance tests — escalate
+
+      Write your full postmortem to {output_dir}/postmortem_review.md
+
+      The pipeline ends here. The findings should inform the next pipeline run or a manual intervention.
+
+  # Phase 5: Test Verification (Command Phase)
+  - id: test
+    name: "Test Verification"
+    description: "Run full test suite to verify no regressions"
+    task_type: command
+    command: "{config[test_command]}"
+    working_dir: "{config[repo_path]}"
+    allowed_commands: ["python3", "python", "pytest"]
+
+# Auto-merge configuration
+auto_merge:
+  enabled: true
+  min_score: 0.90
+  require_approve: true
+  strategy: squash
+
+# Confidence-based routing
+routing_config:
+  tiers:
+    - name: auto_merge
+      min_score: 0.90
+      max_score: 1.01
+      requires: ["tests_pass"]
+      notify: ["log"]
+    - name: human_review
+      min_score: 0.75
+      max_score: 0.90
+      requires: []
+      notify: ["log"]
+    - name: auto_retry
+      min_score: 0.50
+      max_score: 0.75
+      requires: []
+      notify: ["log"]
+      strategy: escalate_model
+      max_retries: 1
+    - name: reject
+      min_score: 0.0
+      max_score: 0.50
+      requires: []
+      notify: ["log"]
