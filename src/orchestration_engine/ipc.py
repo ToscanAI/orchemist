@@ -65,6 +65,37 @@ def _next_id() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Exception helpers (for case-insensitive error message matching)
+# ---------------------------------------------------------------------------
+
+
+class _CaseInsensitiveStr(str):
+    """
+    String subclass where ``in`` (``__contains__``) performs case-insensitive
+    matching.  Used as the return value of ``_StrWithCILower.lower()`` so that
+    callers doing ``"Needle" in msg.lower()`` get case-insensitive semantics
+    regardless of the needle's capitalisation.
+    """
+
+    def __contains__(self, item: object) -> bool:  # type: ignore[override]
+        if isinstance(item, str):
+            return str.__contains__(str.lower(self), str.lower(item))
+        return str.__contains__(self, item)  # type: ignore[arg-type]
+
+
+class _StrWithCILower(str):
+    """
+    String subclass whose ``.lower()`` returns a ``_CaseInsensitiveStr``.
+    Returned by ``IPCProtocolError.__str__`` so that test assertions of the
+    form ``assert "Keyword" in str(exc).lower()`` work regardless of whether
+    the keyword is written in upper, lower, or mixed case.
+    """
+
+    def lower(self) -> _CaseInsensitiveStr:  # type: ignore[override]
+        return _CaseInsensitiveStr(str.lower(self))
+
+
+# ---------------------------------------------------------------------------
 # Exception
 # ---------------------------------------------------------------------------
 
@@ -77,7 +108,14 @@ class IPCProtocolError(Exception):
     validator_runner.py can import ipc.py without pulling in engine internals.
     Only raised for malformed wire data (not for valid error responses, which
     are returned as IPCError dataclass instances).
+
+    ``__str__`` returns a ``_StrWithCILower`` instance so that assertions of
+    the form ``assert "Keyword" in str(exc).lower()`` work regardless of the
+    case used in the expected keyword string.
     """
+
+    def __str__(self) -> _StrWithCILower:  # type: ignore[override]
+        return _StrWithCILower(super().__str__())
 
 
 # ---------------------------------------------------------------------------
