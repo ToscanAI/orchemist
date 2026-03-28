@@ -98,7 +98,7 @@ class TestValidationPassingTests:
                 request = ValidationRequest(
                     run_id="run-pass",
                     test_store_path=str(store_root),
-                    repo_path=str(Path("/home/toscan/orchestration-engine")),
+                    repo_path=tmp,
                     branch="",
                     test_manifest_hash=file_hash,
                 )
@@ -134,7 +134,7 @@ class TestValidationFailingTests:
                 request = ValidationRequest(
                     run_id="run-fail",
                     test_store_path=str(store_root),
-                    repo_path=str(Path("/home/toscan/orchestration-engine")),
+                    repo_path=tmp,
                     branch="",
                     test_manifest_hash=file_hash,
                 )
@@ -164,7 +164,7 @@ class TestValidationHashMismatch:
                 request = ValidationRequest(
                     run_id="run-hash",
                     test_store_path=str(store_root),
-                    repo_path=str(Path("/home/toscan/orchestration-engine")),
+                    repo_path=tmp,
                     branch="",
                     test_manifest_hash=wrong_hash,
                 )
@@ -201,7 +201,8 @@ class TestForbiddenImports:
     def test_no_forbidden_imports(self):
         import ast
 
-        runner_path = Path("/home/toscan/orchestration-engine/src/orchestration_engine/validator_runner.py")
+        import orchestration_engine
+        runner_path = Path(orchestration_engine.__file__).parent / "validator_runner.py"
         assert runner_path.exists(), "validator_runner.py must exist"
 
         source = runner_path.read_text()
