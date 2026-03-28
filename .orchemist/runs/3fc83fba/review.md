@@ -1,0 +1,10 @@
+APPROVE
+[MINOR][test] Hardcoded paths in test_validator_runner.py (lines 101, 137, 167, 204) use `/home/toscan/orchestration-engine` — makes tests non-portable. Should derive from `__file__` or a fixture. Acceptable for now since CI runs on this host.
+[MINOR][design] `ExternalValidator.__init__` stores `self._test_store_path` (line 246 of validator.py) but never reads it — `validate()` uses `request.test_store_path` exclusively. Dead constructor parameter; consider removing or using it as a default/override.
+[MINOR][design] stderr pipe is created (`stderr=subprocess.PIPE`) but never consumed by spawn/validate/shutdown. Won't deadlock in practice (validator_runner doesn't write much to stderr) but masks diagnostic output on subprocess crashes. Consider logging stderr on process exit.
+[MINOR][correctness] Pytest summary regex in `_parse_pytest_output` assumes fixed ordering (passed→failed→error). Some pytest versions/configs may reorder. Mitigated by fallback individual-count pattern search, so unlikely to cause incorrect verdicts.
+[NITPICK][style] `except (IPCProtocolError, Exception)` on line ~305 of validator.py — `Exception` is a superclass of `IPCProtocolError`, making the first catch branch unreachable. Use just `except Exception` or keep `IPCProtocolError` alone if the intent is narrow catching.
+[NITPICK][style] `import time as _time` and `import re` are imported inside function bodies in validator_runner.py (lines 95, 130, 228) rather than at module top. Works but unconventional — move to module-level imports for clarity.
+
+VERDICT: APPROVE
+COMMENT: Implementation is solid. All 4 spec files created correctly, subprocess isolation model is sound (validator_runner imports only from ipc.py and test_store.py), lifecycle management (spawn→health check→validate→shutdown) handles edge cases properly, and path traversal is protected by TestStore._validate_run_id. The 6 minor/nitpick issues above are non-blocking improvements for a follow-up. 15/15 repo tests pass; the 1 acceptance test failure (test 18) was a test setup ordering bug, not an implementation defect.
