@@ -1,0 +1,118 @@
+# coding-pipeline-skip-spec-smoke.yaml — Smoke test for coding-pipeline-skip-spec.yaml
+#
+# Purpose:
+#   Validates that the skip-spec pipeline template produces structurally
+#   correct output across its 5 active phases:
+#   acceptance_test → implement → acceptance_run → review → test.
+#
+#   This template skips the spec loop (spec → behavioral → adversary) and
+#   expects pre-populated spec.md and behavioral.md in the output directory.
+#
+# Scoring:
+#   Non-gate weights: keyword(40) + llm_judge(60) = 100
+#   pass_threshold: 0.70
+
+id: coding-pipeline-skip-spec-smoke
+version: "1.0.0"
+name: "Coding Pipeline Skip-Spec Smoke Test"
+description: >
+  Smoke test for the coding-pipeline-skip-spec template. Validates the
+  implementation loop: acceptance tests → implementation → acceptance run →
+  Opus code review → fix → test. Spec loop is skipped — spec.md and
+  behavioral.md are assumed pre-populated.
+tags:
+  - smoke
+  - coding-pipeline
+  - skip-spec
+
+pipeline: templates/coding-pipeline-skip-spec.yaml
+
+input:
+  issue_title: "Test: Add email validation utility"
+  issue_body: "Add a Python utility function that validates email addresses using regex."
+  repo_path: "/tmp/test-repo"
+  branch_name: "test/email-validation"
+  issue_number: 999
+  repo_url: "https://github.com/ToscanAI/orchestration-engine"
+
+acceptance:
+  # Gate: pipeline must produce non-trivial output
+  - id: output_not_empty
+    type: assertion
+    check: "len(str(output)) > 10"
+    weight: 0
+    description: >
+      Hard gate: pipeline must produce non-trivial output.
+
+  # Keyword check for structural content
+  - id: structural_keywords
+    type: keyword
+    keywords:
+      # Live mode keywords
+      - "acceptance_test"
+      - "behavioral"
+      - "acceptance_tests"
+      - "implement"
+      - "review"
+      - "APPROVE"
+      - "test"
+      - "fix"
+      - "pass_rate"
+      # Dry-run mode keywords
+      - "mock"
+      - "execution"
+      - "content"
+    match_mode: "any"
+    threshold: 0.5
+    weight: 40
+    description: >
+      Structural check: output contains recognisable content from a coding
+      pipeline run. Live: behavioral acceptance tests, implementation,
+      review verdict (APPROVE/REVISE), fix pass, test results.
+      Dry-run: mock executor output.
+
+  # LLM judge for quality
+  - id: output_quality
+    type: llm_judge
+    judge_model: claude-haiku-4-5-20241022
+    rubric: |
+      You are evaluating the output of a coding pipeline that SKIPS the spec loop.
+      The spec and behavioral contracts were pre-populated. The pipeline runs:
+        acceptance_test → implement → acceptance_run → review → fix → test.
+
+      Phases:
+      1. Behavioral Acceptance Tests — writes pytest tests expressing "when I call X with Y,
+         it produces Z" contracts BEFORE implementation. Produces acceptance_tests.py and
+         acceptance_results.json with pass_rate.
+      2. Implementation — implements changes, runs acceptance tests, reports pass_rate and
+         commit hash
+      3. Acceptance Run — engine-executed pytest (no LLM), writes acceptance_results.json
+      4. Code review — APPROVE or REQUEST_CHANGES verdict with reasoning
+      5. Fix — addresses review feedback (may be absent if first review approved)
+      6. Test — full test suite results with pass/fail counts
+
+      Scoring criteria (equal weight):
+      1. Acceptance tests present — behavioral contracts listed, acceptance_results.json
+         with pass_rate field
+      2. Implementation evidence — describes files changed, acceptance test pass rate,
+         commit hash
+      3. Acceptance run results — engine-verified pass_rate in acceptance_results.json
+      4. Review verdict — APPROVE or REQUEST_CHANGES with substantive reasoning
+      5. Test results — pass/fail counts present
+
+      Score 0.0 (none met) to 1.0 (all five met).
+      If fix phase is absent (first-pass APPROVE), still score all other criteria.
+
+      Respond ONLY:
+      Score: <0.0-1.0>
+      Reasoning: <one sentence>
+    threshold: 0.60
+    weight: 60
+    description: >
+      LLM judge: checks for behavioral acceptance tests, implementation,
+      engine-verified acceptance run, review verdict, and test results.
+
+scoring:
+  method: weighted_average
+  pass_threshold: 0.70
+  gate_mode: all_or_nothing
