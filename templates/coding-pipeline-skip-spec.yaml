@@ -94,8 +94,6 @@ phases:
     transitions:
       success: acceptance_test_adversary
       failed: acceptance_test
-    protected_outputs:
-      - acceptance_tests.py
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the ACCEPTANCE_TEST phase. Write tests from behavioral contracts only. You have NO access to implementation details — this is by design. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
@@ -159,6 +157,8 @@ phases:
       success: implement
       failed: acceptance_test_adversary
       exhausted: implement
+    protected_outputs:
+      - acceptance_tests.py
     adversary_config:
       valid_categories: [coverage, trivial_satisfaction, leakage, specificity]
       fallback_category: coverage
