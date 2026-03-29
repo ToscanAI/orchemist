@@ -36,41 +36,33 @@ spawns a daemon subprocess — all in a single HTTP request cycle.
 
 ## Architecture Overview
 
-```
-GitHub Issue (opened / labeled "orchemist")
-  │
-  ▼
-POST /api/v1/github/issues
-  ├─ Validate X-GitHub-Event header
-  ├─ Filter: action == "opened" or "labeled"
-  ├─ Check trigger label ("orchemist" or env override)
-  ├─ Dedup: skip if active run exists for this issue
-  │
-  ▼
-IssueAutomation.process()
-  ├─ IssueClassifier.classify() → bug/feature/docs/refactor/research/content
-  ├─ Confidence gate (default ≥ 0.70, else escalate to human)
-  ├─ TemplateSelector.select() → pipeline template name
-  ├─ InputExtractor.extract() → pipeline input dict from issue body
-  └─ launcher() → spawn daemon subprocess
-       │
-       ▼
-Post GitHub comment with run ID + classification
+```mermaid
+flowchart TD
+    GH["GitHub Issue\n(opened / labeled 'orchemist')"] --> POST["POST /api/v1/github/issues"]
+    POST --> V1["Validate X-GitHub-Event header"]
+    V1 --> V2["Filter: action == 'opened' or 'labeled'"]
+    V2 --> V3["Check trigger label"]
+    V3 --> V4["Dedup: skip if active run exists"]
+    V4 --> IA["IssueAutomation.process()"]
+    IA --> CL["IssueClassifier.classify()\n→ bug/feature/docs/refactor/research/content"]
+    CL --> CG["Confidence gate (≥ 0.70)"]
+    CG --> TS["TemplateSelector.select()\n→ pipeline template name"]
+    TS --> IE["InputExtractor.extract()\n→ pipeline input dict"]
+    IE --> LAUNCH["launcher() → spawn daemon"]
+    LAUNCH --> COMMENT["Post GitHub comment\nwith run ID + classification"]
 ```
 
 A second, simpler path exists for the `pipeline-ready` label:
 
-```
-GitHub Issue (labeled "pipeline-ready")
-  │
-  ▼
-POST /api/v1/github/issues/pipeline-ready
-  ├─ Filter: action == "labeled", label == "pipeline-ready"
-  ├─ Dedup: skip if active run exists
-  ├─ generate_pipeline_input() → branch name + input dict
-  ├─ Launch coding-pipeline-v1
-  ├─ Remove "pipeline-ready" label
-  └─ Post comment with run ID + branch name
+```mermaid
+flowchart TD
+    GH["GitHub Issue\n(labeled 'pipeline-ready')"] --> POST["POST /api/v1/github/issues/pipeline-ready"]
+    POST --> F1["Filter: action == 'labeled',\nlabel == 'pipeline-ready'"]
+    F1 --> F2["Dedup: skip if active run exists"]
+    F2 --> GEN["generate_pipeline_input()\n→ branch name + input dict"]
+    GEN --> LAUNCH["Launch coding-pipeline-v1"]
+    LAUNCH --> RM["Remove 'pipeline-ready' label"]
+    RM --> COMMENT["Post comment with\nrun ID + branch name"]
 ```
 
 ---

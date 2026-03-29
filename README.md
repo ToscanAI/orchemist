@@ -110,30 +110,26 @@ Each use case is a template. Browse them with `orch templates list` or search wi
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  YAML Templates   (community index / local / GitHub)        │
-│  content-pipeline.yaml  ·  code-review.yaml  ·  …          │
-└────────────────────────┬────────────────────────────────────┘
-                         │  orch run
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Pipeline Runner                                            │
-│  ┌─────────────┐   ┌──────────────────┐   ┌─────────────┐  │
-│  │ Template    │ → │ Phase Sequencer  │ → │  Executors  │  │
-│  │ Engine      │   │ (topo sort,      │   │             │  │
-│  │ (YAML parse │   │  output forward, │   │ Anthropic   │  │
-│  │  var interp)│   │  retry logic)    │   │ OpenClaw    │  │
-│  └─────────────┘   └──────────────────┘   │ Gemini      │  │
-│                                           │ Dry-Run     │  │
-│                                           └─────────────┘  │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Scenario Runner  (optional acceptance testing)             │
-│  Assertion Grader · LLM Judge · URL Check                   │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph Templates["YAML Templates"]
+        T1["content-pipeline.yaml"]
+        T2["code-review.yaml"]
+        T3["…"]
+    end
+
+    Templates -- "orch run" --> Runner
+
+    subgraph Runner["Pipeline Runner"]
+        TE["Template Engine\n(YAML parse, var interp)"] --> PS["Phase Sequencer\n(topo sort, output forward,\nretry logic)"]
+        PS --> EX["Executors\n(Anthropic · OpenClaw\nGemini · Dry-Run)"]
+    end
+
+    Runner --> SR
+
+    subgraph SR["Scenario Runner (optional acceptance testing)"]
+        AG["Assertion Grader"] ~~~ LJ["LLM Judge"] ~~~ UC["URL Check"]
+    end
 ```
 
 **Three execution modes:**

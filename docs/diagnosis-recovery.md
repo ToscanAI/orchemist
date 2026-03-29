@@ -35,30 +35,34 @@ as a detached daemon subprocess — fully automated, no human intervention.
 
 ## Architecture Overview
 
-```
-Pipeline fails
-  │
-  ▼
-DiagnosisEngine.diagnose()
-  ├─ Collect phase output files (*.txt, *.md, *.json)
-  ├─ Build structured LLM prompt
-  ├─ Call Haiku model via executor
-  ├─ Parse JSON → DiagnosisResult
-  ├─ Persist to diagnosis_results table
-  └─ Track pattern via FailurePatternTracker
-       │
-       ▼
-AdaptiveRetryEngine.plan_and_execute()
-  ├─ Resolve original_run_id (trace chained retries)
-  ├─ Map FailureClass → RetryStrategy
-  ├─ Check retry cap (default: 3)
-  ├─ Check budget guard (estimated cost vs remaining)
-  ├─ Build modified input (model override / context / timeout)
-  ├─ Insert pipeline_runs row (retry_of_run_id set)
-  └─ Spawn detached daemon subprocess
-       │
-       ▼
-New daemon process runs the retry pipeline
+```mermaid
+flowchart TD
+    FAIL["Pipeline fails"] --> DE
+
+    subgraph DE["DiagnosisEngine.diagnose()"]
+        D1["Collect phase output files\n(*.txt, *.md, *.json)"]
+        D2["Build structured LLM prompt"]
+        D3["Call Haiku model via executor"]
+        D4["Parse JSON → DiagnosisResult"]
+        D5["Persist to diagnosis_results table"]
+        D6["Track pattern via FailurePatternTracker"]
+        D1 --> D2 --> D3 --> D4 --> D5 --> D6
+    end
+
+    DE --> ARE
+
+    subgraph ARE["AdaptiveRetryEngine.plan_and_execute()"]
+        A1["Resolve original_run_id\n(trace chained retries)"]
+        A2["Map FailureClass → RetryStrategy"]
+        A3["Check retry cap (default: 3)"]
+        A4["Check budget guard\n(estimated cost vs remaining)"]
+        A5["Build modified input\n(model override / context / timeout)"]
+        A6["Insert pipeline_runs row\n(retry_of_run_id set)"]
+        A7["Spawn detached daemon subprocess"]
+        A1 --> A2 --> A3 --> A4 --> A5 --> A6 --> A7
+    end
+
+    ARE --> DAEMON["New daemon process runs the retry pipeline"]
 ```
 
 Both stages are **non-fatal** — failures at any point are logged and

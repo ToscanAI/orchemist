@@ -16,19 +16,15 @@ The OpenClaw executor spawns sub-agents that have full tool access (file read/wr
 
 ## Current Architecture
 
-```
-Pipeline Template (YAML)
-    ↓
-PhaseSequencer (builds prompts with {phase_id.output})
-    ↓
-OpenClawExecutor._run_session()
-    ├── POST /tools/invoke → sessions_spawn (spawns sub-agent)
-    ├── Poll sessions_history (waits for completion)
-    └── Extract last assistant text blocks → return as phase output
-    ↓
-phase_outputs[phase_id] = TaskResult(result={"text": output_text})
-    ↓
-_PhaseOutput wrapper → available as {phase_id.output} in next phase
+```mermaid
+flowchart TD
+    PT["Pipeline Template (YAML)"] --> PS["PhaseSequencer\n(builds prompts with phase_id.output)"]
+    PS --> RS["OpenClawExecutor._run_session()"]
+    RS --> SPAWN["POST /tools/invoke\n→ sessions_spawn"]
+    RS --> POLL["Poll sessions_history\n(waits for completion)"]
+    RS --> EXTRACT["Extract last assistant text blocks\n→ return as phase output"]
+    EXTRACT --> PO["phase_outputs[phase_id] =\nTaskResult(result={'text': output_text})"]
+    PO --> WRAP["_PhaseOutput wrapper\n→ available as phase_id.output in next phase"]
 ```
 
 **The gap:** `sessions_history` returns the full conversation including tool calls, but the executor only reads `content[].type == "text"` from the last assistant message.

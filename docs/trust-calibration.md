@@ -26,27 +26,16 @@ Trust calibration is a feedback loop that adjusts auto-merge thresholds based on
 
 ## 1. Overview
 
-```
-Pipeline completes
-       │
-       ▼
-┌──────────────────┐     ┌───────────────────┐     ┌──────────────────┐
-│ Confidence       │────→│ Routing Engine     │────→│ Action           │
-│ Calculator       │     │ .evaluate()        │     │ (merge/review/…) │
-└──────────────────┘     └───────┬────────────┘     └────────┬─────────┘
-                                 │                           │
-                                 │ reads thresholds          │ outcome feedback
-                                 ▼                           ▼
-                         ┌───────────────────┐     ┌──────────────────┐
-                         │ Trust Profile     │◄────│ Trust Calibrator  │
-                         │ (DB row)          │     │ .update_after_run │
-                         └───────────────────┘     └──────────────────┘
-                                                           │
-                                                           ▼
-                                                   ┌──────────────────┐
-                                                   │ Trust Adjustments│
-                                                   │ (audit log)      │
-                                                   └──────────────────┘
+```mermaid
+flowchart TD
+    PC["Pipeline completes"] --> CC["Confidence Calculator"]
+    CC --> RE["Routing Engine\n.evaluate()"]
+    RE --> ACT["Action\n(merge / review / …)"]
+
+    RE -- "reads thresholds" --> TP["Trust Profile\n(DB row)"]
+    ACT -- "outcome feedback" --> TC["Trust Calibrator\n.update_after_run()"]
+    TC --> TP
+    TC --> TA["Trust Adjustments\n(audit log)"]
 ```
 
 **Cycle:**

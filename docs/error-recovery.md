@@ -108,16 +108,14 @@ Circuit breakers prevent cascade failures by short-circuiting requests to a `tas
 
 ### State Machine
 
-```
-         failure_count >= threshold
-[closed] ──────────────────────────▶ [open]
-    ▲                                    │
-    │                                    │ reset_timeout expires
-    │  success call                      ▼
-    └─────────────────────────────── [half_open]
-                                         │
-                                         │ next call succeeds
-                                         └── back to [closed]
+```mermaid
+stateDiagram-v2
+    [*] --> closed
+    closed --> open : failure_count >= threshold
+    open --> half_open : reset_timeout expires
+    half_open --> closed : next call succeeds
+    half_open --> open : next call fails
+    closed --> closed : success call (reset counter)
 ```
 
 **State transitions (`CircuitBreakerState`):**
@@ -165,24 +163,19 @@ class RecoveryManager:
 
 ### Failure Handling Flow
 
-```
-handle_task_failure(task_id, ...)
-    │
-    ├── ErrorClassifier.classify(error_message) → (error_type, severity)
-    ├── _record_error_pattern(error_message, ...)  [DB write, best-effort]
-    │
-    ├── Check circuit breaker (thread-safe):
-    │   └── if open → return (False, None, None)  [don't retry]
-    │
-    ├── Check retry state:
-    │   └── if PERMANENT or max_retries exceeded → return (False, None, None)
-    │
-    ├── Schedule retry:
-    │   ├── Calculate backoff_seconds
-    │   ├── Get next_model_tier from escalation path
-    │   └── _record_retry_attempt(...)  [DB write, best-effort]
-    │
-    └── return (True, retry_at, next_model_tier)
+```mermaid
+flowchart TD
+    HTF["handle_task_failure(task_id, ...)"] --> EC["ErrorClassifier.classify(error_message)\n→ (error_type, severity)"]
+    EC --> REP["_record_error_pattern(...)\n[DB write, best-effort]"]
+    REP --> CB{"Circuit breaker open?"}
+    CB -- Yes --> NO1["return (False, None, None)\n[don't retry]"]
+    CB -- No --> RS{"PERMANENT or\nmax_retries exceeded?"}
+    RS -- Yes --> NO2["return (False, None, None)"]
+    RS -- No --> SCHED["Schedule retry"]
+    SCHED --> BO["Calculate backoff_seconds"]
+    BO --> ESC["Get next_model_tier\nfrom escalation path"]
+    ESC --> REC["_record_retry_attempt(...)\n[DB write, best-effort]"]
+    REC --> RET["return (True, retry_at, next_model_tier)"]
 ```
 
 ## Database Schema
@@ -284,18 +277,13 @@ The `AdaptiveRetryEngine` consumes a `DiagnosisResult` and produces a `RetryPlan
 
 ### How the layers interact
 
-```
-Phase fails
-    │
-    ├── DiagnosisEngine.diagnose(phase_context)
-    │       │
-    │       └── LLM classifies failure → DiagnosisResult
-    │
-    ├── AdaptiveRetryEngine.plan(diagnosis)
-    │       │
-    │       └── Maps failure class → RetryPlan (strategy, model override, timeout multiplier)
-    │
-    └── Sequencer executes retry with adjusted parameters
+```mermaid
+flowchart TD
+    PF["Phase fails"] --> DE["DiagnosisEngine.diagnose(phase_context)"]
+    DE --> LLM["LLM classifies failure\n→ DiagnosisResult"]
+    LLM --> ARE["AdaptiveRetryEngine.plan(diagnosis)"]
+    ARE --> MAP["Maps failure class → RetryPlan\n(strategy, model override, timeout multiplier)"]
+    MAP --> SEQ["Sequencer executes retry\nwith adjusted parameters"]
 ```
 
 The base `RecoveryManager` still handles circuit breakers and backoff timing. The Level 4 layer adds *intelligent* strategy selection on top.

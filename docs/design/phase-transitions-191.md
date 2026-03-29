@@ -40,13 +40,14 @@ Issue #191 extends the orchestration engine from a fixed DAG executor to a **con
 
 ### Execution Model (today)
 
-```
-PipelineTemplate → TemplateEngine.get_execution_order() → List[List[str]] (waves)
-                                                              ↓
-PhaseSequencer.execute() iterates waves:
-  Wave 0: [phase_a, phase_b]  ← parallel if template.parallel=True
-  Wave 1: [phase_c]           ← depends on a & b
-  Wave 2: [phase_d]           ← depends on c
+```mermaid
+flowchart LR
+    PT["PipelineTemplate"] --> TE["TemplateEngine\n.get_execution_order()"]
+    TE --> WAVES["List of List of str (waves)"]
+    WAVES --> SEQ["PhaseSequencer.execute()\niterates waves"]
+    SEQ --> W0["Wave 0: [phase_a, phase_b]\n(parallel if template.parallel=True)"]
+    SEQ --> W1["Wave 1: [phase_c]\n(depends on a & b)"]
+    SEQ --> W2["Wave 2: [phase_d]\n(depends on c)"]
 ```
 
 Key characteristics:
