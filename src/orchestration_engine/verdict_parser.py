@@ -1,7 +1,9 @@
 """Shared verdict parser for pipeline phase outputs (Issue #678).
 
 Two-pass extraction:
-  - Pass 1: Structured ``VERDICT: <keyword>`` lines (last-match-wins, reverse scan).
+  - Pass 1: Structured ``VERDICT: <keyword>`` lines.
+            scan_order="last" (default): reverse scan, last match wins.
+            scan_order="first": forward scan, first match wins.
   - Pass 2: Fallback regex scan stripping markdown (priority: REQUEST_CHANGES > ABORT > APPROVE).
 
 Public API:
@@ -47,6 +49,7 @@ def extract_verdict(
     text: Optional[str] = None,
     file_path: Optional[str] = None,
     allowed_verdicts: Optional[set] = None,
+    scan_order: str = "last",
 ) -> Optional[str]:
     """Extract a verdict keyword from *text* or *file_path*.
 
@@ -59,6 +62,11 @@ def extract_verdict(
         *text* with a warning if the file is missing or empty.
     allowed_verdicts : set of str, optional
         When provided, only verdicts in this set (lowercase) are returned.
+    scan_order : str, optional
+        ``"last"`` (default) — Pass 1 scans in reverse; last structured
+        ``VERDICT:`` line wins.  Backward compatible with all existing callers.
+        ``"first"`` — Pass 1 scans forward; first structured ``VERDICT:``
+        line wins.  Pass 2 behaviour is unchanged regardless of *scan_order*.
 
     Returns
     -------
@@ -70,8 +78,8 @@ def extract_verdict(
     if not content or not content.strip():
         return None
 
-    # Pass 1: structured VERDICT: lines — scan in reverse (last match wins)
-    verdict = _pass1(content)
+    # Pass 1: structured VERDICT: lines — scan order controlled by scan_order param
+    verdict = _pass1(content, scan_order=scan_order)
     if verdict is not None:
         if allowed_verdicts is not None and verdict not in allowed_verdicts:
             return None
@@ -80,6 +88,7 @@ def extract_verdict(
     # Pass 2: full-file regex fallback with priority ordering
     # allowed_verdicts filtering happens inside _pass2 so lower-priority
     # keywords can still win when higher-priority ones are filtered out.
+    # Pass 2 behaviour is unchanged regardless of scan_order.
     return _pass2(content, allowed_verdicts)
 
 
@@ -104,9 +113,25 @@ def _resolve_content(text: Optional[str], file_path: Optional[str]) -> Optional[
     return text
 
 
-def _pass1(content: str) -> Optional[str]:
-    """Pass 1: scan lines in reverse for last VERDICT: <keyword> line."""
-    for line in reversed(content.splitlines()):
+def _pass1(content: str, scan_order: str = "last") -> Optional[str]:
+    """Pass 1: scan lines for a structured VERDICT: <keyword> line.
+
+    Parameters
+    ----------
+    content : str
+        Full text to scan.
+    scan_order : str
+        ``"last"`` (default) — scan in reverse; last match wins.
+        ``"first"`` — scan forward; first match wins.
+    """
+    lines = content.splitlines()
+    if scan_order == "first":
+        scan_lines = lines
+    else:
+        # Default: reverse scan (last match wins) — backward-compatible behaviour
+        scan_lines = reversed(lines)  # type: ignore[assignment]
+
+    for line in scan_lines:
         m = _PASS1_RE.match(line)
         if m:
             return m.group(1).lower()
