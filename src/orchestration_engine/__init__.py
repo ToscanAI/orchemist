@@ -4,7 +4,7 @@ A Python CLI tool for multi-agent task orchestration on top of OpenClaw.
 Provides task queuing, retry logic, quality gates, and reusable orchestra templates.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.8.0"
 __author__ = "Conny Lazo"
 __email__ = "contact@renerivera.net"
 
