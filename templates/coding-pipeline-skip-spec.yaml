@@ -9,10 +9,10 @@ description: >
     - {output_dir}/spec.md         — implementation spec (Section B)
     - {output_dir}/behavioral.md   — behavioral contracts (Section A)
 
-  Phases: acceptance_test → implement → acceptance_run → review → fix → test
-  Loops: implement ↔ acceptance_run (max 3), review ↔ fix ↔ acceptance_run (max 3)
+  Phases: acceptance_test → acceptance_test_adversary → implement → acceptance_run → review → fix → test
+  Loops: acceptance_test ↔ acceptance_test_adversary (max 3), implement ↔ acceptance_run (max 3), review ↔ fix ↔ acceptance_run (max 3)
 author: "Toscan"
-version: "1.0.0"
+version: "1.1.0"
 scenario: scenarios/coding-pipeline-skip-spec-smoke.yaml
 category: "code"
 tags: [code, development, review, testing, pipeline, skip-spec]
@@ -90,8 +90,9 @@ phases:
     description: "Write behavioral tests from contracts ONLY — never from implementation. These become immutable constraints for the implementing agent. Behavioral contracts were reviewed externally before reaching this pipeline."
     model_tier: sonnet
     thinking_level: high
+    max_iterations: 3
     transitions:
-      success: implement
+      success: acceptance_test_adversary
       failed: acceptance_test
     protected_outputs:
       - acceptance_tests.py
@@ -144,6 +145,68 @@ phases:
       - List of behavioral contracts (one per test)
       - Rationale for each contract (what aspect of the spec it validates)
       - Any ambiguities in the spec that required assumptions
+
+  # Phase 1b: Acceptance Test Adversary
+  - id: acceptance_test_adversary
+    name: "Acceptance Test Adversary"
+    description: "Adversarially reviews acceptance tests for coverage gaps, trivial satisfaction, leakage of implementation details, and missing edge cases. Approves or sends back for revision (max 3 rounds)."
+    model_tier: opus
+    thinking_level: high
+    max_iterations: 3
+    transitions:
+      approve: implement
+      request_changes: acceptance_test
+      success: implement
+      failed: acceptance_test_adversary
+      exhausted: implement
+    adversary_config:
+      valid_categories: [coverage, trivial_satisfaction, leakage, specificity]
+      fallback_category: coverage
+      verdict_scan: first
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the ACCEPTANCE_TEST_ADVERSARY phase. Your job is to find weaknesses in acceptance tests — not to be satisfied easily. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      You are an adversarial reviewer of behavioral acceptance tests. Your goal is to find every way these tests could pass while the implementation is still wrong.
+
+      ## Previous Work
+      {phase_summary}
+
+      ## Prior Rounds
+      {iteration_history}
+
+      Read the behavioral contracts at: {output_dir}/behavioral.md
+      Read the acceptance tests at: {output_dir}/acceptance_tests.py
+
+      ## Task
+      Adversarially review the acceptance tests against the behavioral contracts. For EACH test, ask:
+
+      1. **Coverage** — Does a test exist for this behavioral contract? Is any contract untested?
+      2. **Trivial satisfaction** — Could a trivially wrong implementation pass this test? (e.g. `return True` passes `assert result is not None`)
+      3. **Leakage** — Does the test reference implementation internals (private methods, class names, specific attribute names)? Tests should only test behavior.
+      4. **Specificity** — Are assertions specific enough? (`assert result == expected_value` beats `assert result is not None`)
+
+      ## Output
+      Write your findings to {output_dir}/acceptance_test_adversary.md.
+
+      **Your response MUST start with one of these verdicts on the very first line:**
+      - `APPROVE` — tests adequately cover all behavioral contracts, no significant gaps
+      - `REQUEST_CHANGES` — one or more significant gaps or weaknesses found
+
+      Then for each finding, one line per issue:
+        [CATEGORY] description of the gap or weakness
+
+      Where CATEGORY is one of: coverage, trivial_satisfaction, leakage, specificity
+
+      ✅ CORRECT example:
+        REQUEST_CHANGES
+        [coverage] No test for the edge case where input is an empty string — behavioral.md section 3 requires this returns None
+        [trivial_satisfaction] test_parse_returns_value: `assert result is not None` — a function that returns 42 always would pass
+        [specificity] test_verdict_approved: should assert result == "approve", not just assert result
+
+      If no significant gaps (APPROVE):
+        APPROVE
+
+      Do NOT write preamble before the verdict. First line must be the verdict word only.
 
   # Phase 2: Implementation
   - id: implement
