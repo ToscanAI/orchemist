@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
+from .adversary_parser import AdversaryConfig
 from .git_integration import GitConfig
 from .routing import RoutingConfig, RoutingEngine, _parse_routing_config
 
@@ -321,6 +322,88 @@ def _parse_budget_config(raw: Any) -> Optional["BudgetConfig"]:
     return BudgetConfig(**kwargs)
 
 
+def _parse_adversary_config(raw: Any) -> Optional[AdversaryConfig]:
+    """Parse the ``adversary_config:`` sub-section of a phase YAML.
+
+    Args:
+        raw: The value of ``phase_data.get("adversary_config")`` — a dict,
+             ``None``, or a non-dict value (treated as absent).
+
+    Returns:
+        An :class:`AdversaryConfig` instance if ``raw`` is a non-empty dict,
+        else ``None`` (phase does not use the generic adversary parser).
+
+    Raises:
+        ValueError: If validation fails (empty categories, fallback not in
+                    categories, or invalid verdict_scan value).
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    known_fields = {
+        "valid_categories", "fallback_category", "verdict_scan",
+        "reward_enabled", "reward_filename",
+    }
+    unknown = set(raw.keys()) - known_fields
+    if unknown:
+        logger.warning(
+            "adversary_config has unknown fields (ignored): %s",
+            sorted(unknown),
+        )
+
+    # --- valid_categories: required, must be non-empty after dedup --------
+    raw_cats = raw.get("valid_categories")
+    if not isinstance(raw_cats, list) or len(raw_cats) == 0:
+        raise ValueError(
+            "adversary_config.valid_categories must be a non-empty list"
+        )
+
+    # Deduplicate preserving order (first occurrence kept)
+    seen: set = set()
+    valid_categories: List[str] = []
+    for cat in raw_cats:
+        cat_str = str(cat)
+        if cat_str not in seen:
+            seen.add(cat_str)
+            valid_categories.append(cat_str)
+
+    if len(valid_categories) == 0:
+        raise ValueError(
+            "adversary_config.valid_categories must be a non-empty list "
+            "(after deduplication)"
+        )
+
+    # --- fallback_category: optional, but if set must be in valid_categories
+    fallback_category: Optional[str] = raw.get("fallback_category", None)
+    if fallback_category is not None:
+        fallback_category = str(fallback_category)
+        if fallback_category not in valid_categories:
+            raise ValueError(
+                f"adversary_config.fallback_category {fallback_category!r} "
+                f"is not in valid_categories {valid_categories!r}"
+            )
+
+    # --- verdict_scan: optional, must be "first" or "last" ----------------
+    verdict_scan: str = raw.get("verdict_scan", "last")
+    if verdict_scan not in ("first", "last"):
+        raise ValueError(
+            f"adversary_config.verdict_scan must be 'first' or 'last', "
+            f"got: {verdict_scan!r}"
+        )
+
+    # --- reward_enabled and reward_filename: parsed but not acted on ------
+    reward_enabled: bool = bool(raw.get("reward_enabled", False))
+    reward_filename: str = str(raw.get("reward_filename", "adversary_reward.json"))
+
+    return AdversaryConfig(
+        valid_categories=valid_categories,
+        fallback_category=fallback_category,
+        verdict_scan=verdict_scan,
+        reward_enabled=reward_enabled,
+        reward_filename=reward_filename,
+    )
+
+
 def _parse_auto_merge_config(raw: Any) -> Optional[AutoMergeConfig]:
     """Parse the ``auto_merge:`` section of a pipeline YAML into an :class:`AutoMergeConfig`.
 
@@ -404,6 +487,11 @@ class PhaseDefinition:
     # List of filenames (relative to output_dir) to checksum-protect.
     # Hashes are computed after this phase completes and verified before
     # the next consuming phase's output is accepted.
+
+    # Generic adversary parser config (Issue #701)
+    adversary_config: Optional[AdversaryConfig] = None
+    # When set, the phase uses the generic adversary parser driven by this config.
+    # None = phase does not use the generic adversary parser.
 
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
@@ -902,6 +990,8 @@ class TemplateEngine:
                 "min_output_length",
                 # Protected outputs for file-guard hash verification (#531)
                 "protected_outputs",
+                # Generic adversary parser config (#701)
+                "adversary_config",
             }
 
             # Warn on unknown fields (prevents silent data loss)
@@ -913,7 +1003,16 @@ class TemplateEngine:
                 )
 
             cleaned = {k: v for k, v in phase_data.items() if k in known_fields}
-            phases.append(PhaseDefinition(**cleaned))
+
+            # Parse adversary_config sub-section if present
+            raw_adversary_config = cleaned.pop("adversary_config", None)
+            adversary_config_parsed: Optional[AdversaryConfig] = _parse_adversary_config(
+                raw_adversary_config
+            )
+
+            phase_obj = PhaseDefinition(**cleaned)
+            phase_obj.adversary_config = adversary_config_parsed
+            phases.append(phase_obj)
 
         # Parse optional git: section
         git_config: Optional[GitConfig] = _parse_git_config(data.get("git"))
