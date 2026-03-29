@@ -167,12 +167,16 @@ Paused pipelines auto-expire after **1 hour** of inactivity (the background thre
 
 ## Run Lifecycle
 
-```
-starting → running → completed
-                   ↘ aborted   (a phase permanently failed)
-                   ↘ paused    (waiting for human review)
-                   ↘ cancelled (paused run timed out)
-                   ↘ error     (unexpected exception)
+```mermaid
+stateDiagram-v2
+    [*] --> starting
+    starting --> running
+    running --> completed
+    running --> aborted : phase permanently failed
+    running --> paused : waiting for human review
+    running --> error : unexpected exception
+    paused --> cancelled : timed out
+    paused --> running : resumed
 ```
 
 Completed runs are kept in memory for **1 hour** before being purged.

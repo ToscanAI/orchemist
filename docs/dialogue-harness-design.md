@@ -69,26 +69,26 @@ echo "Review this spec..." | gemini -p "" -m deep-think-harness
 
 ### The Loop
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  Dialogue Harness                     │
-│                                                       │
-│   Input: rough issue description / draft spec         │
-│                                                       │
-│   Round 1:                                            │
-│     Drafter (Claude Opus) → initial spec              │
-│     Reviewer (Gemini 3.1 Pro, deep think) → critique  │
-│                                                       │
-│   Round 2:                                            │
-│     Drafter receives critique → revised spec          │
-│     Reviewer receives revision → critique or APPROVED │
-│                                                       │
-│   Round N:                                            │
-│     Reviewer says APPROVED → done                     │
-│     OR max_rounds hit → done with last version        │
-│                                                       │
-│   Output: final spec + full conversation trace        │
-└─────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    INPUT["Input: rough issue description / draft spec"] --> R1
+
+    subgraph R1["Round 1"]
+        D1["Drafter (Claude Opus)\n→ initial spec"] --> V1["Reviewer (Gemini 3.1 Pro, deep think)\n→ critique"]
+    end
+
+    R1 --> CHECK1{"APPROVED?"}
+    CHECK1 -- No --> R2
+
+    subgraph R2["Round 2"]
+        D2["Drafter receives critique\n→ revised spec"] --> V2["Reviewer receives revision\n→ critique or APPROVED"]
+    end
+
+    R2 --> CHECK2{"APPROVED or\nmax_rounds hit?"}
+    CHECK2 -- No --> RN["Round N …"]
+    CHECK1 -- Yes --> OUTPUT
+    CHECK2 -- Yes --> OUTPUT
+    RN --> OUTPUT["Output: final spec +\nfull conversation trace"]
 ```
 
 ### Participants

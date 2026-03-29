@@ -16,20 +16,17 @@
 
 ## Current Architecture (As-Is)
 
-```
-User/Exec
-  └─ orch run --mode openclaw          ← BLOCKS HERE (5-8 min)
-       └─ cli.py::run_template()
-            └─ PhaseSequencer.execute()
-                 └─ for each wave:
-                      └─ _execute_wave_sequential()
-                           └─ _execute_and_wait()
-                                └─ OpenClawExecutor.execute()
-                                     └─ _run_session()
-                                          ├─ POST /tools/invoke → sessions_spawn
-                                          └─ POLL LOOP (3s interval)
-                                               └─ /tools/invoke → sessions_history
-                                                    └─ check stopReason
+```mermaid
+flowchart TD
+    U["User/Exec"] --> ORCH["orch run --mode openclaw\n(BLOCKS HERE 5-8 min)"]
+    ORCH --> CLI["cli.py::run_template()"]
+    CLI --> SEQ["PhaseSequencer.execute()"]
+    SEQ --> WAVE["for each wave:\n_execute_wave_sequential()"]
+    WAVE --> EW["_execute_and_wait()"]
+    EW --> EX["OpenClawExecutor.execute()"]
+    EX --> RS["_run_session()"]
+    RS --> SPAWN["POST /tools/invoke\n→ sessions_spawn"]
+    RS --> POLL["POLL LOOP (3s interval)\n/tools/invoke → sessions_history\n→ check stopReason"]
 ```
 
 ### Critical Call Chain

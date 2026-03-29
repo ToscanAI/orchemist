@@ -32,23 +32,16 @@ Every completed pipeline run produces a **composite confidence score** in [0.0, 
 
 ## 1. Pipeline Overview
 
-```
-Pipeline completes
-       │
-       ▼
-┌──────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│ Scenario     │────→│ Confidence      │────→│ Routing         │
-│ Scoring      │     │ Calculator      │     │ Engine          │
-│ (scoring.py) │     │ (confidence.py) │     │ (routing.py)    │
-└──────────────┘     └─────────────────┘     └────────┬────────┘
-                                                      │
-                            ┌─────────────────────────┼─────────────────────────┐
-                            │                         │                         │
-                            ▼                         ▼                         ▼
-                    ┌──────────────┐          ┌──────────────┐          ┌──────────────┐
-                    │ Auto-merge   │          │ Human Review │          │ Retry / Reject│
-                    │ (≥ 0.90)     │          │ (≥ 0.70)     │          │ (< 0.70)      │
-                    └──────────────┘          └──────────────┘          └──────────────┘
+```mermaid
+flowchart TD
+    PC["Pipeline completes"] --> SS
+
+    SS["Scenario Scoring\n(scoring.py)"] --> CC["Confidence Calculator\n(confidence.py)"]
+    CC --> RE["Routing Engine\n(routing.py)"]
+
+    RE --> AM["Auto-merge\n(≥ 0.90)"]
+    RE --> HR["Human Review\n(≥ 0.70)"]
+    RE --> RR["Retry / Reject\n(< 0.70)"]
 ```
 
 **Sequence:**

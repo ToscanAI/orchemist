@@ -6,56 +6,30 @@ The orchestration engine integrates with the **Model Context Protocol (MCP)** to
 
 ## MCP Architecture Overview
 
-```ascii
-┌─────────────────────────────────────────────────────────────────┐
-│                ORCHESTRATION ENGINE                            │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │                MCP SERVER                               │   │
-│  │                                                         │   │
-│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │   │
-│  │  │ Resource    │  │ Tool        │  │ Context     │    │   │
-│  │  │ Manager     │  │ Registry    │  │ Sharing     │    │   │
-│  │  │             │  │             │  │             │    │   │
-│  │  │• Task Queue │  │• web_search │  │• Shared     │    │   │
-│  │  │• Memory     │  │• web_fetch  │  │  Memory     │    │   │
-│  │  │• Results    │  │• exec       │  │• Orchestra  │    │   │
-│  │  │• Metrics    │  │• file ops   │  │  Context    │    │   │
-│  │  └─────────────┘  └─────────────┘  └─────────────┘    │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                   │                             │
-│                                   ▼                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
-│  │ MCP CLIENT  │  │ MCP CLIENT  │  │ MCP CLIENT  │            │
-│  │ Agent 1     │  │ Agent 2     │  │ Agent 3     │            │
-│  │             │  │             │  │             │            │
-│  │• Research   │  │• Content    │  │• Code       │            │
-│  │  Task       │  │  Creation   │  │  Generation │            │
-│  │• Haiku 4.5  │  │• Sonnet 4   │  │• Opus 4.6   │            │
-│  └─────────────┘  └─────────────┘  └─────────────┘            │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-                                   │
-                   ┌───────────────▼───────────────┐
-                   │           OpenClaw            │
-                   │                               │
-                   │  ┌─────────────────────────┐  │
-                   │  │ Session Management      │  │
-                   │  │ sessions_spawn()        │  │
-                   │  │ sessions_send()         │  │
-                   │  │ sessions_status()       │  │
-                   │  └─────────────────────────┘  │
-                   │                               │
-                   │  ┌─────────────────────────┐  │
-                   │  │ Native Tools            │  │
-                   │  │ web_search, web_fetch   │  │
-                   │  │ exec, read, write       │  │
-                   │  │ message, browser        │  │
-                   │  └─────────────────────────┘  │
-                   └───────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph ENGINE["ORCHESTRATION ENGINE"]
+        subgraph MCP_SERVER["MCP SERVER"]
+            RM["Resource Manager\n• Task Queue\n• Memory\n• Results\n• Metrics"]
+            TR["Tool Registry\n• web_search\n• web_fetch\n• exec\n• file ops"]
+            CS["Context Sharing\n• Shared Memory\n• Orchestra Context"]
+        end
+
+        MCP_SERVER --> AGENTS
+
+        subgraph AGENTS["MCP Client Agents"]
+            A1["Agent 1\nResearch Task\n(Haiku 4.5)"]
+            A2["Agent 2\nContent Creation\n(Sonnet 4)"]
+            A3["Agent 3\nCode Generation\n(Opus 4.6)"]
+        end
+    end
+
+    AGENTS --> OC
+
+    subgraph OC["OpenClaw"]
+        SM["Session Management\nsessions_spawn()\nsessions_send()\nsessions_status()"]
+        NT["Native Tools\nweb_search · web_fetch\nexec · read · write\nmessage · browser"]
+    end
 ```
 
 ## MCP Server Implementation
