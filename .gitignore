@@ -65,3 +65,4 @@ frontend/out/
 
 # Pipeline run artifacts
 .orchemist/runs/
+pipeline-emulation/
