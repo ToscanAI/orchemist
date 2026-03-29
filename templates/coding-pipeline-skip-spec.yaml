@@ -157,8 +157,6 @@ phases:
       success: implement
       failed: acceptance_test_adversary
       exhausted: implement
-    protected_outputs:
-      - acceptance_tests.py
     adversary_config:
       valid_categories: [coverage, trivial_satisfaction, leakage, specificity]
       fallback_category: coverage
