@@ -1,0 +1,164 @@
+{
+  "run_timestamp": "2026-03-29T14:45:00+02:00",
+  "phase": "ACCEPTANCE_TEST",
+  "issue": "#701 — Generic Adversary Parser",
+  "test_file": "acceptance_tests.py",
+  "summary": {
+    "total": 64,
+    "passed": 4,
+    "failed": 60,
+    "errors": 0,
+    "status": "EXPECTED_FAILURES — implementation not yet shipped"
+  },
+  "passing_tests": [
+    {
+      "id": "TestVerdictParserScanOrder::test_scan_order_param_does_not_break_existing_signature",
+      "reason": "Tests existing extract_verdict() signature — passes because scan_order not yet added, call without it works fine"
+    },
+    {
+      "id": "TestVerdictParserScanOrder::test_scan_order_defaults_to_last_backward_compat",
+      "reason": "Default (no scan_order) extract_verdict returns last-match-wins — existing behavior already correct"
+    },
+    {
+      "id": "TestValidation::test_verdict_scan_first_is_valid",
+      "reason": "Template with verdict_scan: first loads without error — the field is currently an unknown field, silently dropped, so load succeeds. This test will continue to pass after implementation since 'first' is valid."
+    },
+    {
+      "id": "TestValidation::test_verdict_scan_last_is_valid",
+      "reason": "Same as above — unknown field silently dropped today, valid field after implementation."
+    }
+  ],
+  "failing_tests_by_section": {
+    "section_1_verdict_extraction": {
+      "count": 5,
+      "failure_reason": "ModuleNotFoundError: No module named 'orchestration_engine.adversary_parser'",
+      "tests": [
+        "TestVerdictExtraction::test_approve_verdict_no_findings",
+        "TestVerdictExtraction::test_request_changes_with_valid_finding",
+        "TestVerdictExtraction::test_multiple_findings_all_valid_categories_preserved_in_order",
+        "TestVerdictExtraction::test_no_verdict_uses_fallback_category",
+        "TestVerdictExtraction::test_no_verdict_fallback_category_none_uses_first_valid"
+      ]
+    },
+    "section_2_category_filtering": {
+      "count": 5,
+      "failure_reason": "ModuleNotFoundError: No module named 'orchestration_engine.adversary_parser'",
+      "tests": [
+        "TestCategoryFiltering::test_valid_category_included",
+        "TestCategoryFiltering::test_invalid_category_silently_skipped",
+        "TestCategoryFiltering::test_invalid_category_no_exception",
+        "TestCategoryFiltering::test_category_valid_only_for_this_config",
+        "TestCategoryFiltering::test_mixed_valid_invalid_categories"
+      ]
+    },
+    "section_3_input_coercion": {
+      "count": 9,
+      "failure_reason": "ModuleNotFoundError: No module named 'orchestration_engine.adversary_parser'",
+      "tests": [
+        "TestInputCoercion::test_none_input_does_not_raise",
+        "TestInputCoercion::test_none_input_has_explanatory_finding",
+        "TestInputCoercion::test_empty_string_input",
+        "TestInputCoercion::test_int_input_coerced_no_raise",
+        "TestInputCoercion::test_dict_input_coerced_no_raise",
+        "TestInputCoercion::test_list_input_coerced_no_raise",
+        "TestInputCoercion::test_bool_input_coerced_no_raise",
+        "TestInputCoercion::test_float_input_coerced_no_raise",
+        "TestInputCoercion::test_all_non_string_types_do_not_raise"
+      ]
+    },
+    "section_4_data_structures": {
+      "count": 10,
+      "failure_reason": "ModuleNotFoundError: No module named 'orchestration_engine.adversary_parser'",
+      "tests": [
+        "TestDataStructures::test_verdict_object_exposes_verdict_field",
+        "TestDataStructures::test_verdict_object_exposes_findings_field",
+        "TestDataStructures::test_verdict_object_exposes_raw_text_field",
+        "TestDataStructures::test_raw_text_preserved_verbatim",
+        "TestDataStructures::test_raw_text_coerced_for_non_string",
+        "TestDataStructures::test_raw_text_coerced_none_input",
+        "TestDataStructures::test_finding_category_is_lowercase",
+        "TestDataStructures::test_finding_description_preserved_verbatim",
+        "TestDataStructures::test_finding_exposes_category_and_description",
+        "TestDataStructures::test_approve_with_finding_lines_still_populated"
+      ]
+    },
+    "section_5_config_driven": {
+      "count": 4,
+      "failure_reason": "ModuleNotFoundError: No module named 'orchestration_engine.adversary_parser'",
+      "tests": [
+        "TestConfigDrivenBehavior::test_verdict_scan_first_returns_first_verdict",
+        "TestConfigDrivenBehavior::test_verdict_scan_last_returns_last_verdict",
+        "TestConfigDrivenBehavior::test_different_configs_produce_different_findings",
+        "TestConfigDrivenBehavior::test_single_verdict_line_same_regardless_of_scan_order"
+      ]
+    },
+    "section_6_scan_order": {
+      "count": 8,
+      "failure_reason": "TypeError: extract_verdict() got an unexpected keyword argument 'scan_order'",
+      "tests": [
+        "TestVerdictParserScanOrder::test_scan_order_last_matches_default_behavior",
+        "TestVerdictParserScanOrder::test_scan_order_first_returns_first_verdict",
+        "TestVerdictParserScanOrder::test_scan_order_first_single_verdict",
+        "TestVerdictParserScanOrder::test_pass2_used_when_pass1_finds_nothing_scan_order_last",
+        "TestVerdictParserScanOrder::test_pass2_priority_unchanged_by_scan_order",
+        "TestVerdictParserScanOrder::test_scan_order_first_three_verdicts",
+        "TestVerdictParserScanOrder::test_scan_order_last_three_verdicts",
+        "TestVerdictParserScanOrder::test_scan_order_last_three_verdicts_last_is_approve"
+      ]
+    },
+    "section_7_phase_definition": {
+      "count": 4,
+      "failure_reason": "AttributeError: 'PhaseDefinition' object has no attribute 'adversary_config'",
+      "tests": [
+        "TestPhaseDefinitionParsing::test_phase_with_full_adversary_config",
+        "TestPhaseDefinitionParsing::test_phase_without_adversary_config_is_none",
+        "TestPhaseDefinitionParsing::test_phase_adversary_config_only_valid_categories_uses_defaults",
+        "TestPhaseDefinitionParsing::test_adversary_config_verdict_scan_first_parsed"
+      ]
+    },
+    "section_8_validation": {
+      "count": 5,
+      "failure_reason": "pytest.fail OR AttributeError — templates don't reject invalid adversary_config yet",
+      "tests": [
+        "TestValidation::test_empty_valid_categories_rejected",
+        "TestValidation::test_fallback_not_in_valid_categories_rejected",
+        "TestValidation::test_invalid_verdict_scan_value_rejected",
+        "TestValidation::test_duplicate_valid_categories_deduplicated_preserving_order",
+        "TestValidation::test_unknown_field_in_adversary_config_logs_warning"
+      ]
+    },
+    "edge_cases": {
+      "count": 10,
+      "failure_reason": "ModuleNotFoundError (adversary_parser) or AttributeError (adversary_config on PhaseDefinition)",
+      "tests": [
+        "TestEdgeCasesAndBoundaries::test_single_valid_category_config",
+        "TestEdgeCasesAndBoundaries::test_all_finding_categories_invalid_returns_empty_findings",
+        "TestEdgeCasesAndBoundaries::test_approve_no_findings_raw_text_preserved",
+        "TestEdgeCasesAndBoundaries::test_finding_description_strips_only_category_prefix",
+        "TestEdgeCasesAndBoundaries::test_adversary_config_default_verdict_scan",
+        "TestEdgeCasesAndBoundaries::test_adversary_config_default_fallback_category",
+        "TestEdgeCasesAndBoundaries::test_adversary_config_default_reward_enabled",
+        "TestEdgeCasesAndBoundaries::test_whitespace_only_string",
+        "TestEdgeCasesAndBoundaries::test_scan_first_single_verdict",
+        "TestEdgeCasesAndBoundaries::test_category_matching_is_case_sensitive_or_normalized"
+      ]
+    }
+  },
+  "contracts_covered": {
+    "section_1": 5,
+    "section_2": 4,
+    "section_3": 3,
+    "section_4": 3,
+    "section_5": 3,
+    "section_6": 4,
+    "section_7": 3,
+    "section_8": 5,
+    "total_contracts_in_behavioral_md": 30,
+    "additional_edge_case_tests": 10
+  },
+  "implementation_prerequisites": [
+    "Create src/orchestration_engine/adversary_parser.py with parse_adversary_output(), AdversaryConfig, AdversaryFinding, AdversaryVerdict",
+    "Enhance src/orchestration_engine/verdict_parser.py: add scan_order parameter to extract_verdict()",
+    "Enhance src/orchestration_engine/templates.py: add adversary_config field to PhaseDefinition, add _parse_adversary_config() helper, add 'adversary_config' to known_fields"
+  ]
+}
