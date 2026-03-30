@@ -1414,19 +1414,21 @@ class PhaseSequencer:
             abs_path = self._resolve_protected_path(raw_path)
             if abs_path is None:
                 continue  # warning already logged
-            try:
-                digest = compute_directory_hash(abs_path)
-                self._protected_path_snapshots[abs_path] = digest
-                logger.debug(
-                    "Phase '%s': snapshot protected_path '%s' → sha256:%s…",
-                    phase.id, abs_path, digest[:16],
-                )
-            except (FileNotFoundError, NotADirectoryError) as exc:
+            # compute_directory_hash returns None (not raises) for missing/non-dir paths;
+            # it logs a WARNING internally.  We just skip storing the snapshot.
+            digest = compute_directory_hash(abs_path)
+            if digest is None:
                 logger.warning(
-                    "Phase '%s': protected_path '%s' does not exist at snapshot time — "
-                    "skipping (%s).",
-                    phase.id, abs_path, exc,
+                    "Phase '%s': protected_path '%s' could not be hashed at snapshot time — "
+                    "skipping (path missing or not a directory).",
+                    phase.id, abs_path,
                 )
+                continue
+            self._protected_path_snapshots[abs_path] = digest
+            logger.debug(
+                "Phase '%s': snapshot protected_path '%s' → sha256:%s…",
+                phase.id, abs_path, digest[:16],
+            )
 
     def _verify_protected_paths(self, phase: "PhaseDefinition") -> Optional[dict]:
         """Re-hash all snapshotted protected_paths and compare against pre-execution digests.
@@ -1450,10 +1452,10 @@ class PhaseSequencer:
             return None  # fast path
 
         for abs_path, expected in list(self._protected_path_snapshots.items()):
-            try:
-                actual = compute_directory_hash(abs_path)
-            except (FileNotFoundError, NotADirectoryError) as exc:
-                actual = f"<missing: {exc}>"
+            actual = compute_directory_hash(abs_path)
+            if actual is None:
+                # Path vanished after snapshot — treat as a modification
+                actual = "<missing after snapshot>"
 
             if actual != expected:
                 msg = (

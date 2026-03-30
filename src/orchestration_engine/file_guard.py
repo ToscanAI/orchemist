@@ -50,7 +50,7 @@ def compute_directory_hash(
     path: Union[str, Path],
     exclude_patterns: Optional[List[str]] = None,
     exclude_suffixes: Optional[List[str]] = None,
-) -> str:
+) -> Optional[str]:
     """Compute a deterministic SHA256 hash over a directory tree.
 
     Recursively walks *path*, sorts entries **lexicographically by relative
@@ -76,12 +76,13 @@ def compute_directory_hash(
             to :data:`DEFAULT_EXCLUDE_SUFFIXES`.
 
     Returns:
-        Lowercase SHA256 hex digest string (64 chars).
-
-    Raises:
-        FileNotFoundError: If *path* does not exist.
-        NotADirectoryError: If *path* is not a directory (and not a symlink).
+        Lowercase SHA256 hex digest string (64 chars), or ``None`` when *path*
+        does not exist or is not a directory (graceful degradation — logs a
+        WARNING and skips instead of raising).
     """
+    import logging as _logging
+    _logger = _logging.getLogger(__name__)
+
     if exclude_patterns is None:
         exclude_patterns = DEFAULT_EXCLUDES
     if exclude_suffixes is None:
@@ -90,9 +91,15 @@ def compute_directory_hash(
     root = Path(path)
 
     if not root.exists():
-        raise FileNotFoundError(f"compute_directory_hash: path does not exist: {root}")
+        _logger.warning(
+            "compute_directory_hash: path does not exist: %s — skipping.", root
+        )
+        return None
     if not root.is_dir():
-        raise NotADirectoryError(f"compute_directory_hash: path is not a directory: {root}")
+        _logger.warning(
+            "compute_directory_hash: path is not a directory: %s — skipping.", root
+        )
+        return None
 
     # Collect (relative_path_str, is_symlink, symlink_target_or_None) for all
     # entries, then sort lexicographically so the digest is deterministic.
