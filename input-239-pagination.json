@@ -1,8 +1,0 @@
-{
-  "issue_id": "#239",
-  "issue_title": "Paginate sessions_history to capture full sub-agent output",
-  "requirements": "Replace the fixed `limit` parameter in `sessions_history` calls with logic that captures ALL messages from a sub-agent session. Currently in `src/orchestration_engine/openclaw_executor.py` around line 470, the call is `self._invoke_tool('sessions_history', {'sessionKey': session_key, 'limit': 200})`. The problem: when sub-agents produce conversations exceeding this limit (research with web searches), early messages are truncated. The output extraction at lines 524-536 collects text from ALL assistant messages in the response, but if the response itself is truncated, content is lost. Solution: Either (a) paginate using multiple calls with offset, or (b) set a very high limit (1000+). The gateway's `sessions_history` tool accepts `limit` (number) and may accept `offset` or `before` for pagination — check the tool signature. If pagination isn't supported, use limit=1000 as a safe ceiling. Add a test that mocks a session with 150+ messages and verifies all text is captured.",
-  "codebase_context": "File: src/orchestration_engine/openclaw_executor.py. The polling loop is in the execute() method around lines 458-540. Key line: `hist_result = self._invoke_tool('sessions_history', {'sessionKey': session_key, 'limit': 200})`. The _invoke_tool method calls the OpenClaw gateway API via HTTP POST to /tools/invoke. The output extraction is at lines 524-536: iterates all assistant messages, extracts text content blocks, joins with newlines. Tests are in tests/ directory. The executor has a mock/dry-run mode for testing.",
-  "test_framework": "pytest",
-  "language": "python"
-}
