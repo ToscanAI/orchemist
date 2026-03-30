@@ -4,6 +4,10 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 
 ## [Unreleased]
 
+### Added
+- Directory-level hash guard with `protected_paths` (#706) — `compute_directory_hash()` in `file_guard.py` for recursive, deterministic SHA-256 over directories; pre-execution snapshot + post-execution verification detects unauthorized writes to repo paths like `tests/` or `src/`; excludes `__pycache__/`, `*.pyc`, `.pytest_cache/`, `.git/` by default; symlinks hashed by target path string (not followed); path resolution: `config["repo_path"]` primary, `working_dir` fallback
+- Approve-gated file protection with `protect_on_approve` (#718) — adversary/reviewer phases can declare files to seal upon APPROVE verdict; hash snapshot taken at the approve transition (after verdict extraction), stored in `_protected_hashes` for downstream verification; activates on both `approve` and `exhausted` (implicit approval); `coding-pipeline-skip-spec.yaml` updated to guard `acceptance_tests.py` via `acceptance_test_adversary`
+
 ## [0.8.0] - 2026-03-28
 
 ### Added
