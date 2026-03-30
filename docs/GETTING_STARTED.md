@@ -26,6 +26,12 @@ If you're on Python 3.9 or older, install a newer version from [python.org](http
   ```
   Add that line to your `~/.bashrc` or `~/.zshrc` so it persists across sessions.
 
+  > **Tip:** Copy `.env.example` to `.env` at the repo root — it lists every supported variable with defaults:
+  > ```bash
+  > cp .env.example .env
+  > # Edit .env with your API key
+  > ```
+
 - **OpenClaw** — if you're running inside OpenClaw, you're already set. The executor will use OpenClaw's session infrastructure automatically.
 
   ```bash

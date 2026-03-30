@@ -293,6 +293,7 @@ Please read CONTRIBUTING.md for code style and PR guidelines.
 - [API Reference](docs/api-reference.md) — CLI commands + Python classes
 - [Web UI](docs/web-ui.md) — browser interface (`orch serve`)
 - [Tech Stack](docs/tech-stack.md) — dependencies and choices
+- [Security Policy](SECURITY.md) — vulnerability reporting & supported versions
 
 ---
 
