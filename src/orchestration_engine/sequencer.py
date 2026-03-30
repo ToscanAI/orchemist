@@ -147,8 +147,9 @@ class PhaseSequencer:
         self._protected_hashes: Dict[str, str] = {}
 
         # Protected-path snapshot store (Issue #706)
-        # Maps guarded directory path → SHA256 hex digest, captured before each phase.
-        self._protected_path_snapshots: Dict[str, str] = {}
+        # NOTE: This attribute is retained only for potential future use.
+        # The snapshot dict is now passed explicitly through the call chain to
+        # eliminate thread-safety races in parallel wave execution.
 
     # ------------------------------------------------------------------
     # Public API
@@ -299,8 +300,8 @@ class PhaseSequencer:
             )
 
             # Snapshot protected_paths before execution (#706)
-            self._protected_path_snapshots = {}
-            self._snapshot_protected_paths(phase)
+            # Local dict — no shared instance state — safe for both sequential and parallel paths.
+            _path_snapshots = self._snapshot_protected_paths(phase)
 
             task_id = self.runner.queue.submit_task(task)
             logger.info(
@@ -316,7 +317,7 @@ class PhaseSequencer:
                 self._handle_file_write(phase, result)
 
             # Folder-guard verification — check if protected_paths were modified (#706)
-            path_guard_failure = self._verify_protected_paths(phase)
+            path_guard_failure = self._verify_protected_paths(phase, _path_snapshots)
             if path_guard_failure is not None:
                 result = path_guard_failure
                 with self._phase_outputs_lock:
@@ -504,8 +505,9 @@ class PhaseSequencer:
             )
 
             # Snapshot protected_paths before execution (#706)
-            self._protected_path_snapshots = {}
-            self._snapshot_protected_paths(phase)
+            # Local dict scoped to this worker thread — no shared instance state,
+            # so concurrent phases in the same wave cannot clobber each other's snapshots.
+            _path_snapshots = self._snapshot_protected_paths(phase)
 
             task_id = self.runner.queue.submit_task(task)
             logger.info(
@@ -520,7 +522,7 @@ class PhaseSequencer:
                 self._handle_file_write(phase, result)
 
             # Folder-guard verification — check if protected_paths were modified (#706)
-            path_guard_failure = self._verify_protected_paths(phase)
+            path_guard_failure = self._verify_protected_paths(phase, _path_snapshots)
             if path_guard_failure is not None:
                 result = path_guard_failure
                 with self._phase_outputs_lock:
@@ -1396,19 +1398,27 @@ class PhaseSequencer:
         )
         return None
 
-    def _snapshot_protected_paths(self, phase: "PhaseDefinition") -> None:
-        """Compute and store directory hashes for all phase.protected_paths.
+    def _snapshot_protected_paths(self, phase: "PhaseDefinition") -> Dict[str, str]:
+        """Compute and return directory hashes for all phase.protected_paths.
 
-        Fast path: does nothing when protected_paths is empty.
+        Returns a **local** dict rather than writing to shared instance state,
+        making it safe to call concurrently for different phases in a parallel
+        wave (fixes thread-safety race condition).
+
+        Fast path: returns an empty dict immediately when protected_paths is empty.
         Paths that don't exist or can't be resolved are logged as WARNINGs
         and skipped (no FAIL).
 
         Args:
             phase: The phase about to execute.
+
+        Returns:
+            Dict mapping absolute path string → SHA256 hex digest.
         """
+        snapshots: Dict[str, str] = {}
         raw_paths = getattr(phase, "protected_paths", None) or []
         if not raw_paths:
-            return  # fast path — zero overhead
+            return snapshots  # fast path — zero overhead
 
         for raw_path in raw_paths:
             abs_path = self._resolve_protected_path(raw_path)
@@ -1424,16 +1434,25 @@ class PhaseSequencer:
                     phase.id, abs_path,
                 )
                 continue
-            self._protected_path_snapshots[abs_path] = digest
+            snapshots[abs_path] = digest
             logger.debug(
                 "Phase '%s': snapshot protected_path '%s' → sha256:%s…",
                 phase.id, abs_path, digest[:16],
             )
+        return snapshots
 
-    def _verify_protected_paths(self, phase: "PhaseDefinition") -> Optional[dict]:
+    def _verify_protected_paths(
+        self,
+        phase: "PhaseDefinition",
+        snapshots: Dict[str, str],
+    ) -> Optional[dict]:
         """Re-hash all snapshotted protected_paths and compare against pre-execution digests.
 
-        Fast path: returns None immediately when _protected_path_snapshots is empty.
+        Fast path: returns None immediately when *snapshots* is empty.
+
+        The *snapshots* dict is passed in explicitly rather than read from
+        instance state, ensuring this method is thread-safe when called
+        concurrently for different phases in a parallel wave.
 
         On any mismatch, returns a synthetic FAILED result dict with:
         - error_code: "PROTECTED_PATH_MODIFIED"
@@ -1443,15 +1462,17 @@ class PhaseSequencer:
 
         Args:
             phase: The phase whose output is being verified.
+            snapshots: Dict mapping absolute path → pre-execution SHA256 digest,
+                as returned by :meth:`_snapshot_protected_paths`.
 
         Returns:
             None if all hashes match (or no snapshots).
             Synthetic FAILED result dict on first mismatch detected.
         """
-        if not self._protected_path_snapshots:
+        if not snapshots:
             return None  # fast path
 
-        for abs_path, expected in list(self._protected_path_snapshots.items()):
+        for abs_path, expected in snapshots.items():
             actual = compute_directory_hash(abs_path)
             if actual is None:
                 # Path vanished after snapshot — treat as a modification
@@ -3343,8 +3364,8 @@ class StateMachineSequencer(PhaseSequencer):
                 # ── Snapshot protected_paths before each iteration (#706)
                 # Re-snapshot per iteration so each retry baseline reflects
                 # current state of the guarded directory (not iteration-1 state).
-                self._protected_path_snapshots = {}
-                self._snapshot_protected_paths(phase)
+                # Local dict — no shared instance state.
+                _path_snapshots = self._snapshot_protected_paths(phase)
 
                 task_id = self.runner.queue.submit_task(task)
                 logger.info(
@@ -3363,7 +3384,7 @@ class StateMachineSequencer(PhaseSequencer):
                     self._handle_file_write(phase, result)
 
                 # ── Folder-guard verification — check if protected_paths were modified (#706)
-                path_guard_failure = self._verify_protected_paths(phase)
+                path_guard_failure = self._verify_protected_paths(phase, _path_snapshots)
                 if path_guard_failure is not None:
                     result = path_guard_failure
                     with self._phase_outputs_lock:

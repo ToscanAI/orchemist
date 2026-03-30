@@ -5,9 +5,12 @@ nominated files have not been modified between pipeline phases.
 No information about the verification mechanism is exposed to running agents.
 """
 import hashlib
+import logging
 import os
 from pathlib import Path
 from typing import List, Optional, Union
+
+_logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Default exclusion patterns for compute_directory_hash
@@ -80,9 +83,6 @@ def compute_directory_hash(
         does not exist or is not a directory (graceful degradation — logs a
         WARNING and skips instead of raising).
     """
-    import logging as _logging
-    _logger = _logging.getLogger(__name__)
-
     if exclude_patterns is None:
         exclude_patterns = DEFAULT_EXCLUDES
     if exclude_suffixes is None:
@@ -142,9 +142,13 @@ def compute_directory_hash(
                 with full.open("rb") as fh:
                     for chunk in iter(lambda: fh.read(65536), b""):
                         h.update(chunk)
-            except OSError:
-                # Skip unreadable files — log-less for now; caller handles.
-                pass
+            except OSError as exc:
+                # Skip unreadable files and log so operators can diagnose
+                # unexpected permission/IO issues in the guarded directory.
+                _logger.debug(
+                    "compute_directory_hash: skipping unreadable file %s (%s)",
+                    full, exc,
+                )
 
         h.update(b"\xff")  # separator between entries
 
