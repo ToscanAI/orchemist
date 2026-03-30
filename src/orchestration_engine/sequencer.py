@@ -151,6 +151,11 @@ class PhaseSequencer:
         # The snapshot dict is now passed explicitly through the call chain to
         # eliminate thread-safety races in parallel wave execution.
 
+        # Protect-on-approve state (Issue #718)
+        # Tracks the adversary phase id that owns the protect_on_approve protections.
+        # The adversary phase itself is exempt from its own hash verification.
+        self._protect_on_approve_source_phase: Optional[str] = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -1242,6 +1247,101 @@ class PhaseSequencer:
     # File-guard hash helpers (Issue #531)
     # ------------------------------------------------------------------
 
+    def _maybe_snapshot_on_approve(
+        self,
+        phase: "PhaseDefinition",
+        next_phase_id: Optional[str],
+        is_exhausted: bool = False,
+    ) -> None:
+        """Snapshot protect_on_approve paths when an adversary phase approves or is exhausted.
+
+        Called immediately after :meth:`_resolve_next_phase` at both call sites
+        in the sequencer loop. Does nothing if:
+        - ``phase.protect_on_approve`` is empty, OR
+        - the transition is neither an APPROVE verdict nor an EXHAUSTED outcome.
+
+        Approval detection: checks whether ``next_phase_id`` matches the target
+        declared under the ``approve`` transition key in the phase's effective
+        transitions. This avoids re-running verdict extraction and is purely
+        structural — if the router picked the approve target, the verdict was approve.
+
+        On APPROVE or EXHAUSTED, iterates ``phase.protect_on_approve``, resolves
+        each path, and records its SHA256 hash in ``self._protected_hashes``.
+        Subsequent phases are then subject to :meth:`_verify_protected_hashes`
+        checks. The adversary phase itself is exempt (checked by the adversary's
+        own phase id vs the ``_protect_on_approve_source_phase`` attribute).
+
+        Path resolution:
+        - Absolute paths are used as-is.
+        - Relative paths are resolved against ``self.output_dir``.
+        - Missing files emit a WARNING and are skipped (graceful degradation).
+
+        Args:
+            phase:         The adversary phase that just completed.
+            next_phase_id: The phase ID resolved by ``_resolve_next_phase``.
+            is_exhausted:  ``True`` when the phase was routed via EXHAUSTED outcome
+                           (implicit approval).
+        """
+        poa_paths = getattr(phase, "protect_on_approve", [])
+        if not poa_paths:
+            return  # fast path — nothing declared
+
+        # Determine whether this is an approve transition.
+        # For the exhausted call site, is_exhausted=True is passed explicitly.
+        # For the normal call site, check whether next_phase_id matches the
+        # approve transition target (structural approval detection).
+        if is_exhausted:
+            is_approve_transition = True
+        else:
+            effective: dict = {
+                **self.template.default_transitions,
+                **phase.transitions,
+            }
+            approve_target = effective.get("approve")
+            is_approve_transition = (
+                approve_target is not None and next_phase_id == approve_target
+            )
+
+        if not is_approve_transition:
+            return  # only snapshot on approve / exhausted
+
+        if not self.output_dir:
+            logger.warning(
+                f"Phase '{phase.id}': protect_on_approve declared but output_dir is None "
+                f"— skipping snapshot"
+            )
+            return
+
+        logger.info(
+            f"Pipeline {self.template.id}: phase '{phase.id}' approved — "
+            f"snapshotting {len(poa_paths)} protect_on_approve path(s)"
+        )
+
+        # Record which adversary phase owns these protections so the adversary
+        # itself is exempt from its own protection during re-invocation.
+        if not hasattr(self, "_protect_on_approve_source_phase"):
+            self._protect_on_approve_source_phase: Optional[str] = None
+        self._protect_on_approve_source_phase = phase.id
+
+        with self._phase_outputs_lock:
+            for raw_path in poa_paths:
+                if Path(raw_path).is_absolute():
+                    abs_path = raw_path
+                else:
+                    abs_path = str(Path(self.output_dir) / raw_path)
+                try:
+                    digest = compute_hash(abs_path)
+                    self._protected_hashes[abs_path] = digest
+                    logger.debug(
+                        f"Phase '{phase.id}': protect_on_approve snapshotted "
+                        f"'{raw_path}' → sha256:{digest[:16]}…"
+                    )
+                except FileNotFoundError:
+                    logger.warning(
+                        f"Phase '{phase.id}': protect_on_approve path '{raw_path}' "
+                        f"not found at snapshot time — skipping"
+                    )
+
     def _store_protected_hashes(self, phase: "PhaseDefinition") -> None:
         """Compute and store SHA256 hashes for all files in phase.protected_outputs.
 
@@ -1288,6 +1388,12 @@ class PhaseSequencer:
         compares. On mismatch or deletion, returns a synthetic FAILED result dict
         with error code "PROTECTED_FILE_MODIFIED" and a human-readable message.
 
+        Adversary exemption (Issue #718): The adversary phase that owns the
+        protect_on_approve protections is exempt from its own hash verification.
+        This allows the adversary to re-run (e.g. in a review loop) without
+        being blocked by its own protection. Non-adversary downstream phases
+        remain subject to the protection.
+
         Args:
             phase: The phase whose output is about to be accepted (used for error context).
 
@@ -1297,6 +1403,12 @@ class PhaseSequencer:
         """
         if not self._protected_hashes:
             return None  # fast path — no protected outputs
+
+        # Adversary exemption: the phase that owns protect_on_approve is not
+        # subject to its own protection (Issue #718)
+        if (self._protect_on_approve_source_phase is not None
+                and phase.id == self._protect_on_approve_source_phase):
+            return None
 
         with self._phase_outputs_lock:
             items = list(self._protected_hashes.items())
@@ -3253,6 +3365,10 @@ class StateMachineSequencer(PhaseSequencer):
                             PhaseOutcome.EXHAUSTED,
                             self.phase_outputs.get(current_phase_id, {}),
                         )
+                        # Issue #718: snapshot protect_on_approve on exhausted (implicit approval)
+                        self._maybe_snapshot_on_approve(
+                            phase, _exhausted_next, is_exhausted=True
+                        )
                         if _exhausted_next is not None:
                             logger.info(
                                 f"Pipeline {self.template.id}: MAX_ITERATIONS_EXCEEDED "
@@ -3502,6 +3618,9 @@ class StateMachineSequencer(PhaseSequencer):
                 # ── Transition resolution ─────────────────────────────────────
                 outcome: PhaseOutcome = determine_outcome(result)
                 next_phase_id = self._resolve_next_phase(phase, outcome, result)
+
+                # Issue #718: snapshot protect_on_approve on approve verdict
+                self._maybe_snapshot_on_approve(phase, next_phase_id)
 
                 if next_phase_id is None:
                     # Terminal state — no outgoing transition for this outcome
