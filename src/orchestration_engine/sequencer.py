@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from .file_guard import compute_hash, FileGuardError
+from .file_guard import compute_hash, compute_directory_hash, FileGuardError
 from .output_parser import extract_and_write, parse_output
 from .review_parser import parse_review_output, ReviewOutcome
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
@@ -145,6 +145,11 @@ class PhaseSequencer:
         # File-guard hash store (Issue #531)
         # Maps absolute file path → SHA256 hex digest for protected_outputs verification.
         self._protected_hashes: Dict[str, str] = {}
+
+        # Protected-path snapshot store (Issue #706)
+        # NOTE: This attribute is retained only for potential future use.
+        # The snapshot dict is now passed explicitly through the call chain to
+        # eliminate thread-safety races in parallel wave execution.
 
     # ------------------------------------------------------------------
     # Public API
@@ -294,6 +299,10 @@ class PhaseSequencer:
                 timeout_seconds=phase.timeout_minutes * 60,
             )
 
+            # Snapshot protected_paths before execution (#706)
+            # Local dict — no shared instance state — safe for both sequential and parallel paths.
+            _path_snapshots = self._snapshot_protected_paths(phase)
+
             task_id = self.runner.queue.submit_task(task)
             logger.info(
                 f"Pipeline {self.template.id}: submitted phase '{phase_id}' "
@@ -306,6 +315,20 @@ class PhaseSequencer:
             # Write FILE blocks to disk if phase requests it (#189)
             if phase.write_files:
                 self._handle_file_write(phase, result)
+
+            # Folder-guard verification — check if protected_paths were modified (#706)
+            path_guard_failure = self._verify_protected_paths(phase, _path_snapshots)
+            if path_guard_failure is not None:
+                result = path_guard_failure
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+                self._invoke_on_phase_complete(phase_id, result)
+                return {
+                    "phase_outputs": self.phase_outputs,
+                    "final_output": result,
+                    "failed_phase": phase_id,
+                    "aborted": True,
+                }
 
             # Hash verification — check if THIS phase tampered with protected files (#531)
             guard_failure = self._verify_protected_hashes(phase)
@@ -481,6 +504,11 @@ class PhaseSequencer:
                 timeout_seconds=phase.timeout_minutes * 60,
             )
 
+            # Snapshot protected_paths before execution (#706)
+            # Local dict scoped to this worker thread — no shared instance state,
+            # so concurrent phases in the same wave cannot clobber each other's snapshots.
+            _path_snapshots = self._snapshot_protected_paths(phase)
+
             task_id = self.runner.queue.submit_task(task)
             logger.info(
                 f"Pipeline {self.template.id}: submitted phase '{phase_id}' "
@@ -492,6 +520,15 @@ class PhaseSequencer:
             # Write FILE blocks to disk if phase requests it (#189)
             if phase.write_files:
                 self._handle_file_write(phase, result)
+
+            # Folder-guard verification — check if protected_paths were modified (#706)
+            path_guard_failure = self._verify_protected_paths(phase, _path_snapshots)
+            if path_guard_failure is not None:
+                result = path_guard_failure
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+                self._invoke_on_phase_complete(phase_id, result)
+                return result
 
             # Hash verification — check if THIS phase tampered with protected files (#531)
             guard_failure = self._verify_protected_hashes(phase)
@@ -1318,6 +1355,159 @@ class PhaseSequencer:
                 }
 
         return None  # all hashes match
+
+    # ------------------------------------------------------------------
+    # Protected-path guard helpers (Issue #706)
+    # ------------------------------------------------------------------
+
+    def _resolve_protected_path(self, raw_path: str) -> Optional[str]:
+        """Resolve a protected_paths entry to an absolute path.
+
+        Resolution order (mirrors behavioral contract):
+        1. If absolute path — use as-is.
+        2. config["repo_path"] if present — join relative path against it.
+        3. self.working_dir (the sequencer's own working directory) if set.
+        4. Otherwise log a WARNING and return None (skip this path).
+
+        output_dir is explicitly NOT used — it is for pipeline artifacts.
+
+        Args:
+            raw_path: The protected_paths entry (relative or absolute string).
+
+        Returns:
+            Absolute path string, or None if resolution failed.
+        """
+        p = Path(raw_path)
+        if p.is_absolute():
+            return str(p)
+
+        # Primary: config["repo_path"]
+        repo_path = self.config.get("repo_path")
+        if repo_path:
+            return str(Path(repo_path) / raw_path)
+
+        # Fallback: sequencer working_dir attribute (may be set by subclasses)
+        wd = getattr(self, "working_dir", None)
+        if wd:
+            return str(Path(wd) / raw_path)
+
+        logger.warning(
+            "Phase: protected_paths entry %r could not be resolved — "
+            "config['repo_path'] and working_dir are both absent. Skipping.",
+            raw_path,
+        )
+        return None
+
+    def _snapshot_protected_paths(self, phase: "PhaseDefinition") -> Dict[str, str]:
+        """Compute and return directory hashes for all phase.protected_paths.
+
+        Returns a **local** dict rather than writing to shared instance state,
+        making it safe to call concurrently for different phases in a parallel
+        wave (fixes thread-safety race condition).
+
+        Fast path: returns an empty dict immediately when protected_paths is empty.
+        Paths that don't exist or can't be resolved are logged as WARNINGs
+        and skipped (no FAIL).
+
+        Args:
+            phase: The phase about to execute.
+
+        Returns:
+            Dict mapping absolute path string → SHA256 hex digest.
+        """
+        snapshots: Dict[str, str] = {}
+        raw_paths = getattr(phase, "protected_paths", None) or []
+        if not raw_paths:
+            return snapshots  # fast path — zero overhead
+
+        for raw_path in raw_paths:
+            abs_path = self._resolve_protected_path(raw_path)
+            if abs_path is None:
+                continue  # warning already logged
+            # compute_directory_hash returns None (not raises) for missing/non-dir paths;
+            # it logs a WARNING internally.  We just skip storing the snapshot.
+            digest = compute_directory_hash(abs_path)
+            if digest is None:
+                logger.warning(
+                    "Phase '%s': protected_path '%s' could not be hashed at snapshot time — "
+                    "skipping (path missing or not a directory).",
+                    phase.id, abs_path,
+                )
+                continue
+            snapshots[abs_path] = digest
+            logger.debug(
+                "Phase '%s': snapshot protected_path '%s' → sha256:%s…",
+                phase.id, abs_path, digest[:16],
+            )
+        return snapshots
+
+    def _verify_protected_paths(
+        self,
+        phase: "PhaseDefinition",
+        snapshots: Dict[str, str],
+    ) -> Optional[dict]:
+        """Re-hash all snapshotted protected_paths and compare against pre-execution digests.
+
+        Fast path: returns None immediately when *snapshots* is empty.
+
+        The *snapshots* dict is passed in explicitly rather than read from
+        instance state, ensuring this method is thread-safe when called
+        concurrently for different phases in a parallel wave.
+
+        On any mismatch, returns a synthetic FAILED result dict with:
+        - error_code: "PROTECTED_PATH_MODIFIED"
+        - protected_path: the directory that changed
+        - expected_hash: sha256 before phase execution
+        - actual_hash: sha256 after phase execution
+
+        Args:
+            phase: The phase whose output is being verified.
+            snapshots: Dict mapping absolute path → pre-execution SHA256 digest,
+                as returned by :meth:`_snapshot_protected_paths`.
+
+        Returns:
+            None if all hashes match (or no snapshots).
+            Synthetic FAILED result dict on first mismatch detected.
+        """
+        if not snapshots:
+            return None  # fast path
+
+        for abs_path, expected in snapshots.items():
+            actual = compute_directory_hash(abs_path)
+            if actual is None:
+                # Path vanished after snapshot — treat as a modification
+                actual = "<missing after snapshot>"
+
+            if actual != expected:
+                msg = (
+                    f"Protected path modified: {abs_path} "
+                    f"(expected sha256:{expected[:16]}…, got sha256:{actual[:16] if len(actual) >= 16 else actual}…)"
+                )
+                logger.error(
+                    "Pipeline %s: folder-guard FAILED on phase '%s': %s",
+                    self.template.id, phase.id, msg,
+                )
+                return {
+                    "state": "failed",
+                    "result": {"text": ""},
+                    "error_code": "PROTECTED_PATH_MODIFIED",
+                    "protected_path": abs_path,
+                    "expected_hash": expected,
+                    "actual_hash": actual,
+                    "errors": [{
+                        "code": "PROTECTED_PATH_MODIFIED",
+                        "message": msg,
+                        "severity": "error",
+                    }],
+                    "metadata": {
+                        "attempt_number": 1,
+                        "total_attempts": 1,
+                        "folder_guard_failure": True,
+                    },
+                    "confidence": 0.0,
+                }
+
+        return None  # all paths unchanged
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -3171,6 +3361,12 @@ class StateMachineSequencer(PhaseSequencer):
                     timeout_seconds=phase.timeout_minutes * 60,
                 )
 
+                # ── Snapshot protected_paths before each iteration (#706)
+                # Re-snapshot per iteration so each retry baseline reflects
+                # current state of the guarded directory (not iteration-1 state).
+                # Local dict — no shared instance state.
+                _path_snapshots = self._snapshot_protected_paths(phase)
+
                 task_id = self.runner.queue.submit_task(task)
                 logger.info(
                     f"Pipeline {self.template.id}: submitted phase "
@@ -3186,6 +3382,33 @@ class StateMachineSequencer(PhaseSequencer):
                 # ── Write FILE blocks if requested (#189) ─────────────────────
                 if phase.write_files:
                     self._handle_file_write(phase, result)
+
+                # ── Folder-guard verification — check if protected_paths were modified (#706)
+                path_guard_failure = self._verify_protected_paths(phase, _path_snapshots)
+                if path_guard_failure is not None:
+                    result = path_guard_failure
+                    with self._phase_outputs_lock:
+                        if current_phase_id in self.phase_outputs:
+                            self.iteration_history[current_phase_id].append(
+                                self.phase_outputs[current_phase_id]
+                            )
+                        result.setdefault("metadata", {})["iteration"] = current_iter
+                        self.phase_outputs[current_phase_id] = result
+                    self._invoke_on_phase_complete(current_phase_id, result)
+                    self._safe_call_hook(
+                        self.on_pipeline_complete,
+                        self.pipeline_context,
+                        None,
+                        pipeline_id=self.template.id,
+                    )
+                    return {
+                        "phase_outputs": self.phase_outputs,
+                        "final_output": result,
+                        "failed_phase": current_phase_id,
+                        "aborted": True,
+                        "iteration_history": dict(self.iteration_history),
+                        "iteration_counts": dict(self.iteration_counts),
+                    }
 
                 # ── Hash verification — check if THIS phase tampered with protected files (#531)
                 guard_failure = self._verify_protected_hashes(phase)
