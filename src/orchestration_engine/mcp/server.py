@@ -9,9 +9,9 @@ import sys
 from pathlib import Path
 
 try:
-    tomllib = __import__("tomllib")
+    import tomllib
 except ImportError:
-    tomllib = __import__("tomli")  # Python 3.10 backport
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from orchestration_engine.mcp.tools import register_tools
 
@@ -55,7 +55,8 @@ def _read_version() -> str:
 
     try:
         _pyproject = Path(__file__).parent.parent.parent.parent / "pyproject.toml"
-        data = tomllib.load(open(_pyproject, 'rb'))
+        with open(_pyproject, 'rb') as f:
+            data = tomllib.load(f)
         return data["project"]["version"]
     except Exception:
         print("Could not read version from pyproject.toml, using 0.0.0", file=sys.stderr)
