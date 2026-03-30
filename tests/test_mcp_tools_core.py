@@ -6,6 +6,8 @@ They express what the system SHOULD DO, not how it does it.
 
 Import path: /home/toscan/orchestration-engine
 """
+import pytest
+pytest.importorskip("mcp")
 
 import asyncio
 import json

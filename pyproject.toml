@@ -29,10 +29,12 @@ dependencies = [
     "click>=8.0.0,<8.3",
     "toml>=0.10.0",
     "rich>=13.0",
-    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]
+mcp = [
+    "mcp>=1.0.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio",
@@ -43,6 +45,7 @@ dev = [
     "mypy",
     "httpx>=0.24.0",
     "PyJWT[cryptography]>=2.8.0",
+    "orchemist[mcp]",
 ]
 web = [
     "fastapi>=0.100.0",
