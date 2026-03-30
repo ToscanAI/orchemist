@@ -489,6 +489,18 @@ class PhaseDefinition:
     self.working_dir (fallback). output_dir is never used for resolution.
     """
 
+    # Protect-on-approve paths for adversary phase approval locking (Issue #718)
+    protect_on_approve: List[str] = field(default_factory=list)
+    """List of file paths to snapshot (hash-protect) when the adversary phase
+    returns an APPROVE verdict (or is exhausted — treated as implicit approval).
+    Paths are resolved against output_dir (relative) or used as-is (absolute).
+    Missing paths at snapshot time emit a WARNING and are skipped gracefully.
+    Once snapshotted, paths are verified using the same _verify_protected_hashes
+    machinery as protected_outputs. The adversary phase itself is exempt from
+    its own protect_on_approve verification; only downstream non-adversary phases
+    are subject to protection.
+    """
+
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
         if self.depends_on is None:
@@ -546,6 +558,9 @@ class PhaseDefinition:
         # Normalise protected paths field (#706)
         if self.protected_paths is None:
             self.protected_paths = []
+        # Normalise protect-on-approve field (#718)
+        if self.protect_on_approve is None:
+            self.protect_on_approve = []
 
 
 @dataclass
@@ -993,6 +1008,8 @@ class TemplateEngine:
                 "adversary_config",
                 # Protected paths for directory-level hash guard (#706)
                 "protected_paths",
+                # Protect-on-approve paths for adversary approval locking (#718)
+                "protect_on_approve",
             }
 
             # Warn on unknown fields (prevents silent data loss)
