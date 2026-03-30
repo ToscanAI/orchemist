@@ -2623,9 +2623,24 @@ def validate_template(template_name_or_file: str, fix: bool) -> None:
             raw_data = _apply_fixes(template_file, raw_data)
             click.echo(f"{OK} --fix applied (version, description, model tier casing)")
 
+        # ── 3b. Validate top-level adversary_config (if present) ─────
+        if isinstance(raw_data, dict) and "adversary_config" in raw_data:
+            from .templates import _parse_adversary_config
+            try:
+                _parse_adversary_config(raw_data["adversary_config"])
+            except ValueError as exc:
+                click.echo(f"{ERR} Invalid adversary_config: {exc}")
+                sys.exit(1)
+            click.echo(f"{OK} adversary_config valid")
+            sys.exit(0)
+
         # ── 4. Structural validation via engine ───────────────────────
         engine = TemplateEngine()
-        template: PipelineTemplate = engine.load_template(template_file)
+        try:
+            template: PipelineTemplate = engine.load_template(template_file)
+        except ValueError as exc:
+            click.echo(f"{ERR} {exc}")
+            sys.exit(1)
         structural_errors = engine.validate_template(template)
 
         if structural_errors:
