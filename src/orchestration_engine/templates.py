@@ -481,6 +481,14 @@ class PhaseDefinition:
     adversary_config: Optional[AdversaryConfig] = None
     """Parsed ``adversary_config:`` section from the phase YAML, or ``None`` if absent."""
 
+    # Protected paths for directory-level hash guard (Issue #706)
+    protected_paths: List[str] = field(default_factory=list)
+    """List of directory paths (relative or absolute) to guard with a directory hash.
+    Hashes are computed before execution and re-verified after _handle_file_write.
+    Relative paths are resolved against config['repo_path'] (primary) or
+    self.working_dir (fallback). output_dir is never used for resolution.
+    """
+
     def __post_init__(self) -> None:
         # Normalise None values that YAML might produce for optional fields
         if self.depends_on is None:
@@ -535,6 +543,9 @@ class PhaseDefinition:
         # Normalise protected outputs field (#531)
         if self.protected_outputs is None:
             self.protected_outputs = []
+        # Normalise protected paths field (#706)
+        if self.protected_paths is None:
+            self.protected_paths = []
 
 
 @dataclass
@@ -980,6 +991,8 @@ class TemplateEngine:
                 "protected_outputs",
                 # Generic adversary parser config (#701)
                 "adversary_config",
+                # Protected paths for directory-level hash guard (#706)
+                "protected_paths",
             }
 
             # Warn on unknown fields (prevents silent data loss)
