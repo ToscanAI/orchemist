@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-import toml
+import tomli_w
 from pathlib import Path
 from decimal import Decimal
 
@@ -198,7 +198,7 @@ class TestConfigLoading:
         }
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
-            toml.dump(config_data, f)
+            f.write(tomli_w.dumps(config_data))
             temp_path = f.name
         
         try:
@@ -301,7 +301,7 @@ class TestGetConfig:
         }
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
-            toml.dump(config_data, f)
+            f.write(tomli_w.dumps(config_data))
             temp_path = f.name
         
         try:
@@ -324,7 +324,7 @@ class TestGetConfig:
         config_data = {"queue": {"max_workers": 8}}
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
-            toml.dump(config_data, f)
+            f.write(tomli_w.dumps(config_data))
             temp_path = f.name
         
         # Set environment override
@@ -348,7 +348,7 @@ class TestGetConfig:
         }
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.toml', delete=False) as f:
-            toml.dump(config_data, f)
+            f.write(tomli_w.dumps(config_data))
             temp_path = f.name
         
         try:
@@ -415,7 +415,7 @@ class TestConfigIntegration:
             config_dict["queue"]["max_workers"] = 12
             
             with open(config_path, 'w') as f:
-                toml.dump(config_dict, f)
+                f.write(tomli_w.dumps(config_dict))
             
             # 3. Load with environment override
             os.environ['ORCH_RETRY_MAX_RETRIES_DEFAULT'] = '6'

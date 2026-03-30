@@ -27,7 +27,7 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "click>=8.0.0,<8.3",
-    "toml>=0.10.0",
+    "tomli>=2.0.0; python_version < \"3.11\"",
     "rich>=13.0",
 ]
 
@@ -45,6 +45,7 @@ dev = [
     "mypy",
     "httpx>=0.24.0",
     "PyJWT[cryptography]>=2.8.0",
+    "tomli-w>=1.0.0",
     "orchemist[mcp]",
 ]
 web = [

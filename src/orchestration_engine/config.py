@@ -5,7 +5,10 @@ Configuration hierarchy: defaults → user config → environment variables.
 """
 
 import os
-import toml
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -146,8 +149,8 @@ def load_toml_config(config_path: Optional[Union[str, Path]] = None) -> Dict[str
         return {}
     
     try:
-        with open(config_path, 'r') as f:
-            return toml.load(f)
+        with open(config_path, 'rb') as f:
+            return tomllib.load(f)
     except Exception as e:
         raise ValueError(f"Failed to load config from {config_path}: {e}")
 
