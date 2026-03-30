@@ -11,6 +11,27 @@ from pathlib import Path
 from orchestration_engine.mcp.tools import register_tools
 
 
+def _require_mcp() -> None:
+    """Guard that ensures the optional `mcp` package is installed.
+
+    Prints an actionable install hint to stderr and exits non-zero when
+    the `mcp` package is not available, instead of letting a bare
+    ImportError surface to the user.
+
+    Raises:
+        SystemExit: With exit code 1 when `mcp` is not installed.
+    """
+    try:
+        import mcp  # noqa: F401
+    except ImportError:
+        print(
+            "The 'mcp' package is required to run the MCP server. "
+            "Install it with: pip install orchemist[mcp]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def _read_version() -> str:
     """Read the package version from importlib.metadata or pyproject.toml.
 
@@ -57,6 +78,8 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
     Raises:
         SystemExit: On OSError (port already in use) for SSE transport.
     """
+    _require_mcp()
+
     if transport == "stdio":
         print("MCP server started", file=sys.stderr)
         _check_api_key()

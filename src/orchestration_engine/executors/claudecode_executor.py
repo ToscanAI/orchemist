@@ -158,7 +158,13 @@ class ClaudeCodeExecutor(TaskExecutor):
 
     async def _sample(self, prompt: str) -> str:
         """Perform the async MCP sampling call."""
-        from mcp.types import SamplingMessage, TextContent
+        try:
+            from mcp.types import SamplingMessage, TextContent
+        except ImportError as exc:
+            raise ImportError(
+                "The 'mcp' package is required for MCP sampling. "
+                "Install it with: pip install orchemist[mcp]"
+            ) from exc
 
         ctx = self._mcp_server.get_context()
 

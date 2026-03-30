@@ -8,6 +8,8 @@ Uses hello-pipeline in dry-run mode. No internal mocks.
 
 Issue: #471 — MCP E2E Integration Test
 """
+import pytest
+pytest.importorskip("mcp")
 
 import asyncio
 import json
