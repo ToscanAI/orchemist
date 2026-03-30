@@ -29,10 +29,10 @@ dependencies = [
     "click>=8.0.0,<8.3",
     "toml>=0.10.0",
     "rich>=13.0",
-    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]
+mcp = ["mcp>=1.0.0"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio",

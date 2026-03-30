@@ -218,7 +218,10 @@ orch status <task-id>         # Show details for a specific task
 
 Prefer to launch pipelines from Claude Code or Cursor instead of the terminal? Here's the fast path:
 
-1. **Install Orchemist** — follow the [Install](#install) section above.
+1. **Install Orchemist with MCP support:**
+   ```bash
+   pip install orchemist[mcp]
+   ```
 
 2. **Get your Anthropic API key** — go to [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys), create an account if needed, and copy your key.
 

@@ -47,6 +47,23 @@ def _check_api_key() -> None:
         print("No API key configured — running without auth", file=sys.stderr)
 
 
+def _require_mcp() -> None:
+    """Verify that the ``mcp`` extra is installed.
+
+    Raises:
+        SystemExit: If the ``mcp`` package is not available.
+    """
+    try:
+        import mcp  # noqa: F401
+    except ImportError:
+        print(
+            "Error: the 'mcp' package is not installed.\n"
+            "Install it with:  pip install orchemist[mcp]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
     """Start the MCP server with the specified transport.
 
@@ -57,6 +74,8 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
     Raises:
         SystemExit: On OSError (port already in use) for SSE transport.
     """
+    _require_mcp()
+
     if transport == "stdio":
         print("MCP server started", file=sys.stderr)
         _check_api_key()
