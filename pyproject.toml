@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "orchemist"
-version = "0.8.0"
+version = "0.8.2"
 description = "Orchemist — a scenario-driven orchestration engine for multi-agent AI pipelines"
 authors = [
     {name = "Conny Lazo", email = "contact@renerivera.net"},
