@@ -8,6 +8,11 @@ import os
 import sys
 from pathlib import Path
 
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
+
 from orchestration_engine.mcp.tools import register_tools
 
 
@@ -36,7 +41,7 @@ def _read_version() -> str:
     """Read the package version from importlib.metadata or pyproject.toml.
 
     Uses importlib.metadata as primary source, falls back to parsing
-    pyproject.toml with the 'toml' package (Python 3.10-compatible).
+    pyproject.toml with tomllib (stdlib 3.11+) or tomli (3.10 backport).
     Returns '0.0.0' and emits a warning if both sources fail.
 
     Returns:
@@ -49,9 +54,9 @@ def _read_version() -> str:
         pass
 
     try:
-        import toml
         _pyproject = Path(__file__).parent.parent.parent.parent / "pyproject.toml"
-        data = toml.load(str(_pyproject))
+        with open(_pyproject, 'rb') as f:
+            data = tomllib.load(f)
         return data["project"]["version"]
     except Exception:
         print("Could not read version from pyproject.toml, using 0.0.0", file=sys.stderr)

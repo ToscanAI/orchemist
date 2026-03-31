@@ -147,8 +147,8 @@ class TestMcpServerStartup:
         with patch('importlib.metadata.version', side_effect=Exception('not found')), \
              patch('orchestration_engine.mcp.server._pyproject_path',
                    tmp_path / 'nonexistent.toml', create=True):
-            # Override the path by monkeypatching the toml load
-            with patch('toml.load', side_effect=Exception('file not found')):
+            # Override the path by monkeypatching the tomllib load
+            with patch('orchestration_engine.mcp.server.tomllib.load', side_effect=Exception('file not found')):
                 # Also patch __file__ reference by patching Path resolution
                 ver = mcp_server._read_version()
         assert ver == '0.0.0'
