@@ -7,7 +7,7 @@ Please **do not** open a public GitHub issue for security vulnerabilities.
 Report vulnerabilities via GitHub's private disclosure feature:
 **[Report a vulnerability](https://github.com/ToscanAI/orchemist/security/advisories/new)**
 
-Or email: **contact@renerivera.net** with subject line `[SECURITY] orchemist — <brief description>`
+Or email: **conny.lazo@gmail.com** with subject line `[SECURITY] orchemist — <brief description>`
 
 ## Response SLA
 

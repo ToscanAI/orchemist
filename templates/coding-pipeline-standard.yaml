@@ -400,6 +400,7 @@ phases:
     transitions:
       success: acceptance_run
       failed: implement
+      exhausted: postmortem_review
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the IMPLEMENT phase. Your output feeds the review phase — not a human. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
