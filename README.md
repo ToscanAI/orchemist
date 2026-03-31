@@ -6,10 +6,7 @@
 [![PyPI](https://img.shields.io/pypi/v/orchemist)](https://pypi.org/project/orchemist/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
-[![Pi Tested](https://img.shields.io/badge/Raspberry%20Pi-tested-red)](https://www.raspberrypi.com/)
 
-> **Development:** [github.com/ToscanAI/orchestration-engine](https://github.com/ToscanAI/orchestration-engine)  
-> **Stable releases:** [github.com/connylazo/orchestration-engine](https://github.com/connylazo/orchestration-engine)
 
 ---
 
@@ -70,6 +67,7 @@ orch run templates/my-pipeline.yaml --mode standalone --input '{"brief": "AI saf
 |----------|-------------|
 | **Content Pipeline** | Research → Draft → Edit → SEO → Publish-ready output |
 | **Code Review** | Static analysis → Security scan → Architecture review → Summary report |
+| **Coding Pipeline** | Feature development → Unit tests → Integration tests → Deployment |
 | **Research Assistant** | Query expansion → Source gathering → Synthesis → Citation check |
 | **Translation Pipeline** | Translate → Back-translate → Consistency check → Final polish |
 | **Customer Support** | Intent classification → KB lookup → Response draft → Quality gate |

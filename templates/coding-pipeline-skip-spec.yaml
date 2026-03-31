@@ -178,11 +178,19 @@ phases:
       Read the behavioral contracts at: {output_dir}/behavioral.md
       Read the acceptance tests at: {output_dir}/acceptance_tests.py
 
+      ## TDD Context
+      These tests are written BEFORE implementation exists — this is intentional (test-driven development).
+      Do NOT reject tests because they cannot call a production function that hasn't been built yet.
+      A test is valid if it would FAIL against a wrong implementation and PASS against a correct one.
+      Judge tests against the behavioral contracts in behavioral.md, not against the current codebase.
+      Tests that verify the underlying mechanism (e.g. testing that a dispatcher respects an env var)
+      are acceptable pre-build contracts — even if the code that SETS that env var doesn't exist yet.
+
       ## Task
       Adversarially review the acceptance tests against the behavioral contracts. For EACH test, ask:
 
       1. **Coverage** — Does a test exist for this behavioral contract? Is any contract untested?
-      2. **Trivial satisfaction** — Could a trivially wrong implementation pass this test? (e.g. `return True` passes `assert result is not None`)
+      2. **Trivial satisfaction** — Could a trivially wrong implementation pass this test? (e.g. `return True` passes `assert result is not None`). Note: "trivially wrong" means a stub like `return True` or `pass` — NOT "the production function doesn't exist yet." Pre-build tests that assert specific behavioral outcomes are valid.
       3. **Leakage** — Does the test reference implementation internals (private methods, class names, specific attribute names)? Tests should only test behavior.
       4. **Specificity** — Are assertions specific enough? (`assert result == expected_value` beats `assert result is not None`)
 
