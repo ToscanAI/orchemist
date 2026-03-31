@@ -94,6 +94,7 @@ phases:
     transitions:
       success: acceptance_test_adversary
       failed: acceptance_test
+      exhausted: postmortem_review
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the ACCEPTANCE_TEST phase. Write tests from behavioral contracts only. You have NO access to implementation details — this is by design. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
@@ -156,7 +157,7 @@ phases:
       request_changes: acceptance_test
       success: implement
       failed: acceptance_test_adversary
-      exhausted: implement
+      exhausted: postmortem_review
     adversary_config:
       valid_categories: [coverage, trivial_satisfaction, leakage, specificity]
       fallback_category: coverage
@@ -216,8 +217,9 @@ phases:
     thinking_level: high
     max_iterations: 3
     transitions:
-      success: acceptance_run
+      success: verify_tests_integrity
       failed: implement
+      exhausted: postmortem_review
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the IMPLEMENT phase. Your output feeds the review phase — not a human. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
@@ -229,6 +231,13 @@ phases:
       contract of this feature. You MUST make all tests in that file pass.
       You MUST NOT modify, delete, or work around the acceptance tests.
       The pass rate of those tests is the primary quality signal for this pipeline run.
+      ## ANTI-TAMPERING — ENGINE-ENFORCED
+      The following actions are detected by the engine and will ABORT the pipeline:
+      - Modifying `{output_dir}/acceptance_tests.py` (SHA-256 sealed by adversary)
+      - Modifying anything in the `tests/` directory (directory hash guard)
+      - Adding conftest.py, pytest plugins, or fixture files to {output_dir} or tests/
+      - Writing monkey-patches, skip markers, or mock overrides that neutralize test assertions
+      Do NOT attempt any of the above. Make the tests pass by writing correct implementation code.
 
       ## Previous Work
       {phase_summary}
@@ -264,6 +273,18 @@ phases:
       - Full test suite results (pass/fail count)
       - Commit hash
 
+  # Phase 2a: Git-based test directory integrity check
+  - id: verify_tests_integrity
+    name: "Test Dir Integrity Check"
+    description: "Verifies the agent did not modify the tests/ directory. Uses git diff against main as source of truth."
+    task_type: command
+    command: "git diff main -- tests/ | grep -q . && echo 'TAMPERING DETECTED: tests/ was modified on this branch' && exit 1 || echo 'tests/ integrity verified' && exit 0"
+    working_dir: "{config[repo_path]}"
+    allowed_commands: ["git", "grep", "echo"]
+    transitions:
+      success: acceptance_run
+      failed: postmortem_review
+
   # Phase 2b: Engine-executed Acceptance Test Runner
   - id: acceptance_run
     name: "Acceptance Test Runner"
@@ -297,6 +318,7 @@ phases:
       abort: fix
       success: test
       failed: review
+      exhausted: postmortem_review
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the REVIEW phase. Your verdict determines whether the code proceeds to testing or goes back for fixes. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
@@ -379,7 +401,7 @@ phases:
     thinking_level: low
     max_iterations: 3
     transitions:
-      success: acceptance_run
+      success: verify_tests_integrity
       failed: fix
       exhausted: postmortem_review
     prompt_template: |
@@ -398,6 +420,12 @@ phases:
 
       Read the code review at: {output_dir}/review.md
       Read the original spec at: {output_dir}/spec.md
+
+      ## ANTI-TAMPERING — ENGINE-ENFORCED
+      The acceptance test file at `{output_dir}/acceptance_tests.py` is sealed.
+      The `tests/` directory is hash-guarded. Do NOT modify acceptance tests,
+      add conftest.py, pytest plugins, or any file that alters test behavior.
+      Fix only the implementation code flagged by the reviewer.
 
       ## Repository
       **Path:** {config[repo_path]}
