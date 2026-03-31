@@ -2,7 +2,7 @@
 
 ### Like Docker Compose for AI pipelines — define phases in YAML, the engine handles the rest.
 
-[![CI](https://github.com/ToscanAI/orchestration-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/ToscanAI/orchestration-engine/actions/workflows/ci.yml)
+[![CI](https://github.com/ToscanAI/orchemist/actions/workflows/ci.yml/badge.svg)](https://github.com/ToscanAI/orchemist/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/orchemist)](https://pypi.org/project/orchemist/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
