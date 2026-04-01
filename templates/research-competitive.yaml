@@ -1,8 +1,8 @@
-id: research-competitive
+id: research-competitive-v2
 name: "Competitive Research Pipeline"
-description: "Focused research pipeline for competitive landscape analysis. Three phases: market scan, competitive deep-dive, synthesis with positioning recommendations."
+description: "Focused research pipeline for competitive landscape analysis. Three phases: market scan, competitive deep-dive, synthesis with positioning recommendations. Uses file-handoff via {output_dir} to avoid output truncation."
 author: "Toscan"
-version: "1.0.0"
+version: "2.1.0"
 category: "research"
 tags: [research, competitive-analysis, market-research]
 use_cases:
@@ -32,21 +32,25 @@ config_schema:
     focus_areas:
       type: string
       description: "Key dimensions to compare on"
+      default: "architecture, ease of use, production readiness, quality gates, extensibility"
     additional_research:
       type: string
       description: "Any additional research topics to include"
+      default: "none"
 
 phases:
   - id: market_scan
     name: "Market Scan"
     prompt_template: |
-      You are a market research analyst. Conduct a thorough scan of the current landscape for: {research_topic}
+      You are a market research analyst. Conduct a thorough scan of the current landscape for: {config[research_topic]}
 
-      **Competitors to analyze:** {competitors}
+      **Competitors to analyze:** {config[competitors]}
 
-      **Additional research topics:** {additional_research}
+      **Additional research topics:** {config[additional_research]}
 
-      For each competitor, find and document:
+      **IMPORTANT:** You have access to web search tools. USE THEM extensively for this task. Search for each competitor individually, search for comparison articles, search for recent news and releases. Do NOT rely on training data alone — actively search the web for current, verifiable information.
+
+      For each competitor, **search the web** and document:
       1. **What it is** — one-paragraph description
       2. **Architecture approach** — how it works technically
       3. **Key features** — what makes it distinctive
@@ -55,34 +59,41 @@ phases:
       6. **Limitations** — known weaknesses, complaints from users
       7. **Recent developments** — last 6 months of notable changes
 
-      For additional research topics, provide:
+      For additional research topics, **search the web** and provide:
       - Key concepts and frameworks
       - Notable practitioners/researchers
       - Practical applications relevant to our domain
 
-      **CRITICAL:** Every claim must include a source URL. No unsourced claims.
+      **CRITICAL:** Every claim must include a source URL from your web search. No unsourced claims.
       Aim for 80+ sources total across all competitors and topics.
 
-      Output a structured research brief with clear sections per competitor and per additional topic.
+      ## OUTPUT INSTRUCTIONS
+      **CRITICAL:** Write your COMPLETE output to the file: {output_dir}/market_scan.md
+      Use the write tool / file write to save the full research brief to that path.
+      Do NOT truncate. Write the entire document — every competitor, every source URL, every data point.
+      After writing, confirm the file was saved and report the file size.
+
+      Also return a brief summary (5-10 lines) as your response text confirming what was researched.
     model_tier: sonnet
 
 
   - id: competitive_analysis
     name: "Competitive Deep-Dive"
+    depends_on: [market_scan]
     prompt_template: |
       You are a competitive strategy analyst. Using the market research below, produce a deep competitive analysis.
 
-      **Our product:** {our_product}
-      **Focus areas:** {focus_areas}
+      **Our product:** {config[our_product]}
+      **Focus areas:** {config[focus_areas]}
 
       ## Research Data
-      {market_scan.output}
+      Read the full market scan from: {output_dir}/market_scan.md
 
       ## Analysis Required:
 
       ### 1. Feature Comparison Matrix
       Create a detailed comparison across these dimensions:
-      - {focus_areas}
+      - {config[focus_areas]}
       - Also: multi-model support, testing/quality gates, extensibility, learning curve, documentation quality
 
       ### 2. Architecture Comparison
@@ -101,19 +112,26 @@ phases:
       How do the additional research findings (e.g., humor frameworks, communication strategies) apply to our product positioning and content strategy?
 
       **Be rigorous.** If a competitor does something better than us, say so. Credibility comes from honesty.
+
+      ## OUTPUT INSTRUCTIONS
+      **CRITICAL:** Write your COMPLETE output to the file: {output_dir}/competitive_analysis.md
+      Use the write tool / file write to save the full analysis to that path.
+      Do NOT truncate. Write the entire document — every comparison, every gap, every positioning insight.
+      After writing, confirm the file was saved and report the file size.
+
+      Also return a brief summary (5-10 lines) as your response text confirming what was analyzed.
     model_tier: sonnet
 
 
   - id: synthesis
     name: "Research Synthesis"
+    depends_on: [competitive_analysis]
     prompt_template: |
       You are a senior strategist. Synthesize the market scan and competitive analysis into an actionable brief.
 
-      ## Market Scan
-      {market_scan.output}
-
-      ## Competitive Analysis
-      {competitive_analysis.output}
+      ## Source Files
+      Read the full market scan from: {output_dir}/market_scan.md
+      Read the full competitive analysis from: {output_dir}/competitive_analysis.md
 
       ## Deliverable:
       Produce a **Research Synthesis Brief** with:
@@ -142,5 +160,12 @@ phases:
          - Each with supporting evidence from the research
 
       Keep it dense. No filler. Every sentence should carry information.
-    model_tier: sonnet
 
+      ## OUTPUT INSTRUCTIONS
+      **CRITICAL:** Write your COMPLETE output to the file: {output_dir}/synthesis.md
+      Use the write tool / file write to save the full synthesis brief to that path.
+      Do NOT truncate. Write the entire document.
+      After writing, confirm the file was saved and report the file size.
+
+      Also return a brief summary (5-10 lines) as your response text confirming what was synthesized.
+    model_tier: sonnet

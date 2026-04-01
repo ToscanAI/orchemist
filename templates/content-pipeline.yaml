@@ -1,18 +1,18 @@
-id: content-pipeline-v27
-name: "Content Pipeline v2.7"
-description: "7-phase content pipeline with file-path handoff. Instead of embedding full phase outputs inline (token-expensive), phases read prior outputs from disk via {output_dir}/phase.md paths. Preserves all role instructions, humor rules, and voice style. {phase_summary} placeholder gives sequencer-injected context without full text."
+id: content-pipeline
+name: "Content Pipeline"
+description: "7-phase content pipeline with file-path handoff. Instead of embedding full phase outputs inline (token-expensive), phases read prior outputs from disk via {output_dir}/phase.md paths. Preserves all role instructions, humor rules, and voice style. {phase_summary} placeholder gives sequencer-injected context without full text: fixed hyphenated phase IDs to underscores for correct disc lookup."
 author: "Toscan"
-version: "2.7.0"
+version: "2.9.0"
 category: "content"
-tags: [content, writing, articles, fact-checking, red-team, humor, file-handoff]
+tags: [content, writing, articles, fact_checking, red_team, humor, file_handoff]
 use_cases:
-  - "Blog articles with personality and fact-checking"
+  - "Blog articles with personality and fact checking"
   - "LinkedIn newsletter content with author voice"
   - "Technical writing with humor and peer review"
 
 config_schema:
   type: object
-  required: [topic, author_name, author_facts, voice_style, source_material]
+  required: [topic, author_name, author_facts, voice_style]
   properties:
     topic:
       type: string
@@ -28,7 +28,7 @@ config_schema:
       description: "Author's humor and personality style with CONCRETE EXAMPLES. Not just descriptions — actual sample lines."
     source_material:
       type: string
-      description: "Transcripts, research briefs, and reference material to draw from"
+      description: "Short summary of source material (<500 chars). Full content must be placed at {output_dir}/source_material.md before launch."
     audience:
       type: string
       default: "technical leaders"
@@ -47,7 +47,7 @@ example_input:
   author_name: "René Rivera"
   author_facts: "Author and engineer with 10+ years of experience."
   voice_style: "Direct, opinionated, builder-focused. E.g.: 'This is broken. Here's why.'"
-  source_material: "Interview transcript or research notes go here."
+  source_material: "Interview transcript on AI testing — full text in source_material.md"
 
 phases:
   - id: research
@@ -64,16 +64,20 @@ phases:
       {config[topic]}
 
       ## Source Material
-      {config[source_material]}
+      Read the full source material from: {output_dir}/source_material.md
+      If that file does not exist, proceed using only the topic description above and web research. Note the absence of source material in your brief.
 
       ## Task
       1. Extract ALL key facts, statistics, quotes, and arguments from the source material
-      2. For each fact/stat/quote, note the EXACT source (speaker, publication, date, URL if available)
-      3. Identify the strongest narrative threads
-      4. Flag any claims that need external verification
-      5. Note opportunities for humor — surprising facts, ironic contrasts, absurd situations, self-deprecating angles
-      6. Rate each source on credibility (primary vs. secondary vs. opinion)
-      7. Build a SOURCES LIST at the end with full attribution for every source referenced
+      2. **Use web search** to find additional sources, verify claims from the source material, and gather current data. Do NOT rely solely on the provided material — actively search for corroborating evidence, recent developments, and expert perspectives.
+      3. For each fact/stat/quote, note the EXACT source (speaker, publication, date, URL). Every claim MUST have a verifiable URL.
+      4. Identify the strongest narrative threads
+      5. For any claim that cannot be independently verified via web search, mark it as **[UNVERIFIED]** with an explanation
+      6. Note opportunities for humor — surprising facts, ironic contrasts, absurd situations, self-deprecating angles
+      7. Rate each source on credibility (primary vs. secondary vs. opinion)
+      8. Build a SOURCES LIST at the end with full attribution and URLs for every source referenced
+
+      **IMPORTANT:** You have access to web search tools. USE THEM. Search for the topic, search for sources mentioned in the material, search for recent news and data. A research brief without web-verified sources is incomplete.
 
       Output a structured research brief organized by theme, with inline source attribution for every claim, and a complete sources list at the end.
 
@@ -154,7 +158,7 @@ phases:
          If git push fails, retry once. If it fails again, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
-  - id: fact-check
+  - id: fact_check
     name: "Fact Check"
     description: "Verify all claims against sources"
     model_tier: sonnet
@@ -182,8 +186,11 @@ phases:
       5. Numbers consistent throughout
       6. Sources section at the end is complete and accurate
       7. No missing citations for factual claims
+      8. **Use web search** to independently verify statistical claims, check that cited URLs are real and accurate, and confirm that quoted sources actually said what is attributed to them. Do not just compare the article against the research brief — verify against the real world.
 
       List every issue. For each: location, claim, what's wrong, severity (critical/high/moderate/low), suggested fix.
+
+      **IMPORTANT:** You have access to web search tools. USE THEM for verification. A fact-check that only compares two documents without checking external reality is not a real fact-check.
 
       NOTE: Do NOT flag humor, personality, or self-deprecating observations as issues. They are intentional.
 
@@ -193,18 +200,18 @@ phases:
          cd {output_dir}
          git pull
          ```
-      2. Write your complete output to: {output_dir}/fact-check.md
+      2. Write your complete output to: {output_dir}/fact_check.md
       3. Then commit and push:
          ```bash
          cd {output_dir}
-         git add fact-check.md
+         git add fact_check.md
          git commit -m "pipeline: Fact Check phase complete"
          git push
          ```
          If git push fails, retry once. If it fails again, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
-  - id: red-team
+  - id: red_team
     name: "Red Team"
     description: "Adversarial review with humor calibration"
     model_tier: opus
@@ -248,22 +255,22 @@ phases:
          cd {output_dir}
          git pull
          ```
-      2. Write your complete output to: {output_dir}/red-team.md
+      2. Write your complete output to: {output_dir}/red_team.md
       3. Then commit and push:
          ```bash
          cd {output_dir}
-         git add red-team.md
+         git add red_team.md
          git commit -m "pipeline: Red Team phase complete"
          git push
          ```
          If git push fails, retry once. If it fails again, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
-  - id: apply-fixes
+  - id: apply_fixes
     name: "Apply All Fixes"
     description: "Single-pass fix preserving humor and adding sources"
     model_tier: sonnet
-    depends_on: [draft, fact-check, red-team]
+    depends_on: [draft, fact_check, red_team]
     prompt_template: |
       Apply all fixes from fact-check and red team reviews in a SINGLE PASS.
 
@@ -274,10 +281,10 @@ phases:
       Read the full original article from: {output_dir}/draft.md
 
       ## Fact-Check Issues
-      Read the full fact-check report from: {output_dir}/fact-check.md
+      Read the full fact-check report from: {output_dir}/fact_check.md
 
       ## Red Team Issues
-      Read the full red team report from: {output_dir}/red-team.md
+      Read the full red team report from: {output_dir}/red_team.md
 
       ## RULES:
       1. Fix all factual errors, unsupported claims, and fabricated details
@@ -298,22 +305,22 @@ phases:
          cd {output_dir}
          git pull
          ```
-      2. Write your complete output to: {output_dir}/apply-fixes.md
+      2. Write your complete output to: {output_dir}/apply_fixes.md
       3. Then commit and push:
          ```bash
          cd {output_dir}
-         git add apply-fixes.md
+         git add apply_fixes.md
          git commit -m "pipeline: Apply All Fixes phase complete"
          git push
          ```
          If git push fails, retry once. If it fails again, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
-  - id: voice-check
+  - id: voice_check
     name: "Voice & Personality Check"
     description: "Ensure humor and personality survived editing"
     model_tier: sonnet
-    depends_on: [draft, apply-fixes]
+    depends_on: [draft, apply_fixes]
     prompt_template: |
       Compare the original draft with the fixed version. Your ONLY job: did the author's voice survive?
 
@@ -324,7 +331,7 @@ phases:
       Read the full original draft from: {output_dir}/draft.md
 
       ## Fixed Version
-      Read the full fixed version from: {output_dir}/apply-fixes.md
+      Read the full fixed version from: {output_dir}/apply_fixes.md
 
       ## Author's Voice Style
       {config[voice_style]}
@@ -346,22 +353,22 @@ phases:
          cd {output_dir}
          git pull
          ```
-      2. Write your complete output to: {output_dir}/voice-check.md
+      2. Write your complete output to: {output_dir}/voice_check.md
       3. Then commit and push:
          ```bash
          cd {output_dir}
-         git add voice-check.md
+         git add voice_check.md
          git commit -m "pipeline: Voice & Personality Check phase complete"
          git push
          ```
          If git push fails, retry once. If it fails again, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
-  - id: final-polish
+  - id: final_polish
     name: "Final Polish"
     description: "Restore personality, tighten prose, ensure sources"
     model_tier: opus
-    depends_on: [apply-fixes, voice-check]
+    depends_on: [apply_fixes, voice_check]
     prompt_template: |
       Final pass. Make this article the best version of itself.
 
@@ -369,10 +376,10 @@ phases:
       {phase_summary}
 
       ## Current Article
-      Read the full current article from: {output_dir}/apply-fixes.md
+      Read the full current article from: {output_dir}/apply_fixes.md
 
       ## Voice Check Feedback
-      Read the full voice check report from: {output_dir}/voice-check.md
+      Read the full voice check report from: {output_dir}/voice_check.md
 
       ## Voice Style
       {config[voice_style]}
@@ -394,11 +401,11 @@ phases:
          cd {output_dir}
          git pull
          ```
-      2. Write your complete output to: {output_dir}/final-polish.md
+      2. Write your complete output to: {output_dir}/final_polish.md
       3. Then commit and push:
          ```bash
          cd {output_dir}
-         git add final-polish.md
+         git add final_polish.md
          git commit -m "pipeline: Final Polish phase complete"
          git push
          ```
