@@ -60,7 +60,7 @@ class TestTemplateList:
     def test_includes_content_pipeline(self, client):
         data = client.get("/api/templates").json()
         ids = [t["id"] for t in data]
-        assert "content-pipeline-v28" in ids
+        assert "content-pipeline" in ids
 
     def test_template_has_required_keys(self, client):
         data = client.get("/api/templates").json()
@@ -75,16 +75,16 @@ class TestTemplateList:
 
 class TestTemplateDetail:
     def test_returns_200_for_existing(self, client):
-        res = client.get("/api/templates/content-pipeline-v28")
+        res = client.get("/api/templates/content-pipeline")
         assert res.status_code == 200
 
     def test_content_pipeline_has_phases(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         assert "phases" in data
         assert len(data["phases"]) > 0
 
     def test_phases_have_required_keys(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         phase = data["phases"][0]
         for key in ("id", "name", "model_tier"):
             assert key in phase, f"Phase missing key '{key}'"
@@ -94,7 +94,7 @@ class TestTemplateDetail:
         assert res.status_code == 404
 
     def test_detail_has_top_level_fields(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         for key in ("id", "name", "version", "description", "phases"):
             assert key in data, f"Missing key '{key}' in template detail"
 
@@ -107,7 +107,7 @@ class TestRunEndpoint:
     def test_dry_run_returns_run_id(self, client):
         res = client.post(
             "/api/run",
-            json={"template": "content-pipeline-v28", "mode": "dry-run", "input": {}},
+            json={"template": "content-pipeline", "mode": "dry-run", "input": {}},
         )
         assert res.status_code == 200
         data = res.json()
@@ -126,7 +126,7 @@ class TestRunEndpoint:
         for _ in range(3):
             res = client.post(
                 "/api/run",
-                json={"template": "content-pipeline-v28", "mode": "dry-run", "input": {}},
+                json={"template": "content-pipeline", "mode": "dry-run", "input": {}},
             )
             assert res.status_code == 200
             ids.add(res.json()["run_id"])
@@ -217,7 +217,7 @@ class TestSSEStreaming:
         # 1. Start a run
         res = client.post(
             "/api/run",
-            json={"template": "content-pipeline-v28", "mode": "dry-run", "input": {}},
+            json={"template": "content-pipeline", "mode": "dry-run", "input": {}},
         )
         assert res.status_code == 200
         run_id = res.json()["run_id"]
@@ -271,7 +271,7 @@ class TestRunRequestValidation:
     def test_invalid_mode_returns_422(self, client):
         res = client.post(
             "/api/run",
-            json={"template": "content-pipeline-v28", "mode": "bogus", "input": {}},
+            json={"template": "content-pipeline", "mode": "bogus", "input": {}},
         )
         assert res.status_code == 422, (
             f"Expected 422 Unprocessable Entity for invalid mode, got {res.status_code}"
@@ -281,7 +281,7 @@ class TestRunRequestValidation:
         for mode in ("dry-run", "standalone", "openclaw"):
             res = client.post(
                 "/api/run",
-                json={"template": "content-pipeline-v28", "mode": mode, "input": {}},
+                json={"template": "content-pipeline", "mode": mode, "input": {}},
             )
             # 200 OK or 404 (if template doesn't exist in CI) — but NOT 422.
             assert res.status_code != 422, (
@@ -324,15 +324,15 @@ class TestTemplateListEnhanced:
 
     def test_content_pipeline_has_known_category(self, client):
         data = client.get("/api/templates").json()
-        cp = next((t for t in data if t["id"] == "content-pipeline-v28"), None)
+        cp = next((t for t in data if t["id"] == "content-pipeline"), None)
         assert cp is not None
-        assert cp["category"], "content-pipeline-v28 should have a non-empty category"
+        assert cp["category"], "content-pipeline should have a non-empty category"
 
     def test_content_pipeline_has_author(self, client):
         data = client.get("/api/templates").json()
-        cp = next((t for t in data if t["id"] == "content-pipeline-v28"), None)
+        cp = next((t for t in data if t["id"] == "content-pipeline"), None)
         assert cp is not None
-        assert cp["author"], "content-pipeline-v28 should have a non-empty author"
+        assert cp["author"], "content-pipeline should have a non-empty author"
 
     def test_category_is_string(self, client):
         data = client.get("/api/templates").json()
@@ -411,20 +411,20 @@ class TestTemplateDetailEnhanced:
     """Verify that GET /api/templates/{name} returns phases for the card detail view."""
 
     def test_detail_has_phases(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         assert "phases" in data
         assert len(data["phases"]) > 0
 
     def test_detail_phases_have_full_keys(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         phase = data["phases"][0]
         for key in ("id", "name", "model_tier", "thinking_level", "depends_on", "task_type"):
             assert key in phase, f"Detail phase missing key '{key}'"
 
     def test_detail_has_author(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         assert "author" in data, "Template detail should include 'author'"
-        assert data["author"], "content-pipeline-v28 author should be non-empty"
+        assert data["author"], "content-pipeline author should be non-empty"
 
 
 # ---------------------------------------------------------------------------
@@ -533,47 +533,47 @@ class TestInputFormsAPI:
     """Verify that the template detail API exposes config_schema."""
 
     def test_detail_has_config_schema_key(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         assert "config_schema" in data, (
             "Template detail should include 'config_schema' key"
         )
 
     def test_config_schema_is_dict(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         assert isinstance(data["config_schema"], dict), (
             "'config_schema' should be a dict"
         )
 
     def test_content_pipeline_config_schema_has_properties(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         schema = data["config_schema"]
         assert "properties" in schema, (
-            "content-pipeline-v28 config_schema should have 'properties'"
+            "content-pipeline config_schema should have 'properties'"
         )
 
     def test_content_pipeline_config_schema_has_topic_field(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         props = data["config_schema"].get("properties", {})
         assert "topic" in props, (
-            "content-pipeline-v28 config_schema should have a 'topic' property"
+            "content-pipeline config_schema should have a 'topic' property"
         )
 
     def test_content_pipeline_config_schema_has_required(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         schema = data["config_schema"]
         assert "required" in schema, (
-            "content-pipeline-v28 config_schema should have a 'required' list"
+            "content-pipeline config_schema should have a 'required' list"
         )
 
     def test_content_pipeline_topic_is_required(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         required = data["config_schema"].get("required", [])
         assert "topic" in required, (
-            "content-pipeline-v28 'topic' field should be in required list"
+            "content-pipeline 'topic' field should be in required list"
         )
 
     def test_content_pipeline_schema_field_has_type(self, client):
-        data = client.get("/api/templates/content-pipeline-v28").json()
+        data = client.get("/api/templates/content-pipeline").json()
         props = data["config_schema"].get("properties", {})
         for field_name, field_schema in props.items():
             assert "type" in field_schema, (
@@ -665,7 +665,7 @@ class TestOutputViewer:
 
     def test_outputs_endpoint(self, client):
         # Start a dry-run, then check outputs endpoint
-        r = client.post("/api/run", json={"template": "content-pipeline-v28", "mode": "dry-run"})
+        r = client.post("/api/run", json={"template": "content-pipeline", "mode": "dry-run"})
         if r.status_code == 200:
             run_id = r.json()["run_id"]
             import time
@@ -696,7 +696,7 @@ class TestHumanInTheLoop:
     def test_pause_field_accepted(self, client):
         r = client.post(
             "/api/run",
-            json={"template": "content-pipeline-v28", "mode": "dry-run", "pause_after": ["research"]},
+            json={"template": "content-pipeline", "mode": "dry-run", "pause_after": ["research"]},
         )
         assert r.status_code == 200
         # Resume the run to prevent zombie threads blocking teardown

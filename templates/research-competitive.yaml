@@ -1,4 +1,4 @@
-id: research-competitive-v2
+id: research-competitive
 name: "Competitive Research Pipeline"
 description: "Focused research pipeline for competitive landscape analysis. Three phases: market scan, competitive deep-dive, synthesis with positioning recommendations. Uses file-handoff via {output_dir} to avoid output truncation."
 author: "Toscan"

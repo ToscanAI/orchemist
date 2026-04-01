@@ -3,10 +3,10 @@ import yaml
 from pathlib import Path
 from src.orchestration_engine.templates import TemplateEngine
 
-TEMPLATE_PATH = Path(__file__).parent.parent .joinpath("templates") / "content-pipeline-v28.yaml"
+TEMPLATE_PATH = Path(__file__).parent.parent .joinpath("templates") / "content-pipeline.yaml"
 
 
-class TestContentPipelineV28:
+class TestContentPipeline:
     @pytest.fixture(autouse=True, scope="class")
     def loaded_template(self, request):
         """Class-scoped fixture: load engine + template once for all tests."""
@@ -16,9 +16,9 @@ class TestContentPipelineV28:
         request.cls.tmpl = tmpl
 
     def test_loads_successfully(self):
-        assert self.tmpl.id == "content-pipeline-v28"
-        assert self.tmpl.name == "Content Pipeline v2.8"
-        assert self.tmpl.version == "2.8.0"
+        assert self.tmpl.id == "content-pipeline"
+        assert self.tmpl.name == "Content Pipeline"
+        assert self.tmpl.version == "2.9.0"
 
     def test_has_7_phases(self):
         assert len(self.tmpl.phases) == 7
@@ -51,13 +51,13 @@ class TestContentPipelineV28:
         assert "voice_check" in phases["final_polish"].depends_on
 
     def test_no_human_review_phases(self):
-        """v28 has no human_review fields — all phases return False."""
+        """Content pipeline has no human_review fields — all phases return False."""
         for phase in self.tmpl.phases:
             assert getattr(phase, "human_review", False) == False
 
     def test_config_schema_fields(self):
         required = set(self.tmpl.config_schema.get("required", []))
-        assert required == {"topic", "author_name", "author_facts", "voice_style", "source_material"}
+        assert required == {"topic", "author_name", "author_facts", "voice_style"}
         props = self.tmpl.config_schema.get("properties", {})
         # Optional fields are in properties but not required
         for optional in ("audience", "tone", "word_count", "publication"):
@@ -70,7 +70,7 @@ class TestContentPipelineV28:
         assert len(self.tmpl.tags) >= 3
         assert len(self.tmpl.use_cases) >= 2
         # v28 YAML has no example_input — value is absent, None, or empty dict
-        assert getattr(self.tmpl, "example_input", None)  # v28 has example_input since #589
+        assert getattr(self.tmpl, "example_input", None)  # content-pipeline has example_input
 
     def test_validates_clean(self):
         raw = yaml.safe_load(TEMPLATE_PATH.read_text())

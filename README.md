@@ -277,8 +277,8 @@ pytest
 | Bug | Bug Report | `coding-pipeline-v1` |
 | Feature / code change | Feature Request | `coding-pipeline-v1` |
 | Documentation | Documentation Request | `docs-pipeline-v1` |
-| Article / blog post | Content Request | `content-pipeline-v28` |
-| Research / analysis | Research Request | `research-competitive-v2` |
+| Article / blog post | Content Request | `content-pipeline` |
+| Research / analysis | Research Request | `research-competitive` |
 
 Please read CONTRIBUTING.md for code style and PR guidelines.
 
