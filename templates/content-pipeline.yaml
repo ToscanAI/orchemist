@@ -82,21 +82,8 @@ phases:
       Output a structured research brief organized by theme, with inline source attribution for every claim, and a complete sources list at the end.
 
       ## Output Instructions
-      1. Before writing, pull the latest from the output repo:
-         ```bash
-         cd {output_dir}
-         git pull
-         ```
-      2. Write your complete output to: {output_dir}/research.md
-      3. Then commit and push:
-         ```bash
-         cd {output_dir}
-         git add research.md
-         git commit -m "pipeline: Research & Synthesis phase complete"
-         git push
-         ```
-         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
-      4. Return a brief summary (max 200 words) of what you produced.
+      1. Write your complete output to: {output_dir}/research.md
+      2. Return a brief summary (max 200 words) of what you produced.
 
   - id: draft
     name: "Draft"
@@ -142,21 +129,8 @@ phases:
       - Closing: leave the reader with something they'll think about later
 
       ## Output Instructions
-      1. Before writing, pull the latest from the output repo:
-         ```bash
-         cd {output_dir}
-         git pull
-         ```
-      2. Write your complete output to: {output_dir}/draft.md
-      3. Then commit and push:
-         ```bash
-         cd {output_dir}
-         git add draft.md
-         git commit -m "pipeline: Draft phase complete"
-         git push
-         ```
-         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
-      4. Return a brief summary (max 200 words) of what you produced.
+      1. Write your complete output to: {output_dir}/draft.md
+      2. Return a brief summary (max 200 words) of what you produced.
 
   - id: fact_check
     name: "Fact Check"
@@ -195,27 +169,15 @@ phases:
       NOTE: Do NOT flag humor, personality, or self-deprecating observations as issues. They are intentional.
 
       ## Output Instructions
-      1. Before writing, pull the latest from the output repo:
-         ```bash
-         cd {output_dir}
-         git pull
-         ```
-      2. Write your complete output to: {output_dir}/fact_check.md
-      3. Then commit and push:
-         ```bash
-         cd {output_dir}
-         git add fact_check.md
-         git commit -m "pipeline: Fact Check phase complete"
-         git push
-         ```
-         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
-      4. Return a brief summary (max 200 words) of what you produced.
+      1. Write your complete output to: {output_dir}/fact_check.md
+      2. Return a brief summary (max 200 words) of what you produced.
+
 
   - id: red_team
     name: "Red Team"
     description: "Adversarial review with humor calibration"
     model_tier: opus
-    depends_on: [draft]
+    depends_on: [fact_checkt]
     prompt_template: |
       You are an adversarial reviewer. Critically analyze this article.
 
@@ -250,21 +212,8 @@ phases:
       Score backlash risk 0-100. List genuinely problematic phrases only.
 
       ## Output Instructions
-      1. Before writing, pull the latest from the output repo:
-         ```bash
-         cd {output_dir}
-         git pull
-         ```
-      2. Write your complete output to: {output_dir}/red_team.md
-      3. Then commit and push:
-         ```bash
-         cd {output_dir}
-         git add red_team.md
-         git commit -m "pipeline: Red Team phase complete"
-         git push
-         ```
-         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
-      4. Return a brief summary (max 200 words) of what you produced.
+      1. Write your complete output to: {output_dir}/red_team.md
+      2. Return a brief summary (max 200 words) of what you produced.
 
   - id: apply_fixes
     name: "Apply All Fixes"
@@ -300,22 +249,9 @@ phases:
       Output the COMPLETE fixed article including the Sources section.
 
       ## Output Instructions
-      1. Before writing, pull the latest from the output repo:
-         ```bash
-         cd {output_dir}
-         git pull
-         ```
-      2. Write your complete output to: {output_dir}/apply_fixes.md
-      3. Then commit and push:
-         ```bash
-         cd {output_dir}
-         git add apply_fixes.md
-         git commit -m "pipeline: Apply All Fixes phase complete"
-         git push
-         ```
-         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
-      4. Return a brief summary (max 200 words) of what you produced.
-
+      1. Write your complete output to: {output_dir}/apply_fixes.md
+      2. Return a brief summary (max 200 words) of what you produced.
+  
   - id: voice_check
     name: "Voice & Personality Check"
     description: "Ensure humor and personality survived editing"
@@ -348,21 +284,8 @@ phases:
       If the voice is intact, say "Voice intact — no restoration needed." Don't invent problems.
 
       ## Output Instructions
-      1. Before writing, pull the latest from the output repo:
-         ```bash
-         cd {output_dir}
-         git pull
-         ```
-      2. Write your complete output to: {output_dir}/voice_check.md
-      3. Then commit and push:
-         ```bash
-         cd {output_dir}
-         git add voice_check.md
-         git commit -m "pipeline: Voice & Personality Check phase complete"
-         git push
-         ```
-         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
-      4. Return a brief summary (max 200 words) of what you produced.
+      1. Write your complete output to: {output_dir}/voice_check.md
+      2. Return a brief summary (max 200 words) of what you produced.
 
   - id: final_polish
     name: "Final Polish"
@@ -396,18 +319,6 @@ phases:
       Output the COMPLETE final article. This goes to human review.
 
       ## Output Instructions
-      1. Before writing, pull the latest from the output repo:
-         ```bash
-         cd {output_dir}
-         git pull
-         ```
-      2. Write your complete output to: {output_dir}/final_polish.md
-      3. Then commit and push:
-         ```bash
-         cd {output_dir}
-         git add final_polish.md
-         git commit -m "pipeline: Final Polish phase complete"
-         git push
-         ```
-         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
-      4. Return a brief summary (max 200 words) of what you produced.
+      1. Write your complete output to: {output_dir}/final_article.md
+      2. Return a brief summary (max 200 words) of what you produced.
+      
