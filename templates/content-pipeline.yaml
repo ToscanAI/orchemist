@@ -177,7 +177,7 @@ phases:
     name: "Red Team"
     description: "Adversarial review with humor calibration"
     model_tier: opus
-    depends_on: [fact_checkt]
+    depends_on: [fact_check]
     prompt_template: |
       You are an adversarial reviewer. Critically analyze this article.
 
@@ -321,4 +321,3 @@ phases:
       ## Output Instructions
       1. Write your complete output to: {output_dir}/final_article.md
       2. Return a brief summary (max 200 words) of what you produced.
-      
