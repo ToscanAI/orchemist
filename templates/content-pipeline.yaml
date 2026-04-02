@@ -95,7 +95,7 @@ phases:
          git commit -m "pipeline: Research & Synthesis phase complete"
          git push
          ```
-         If git push fails, retry once. If it fails again, return the error message in your summary.
+         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
   - id: draft
@@ -155,7 +155,7 @@ phases:
          git commit -m "pipeline: Draft phase complete"
          git push
          ```
-         If git push fails, retry once. If it fails again, return the error message in your summary.
+         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
   - id: fact_check
@@ -208,7 +208,7 @@ phases:
          git commit -m "pipeline: Fact Check phase complete"
          git push
          ```
-         If git push fails, retry once. If it fails again, return the error message in your summary.
+         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
   - id: red_team
@@ -263,7 +263,7 @@ phases:
          git commit -m "pipeline: Red Team phase complete"
          git push
          ```
-         If git push fails, retry once. If it fails again, return the error message in your summary.
+         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
   - id: apply_fixes
@@ -313,7 +313,7 @@ phases:
          git commit -m "pipeline: Apply All Fixes phase complete"
          git push
          ```
-         If git push fails, retry once. If it fails again, return the error message in your summary.
+         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
   - id: voice_check
@@ -361,7 +361,7 @@ phases:
          git commit -m "pipeline: Voice & Personality Check phase complete"
          git push
          ```
-         If git push fails, retry once. If it fails again, return the error message in your summary.
+         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
 
   - id: final_polish
@@ -409,5 +409,5 @@ phases:
          git commit -m "pipeline: Final Polish phase complete"
          git push
          ```
-         If git push fails, retry once. If it fails again, return the error message in your summary.
+         If git push fails, run `git pull --rebase` then retry `git push`. If it still fails, return the error message in your summary.
       4. Return a brief summary (max 200 words) of what you produced.
