@@ -68,11 +68,11 @@ def engine(templates_dir):
 
 @pytest.fixture
 def content_pipeline_yaml(templates_dir):
-    """Write the project's real content-pipeline-v28.yaml into the temp dir."""
+    """Write the project's real content-pipeline.yaml into the temp dir."""
     repo_template = (
-        Path(__file__).parent.parent .joinpath("templates") / "content-pipeline-v28.yaml"
+        Path(__file__).parent.parent .joinpath("templates") / "content-pipeline.yaml"
     )
-    dest = templates_dir / "content-pipeline-v28.yaml"
+    dest = templates_dir / "content-pipeline.yaml"
     dest.write_text(repo_template.read_text())
     return dest
 
@@ -113,12 +113,12 @@ class TestTemplateLoading:
     """Tests for TemplateEngine.load_template()."""
 
     def test_load_real_content_pipeline(self, engine, content_pipeline_yaml):
-        """Loading the real content-pipeline-v28.yaml succeeds."""
+        """Loading the real content-pipeline.yaml succeeds."""
         tpl = engine.load_template(content_pipeline_yaml)
 
-        assert tpl.id == "content-pipeline-v28"
-        assert tpl.name == "Content Pipeline v2.8"
-        assert tpl.version == "2.8.0"
+        assert tpl.id == "content-pipeline"
+        assert tpl.name == "Content Pipeline"
+        assert tpl.version == "2.9.0"
         assert len(tpl.phases) == 7
 
     def test_load_phase_fields(self, engine, content_pipeline_yaml):
@@ -510,8 +510,8 @@ class TestPhaseSequencerExecution:
         assert result["final_output"] == result["phase_outputs"]["b"]
 
     def test_all_phases_present_in_output(self, fast_runner):
-        """All seven content-pipeline v28 phases appear in phase_outputs."""
-        repo_template = Path(__file__).parent.parent .joinpath("templates") / "content-pipeline-v28.yaml"
+        """All seven content-pipeline phases appear in phase_outputs."""
+        repo_template = Path(__file__).parent.parent .joinpath("templates") / "content-pipeline.yaml"
         engine = TemplateEngine()
         tpl = engine.load_template(repo_template)
 
