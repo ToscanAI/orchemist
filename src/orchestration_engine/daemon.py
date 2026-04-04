@@ -275,6 +275,9 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 gateway_url=gateway_url,
                 gateway_token=gateway_token,
             )
+        elif mode == 'openrouter':
+            _or_key = _os.environ.get('OPENROUTER_API_KEY', '')
+            runner = PipelineRunner.openrouter(api_key=_or_key)
         else:  # dry-run
             runner = PipelineRunner.dry_run()
     except Exception as exc:

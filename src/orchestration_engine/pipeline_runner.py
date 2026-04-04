@@ -178,6 +178,49 @@ class PipelineRunner:
         return cls(executors=[executor], db_path=db_path)
 
     @classmethod
+    def openrouter(
+        cls,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model_map: Optional[dict] = None,
+        timeout_seconds: int = 300,
+        max_tokens: int = 16384,
+        db_path: str = ":memory:",
+    ) -> "PipelineRunner":
+        """Create a PipelineRunner using OpenRouterExecutor (multi-provider routing).
+
+        Args:
+            api_key:          OpenRouter API key (or ``OPENROUTER_API_KEY`` env var).
+            base_url:         API base URL (for proxies or self-hosted routers).
+            model_map:        Custom model tier → model ID overrides.
+            timeout_seconds:  HTTP request timeout per call (default 300s).
+            max_tokens:       Maximum output tokens per request.
+            db_path:          SQLite path.
+
+        Raises:
+            ValueError: If no API key is found anywhere.
+        """
+        import os
+        from .executors.openrouter_executor import OpenRouterExecutor
+
+        resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        if not resolved_key:
+            raise ValueError(
+                "OpenRouter API key required.\n"
+                "  Option 1: orch run --api-key sk-or-...\n"
+                "  Option 2: export OPENROUTER_API_KEY=sk-or-..."
+            )
+
+        executor = OpenRouterExecutor(
+            api_key=resolved_key,
+            base_url=base_url,
+            model_map=model_map,
+            timeout_seconds=timeout_seconds,
+            max_tokens=max_tokens,
+        )
+        return cls(executors=[executor], db_path=db_path)
+
+    @classmethod
     def dry_run(
         cls,
         delay_seconds: float = 0.0,

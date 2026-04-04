@@ -110,6 +110,32 @@ class GitHubAppConfig(BaseModel):
         return str(Path(v).expanduser())
 
 
+class OpenRouterConfig(BaseModel):
+    """OpenRouter executor configuration."""
+    model_config = ConfigDict(extra="ignore")
+
+    api_key: str = Field(
+        default="",
+        description="OpenRouter API key. Falls back to OPENROUTER_API_KEY env var.",
+    )
+    base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        description="OpenRouter API base URL (for proxies or self-hosted routers).",
+    )
+    model_map: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Custom model tier → model ID overrides (e.g. {'sonnet': 'openai/gpt-4o'}).",
+    )
+    timeout_seconds: int = Field(
+        default=300, ge=10, le=3600,
+        description="HTTP request timeout in seconds.",
+    )
+    max_tokens: int = Field(
+        default=16384, ge=256, le=200000,
+        description="Maximum output tokens per request.",
+    )
+
+
 class EngineConfig(BaseModel):
     """Complete orchestration engine configuration."""
     model_config = ConfigDict(validate_assignment=True, extra="ignore")

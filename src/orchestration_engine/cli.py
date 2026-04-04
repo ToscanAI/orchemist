@@ -1032,16 +1032,16 @@ def workers(detailed: bool) -> None:
 @click.argument('template_name_or_file')
 @click.option(
     '--mode',
-    type=click.Choice(['standalone', 'openclaw', 'dry-run']),
+    type=click.Choice(['standalone', 'openclaw', 'openrouter', 'dry-run']),
     default='standalone',
     show_default=True,
-    help='Execution mode: standalone (direct API), openclaw (sub-agent), dry-run (mock).',
+    help='Execution mode: standalone (direct API), openclaw (sub-agent), openrouter (multi-provider), dry-run (mock).',
 )
 @click.option(
     '--api-key',
     envvar='ANTHROPIC_API_KEY',
     default=None,
-    help='Anthropic API key for standalone mode (or set ANTHROPIC_API_KEY).',
+    help='API key for standalone (ANTHROPIC_API_KEY) or openrouter (OPENROUTER_API_KEY) mode.',
 )
 @click.option(
     '--input', 'input_json',
@@ -1349,6 +1349,10 @@ def run_template(
                 gateway_url=effective_url,
                 gateway_token=effective_token,
             )
+        elif mode == 'openrouter':
+            import os as _os_env
+            effective_key = api_key or _os_env.environ.get("OPENROUTER_API_KEY", "")
+            runner = PipelineRunner.openrouter(api_key=effective_key)
         else:  # dry-run
             runner = PipelineRunner.dry_run(
                 delay_seconds=dry_run_delay,
@@ -1748,7 +1752,7 @@ def _get_persistent_db_path() -> str:
 @click.argument('template_name_or_file')
 @click.option(
     '--mode',
-    type=click.Choice(['standalone', 'openclaw', 'dry-run']),
+    type=click.Choice(['standalone', 'openclaw', 'openrouter', 'dry-run']),
     default='standalone',
     show_default=True,
     help='Execution mode.',
