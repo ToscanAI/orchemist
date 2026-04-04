@@ -2884,4 +2884,98 @@ def create_api_app(
             status_code=201,
         )
 
+    # ------------------------------------------------------------------
+    # Merge Gate endpoints (#743)
+    # ------------------------------------------------------------------
+
+    class GateApproveRequest(BaseModel):
+        message: Optional[str] = None
+        force: bool = False
+
+    class GateRejectRequest(BaseModel):
+        reason: Optional[str] = None
+
+    @app.get("/api/v1/gates")
+    async def list_gates(
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ):
+        """List all merge gates with optional status filter and pagination."""
+        from ..git_integration import GitContext
+
+        all_gates = GitContext.list_gates()
+        if status:
+            all_gates = [g for g in all_gates if g.get("status") == status]
+        total = len(all_gates)
+        items = all_gates[offset : offset + limit]
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+    @app.get("/api/v1/gates/{run_id}")
+    async def get_gate(run_id: str):
+        """Get a single gate by run ID."""
+        from ..git_integration import GitContext
+
+        gate = GitContext.load_gate(run_id)
+        if gate is None:
+            raise HTTPException(status_code=404, detail=f"No gate found for run ID '{run_id}'")
+        return gate
+
+    @app.post("/api/v1/gates/{run_id}/approve")
+    async def approve_gate(run_id: str, req: GateApproveRequest = GateApproveRequest()):
+        """Approve a merge gate."""
+        from ..git_integration import GitContext, GitError
+
+        gate = GitContext.load_gate(run_id)
+        if gate is None:
+            raise HTTPException(status_code=404, detail=f"No gate found for run ID '{run_id}'")
+
+        current_status = gate.get("status")
+        if current_status != "awaiting_approval":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Gate is in status '{current_status}', can only approve 'awaiting_approval' gates",
+            )
+
+        scoring_status = gate.get("scoring_status")
+        if scoring_status == "failed" and not req.force:
+            raise HTTPException(
+                status_code=409,
+                detail="Score gate FAILED \u2014 approval blocked. Use force=true to override.",
+            )
+
+        try:
+            updated = GitContext.update_gate_status(
+                run_id, "approved", message=req.message or "Approved via API"
+            )
+        except GitError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        return updated
+
+    @app.post("/api/v1/gates/{run_id}/reject")
+    async def reject_gate(run_id: str, req: GateRejectRequest = GateRejectRequest()):
+        """Reject a merge gate."""
+        from ..git_integration import GitContext, GitError
+
+        gate = GitContext.load_gate(run_id)
+        if gate is None:
+            raise HTTPException(status_code=404, detail=f"No gate found for run ID '{run_id}'")
+
+        current_status = gate.get("status")
+        if current_status != "awaiting_approval":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Gate is in status '{current_status}', can only reject 'awaiting_approval' gates",
+            )
+
+        try:
+            updated = GitContext.update_gate_status(
+                run_id, "rejected", message=req.reason or "Rejected via API"
+            )
+        except GitError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        return updated
+
     return app
