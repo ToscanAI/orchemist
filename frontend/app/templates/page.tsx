@@ -8,7 +8,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
-import { listTemplates, deleteTemplate, ApiError } from '@/lib/api';
+import { listTemplates, ApiError } from '@/lib/api';
 import type { TemplateSummary } from '@/lib/types';
 import { TemplateCard } from '@/components/pipeline/TemplateCard';
 import { Button } from '@/components/ui/Button';

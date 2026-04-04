@@ -21,6 +21,7 @@ export interface TemplateSummary {
   readonly phases_count: number;
   readonly category: string;
   readonly author: string;
+  readonly source?: string;
 }
 
 /** Phase detail embedded inside `TemplateDetail`. */

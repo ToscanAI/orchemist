@@ -4776,7 +4776,7 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
             # 3a. Try substituting each path segment with '_' from right to left
             #     e.g. /templates/xyz/edit → templates/_/edit.html
             for i in range(len(parts) - 1, 0, -1):
-                trial = list(parts)
+                trial = [*parts]
                 trial[i] = '_'
                 # Try as .html
                 candidate_html = frontend_out / ('/'.join(trial) + '.html')

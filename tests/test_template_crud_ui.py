@@ -335,6 +335,76 @@ class TestCrudRoundTrip:
         assert client.get("/api/v1/templates/test-ui-template-copy").status_code == 404
 
 
+# ---------------------------------------------------------------------------
+# Duplicate-of-duplicate naming (#779)
+# ---------------------------------------------------------------------------
+
+class TestDuplicateOfDuplicateNaming:
+    """Duplicating a copy should increment the (Copy N) suffix, not stack."""
+
+    def _create_user_template(self, client) -> None:
+        client.post(
+            "/api/v1/templates",
+            json={"content": MINIMAL_TEMPLATE, "source": "user"},
+        )
+
+    def test_duplicate_of_duplicate_increments_copy_number(self, crud_client):
+        client, _user_dir = crud_client
+        self._create_user_template(client)
+
+        # First duplicate: name should be "Test UI Template (Copy)"
+        dup1 = client.post("/api/v1/templates/test-ui-template/duplicate").json()
+        assert dup1["name"] == "Test UI Template (Copy)"
+
+        # Duplicate the duplicate: name should be "Test UI Template (Copy 2)", not "Test UI Template (Copy) (Copy)"
+        dup2 = client.post(f"/api/v1/templates/{dup1['id']}/duplicate").json()
+        assert dup2["name"] == "Test UI Template (Copy 2)"
+        assert "(Copy) (Copy)" not in dup2["name"]
+
+
+# ---------------------------------------------------------------------------
+# Update endpoint ID consistency (#781)
+# ---------------------------------------------------------------------------
+
+class TestUpdateIdConsistency:
+    """PUT /api/v1/templates/{name} must reject YAML whose id mismatches the URL."""
+
+    def _create_user_template(self, client) -> None:
+        client.post(
+            "/api/v1/templates",
+            json={"content": MINIMAL_TEMPLATE, "source": "user"},
+        )
+
+    def test_update_with_mismatched_id_returns_400(self, crud_client):
+        client, _user_dir = crud_client
+        self._create_user_template(client)
+
+        mismatched_yaml = UPDATED_TEMPLATE.replace(
+            "id: test-ui-template", "id: wrong-id"
+        )
+        res = client.put(
+            "/api/v1/templates/test-ui-template",
+            json={"content": mismatched_yaml},
+        )
+        assert res.status_code == 400
+        assert "does not match" in res.json()["detail"]
+
+    def test_update_with_missing_id_returns_400(self, crud_client):
+        import yaml as pyyaml
+        client, _user_dir = crud_client
+        self._create_user_template(client)
+
+        parsed = pyyaml.safe_load(UPDATED_TEMPLATE)
+        del parsed["id"]
+        no_id_yaml = pyyaml.dump(parsed)
+        res = client.put(
+            "/api/v1/templates/test-ui-template",
+            json={"content": no_id_yaml},
+        )
+        assert res.status_code == 400
+        assert "id" in res.json()["detail"].lower()
+
+
 class TestPathTraversalRejection:
     """Issue #777: _resolve_template must reject paths outside template dirs."""
 

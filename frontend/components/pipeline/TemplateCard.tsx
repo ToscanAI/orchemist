@@ -41,7 +41,7 @@ export interface TemplateCardProps {
  * <TemplateCard template={summary} />
  */
 export function TemplateCard({ template }: TemplateCardProps) {
-  const isBundled = (template as TemplateSummary & { source?: string }).source === 'bundled';
+  const isBundled = template.source === 'bundled';
 
   return (
     <Link
