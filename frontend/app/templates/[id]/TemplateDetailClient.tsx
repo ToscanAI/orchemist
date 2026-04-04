@@ -23,6 +23,7 @@ import type { TemplateDetail, RunMode } from '@/lib/types';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { PhaseList } from '@/components/pipeline/PhaseList';
+import { SchemaForm } from '@/components/pipeline/SchemaForm';
 
 // ---------------------------------------------------------------------------
 // Static params — required for output: 'export' with dynamic segments
@@ -40,7 +41,7 @@ import { PhaseList } from '@/components/pipeline/PhaseList';
 // Run mode options
 // ---------------------------------------------------------------------------
 
-const MODES: RunMode[] = ['dry-run', 'standalone', 'openclaw'];
+const MODES: RunMode[] = ['dry-run', 'standalone', 'openclaw', 'openrouter'];
 
 // ---------------------------------------------------------------------------
 // TemplateDetailPage
@@ -76,8 +77,7 @@ export default function TemplateDetailClient() {
 
   // ── Launch form state ─────────────────────────────────────────────────────
   const [selectedMode, setSelectedMode] = useState<RunMode>('dry-run');
-  const [jsonInput, setJsonInput] = useState<string>('{}');
-  const [jsonError, setJsonError] = useState<string | null>(null);
+  const [formValues, setFormValues] = useState<Record<string, unknown>>({});
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
@@ -90,10 +90,6 @@ export default function TemplateDetailClient() {
       .then((data) => {
         if (!cancelled) {
           setTemplate(data);
-          // Pre-fill JSON textarea with example_input when available.
-          if (data.example_input !== null) {
-            setJsonInput(JSON.stringify(data.example_input, null, 2));
-          }
           setLoading(false);
         }
       })
@@ -118,21 +114,6 @@ export default function TemplateDetailClient() {
   // ── Form handlers ─────────────────────────────────────────────────────────
 
   /**
-   * Validates the textarea value as JSON on every keystroke.
-   * Clears `apiError` so stale server errors disappear while the user edits.
-   */
-  function handleJsonChange(value: string) {
-    setJsonInput(value);
-    setApiError(null);
-    try {
-      JSON.parse(value);
-      setJsonError(null);
-    } catch (e) {
-      setJsonError(e instanceof Error ? e.message : 'Invalid JSON');
-    }
-  }
-
-  /**
    * Switches the active run mode and clears any stale `apiError`.
    */
   function handleModeChange(mode: RunMode) {
@@ -149,27 +130,16 @@ export default function TemplateDetailClient() {
    */
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!template || jsonError !== null || submitting) return;
-
-    // Parse again as defence-in-depth (state may be one render behind).
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(jsonInput) as Record<string, unknown>;
-    } catch {
-      setJsonError('Invalid JSON');
-      return;
-    }
+    if (!template || submitting) return;
 
     setSubmitting(true);
     setApiError(null);
 
     try {
-      // TODO: if 404 on POST, try template.name instead of template.id.
-      // The API accepts "name or ID"; template.id is the canonical identifier.
       const run = await startRun({
         template: template.id,
         mode: selectedMode,
-        input: parsed,
+        input: formValues,
       });
       router.push(`/runs/${run.run_id}`);
     } catch (err: unknown) {
@@ -324,29 +294,15 @@ export default function TemplateDetailClient() {
             </div>
           </div>
 
-          {/* JSON input */}
-          <div className="flex flex-col gap-2">
-            <label
-              htmlFor="json-input"
-              className="text-xs font-medium text-zinc-400"
-            >
-              Input (JSON)
-            </label>
-            <textarea
-              id="json-input"
-              value={jsonInput}
-              onChange={(e) => handleJsonChange(e.target.value)}
-              className="min-h-[140px] w-full rounded-lg bg-zinc-900 border border-zinc-700 px-3 py-2 font-mono text-xs text-zinc-200 focus:outline-none focus:ring-2 focus:ring-sky-500 resize-y"
-              aria-invalid={jsonError !== null}
-              aria-describedby={jsonError !== null ? 'json-error' : undefined}
-              spellCheck={false}
-            />
-            {jsonError !== null && (
-              <p id="json-error" className="text-xs text-red-400">
-                {jsonError}
-              </p>
-            )}
-          </div>
+          {/* Schema-driven input form */}
+          <SchemaForm
+            schema={template.config_schema ?? {}}
+            exampleInput={template.example_input}
+            onChange={(values) => {
+              setFormValues(values);
+              setApiError(null);
+            }}
+          />
 
           {/* API error */}
           {apiError !== null && (
@@ -363,7 +319,7 @@ export default function TemplateDetailClient() {
             type="submit"
             variant="primary"
             loading={submitting}
-            disabled={jsonError !== null || submitting}
+            disabled={submitting}
           >
             {submitting ? 'Launching…' : 'Launch Run'}
           </Button>

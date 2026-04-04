@@ -45,7 +45,7 @@ export interface TemplateDetail extends TemplateSummary {
 // ── Run types ─────────────────────────────────────────────────────────────────
 
 /** Allowed execution modes for a pipeline run. */
-export type RunMode = 'dry-run' | 'standalone' | 'openclaw';
+export type RunMode = 'dry-run' | 'standalone' | 'openclaw' | 'openrouter';
 
 /** Body for `POST /api/v1/runs`. */
 export interface StartRunRequest {

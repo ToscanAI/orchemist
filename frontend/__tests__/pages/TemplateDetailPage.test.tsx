@@ -369,8 +369,33 @@ describe('TemplateDetailPage', () => {
       mockGetTemplate.mockResolvedValue(mockTemplate);
     });
 
-    it('pre-fills textarea with JSON.stringify(example_input) when example_input is not null', async () => {
+    it('renders a JSON textarea fallback when config_schema has no properties', async () => {
       renderPage();
+      await waitFor(() => {
+        const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+        expect(textarea).toBeInTheDocument();
+        expect(textarea.value).toBe('{}');
+      });
+    });
+
+    it('shows Load Example button when example_input is available', async () => {
+      renderPage();
+      await waitFor(() => {
+        expect(screen.getByText(/load example/i)).toBeInTheDocument();
+      });
+    });
+
+    it('hides Load Example button when example_input is null', async () => {
+      mockGetTemplate.mockResolvedValue({ ...mockTemplate, example_input: null });
+      renderPage();
+      await waitFor(() => screen.getByRole('textbox'));
+      expect(screen.queryByText(/load example/i)).toBeNull();
+    });
+
+    it('populates textarea on Load Example click', async () => {
+      renderPage();
+      await waitFor(() => screen.getByText(/load example/i));
+      fireEvent.click(screen.getByText(/load example/i));
       await waitFor(() => {
         const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
         const parsed = JSON.parse(textarea.value);
@@ -378,63 +403,11 @@ describe('TemplateDetailPage', () => {
       });
     });
 
-    it('defaults textarea to "{}" when example_input is null', async () => {
-      mockGetTemplate.mockResolvedValue({ ...mockTemplate, example_input: null });
+    it('submit button is always enabled with empty JSON (SchemaForm manages validation)', async () => {
       renderPage();
-      await waitFor(() => {
-        const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-        expect(textarea.value).toBe('{}');
-      });
-    });
-
-    it('shows validation error for invalid JSON', async () => {
-      renderPage();
-      await waitFor(() => screen.getByRole('textbox'));
-      const textarea = screen.getByRole('textbox');
-      // Use fireEvent.change to avoid userEvent special-character parsing of { }
-      fireEvent.change(textarea, { target: { value: 'bad json here' } });
-      await waitFor(() => {
-        // The error paragraph has id="json-error"
-        const errorEl = document.getElementById('json-error');
-        expect(errorEl).toBeInTheDocument();
-        expect(errorEl!.textContent).toBeTruthy();
-      });
-    });
-
-    it('clears validation error when JSON becomes valid again', async () => {
-      renderPage();
-      await waitFor(() => screen.getByRole('textbox'));
-      const textarea = screen.getByRole('textbox');
-      // First set invalid JSON
-      fireEvent.change(textarea, { target: { value: 'bad json' } });
-      await waitFor(() => {
-        expect(document.getElementById('json-error')).toBeInTheDocument();
-      });
-      // Then fix it with valid JSON
-      fireEvent.change(textarea, { target: { value: '{}' } });
-      await waitFor(() => {
-        expect(document.getElementById('json-error')).toBeNull();
-      });
-    });
-
-    it('disables submit button when JSON is invalid', async () => {
-      renderPage();
-      await waitFor(() => screen.getByRole('textbox'));
-      const textarea = screen.getByRole('textbox');
-      fireEvent.change(textarea, { target: { value: 'not json at all' } });
       await waitFor(() => {
         const submitBtn = screen.getByRole('button', { name: /launch run/i });
-        expect(submitBtn).toBeDisabled();
-      });
-    });
-
-    it('sets aria-invalid on textarea when JSON is invalid', async () => {
-      renderPage();
-      await waitFor(() => screen.getByRole('textbox'));
-      const textarea = screen.getByRole('textbox');
-      fireEvent.change(textarea, { target: { value: 'oops' } });
-      await waitFor(() => {
-        expect(screen.getByRole('textbox')).toHaveAttribute('aria-invalid', 'true');
+        expect(submitBtn).not.toBeDisabled();
       });
     });
   });
