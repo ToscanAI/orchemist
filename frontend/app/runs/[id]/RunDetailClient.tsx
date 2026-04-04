@@ -61,7 +61,15 @@ function computeElapsed(startIso: string | null, endIso: string | null): number 
  */
 export default function RunDetailClient() {
   const params = useParams<{ id: string }>();
-  const runId = decodeURIComponent(params.id);
+
+  // In static export mode, useParams may return the placeholder ("_") from
+  // generateStaticParams. Fall back to the browser URL.
+  const rawId = params.id && params.id !== '_' ? params.id : (() => {
+    if (typeof window === 'undefined') return '_';
+    const segments = window.location.pathname.split('/').filter(Boolean);
+    return segments[segments.length - 1] ?? '_';
+  })();
+  const runId = decodeURIComponent(rawId);
 
   // ── SSE stream ────────────────────────────────────────────────────────────
   const { events, status, connected } = useRunEvents(runId);

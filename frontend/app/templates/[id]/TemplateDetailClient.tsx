@@ -69,8 +69,17 @@ const MODES: RunMode[] = ['dry-run', 'standalone', 'openclaw', 'openrouter'];
  */
 export default function TemplateDetailClient() {
   const params = useParams<{ id: string }>();
-  const id = decodeURIComponent(params.id);
   const router = useRouter();
+
+  // In static export mode, useParams may return the placeholder ("_") from
+  // generateStaticParams instead of the real URL segment. Fall back to
+  // reading the last path segment from the browser URL.
+  const rawId = params.id && params.id !== '_' ? params.id : (() => {
+    if (typeof window === 'undefined') return '_';
+    const segments = window.location.pathname.split('/').filter(Boolean);
+    return segments[segments.length - 1] ?? '_';
+  })();
+  const id = decodeURIComponent(rawId);
 
   // ── Data fetch state ──────────────────────────────────────────────────────
   const [template, setTemplate] = useState<TemplateDetail | null>(null);
