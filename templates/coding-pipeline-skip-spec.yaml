@@ -90,7 +90,7 @@ phases:
     description: "Write behavioral tests from contracts ONLY — never from implementation. These become immutable constraints for the implementing agent. Behavioral contracts were reviewed externally before reaching this pipeline."
     model_tier: sonnet
     thinking_level: high
-    max_iterations: 3
+    max_iterations: 5
     transitions:
       success: acceptance_test_adversary
       failed: acceptance_test
@@ -107,6 +107,16 @@ phases:
       Read the behavioral contracts at: {output_dir}/behavioral.md
       This file contains ONLY the behavioral contracts — what the system should do.
       You have no access to implementation details. This is by design.
+
+      ## Adversary Feedback Integration
+      If adversary findings exist in the Previous Work above:
+      - Read the EXISTING test file at `{output_dir}/acceptance_tests.py` first
+      - Fix ONLY the issues flagged by the adversary
+      - DO NOT rewrite tests that were not flagged
+      - DO NOT remove tests that existed in the previous round unless the adversary specifically flagged them for removal
+      - Preserve all test function names, class structure, and passing assertions
+      - Add new tests ONLY if the adversary flagged a COVERAGE gap
+      If this is round 1 (no adversary findings above), write the test file from scratch.
 
       ## Task
       1. Read the behavioral contracts carefully
@@ -148,10 +158,10 @@ phases:
   # Phase 1b: Acceptance Test Adversary
   - id: acceptance_test_adversary
     name: "Acceptance Test Adversary"
-    description: "Adversarially reviews acceptance tests for coverage gaps, trivial satisfaction, leakage of implementation details, and missing edge cases. Approves or sends back for revision (max 3 rounds)."
+    description: "Adversarially reviews acceptance tests for coverage gaps, trivial satisfaction, leakage of implementation details, and missing edge cases. Approves or sends back for revision (max 5 rounds)."
     model_tier: opus
     thinking_level: high
-    max_iterations: 3
+    max_iterations: 5
     transitions:
       approve: implement
       request_changes: acceptance_test

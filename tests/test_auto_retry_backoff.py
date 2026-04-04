@@ -101,7 +101,7 @@ class TestExecutorRetryConfig:
 
     def test_default_circuit_breaker_threshold(self):
         cfg = ExecutorRetryConfig()
-        assert cfg.circuit_breaker_threshold == 3
+        assert cfg.circuit_breaker_threshold == 5
 
     def test_default_circuit_breaker_reset_seconds(self):
         cfg = ExecutorRetryConfig()
@@ -508,7 +508,7 @@ class TestCircuitBreaker:
         executor: OpenClawExecutor,
         task: TaskSpec,
         model: str,
-        threshold: int = 3,
+        threshold: int = 5,
     ) -> None:
         """Drive failure_count on the CB for `model` to >= threshold."""
         # Directly manipulate the CB state to avoid running full execute() loops.
@@ -522,7 +522,7 @@ class TestCircuitBreaker:
     def test_circuit_breaker_open_prevents_execution(self, executor, sample_task):
         """When CB is open, execute() returns FAILED immediately without calling _run_session."""
         model = "anthropic/claude-sonnet-4-6"
-        self._exhaust_circuit_breaker(executor, sample_task, model, threshold=3)
+        self._exhaust_circuit_breaker(executor, sample_task, model, threshold=5)
 
         with patch.object(executor, "_run_session") as mock_run:
             result = executor.execute(sample_task)
@@ -533,7 +533,7 @@ class TestCircuitBreaker:
 
     def test_circuit_breaker_error_message_mentions_model(self, executor, sample_task):
         model = "anthropic/claude-sonnet-4-6"
-        self._exhaust_circuit_breaker(executor, sample_task, model, threshold=3)
+        self._exhaust_circuit_breaker(executor, sample_task, model, threshold=5)
 
         with patch.object(executor, "_run_session"):
             result = executor.execute(sample_task)
@@ -543,29 +543,30 @@ class TestCircuitBreaker:
     def test_circuit_breaker_opens_after_threshold_failures(
         self, executor, sample_task
     ):
-        """After 3 consecutive failures, subsequent execute() should return circuit_open."""
+        """After 5 consecutive failures, subsequent execute() should return circuit_open."""
         call_count = {"n": 0}
 
         def mock_run_session(prompt, model, thinking, timeout=None):
             call_count["n"] += 1
             raise RuntimeError("persistent failure")
 
-        # Execute three times, each of which exhausts all retries and increments CB.
-        # With max_attempts=3 retries, each execute() call records 3 failures.
-        # After first execute() the CB has 3 failures → opens.
+        # Execute twice: each execute() exhausts 3 retries, recording 3 failures each.
+        # After two execute() calls the CB has 6 failures → exceeds threshold of 5 → opens.
         with patch.object(executor, "_run_session", side_effect=mock_run_session), \
              patch("orchestration_engine.openclaw_executor.time.sleep"):
             result1 = executor.execute(sample_task)
+            result2 = executor.execute(sample_task)
 
         # The CB should now be open.
-        with patch.object(executor, "_run_session") as mock_run2, \
+        with patch.object(executor, "_run_session") as mock_run3, \
              patch("orchestration_engine.openclaw_executor.time.sleep"):
-            result2 = executor.execute(sample_task)
-            mock_run2.assert_not_called()
+            result3 = executor.execute(sample_task)
+            mock_run3.assert_not_called()
 
         assert result1.state == TaskState.FAILED
         assert result2.state == TaskState.FAILED
-        assert result2.errors[0].code == "circuit_open"
+        assert result3.state == TaskState.FAILED
+        assert result3.errors[0].code == "circuit_open"
 
     def test_circuit_breaker_resets_on_success(self, executor, sample_task):
         """A successful execute() should reset the circuit breaker."""
@@ -593,13 +594,14 @@ class TestCircuitBreaker:
 
         model = "anthropic/claude-sonnet-4-6"
 
-        # Exhaust CB via executor_a
+        # Exhaust CB via executor_a — need 5+ failures to trip threshold
         def always_fail(prompt, model_str, thinking, timeout=None):
             raise RuntimeError("fail")
 
         with patch.object(executor_a, "_run_session", side_effect=always_fail), \
              patch("orchestration_engine.openclaw_executor.time.sleep"):
-            executor_a.execute(sample_task)
+            executor_a.execute(sample_task)  # 3 failures (retries)
+            executor_a.execute(sample_task)  # 3 more failures → 6 total, CB opens
 
         # The CB for that model should now be open
         with _CIRCUIT_BREAKERS_LOCK:
