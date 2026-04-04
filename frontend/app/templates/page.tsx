@@ -45,7 +45,9 @@ export default function TemplatesPage() {
     <div className="flex flex-col gap-6">
       <section>
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
-          Templates
+          Templates{!loading && !error && templates.length > 0 && (
+            <span className="ml-2 text-base font-normal text-zinc-500">({templates.length})</span>
+          )}
         </h1>
         <p className="mt-1 text-sm text-zinc-400">
           Browse and launch pipeline templates.
@@ -58,6 +60,7 @@ export default function TemplatesPage() {
           <input
             type="text"
             placeholder="Search templates..."
+            aria-label="Search templates"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full max-w-sm rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"

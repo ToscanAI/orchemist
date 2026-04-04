@@ -203,8 +203,8 @@ describe('TemplateDetailPage', () => {
       mockGetTemplate.mockRejectedValue(new Error('Oops'));
       renderPage();
       await waitFor(() => {
-        const backLink = screen.getByRole('link', { name: /back to dashboard/i });
-        expect(backLink).toHaveAttribute('href', '/');
+        const backLink = screen.getByRole('link', { name: /back to templates/i });
+        expect(backLink).toHaveAttribute('href', '/templates');
       });
     });
 
@@ -275,8 +275,8 @@ describe('TemplateDetailPage', () => {
     it('renders back link to "/"', async () => {
       renderPage();
       await waitFor(() => {
-        const backLink = screen.getByRole('link', { name: /back to dashboard/i });
-        expect(backLink).toHaveAttribute('href', '/');
+        const backLink = screen.getByRole('link', { name: /back to templates/i });
+        expect(backLink).toHaveAttribute('href', '/templates');
       });
     });
   });
@@ -568,8 +568,8 @@ describe('TemplateDetailPage', () => {
       mockGetTemplate.mockResolvedValue(mockTemplate);
       renderPage();
       await waitFor(() => {
-        const backLink = screen.getByRole('link', { name: /back to dashboard/i });
-        expect(backLink).toHaveAttribute('href', '/');
+        const backLink = screen.getByRole('link', { name: /back to templates/i });
+        expect(backLink).toHaveAttribute('href', '/templates');
       });
     });
   });

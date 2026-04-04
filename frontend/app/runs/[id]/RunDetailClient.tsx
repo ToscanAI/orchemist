@@ -14,11 +14,12 @@
  * @module
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useRunEvents } from '@/lib/sse';
-import { resumeRun, cancelRun, ApiError } from '@/lib/api';
+import { getRun, resumeRun, cancelRun, ApiError } from '@/lib/api';
+import type { RunRecord } from '@/lib/types';
 import { RunStatusBadge } from '@/components/pipeline/RunStatusBadge';
 import { PhaseEventRow } from '@/components/pipeline/PhaseEventRow';
 import type { PhaseEventRowProps } from '@/components/pipeline/PhaseEventRow';
@@ -74,6 +75,29 @@ export default function RunDetailClient() {
   // ── SSE stream ────────────────────────────────────────────────────────────
   const { events, status, connected } = useRunEvents(runId);
 
+  // ── Initial run state (for completed/historical runs) ─────────────────────
+  const [initialRun, setInitialRun] = useState<RunRecord | null>(null);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [initialError, setInitialError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getRun(runId)
+      .then((data) => {
+        if (!cancelled) {
+          setInitialRun(data);
+          setInitialLoading(false);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setInitialError(err instanceof Error ? err.message : 'Failed to load run.');
+          setInitialLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [runId]);
+
   // ── Resume action state ───────────────────────────────────────────────────
   const [resuming, setResuming] = useState<boolean>(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
@@ -117,6 +141,39 @@ export default function RunDetailClient() {
     let isPaused = false;
     let totalCostUsd = 0;
     let totalTokens = 0;
+
+    // Seed from initial REST fetch (completed/historical runs)
+    // Only used when SSE hasn't provided phase_completed events yet
+    const sseHasPhases = events.some((e) => e.type === 'phase_completed');
+    if (!sseHasPhases && initialRun) {
+      for (const phaseId of initialRun.completed_phases) {
+        completedPhases.push({
+          phaseName: phaseId,
+          phaseStatus: 'completed',
+          tokensIn: null,
+          tokensOut: null,
+          costUsd: null,
+          elapsedSeconds: null,
+          outputPreview: null,
+        });
+      }
+      if (initialRun.current_phase) {
+        currentPhase = initialRun.current_phase;
+      }
+      // Synthesize terminal status from initial run data
+      const terminalStatuses = ['success', 'failed', 'crashed', 'cancelled'];
+      if (terminalStatuses.includes(initialRun.status)) {
+        finalStatusEvent = {
+          type: 'status_changed',
+          status: initialRun.status,
+          error_message: initialRun.error_message ?? undefined,
+          completed_at: initialRun.completed_at ?? undefined,
+        } as SseStatusChangedEvent;
+      }
+      if ((initialRun.status as string) === 'paused') {
+        isPaused = true;
+      }
+    }
 
     for (const event of events) {
       if (event.type === 'phase_started') {
@@ -179,7 +236,7 @@ export default function RunDetailClient() {
       totalCostUsd,
       totalTokens,
     };
-  }, [events]);
+  }, [events, initialRun]);
 
   // Convenience flag: stream has reached a terminal state.
   const isTerminal =
@@ -237,10 +294,10 @@ export default function RunDetailClient() {
 
       {/* ── Back navigation ─────────────────────────────────────────────── */}
       <Link
-        href="/"
+        href="/runs"
         className="text-sm text-sky-400 hover:text-sky-300 self-start"
       >
-        ← Back to dashboard
+        ← Back to runs
       </Link>
 
       {/* ── Header: run ID + live status badge ──────────────────────────── */}
@@ -395,7 +452,7 @@ export default function RunDetailClient() {
           {/* Empty state while awaiting first events */}
           {completedPhases.length === 0 && currentPhase === null && !isTerminal && (
             <p className="text-sm italic text-zinc-500">
-              Waiting for phase events…
+              {initialLoading ? 'Loading run data…' : initialError ? initialError : 'Waiting for phase events…'}
             </p>
           )}
         </div>

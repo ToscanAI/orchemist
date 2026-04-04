@@ -11,6 +11,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { listRuns, ApiError } from '@/lib/api';
 import type { RunRecord, RunsListResponse } from '@/lib/types';
 import { RunStatusBadge } from '@/components/pipeline/RunStatusBadge';
@@ -25,6 +26,7 @@ const STATUS_OPTIONS = [
   'failed',
   'cancelled',
   'crashed',
+  'scoring_failed',
 ] as const;
 
 /**
@@ -60,6 +62,7 @@ function formatDate(dateStr: string | null): string {
 }
 
 export default function RunsPage() {
+  const router = useRouter();
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -139,7 +142,7 @@ export default function RunsPage() {
 
       {/* Error state */}
       {error && (
-        <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-400">
+        <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-400" role="alert">
           {error}
         </div>
       )}
@@ -158,7 +161,10 @@ export default function RunsPage() {
             <Link href="/" className="text-sky-400 hover:underline">
               Dashboard
             </Link>{' '}
-            or via <code className="text-zinc-400">orch run</code>.
+            or via <code className="text-zinc-400">orch run</code>, or go to{' '}
+            <Link href="/templates" className="text-sky-400 hover:underline">
+              Templates
+            </Link>.
           </p>
         </div>
       )}
@@ -182,14 +188,12 @@ export default function RunsPage() {
                 <tr
                   key={run.run_id}
                   className="cursor-pointer transition-colors hover:bg-zinc-900/50"
+                  onClick={() => router.push(`/runs/${run.run_id}`)}
                 >
                   <td className="px-4 py-3">
-                    <Link
-                      href={`/runs/${run.run_id}`}
-                      className="font-mono text-sky-400 hover:underline"
-                    >
+                    <span className="font-mono text-sky-400">
                       {run.run_id}
-                    </Link>
+                    </span>
                   </td>
                   <td className="px-4 py-3 text-zinc-300">{run.template_id}</td>
                   <td className="px-4 py-3">

@@ -215,10 +215,10 @@ export default function TemplateDetailClient() {
     return (
       <div className="flex flex-col gap-4">
         <Link
-          href="/"
+          href="/templates"
           className="text-sm text-sky-400 hover:text-sky-300 self-start"
         >
-          ← Back to dashboard
+          ← Back to templates
         </Link>
         <div
           className="card border-red-500/50 bg-red-900/10"
@@ -237,10 +237,10 @@ export default function TemplateDetailClient() {
     <div className="flex flex-col gap-8">
       {/* Back navigation */}
       <Link
-        href="/"
+        href="/templates"
         className="text-sm text-sky-400 hover:text-sky-300 self-start"
       >
-        ← Back to dashboard
+        ← Back to templates
       </Link>
 
       {/* ── Template metadata ────────────────────────────────────────────── */}
