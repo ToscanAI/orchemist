@@ -177,7 +177,7 @@ phases:
     name: "Red Team"
     description: "Adversarial review with humor calibration"
     model_tier: opus
-    depends_on: [fact_check]
+    depends_on: [draft]
     prompt_template: |
       You are an adversarial reviewer. Critically analyze this article.
 
