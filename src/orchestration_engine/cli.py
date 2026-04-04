@@ -4714,40 +4714,69 @@ def import_plugin_command(
 @click.option('--port', default=8374, show_default=True, help='Port to serve on.')
 @click.option('--host', default='127.0.0.1', show_default=True, help='Host to bind to.')
 @click.option('--no-open', is_flag=True, help='Do not auto-open browser.')
-def serve(port: int, host: str, no_open: bool) -> None:
-    """Launch the web UI for running pipelines in the browser.
+@click.option('--db-path', default=None, help='SQLite DB path for pipeline runs.')
+@click.option('--reload', is_flag=True, help='Enable uvicorn auto-reload (dev mode).')
+def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: bool) -> None:
+    """Launch the unified web UI + REST API on a single port.
 
-    Starts a local FastAPI server and opens the browser automatically.
+    Serves the Next.js static frontend and the /api/v1/ REST API together.
+    No CORS, no proxy, no separate servers needed.
+
     Requires the optional [web] extra:
 
       pip install orchestration-engine[web]
 
-    Example:
+    Examples:
 
       orch serve                    # http://127.0.0.1:8374
       orch serve --port 9000
       orch serve --no-open          # start without opening browser
+      orch serve --db-path /tmp/my.db
     """
     try:
         import uvicorn
-        from .web.app import create_app
+        from .web.api import create_api_app
     except ImportError:
         click.echo("Web UI requires extra dependencies. Install with:", err=True)
         click.echo("  pip install orchestration-engine[web]", err=True)
         sys.exit(1)
 
-    app = create_app()
+    app = create_api_app(db_path=db_path)
+
+    # Mount static frontend if available
+    frontend_out = Path(__file__).resolve().parent.parent.parent / 'frontend' / 'out'
+    if frontend_out.exists():
+        from fastapi.responses import FileResponse
+
+        index_html = frontend_out / 'index.html'
+
+        @app.get("/{full_path:path}")
+        async def spa_fallback(full_path: str):
+            """SPA fallback: serve static files or index.html for client-side routing."""
+            static_file = frontend_out / full_path
+            if static_file.is_file() and static_file.resolve().is_relative_to(frontend_out.resolve()):
+                return FileResponse(str(static_file))
+            return FileResponse(str(index_html))
+
+        click.echo(f"Frontend: {frontend_out}")
+    else:
+        click.echo(
+            "Warning: Frontend not built. Run 'cd frontend && npm run build'. "
+            "API endpoints are still available at /api/v1/",
+            err=True,
+        )
 
     if not no_open:
         import threading
         import webbrowser
         threading.Timer(1.5, lambda: webbrowser.open(f"http://{host}:{port}")).start()
 
-    click.echo(f"✓ Orchestration Engine web UI")
-    click.echo(f"  Listening on http://{host}:{port}")
+    click.echo(f"Orchestration Engine (unified)")
+    click.echo(f"  UI:  http://{host}:{port}")
+    click.echo(f"  API: http://{host}:{port}/api/v1/docs")
     click.echo(f"  Press Ctrl+C to stop.")
 
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, reload=reload)
 
 
 # ---------------------------------------------------------------------------
