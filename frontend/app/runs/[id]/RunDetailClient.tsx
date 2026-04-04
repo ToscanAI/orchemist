@@ -72,13 +72,18 @@ export default function RunDetailClient() {
   })();
   const runId = decodeURIComponent(rawId);
 
-  // ── SSE stream ────────────────────────────────────────────────────────────
-  const { events, status, connected } = useRunEvents(runId);
-
   // ── Initial run state (for completed/historical runs) ─────────────────────
   const [initialRun, setInitialRun] = useState<RunRecord | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
   const [initialError, setInitialError] = useState<string | null>(null);
+
+  // Only open SSE for non-terminal runs. While initial fetch is in flight,
+  // default to enabled (optimistic); once we know the run is terminal, disable.
+  const terminalStatuses = ['success', 'failed', 'cancelled', 'crashed', 'scoring_failed'];
+  const sseEnabled = !initialRun || !terminalStatuses.includes(initialRun.status);
+
+  // ── SSE stream ────────────────────────────────────────────────────────────
+  const { events, status, connected } = useRunEvents(runId, sseEnabled);
 
   useEffect(() => {
     let cancelled = false;
@@ -161,7 +166,6 @@ export default function RunDetailClient() {
         currentPhase = initialRun.current_phase;
       }
       // Synthesize terminal status from initial run data
-      const terminalStatuses = ['success', 'failed', 'crashed', 'cancelled'];
       if (terminalStatuses.includes(initialRun.status)) {
         finalStatusEvent = {
           type: 'status_changed',

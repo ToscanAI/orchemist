@@ -34,6 +34,7 @@ function statusVariant(status: string): 'success' | 'error' | 'warning' | 'info'
 export default function DashboardPage() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [totalRuns, setTotalRuns] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,7 +43,7 @@ export default function DashboardPage() {
 
     Promise.all([
       listTemplates(),
-      listRuns({ limit: 10 }).then((r) => r.items).catch(() => [] as RunRecord[]),
+      listRuns({ limit: 5 }).then((r) => { setTotalRuns(r.total); return r.items; }).catch(() => [] as RunRecord[]),
     ])
       .then(([tpls, rns]) => {
         if (!cancelled) {
@@ -119,7 +120,7 @@ export default function DashboardPage() {
                 Total Runs
               </span>
               <span className="text-3xl font-bold text-zinc-100">
-                {runs.length > 0 ? `${runs.length}+` : '0'}
+                {totalRuns}
               </span>
               <span className="text-xs text-zinc-500">pipeline executions</span>
             </Link>

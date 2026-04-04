@@ -13,7 +13,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { listRuns, ApiError } from '@/lib/api';
-import type { RunRecord, RunsListResponse } from '@/lib/types';
+import type { RunRecord, RunStatus, RunsListResponse, ListRunsParams } from '@/lib/types';
 import { RunStatusBadge } from '@/components/pipeline/RunStatusBadge';
 
 const PAGE_SIZE = 20;
@@ -75,14 +75,14 @@ export default function RunsPage() {
     setLoading(true);
     setError(null);
     try {
-      const params: Record<string, unknown> = {
+      const params: ListRunsParams = {
         limit: PAGE_SIZE,
         offset,
+        ...(statusFilter !== 'all' ? { status: statusFilter as RunStatus } : {}),
+        ...(templateFilter.trim() ? { template_id: templateFilter.trim() } : {}),
       };
-      if (statusFilter !== 'all') params.status = statusFilter;
-      if (templateFilter.trim()) params.template_id = templateFilter.trim();
 
-      const data: RunsListResponse = await listRuns(params as any);
+      const data: RunsListResponse = await listRuns(params);
       setRuns([...data.items]);
       setTotal(data.total);
     } catch (err: unknown) {

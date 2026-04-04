@@ -90,7 +90,6 @@ export default function TemplateDetailClient() {
   const [selectedMode, setSelectedMode] = useState<RunMode>('dry-run');
   const [formValues, setFormValues] = useState<Record<string, unknown>>({});
   const [apiKey, setApiKey] = useState<string>('');
-  const [baseUrl, setBaseUrl] = useState<string>('');
   const [modelMap, setModelMap] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -150,18 +149,13 @@ export default function TemplateDetailClient() {
     setApiError(null);
 
     try {
-      // Build input with optional model map
-      const input = { ...formValues };
-      if (Object.keys(modelMap).length > 0) {
-        input._model_map = modelMap;
-      }
-
       const run = await startRun({
         template: template.id,
         mode: selectedMode,
-        input,
+        input: { ...formValues },
         ...(apiKey ? { api_key: apiKey } : {}),
-      } as any);
+        ...(Object.keys(modelMap).length > 0 ? { model_map: modelMap } : {}),
+      });
       router.push(`/runs/${run.run_id}`);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -319,7 +313,7 @@ export default function TemplateDetailClient() {
           <ProviderSelector
             mode={selectedMode}
             onApiKeyChange={setApiKey}
-            onBaseUrlChange={setBaseUrl}
+
           />
 
           {/* Schema-driven input form */}

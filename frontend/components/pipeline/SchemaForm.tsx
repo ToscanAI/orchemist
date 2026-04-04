@@ -9,7 +9,7 @@
  * @module
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,6 +42,10 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
   const required = new Set((schema as ConfigSchema).required ?? []);
   const hasSchema = properties && Object.keys(properties).length > 0;
 
+  // Stable ref for onChange to avoid stale closures
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
   // Field values
   const [values, setValues] = useState<Record<string, unknown>>({});
   // Fallback raw JSON textarea
@@ -58,8 +62,8 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
       }
     }
     setValues(defaults);
-    onChange(defaults);
-  }, [hasSchema]); // eslint-disable-line react-hooks/exhaustive-deps
+    onChangeRef.current(defaults);
+  }, [hasSchema, properties]);
 
   const updateField = useCallback(
     (key: string, value: unknown) => {

@@ -4766,7 +4766,7 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
 
             # 2. Try .html extension (e.g. /runs → runs.html)
             html_file = frontend_out / f"{full_path}.html"
-            if html_file.is_file():
+            if html_file.is_file() and html_file.resolve().is_relative_to(frontend_out.resolve()):
                 return FileResponse(str(html_file))
 
             # 3. Dynamic route: /templates/xyz → templates/_.html

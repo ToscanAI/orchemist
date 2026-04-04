@@ -55,6 +55,8 @@ export interface StartRunRequest {
   readonly output_dir?: string;
   readonly gateway_url?: string;
   readonly skip_scoring?: boolean;
+  readonly api_key?: string;
+  readonly model_map?: Record<string, string>;
 }
 
 /** Possible run statuses. */
