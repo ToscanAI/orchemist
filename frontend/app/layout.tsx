@@ -49,8 +49,8 @@ function TopNav() {
               </a>
             </li>
             <li>
-              <a href="/pipelines" className="nav-item">
-                Pipelines
+              <a href="/runs" className="nav-item">
+                Runs
               </a>
             </li>
             <li>
