@@ -598,6 +598,18 @@ def create_api_app(
                     status_code=404,
                     detail=f"Template file not found: {name_or_path}",
                 )
+            # Sandbox check: ensure path is within allowed template directories
+            engine = _make_engine()
+            resolved = p.resolve()
+            allowed = any(
+                resolved.is_relative_to(d.resolve())
+                for d, _ in engine.get_search_paths()
+            )
+            if not allowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Path outside template directories",
+                )
             return p
 
         engine = _make_engine()
@@ -873,7 +885,7 @@ def create_api_app(
 
         Raises 404 when the template is not found.
         """
-        engine = TemplateEngine()
+        engine = _make_engine()
 
         # Try by file stem, then by template id field.
         template = None
@@ -1172,6 +1184,15 @@ def create_api_app(
                 detail={"message": "YAML parse error", "errors": [str(exc)]},
             )
 
+        # 3b. Verify YAML id matches URL name parameter (#781)
+        if not raw or not isinstance(raw, dict):
+            raise HTTPException(400, "Invalid YAML content")
+        yaml_id = raw.get("id")
+        if not yaml_id:
+            raise HTTPException(400, "Template YAML must contain an 'id' field")
+        if yaml_id != name:
+            raise HTTPException(400, f"YAML id '{yaml_id}' does not match URL name '{name}'")
+
         # 4. Load and validate new content
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
             tmp.write(req.content)
@@ -1316,12 +1337,35 @@ def create_api_app(
 
         # 4. Modify the YAML to set the new id and name
         raw["id"] = candidate
-        raw["name"] = f"{raw.get('name', template.name)} (Copy)"
+        base_name = raw.get('name', template.name)
+        _copy_match = re.match(r'^(.*?)\s*\(Copy(?:\s+(\d+))?\)$', base_name)
+        if _copy_match:
+            base_name = _copy_match.group(1)
+            _copy_counter = int(_copy_match.group(2) or 1) + 1
+            raw["name"] = f"{base_name} (Copy {_copy_counter})"
+        else:
+            raw["name"] = f"{base_name} (Copy)"
         new_content = yaml.dump(raw, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
-        # 5. Write to user templates dir (user-writable)
+        # 5. Write to user templates dir (user-writable) — exclusive create to avoid TOCTOU race
         dest = _writable_template_path(engine, candidate, "user")
-        dest.write_text(new_content, encoding="utf-8")
+        try:
+            with dest.open('x', encoding='utf-8') as f:
+                f.write(new_content)
+        except FileExistsError:
+            # Retry with incremented counter suffix
+            for _retry in range(2, 100):
+                retry_candidate = f"{base_id}-copy-{_retry}"
+                dest = _writable_template_path(engine, retry_candidate, "user")
+                try:
+                    with dest.open('x', encoding='utf-8') as f:
+                        f.write(new_content)
+                    raw["id"] = retry_candidate
+                    break
+                except FileExistsError:
+                    continue
+            else:
+                raise HTTPException(500, "Could not find a unique filename for duplicate")
 
         # 6. Load the new template and return full detail
         try:

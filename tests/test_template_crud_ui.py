@@ -333,3 +333,17 @@ class TestCrudRoundTrip:
         # 7. Verify both gone
         assert client.get("/api/v1/templates/test-ui-template").status_code == 404
         assert client.get("/api/v1/templates/test-ui-template-copy").status_code == 404
+
+
+class TestPathTraversalRejection:
+    """Issue #777: _resolve_template must reject paths outside template dirs."""
+
+    def test_path_traversal_etc_passwd(self, crud_client):
+        client, _user_dir = crud_client
+        resp = client.get("/api/v1/templates//etc/passwd.yaml")
+        assert resp.status_code in (403, 404)
+
+    def test_path_traversal_dotdot(self, crud_client):
+        client, _user_dir = crud_client
+        resp = client.get("/api/v1/templates/../../etc/passwd.yaml")
+        assert resp.status_code in (403, 404)
