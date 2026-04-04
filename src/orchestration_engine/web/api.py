@@ -1839,6 +1839,15 @@ def create_api_app(
                 )
                 for evt in events:
                     last_event_id = evt["id"]
+                    # Parse metadata JSON for enriched fields (#747)
+                    meta = {}
+                    raw_meta = evt.get("metadata_json")
+                    if raw_meta:
+                        try:
+                            meta = json.loads(raw_meta) if isinstance(raw_meta, str) else (raw_meta or {})
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
                     payload = {
                         "run_id": run_id,
                         "phase_id": evt.get("phase_id"),
@@ -1850,6 +1859,15 @@ def create_api_app(
                             if hasattr(evt.get("created_at"), "isoformat")
                             else evt.get("created_at")
                         ),
+                        # Enriched fields (#747)
+                        "model_tier": meta.get("model_tier"),
+                        "model_used": meta.get("model_used"),
+                        "phase_name": meta.get("phase_name"),
+                        "thinking_level": meta.get("thinking_level"),
+                        "elapsed_seconds": meta.get("elapsed_seconds"),
+                        "tokens_in": meta.get("tokens_in"),
+                        "tokens_out": meta.get("tokens_out"),
+                        "word_count": meta.get("word_count"),
                     }
                     yield {
                         "event": evt["event_type"],

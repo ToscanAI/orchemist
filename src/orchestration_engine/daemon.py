@@ -405,12 +405,30 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # is breached so the post-execution block can use 'budget_exceeded' status.
     _budget_exceeded_flag: list = []  # holds at most one BudgetExceededError
 
+    # Track phase start times for elapsed_seconds calculation
+    _phase_start_times: Dict[str, float] = {}
+
     def _on_phase_start(phase_id: str, phase: Any, wave_index: int) -> None:
         """Emit a phase_started event to the DB for SSE streaming (Issue #258)."""
         if _shutdown_requested:
             return
+        import time as _time
+        _phase_start_times[phase_id] = _time.monotonic()
         logger.info("Phase start: %s  wave=%d", phase_id, wave_index)
-        _write_phase_event(db, run_id, phase_id, "phase_started")
+
+        # Enrich with model_tier and phase_name (#747)
+        start_metadata: Dict[str, Any] = {}
+        if hasattr(phase, 'model_tier'):
+            tier = phase.model_tier
+            start_metadata['model_tier'] = tier.value if hasattr(tier, 'value') else str(tier)
+        if hasattr(phase, 'name'):
+            start_metadata['phase_name'] = str(phase.name)
+        if hasattr(phase, 'thinking_level'):
+            tl = phase.thinking_level
+            start_metadata['thinking_level'] = tl.value if hasattr(tl, 'value') else str(tl) if tl else None
+
+        _write_phase_event(db, run_id, phase_id, "phase_started",
+                          extra_metadata=start_metadata)
 
     def _on_phase_complete(phase_id: str, phase_result: dict) -> None:
         """Update DB after each phase completes."""
@@ -479,15 +497,40 @@ def run_daemon(run_id: str, db_path: str) -> None:
             phase_outputs=json.dumps(phase_outputs, default=str),
         )
 
-        # Emit phase_completed event for SSE streaming (Issue #258)
+        # Emit phase_completed event for SSE streaming (Issue #258, enriched #747)
         tokens = phase_result.get('tokens_consumed')
         cost = phase_result.get('cost_usd')
+
+        # Compute elapsed time (#747)
+        import time as _time
+        complete_metadata: Dict[str, Any] = {}
+        start_t = _phase_start_times.pop(phase_id, None)
+        if start_t is not None:
+            complete_metadata['elapsed_seconds'] = round(_time.monotonic() - start_t, 2)
+
+        # Enrich with model info (#747)
+        model_used = phase_result.get('model_used')
+        if model_used:
+            complete_metadata['model_used'] = str(model_used)
+        model_tier = phase_result.get('model_tier')
+        if model_tier:
+            complete_metadata['model_tier'] = model_tier.value if hasattr(model_tier, 'value') else str(model_tier)
+
+        # Token breakdown (#747)
+        tokens_in = phase_result.get('tokens_in') or phase_result.get('prompt_tokens')
+        tokens_out = phase_result.get('tokens_out') or phase_result.get('completion_tokens')
+        if tokens_in is not None:
+            complete_metadata['tokens_in'] = int(tokens_in)
+        if tokens_out is not None:
+            complete_metadata['tokens_out'] = int(tokens_out)
+
         _write_phase_event(
             db, run_id, phase_id, "phase_completed",
             phase_result=phase_result,
             tokens_consumed=int(tokens) if tokens is not None else None,
             cost_usd=float(cost) if cost is not None else None,
             state=state_val,
+            extra_metadata=complete_metadata,
         )
 
         # --- Record phase cost and enforce per-run budget (Issue #496) ---
@@ -973,6 +1016,7 @@ def _write_phase_event(
     tokens_consumed: Optional[int] = None,
     cost_usd: Optional[float] = None,
     state: Optional[str] = None,
+    extra_metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Write a phase lifecycle event to the DB for SSE live-progress streaming.
 
@@ -994,6 +1038,8 @@ def _write_phase_event(
     """
     try:
         metadata: Dict[str, Any] = {}
+        if extra_metadata:
+            metadata.update(extra_metadata)
         if phase_result:
             # Capture a lightweight summary rather than the full result blob
             result_inner = phase_result.get('result', {})

@@ -119,6 +119,10 @@ export interface SsePhaseStartedEvent {
   readonly cost_usd: number | null;
   readonly state: string | null;
   readonly created_at: string | null;
+  // Enriched fields (#747)
+  readonly model_tier: string | null;
+  readonly phase_name: string | null;
+  readonly thinking_level: string | null;
 }
 
 /**
@@ -134,6 +138,15 @@ export interface SsePhaseCompletedEvent {
   readonly cost_usd: number | null;
   readonly state: string | null;
   readonly created_at: string | null;
+  // Enriched fields (#747)
+  readonly model_tier: string | null;
+  readonly model_used: string | null;
+  readonly phase_name: string | null;
+  readonly thinking_level: string | null;
+  readonly elapsed_seconds: number | null;
+  readonly tokens_in: number | null;
+  readonly tokens_out: number | null;
+  readonly word_count: number | null;
 }
 
 /**
