@@ -24,6 +24,8 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { PhaseList } from '@/components/pipeline/PhaseList';
 import { SchemaForm } from '@/components/pipeline/SchemaForm';
+import { ProviderSelector } from '@/components/pipeline/ProviderSelector';
+import { PhaseModelMap } from '@/components/pipeline/PhaseModelMap';
 
 // ---------------------------------------------------------------------------
 // Static params — required for output: 'export' with dynamic segments
@@ -78,6 +80,9 @@ export default function TemplateDetailClient() {
   // ── Launch form state ─────────────────────────────────────────────────────
   const [selectedMode, setSelectedMode] = useState<RunMode>('dry-run');
   const [formValues, setFormValues] = useState<Record<string, unknown>>({});
+  const [apiKey, setApiKey] = useState<string>('');
+  const [baseUrl, setBaseUrl] = useState<string>('');
+  const [modelMap, setModelMap] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
@@ -136,11 +141,18 @@ export default function TemplateDetailClient() {
     setApiError(null);
 
     try {
+      // Build input with optional model map
+      const input = { ...formValues };
+      if (Object.keys(modelMap).length > 0) {
+        input._model_map = modelMap;
+      }
+
       const run = await startRun({
         template: template.id,
         mode: selectedMode,
-        input: formValues,
-      });
+        input,
+        ...(apiKey ? { api_key: apiKey } : {}),
+      } as any);
       router.push(`/runs/${run.run_id}`);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -294,6 +306,13 @@ export default function TemplateDetailClient() {
             </div>
           </div>
 
+          {/* Provider credentials */}
+          <ProviderSelector
+            mode={selectedMode}
+            onApiKeyChange={setApiKey}
+            onBaseUrlChange={setBaseUrl}
+          />
+
           {/* Schema-driven input form */}
           <SchemaForm
             schema={template.config_schema ?? {}}
@@ -303,6 +322,15 @@ export default function TemplateDetailClient() {
               setApiError(null);
             }}
           />
+
+          {/* Phase model assignments */}
+          {(selectedMode === 'standalone' || selectedMode === 'openrouter') && template.phases.length > 0 && (
+            <PhaseModelMap
+              phases={template.phases}
+              modelMap={modelMap}
+              onModelMapChange={setModelMap}
+            />
+          )}
 
           {/* API error */}
           {apiError !== null && (
