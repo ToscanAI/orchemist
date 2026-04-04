@@ -54,7 +54,7 @@ function TopNav() {
               </a>
             </li>
             <li>
-              <a href="/templates" className="nav-item">
+              <a href="/" className="nav-item">
                 Templates
               </a>
             </li>

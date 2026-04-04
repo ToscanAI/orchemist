@@ -4752,10 +4752,32 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
 
         @app.get("/{full_path:path}")
         async def spa_fallback(full_path: str):
-            """SPA fallback: serve static files or index.html for client-side routing."""
+            """SPA fallback: serve static files or route-specific HTML for client-side routing.
+
+            Next.js static export generates dynamic route pages as `_.html`
+            (e.g. `templates/_.html` for `/templates/[id]`). We must serve
+            the correct HTML shell so the client-side router hydrates the
+            right page component.
+            """
+            # 1. Exact static file match (JS, CSS, images, etc.)
             static_file = frontend_out / full_path
             if static_file.is_file() and static_file.resolve().is_relative_to(frontend_out.resolve()):
                 return FileResponse(str(static_file))
+
+            # 2. Try .html extension (e.g. /runs → runs.html)
+            html_file = frontend_out / f"{full_path}.html"
+            if html_file.is_file():
+                return FileResponse(str(html_file))
+
+            # 3. Dynamic route: /templates/xyz → templates/_.html
+            #    Walk up the path to find the nearest _.html
+            parts = full_path.strip('/').split('/')
+            for i in range(len(parts), 0, -1):
+                candidate = frontend_out / '/'.join(parts[:i]) / '_.html'
+                if candidate.is_file() and candidate.resolve().is_relative_to(frontend_out.resolve()):
+                    return FileResponse(str(candidate))
+
+            # 4. Ultimate fallback: index.html (dashboard)
             return FileResponse(str(index_html))
 
         click.echo(f"Frontend: {frontend_out}")
