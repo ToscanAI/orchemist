@@ -256,6 +256,21 @@ def create_api_app(
         skip_scoring: bool = False
         """Skip auto-scoring even if the template declares a scenario."""
 
+        executor: Optional[str] = None
+        """Executor backend for standalone mode (api/claudecode/auto)."""
+
+        api_key: Optional[str] = None
+        """API key passed to daemon as env var. ANTHROPIC_API_KEY (standalone) or OPENROUTER_API_KEY (openrouter). Never persisted."""
+
+        model_map: Optional[Dict[str, str]] = None
+        """Custom model tier overrides for openrouter mode."""
+
+        issue_number: Optional[int] = None
+        """GitHub issue number to auto-fetch as pipeline input."""
+
+        repo: Optional[str] = None
+        """GitHub repository slug (owner/repo) for issue lookup."""
+
         @property
         def resolved_template(self) -> Optional[str]:
             """Return the effective template identifier (template or template_id)."""
@@ -616,6 +631,7 @@ def create_api_app(
         db: Any,
         skip_scoring: bool = False,
         output_dir_override: Optional[str] = None,
+        extra_env: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Core pipeline launch logic: DB row + daemon spawn + return run dict.
 
@@ -661,6 +677,7 @@ def create_api_app(
         )
 
         log_file_path = output_dir / ".orch-daemon.log"
+        daemon_env = {**os.environ, **(extra_env or {})}
         with open(str(log_file_path), "a") as log_fh:
             proc = subprocess.Popen(
                 [
@@ -673,6 +690,7 @@ def create_api_app(
                 start_new_session=True,
                 stdout=log_fh,
                 stderr=log_fh,
+                env=daemon_env,
             )
 
         db.update_pipeline_run(run_id, pid=proc.pid)
@@ -1277,18 +1295,34 @@ def create_api_app(
                 detail={"message": "Template has validation errors", "errors": errors},
             )
 
-        # 2. Launch via shared helper (DB row + daemon spawn)
+        # 2. Prepare input data with executor and model map overrides
+        launch_input = dict(req.input)
+        if req.executor:
+            launch_input['_executor_type'] = req.executor
+        if req.model_map:
+            launch_input['_model_map'] = req.model_map
+
+        # Build extra env vars for API key (never persisted to DB)
+        extra_env: Dict[str, str] = {}
+        if req.api_key:
+            if req.mode == 'openrouter':
+                extra_env['OPENROUTER_API_KEY'] = req.api_key
+            else:
+                extra_env['ANTHROPIC_API_KEY'] = req.api_key
+
+        # 2b. Launch via shared helper (DB row + daemon spawn)
         db = Database(Path(effective_db_path))
         effective_gw_url = req.gateway_url or os.environ.get("OPENCLAW_GATEWAY_URL")
         run_dict = _launch_pipeline_from_trigger(
             template_file=template_file,
             template=template,
-            input_data=req.input,
+            input_data=launch_input,
             mode=req.mode,
             gateway_url=effective_gw_url,
             db=db,
             skip_scoring=req.skip_scoring,
             output_dir_override=req.output_dir,
+            extra_env=extra_env or None,
         )
 
         # 3. Return the created run record
