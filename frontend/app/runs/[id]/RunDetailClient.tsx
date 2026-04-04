@@ -24,6 +24,7 @@ import { PhaseEventRow } from '@/components/pipeline/PhaseEventRow';
 import type { PhaseEventRowProps } from '@/components/pipeline/PhaseEventRow';
 import { Button } from '@/components/ui/Button';
 import { LogViewer } from '@/components/pipeline/LogViewer';
+import { ObserverPanel } from '@/components/pipeline/ObserverPanel';
 import type { SseStatusChangedEvent } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
@@ -264,6 +265,11 @@ export default function RunDetailClient() {
         {cancelError && (
           <p className="mt-1 text-xs text-red-400">{cancelError}</p>
         )}
+
+        {/* Observer panel */}
+        <div className="mt-3">
+          <ObserverPanel events={events} />
+        </div>
       </section>
 
       {/* ── Tabs ──────────────────────────────────────────────────────────────────── */}
