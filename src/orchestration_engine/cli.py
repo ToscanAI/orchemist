@@ -1120,6 +1120,12 @@ def workers(detailed: bool) -> None:
     show_default=True,
     help='Executor backend for standalone mode: api (ANTHROPIC_API_KEY), claudecode, or auto.',
 )
+@click.option(
+    '--model-map',
+    'model_map_json',
+    default=None,
+    help='JSON model tier overrides for openrouter mode, e.g. \'{"sonnet": "openai/gpt-4o"}\'.',
+)
 def run_template(
     template_name_or_file: str,
     mode: str,
@@ -1136,6 +1142,7 @@ def run_template(
     issue_number: Optional[int],
     repo: Optional[str],
     executor: str,
+    model_map_json: Optional[str],
 ) -> None:
     """Execute a pipeline template end-to-end.
 
@@ -1165,9 +1172,14 @@ def run_template(
     """
     import json as _json
 
-    # --executor is only valid with --mode standalone (dry-run ignores it; openclaw is incompatible)
-    if mode == 'openclaw' and executor != 'auto':
+    # --executor is only valid with --mode standalone (dry-run ignores it; openclaw/openrouter are incompatible)
+    if mode in ('openclaw', 'openrouter') and executor != 'auto':
         click.echo("Error: --executor is only valid with --mode standalone", err=True)
+        sys.exit(1)
+
+    # --model-map is only valid with --mode openrouter
+    if model_map_json and mode != 'openrouter':
+        click.echo("Error: --model-map is only valid with --mode openrouter", err=True)
         sys.exit(1)
 
     from rich.console import Console
@@ -1352,7 +1364,14 @@ def run_template(
         elif mode == 'openrouter':
             import os as _os_env
             effective_key = api_key or _os_env.environ.get("OPENROUTER_API_KEY", "")
-            runner = PipelineRunner.openrouter(api_key=effective_key)
+            model_map = None
+            if model_map_json:
+                try:
+                    model_map = json.loads(model_map_json)
+                except json.JSONDecodeError as e:
+                    click.echo(f"Error: --model-map is not valid JSON: {e}", err=True)
+                    sys.exit(1)
+            runner = PipelineRunner.openrouter(api_key=effective_key, model_map=model_map)
         else:  # dry-run
             runner = PipelineRunner.dry_run(
                 delay_seconds=dry_run_delay,
@@ -1875,8 +1894,8 @@ def pipeline_launch(
         click.echo("Error: Issue number must be a positive integer.", err=True)
         sys.exit(1)
 
-    # --executor is only valid with --mode standalone (openclaw is incompatible)
-    if mode == 'openclaw' and executor != 'auto':
+    # --executor is only valid with --mode standalone (openclaw/openrouter are incompatible)
+    if mode in ('openclaw', 'openrouter') and executor != 'auto':
         click.echo("Error: --executor is only valid with --mode standalone", err=True)
         sys.exit(1)
 

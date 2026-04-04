@@ -241,7 +241,7 @@ def create_api_app(
         template_id: Optional[str] = None
         """Alias for ``template``.  When provided, used as the template identifier."""
 
-        mode: Literal["standalone", "openclaw", "dry-run"] = "dry-run"
+        mode: Literal["standalone", "openclaw", "openrouter", "dry-run"] = "dry-run"
         """Execution mode passed to the daemon subprocess."""
 
         input: Dict[str, Any] = {}
