@@ -4769,9 +4769,25 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
             if html_file.is_file() and html_file.resolve().is_relative_to(frontend_out.resolve()):
                 return FileResponse(str(html_file))
 
-            # 3. Dynamic route: /templates/xyz → templates/_.html
-            #    Walk up the path to find the nearest _.html
+            # 3. Dynamic route: /templates/xyz/edit → templates/_/edit.html
+            #    Try replacing dynamic segments with '_' (most-specific first)
             parts = full_path.strip('/').split('/')
+
+            # 3a. Try substituting each path segment with '_' from right to left
+            #     e.g. /templates/xyz/edit → templates/_/edit.html
+            for i in range(len(parts) - 1, 0, -1):
+                trial = list(parts)
+                trial[i] = '_'
+                # Try as .html
+                candidate_html = frontend_out / ('/'.join(trial) + '.html')
+                if candidate_html.is_file() and candidate_html.resolve().is_relative_to(frontend_out.resolve()):
+                    return FileResponse(str(candidate_html))
+                # Try as directory with index.html
+                candidate_index = frontend_out / '/'.join(trial) / 'index.html'
+                if candidate_index.is_file() and candidate_index.resolve().is_relative_to(frontend_out.resolve()):
+                    return FileResponse(str(candidate_index))
+
+            # 3b. Walk up the path to find the nearest _.html
             for i in range(len(parts), 0, -1):
                 candidate = frontend_out / '/'.join(parts[:i]) / '_.html'
                 if candidate.is_file() and candidate.resolve().is_relative_to(frontend_out.resolve()):

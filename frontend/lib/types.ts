@@ -40,6 +40,21 @@ export interface TemplateDetail extends TemplateSummary {
   readonly example_input: Record<string, unknown> | null;
   readonly config_schema: Record<string, unknown>;
   readonly tags: readonly string[];
+  readonly source?: string;
+  readonly yaml_content?: string;
+}
+
+/** Body for `POST /api/v1/templates` — create a new template. */
+export interface CreateTemplateRequest {
+  readonly content: string;
+  readonly source?: 'user' | 'project';
+  readonly overwrite?: boolean;
+}
+
+/** Body for `PUT /api/v1/templates/{name}` — update an existing template. */
+export interface UpdateTemplateRequest {
+  readonly content: string;
+  readonly source?: 'user' | 'project';
 }
 
 // ── Run types ─────────────────────────────────────────────────────────────────

@@ -41,6 +41,8 @@ export interface TemplateCardProps {
  * <TemplateCard template={summary} />
  */
 export function TemplateCard({ template }: TemplateCardProps) {
+  const isBundled = (template as TemplateSummary & { source?: string }).source === 'bundled';
+
   return (
     <Link
       href={`/templates/${encodeURIComponent(template.id)}`}
@@ -53,10 +55,13 @@ export function TemplateCard({ template }: TemplateCardProps) {
           {template.name}
         </h2>
 
-        {/* Version and category badges */}
+        {/* Version, category, and source badges */}
         <div className="flex flex-wrap gap-1.5">
           <Badge variant="neutral">v{template.version}</Badge>
           <Badge variant="info">{template.category}</Badge>
+          {isBundled && (
+            <Badge variant="warning">Built-in</Badge>
+          )}
         </div>
       </div>
 

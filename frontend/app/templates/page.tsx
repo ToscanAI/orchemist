@@ -7,9 +7,11 @@
  */
 
 import { useState, useEffect, useMemo } from 'react';
-import { listTemplates, ApiError } from '@/lib/api';
+import Link from 'next/link';
+import { listTemplates, deleteTemplate, ApiError } from '@/lib/api';
 import type { TemplateSummary } from '@/lib/types';
 import { TemplateCard } from '@/components/pipeline/TemplateCard';
+import { Button } from '@/components/ui/Button';
 
 export default function TemplatesPage() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
@@ -54,17 +56,24 @@ export default function TemplatesPage() {
         </p>
       </section>
 
-      {/* Search */}
-      {!loading && !error && templates.length > 0 && (
-        <div>
-          <input
-            type="text"
-            placeholder="Search templates..."
-            aria-label="Search templates"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full max-w-sm rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
-          />
+      {/* Search + Create */}
+      {!loading && !error && (
+        <div className="flex items-center gap-3">
+          {templates.length > 0 && (
+            <input
+              type="text"
+              placeholder="Search templates..."
+              aria-label="Search templates"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full max-w-sm rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+            />
+          )}
+          <Link href="/templates/new" className="ml-auto shrink-0">
+            <Button variant="primary" size="sm">
+              + Create Template
+            </Button>
+          </Link>
         </div>
       )}
 

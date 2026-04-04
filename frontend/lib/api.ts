@@ -24,6 +24,8 @@ import type {
   TemplateValidateRequest,
   TemplateValidateResponse,
   TemplateDeleteResponse,
+  CreateTemplateRequest,
+  UpdateTemplateRequest,
   StartRunRequest,
   RunRecord,
   RunsListResponse,
@@ -226,6 +228,25 @@ export function deleteTemplate(name: string): Promise<TemplateDeleteResponse> {
   return _fetch<TemplateDeleteResponse>(
     `/api/v1/templates/${encodeURIComponent(name)}`,
     { method: 'DELETE' },
+  );
+}
+
+/**
+ * Duplicate an existing template.
+ *
+ * `POST /api/v1/templates/{name}/duplicate`
+ *
+ * Creates a copy of the template with a `-copy` suffix in the project
+ * templates directory.
+ *
+ * @param name  Template name (file stem) or template ID.
+ * @returns     Full template detail of the new copy.
+ * @throws      `ApiError` 404 when source template is not found.
+ */
+export function duplicateTemplate(name: string): Promise<TemplateDetail> {
+  return _fetch<TemplateDetail>(
+    `/api/v1/templates/${encodeURIComponent(name)}/duplicate`,
+    { method: 'POST' },
   );
 }
 

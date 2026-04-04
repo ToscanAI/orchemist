@@ -18,7 +18,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter, useParams } from 'next/navigation';
-import { getTemplate, startRun, ApiError } from '@/lib/api';
+import { getTemplate, startRun, deleteTemplate, duplicateTemplate, ApiError } from '@/lib/api';
 import type { TemplateDetail, RunMode } from '@/lib/types';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -93,6 +93,11 @@ export default function TemplateDetailClient() {
   const [modelMap, setModelMap] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [apiError, setApiError] = useState<string | null>(null);
+
+  // ── CRUD action state ─────────────────────────────────────────────────────
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
 
   // ── Fetch template on mount ───────────────────────────────────────────────
   useEffect(() => {
@@ -247,6 +252,9 @@ export default function TemplateDetailClient() {
             {template.name}
           </h1>
           <Badge variant="neutral">v{template.version}</Badge>
+          {template.source === 'bundled' && (
+            <Badge variant="warning">Built-in</Badge>
+          )}
         </div>
 
         <p className="mt-2 text-sm text-zinc-400">{template.description}</p>
@@ -259,7 +267,116 @@ export default function TemplateDetailClient() {
             </Badge>
           ))}
         </div>
+
+        {/* ── Action buttons ──────────────────────────────────────────── */}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {template.source !== 'bundled' ? (
+            <Link href={`/templates/${encodeURIComponent(id)}/edit`}>
+              <Button variant="secondary" size="sm">
+                ✏️ Edit
+              </Button>
+            </Link>
+          ) : (
+            <span title="Built-in templates cannot be edited">
+              <Button variant="secondary" size="sm" disabled>
+                ✏️ Edit
+              </Button>
+            </span>
+          )}
+
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={duplicating}
+            disabled={duplicating}
+            onClick={async () => {
+              setDuplicating(true);
+              setApiError(null);
+              try {
+                const dup = await duplicateTemplate(id);
+                router.push(`/templates/${encodeURIComponent(dup.id)}`);
+              } catch (err: unknown) {
+                setApiError(
+                  err instanceof Error ? err.message : 'Failed to duplicate.',
+                );
+                setDuplicating(false);
+              }
+            }}
+          >
+            {duplicating ? 'Duplicating…' : '📋 Duplicate'}
+          </Button>
+
+          {template.source !== 'bundled' ? (
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => setShowDeleteModal(true)}
+            >
+              🗑️ Delete
+            </Button>
+          ) : (
+            <span title="Built-in templates cannot be deleted">
+              <Button variant="danger" size="sm" disabled>
+                🗑️ Delete
+              </Button>
+            </span>
+          )}
+        </div>
       </section>
+
+      {/* ── Delete confirmation modal ────────────────────────────────────── */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="card max-w-md w-full mx-4 flex flex-col gap-4">
+            <h2 className="text-lg font-semibold text-zinc-100">
+              Delete Template
+            </h2>
+            <p className="text-sm text-zinc-400">
+              Are you sure you want to delete{' '}
+              <span className="text-zinc-200 font-medium">{template.name}</span>?
+              This action cannot be undone.
+            </p>
+            {apiError && (
+              <div className="rounded-lg bg-red-900/10 border border-red-500/50 px-3 py-2" role="alert">
+                <p className="text-xs text-red-400">{apiError}</p>
+              </div>
+            )}
+            <div className="flex justify-end gap-3">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setShowDeleteModal(false);
+                  setApiError(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                loading={deleting}
+                disabled={deleting}
+                onClick={async () => {
+                  setDeleting(true);
+                  setApiError(null);
+                  try {
+                    await deleteTemplate(id);
+                    router.push('/templates');
+                  } catch (err: unknown) {
+                    setApiError(
+                      err instanceof Error ? err.message : 'Failed to delete.',
+                    );
+                    setDeleting(false);
+                  }
+                }}
+              >
+                {deleting ? 'Deleting…' : 'Delete'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Phase execution plan ─────────────────────────────────────────── */}
       <section aria-labelledby="phases-heading">

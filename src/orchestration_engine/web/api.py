@@ -877,21 +877,31 @@ def create_api_app(
 
         # Try by file stem, then by template id field.
         template = None
+        template_path: Optional[Path] = None
         try:
-            path = engine.resolve_template(name)
-            template = engine.load_template(path)
+            template_path = engine.resolve_template(name)
+            template = engine.load_template(template_path)
         except (TemplateNotFoundError, FileNotFoundError):
             # Scan by id
             for entry in engine.list_templates():
                 if entry["id"] == name:
                     try:
-                        template = engine.load_template(Path(entry["path"]))
+                        template_path = Path(entry["path"])
+                        template = engine.load_template(template_path)
                     except Exception:
                         pass
                     break
 
         if template is None:
             raise HTTPException(status_code=404, detail=f"Template '{name}' not found")
+
+        # Determine source label for this template
+        source = _template_source(engine, template_path) if template_path else "unknown"
+
+        # Read raw YAML content from disk
+        yaml_content = ""
+        if template_path and template_path.exists():
+            yaml_content = template_path.read_text(encoding="utf-8")
 
         phases_data = [
             {
@@ -917,6 +927,8 @@ def create_api_app(
                 "phases": phases_data,
                 "example_input": template.example_input,
                 "config_schema": template.config_schema or {},
+                "source": source,
+                "yaml_content": yaml_content,
             }
         )
 
@@ -1256,6 +1268,100 @@ def create_api_app(
 
         # HTTP 204 No Content — must return an empty body.
         return Response(status_code=204)
+
+    @app.post("/api/v1/templates/{name}/duplicate", status_code=201)
+    async def duplicate_template_api(name: str) -> JSONResponse:
+        """Duplicate an existing template.
+
+        Creates a copy of the template with a new unique ID (appends
+        ``-copy`` or ``-copy-N`` suffix).  The duplicate is always written
+        to the project templates directory.
+
+        Path parameter:
+            name (str): Template name (file stem) or template ID.
+
+        Returns:
+            201 with the full template detail of the new copy.
+            404 when the source template is not found.
+        """
+        engine = _make_engine()
+
+        # 1. Resolve and load the original template
+        existing_path = _resolve_template(name)
+        try:
+            template = engine.load_template(existing_path)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load template: {exc}",
+            )
+
+        # 2. Read original YAML content
+        original_content = existing_path.read_text(encoding="utf-8")
+        raw = yaml.safe_load(original_content)
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code=422,
+                detail="Original template is not a valid YAML mapping",
+            )
+
+        # 3. Generate a unique duplicate ID
+        base_id = template.id
+        candidate = f"{base_id}-copy"
+        counter = 1
+        existing_ids = {t["id"] for t in engine.list_templates()}
+        while candidate in existing_ids:
+            counter += 1
+            candidate = f"{base_id}-copy-{counter}"
+
+        # 4. Modify the YAML to set the new id and name
+        raw["id"] = candidate
+        raw["name"] = f"{raw.get('name', template.name)} (Copy)"
+        new_content = yaml.dump(raw, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+        # 5. Write to user templates dir (user-writable)
+        dest = _writable_template_path(engine, candidate, "user")
+        dest.write_text(new_content, encoding="utf-8")
+
+        # 6. Load the new template and return full detail
+        try:
+            new_template = engine.load_template(dest)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Duplicate was written but failed to load: {exc}",
+            )
+
+        source = _template_source(engine, dest)
+        phases_data = [
+            {
+                "id": p.id,
+                "name": p.name,
+                "description": p.description,
+                "model_tier": p.model_tier,
+                "thinking_level": p.thinking_level,
+                "depends_on": p.depends_on,
+                "task_type": p.task_type,
+            }
+            for p in new_template.phases
+        ]
+
+        return JSONResponse(
+            {
+                "id": new_template.id,
+                "name": new_template.name,
+                "version": new_template.version,
+                "description": new_template.description,
+                "author": new_template.author,
+                "tags": new_template.tags,
+                "phases": phases_data,
+                "example_input": new_template.example_input,
+                "config_schema": new_template.config_schema or {},
+                "source": source,
+                "yaml_content": new_content,
+            },
+            status_code=201,
+        )
 
     # ---- Pipeline Runs -----------------------------------------------
 
