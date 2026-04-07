@@ -14,10 +14,11 @@ import type { RunMode } from '@/lib/types';
 
 interface ProviderSelectorProps {
   mode: RunMode;
+  apiKey: string;
   onApiKeyChange: (key: string) => void;
 }
 
-export function ProviderSelector({ mode, onApiKeyChange }: ProviderSelectorProps) {
+export function ProviderSelector({ mode, apiKey, onApiKeyChange }: ProviderSelectorProps) {
   if (mode === 'dry-run' || mode === 'openclaw') {
     return null;
   }
@@ -31,6 +32,7 @@ export function ProviderSelector({ mode, onApiKeyChange }: ProviderSelectorProps
       <input
         type="password"
         placeholder={mode === 'openrouter' ? 'sk-or-...' : 'sk-ant-...'}
+        value={apiKey}
         onChange={(e) => onApiKeyChange(e.target.value)}
         className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 placeholder-zinc-600 focus:border-sky-500 focus:outline-none"
         autoComplete="off"
