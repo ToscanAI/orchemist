@@ -1032,16 +1032,16 @@ def workers(detailed: bool) -> None:
 @click.argument('template_name_or_file')
 @click.option(
     '--mode',
-    type=click.Choice(['standalone', 'openclaw', 'dry-run']),
+    type=click.Choice(['standalone', 'openclaw', 'openrouter', 'dry-run']),
     default='standalone',
     show_default=True,
-    help='Execution mode: standalone (direct API), openclaw (sub-agent), dry-run (mock).',
+    help='Execution mode: standalone (direct API), openclaw (sub-agent), openrouter (multi-provider), dry-run (mock).',
 )
 @click.option(
     '--api-key',
     envvar='ANTHROPIC_API_KEY',
     default=None,
-    help='Anthropic API key for standalone mode (or set ANTHROPIC_API_KEY).',
+    help='API key for standalone (ANTHROPIC_API_KEY) or openrouter (OPENROUTER_API_KEY) mode.',
 )
 @click.option(
     '--input', 'input_json',
@@ -1120,6 +1120,12 @@ def workers(detailed: bool) -> None:
     show_default=True,
     help='Executor backend for standalone mode: api (ANTHROPIC_API_KEY), claudecode, or auto.',
 )
+@click.option(
+    '--model-map',
+    'model_map_json',
+    default=None,
+    help='JSON model tier overrides for openrouter mode, e.g. \'{"sonnet": "openai/gpt-4o"}\'.',
+)
 def run_template(
     template_name_or_file: str,
     mode: str,
@@ -1136,6 +1142,7 @@ def run_template(
     issue_number: Optional[int],
     repo: Optional[str],
     executor: str,
+    model_map_json: Optional[str],
 ) -> None:
     """Execute a pipeline template end-to-end.
 
@@ -1165,9 +1172,14 @@ def run_template(
     """
     import json as _json
 
-    # --executor is only valid with --mode standalone (dry-run ignores it; openclaw is incompatible)
-    if mode == 'openclaw' and executor != 'auto':
+    # --executor is only valid with --mode standalone (dry-run ignores it; openclaw/openrouter are incompatible)
+    if mode in ('openclaw', 'openrouter') and executor != 'auto':
         click.echo("Error: --executor is only valid with --mode standalone", err=True)
+        sys.exit(1)
+
+    # --model-map is only valid with --mode openrouter
+    if model_map_json and mode != 'openrouter':
+        click.echo("Error: --model-map is only valid with --mode openrouter", err=True)
         sys.exit(1)
 
     from rich.console import Console
@@ -1349,6 +1361,17 @@ def run_template(
                 gateway_url=effective_url,
                 gateway_token=effective_token,
             )
+        elif mode == 'openrouter':
+            import os as _os_env
+            effective_key = api_key or _os_env.environ.get("OPENROUTER_API_KEY", "")
+            model_map = None
+            if model_map_json:
+                try:
+                    model_map = json.loads(model_map_json)
+                except json.JSONDecodeError as e:
+                    click.echo(f"Error: --model-map is not valid JSON: {e}", err=True)
+                    sys.exit(1)
+            runner = PipelineRunner.openrouter(api_key=effective_key, model_map=model_map)
         else:  # dry-run
             runner = PipelineRunner.dry_run(
                 delay_seconds=dry_run_delay,
@@ -1748,7 +1771,7 @@ def _get_persistent_db_path() -> str:
 @click.argument('template_name_or_file')
 @click.option(
     '--mode',
-    type=click.Choice(['standalone', 'openclaw', 'dry-run']),
+    type=click.Choice(['standalone', 'openclaw', 'openrouter', 'dry-run']),
     default='standalone',
     show_default=True,
     help='Execution mode.',
@@ -1871,8 +1894,8 @@ def pipeline_launch(
         click.echo("Error: Issue number must be a positive integer.", err=True)
         sys.exit(1)
 
-    # --executor is only valid with --mode standalone (openclaw is incompatible)
-    if mode == 'openclaw' and executor != 'auto':
+    # --executor is only valid with --mode standalone (openclaw/openrouter are incompatible)
+    if mode in ('openclaw', 'openrouter') and executor != 'auto':
         click.echo("Error: --executor is only valid with --mode standalone", err=True)
         sys.exit(1)
 
@@ -4691,40 +4714,107 @@ def import_plugin_command(
 @click.option('--port', default=8374, show_default=True, help='Port to serve on.')
 @click.option('--host', default='127.0.0.1', show_default=True, help='Host to bind to.')
 @click.option('--no-open', is_flag=True, help='Do not auto-open browser.')
-def serve(port: int, host: str, no_open: bool) -> None:
-    """Launch the web UI for running pipelines in the browser.
+@click.option('--db-path', default=None, help='SQLite DB path for pipeline runs.')
+@click.option('--reload', is_flag=True, help='Enable uvicorn auto-reload (dev mode).')
+def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: bool) -> None:
+    """Launch the unified web UI + REST API on a single port.
 
-    Starts a local FastAPI server and opens the browser automatically.
+    Serves the Next.js static frontend and the /api/v1/ REST API together.
+    No CORS, no proxy, no separate servers needed.
+
     Requires the optional [web] extra:
 
       pip install orchestration-engine[web]
 
-    Example:
+    Examples:
 
       orch serve                    # http://127.0.0.1:8374
       orch serve --port 9000
       orch serve --no-open          # start without opening browser
+      orch serve --db-path /tmp/my.db
     """
     try:
         import uvicorn
-        from .web.app import create_app
+        from .web.api import create_api_app
     except ImportError:
         click.echo("Web UI requires extra dependencies. Install with:", err=True)
         click.echo("  pip install orchestration-engine[web]", err=True)
         sys.exit(1)
 
-    app = create_app()
+    app = create_api_app(db_path=db_path)
+
+    # Mount static frontend if available
+    frontend_out = Path(__file__).resolve().parent.parent.parent / 'frontend' / 'out'
+    if frontend_out.exists():
+        from fastapi.responses import FileResponse
+
+        index_html = frontend_out / 'index.html'
+
+        @app.get("/{full_path:path}")
+        async def spa_fallback(full_path: str):
+            """SPA fallback: serve static files or route-specific HTML for client-side routing.
+
+            Next.js static export generates dynamic route pages as `_.html`
+            (e.g. `templates/_.html` for `/templates/[id]`). We must serve
+            the correct HTML shell so the client-side router hydrates the
+            right page component.
+            """
+            # 1. Exact static file match (JS, CSS, images, etc.)
+            static_file = frontend_out / full_path
+            if static_file.is_file() and static_file.resolve().is_relative_to(frontend_out.resolve()):
+                return FileResponse(str(static_file))
+
+            # 2. Try .html extension (e.g. /runs → runs.html)
+            html_file = frontend_out / f"{full_path}.html"
+            if html_file.is_file() and html_file.resolve().is_relative_to(frontend_out.resolve()):
+                return FileResponse(str(html_file))
+
+            # 3. Dynamic route: /templates/xyz/edit → templates/_/edit.html
+            #    Try replacing dynamic segments with '_' (most-specific first)
+            parts = full_path.strip('/').split('/')
+
+            # 3a. Try substituting each path segment with '_' from right to left
+            #     e.g. /templates/xyz/edit → templates/_/edit.html
+            for i in range(len(parts) - 1, 0, -1):
+                trial = [*parts]
+                trial[i] = '_'
+                # Try as .html
+                candidate_html = frontend_out / ('/'.join(trial) + '.html')
+                if candidate_html.is_file() and candidate_html.resolve().is_relative_to(frontend_out.resolve()):
+                    return FileResponse(str(candidate_html))
+                # Try as directory with index.html
+                candidate_index = frontend_out / '/'.join(trial) / 'index.html'
+                if candidate_index.is_file() and candidate_index.resolve().is_relative_to(frontend_out.resolve()):
+                    return FileResponse(str(candidate_index))
+
+            # 3b. Walk up the path to find the nearest _.html
+            for i in range(len(parts), 0, -1):
+                candidate = frontend_out / '/'.join(parts[:i]) / '_.html'
+                if candidate.is_file() and candidate.resolve().is_relative_to(frontend_out.resolve()):
+                    return FileResponse(str(candidate))
+
+            # 4. Ultimate fallback: index.html (dashboard)
+            return FileResponse(str(index_html))
+
+        click.echo(f"Frontend: {frontend_out}")
+    else:
+        click.echo(
+            "Warning: Frontend not built. Run 'cd frontend && npm run build'. "
+            "API endpoints are still available at /api/v1/",
+            err=True,
+        )
 
     if not no_open:
         import threading
         import webbrowser
         threading.Timer(1.5, lambda: webbrowser.open(f"http://{host}:{port}")).start()
 
-    click.echo(f"✓ Orchestration Engine web UI")
-    click.echo(f"  Listening on http://{host}:{port}")
+    click.echo(f"Orchestration Engine (unified)")
+    click.echo(f"  UI:  http://{host}:{port}")
+    click.echo(f"  API: http://{host}:{port}/api/v1/docs")
     click.echo(f"  Press Ctrl+C to stop.")
 
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, reload=reload)
 
 
 # ---------------------------------------------------------------------------

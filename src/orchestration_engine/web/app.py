@@ -95,7 +95,7 @@ def create_app():  # noqa: C901
     class RunRequest(BaseModel):
         template: str
         # Fix 4: Validate mode with Literal to reject unknown values (returns 422).
-        mode: Literal["dry-run", "standalone", "openclaw"] = "dry-run"
+        mode: Literal["dry-run", "standalone", "openclaw", "openrouter"] = "dry-run"
         input: Dict[str, Any] = {}
         pause_after: Optional[List[str]] = None  # Phase IDs to pause after (#86)
 
@@ -108,7 +108,7 @@ def create_app():  # noqa: C901
         template: Optional[str] = None
         """Template name (resolved from search paths) or path to a .yaml file."""
 
-        mode: Literal["dry-run", "standalone", "openclaw"] = "dry-run"
+        mode: Literal["dry-run", "standalone", "openclaw", "openrouter"] = "dry-run"
         """Execution mode passed to the daemon subprocess."""
 
         input: Dict[str, Any] = {}

@@ -830,6 +830,25 @@ class TemplateEngine:
                     return candidate.resolve()
             searched.append(directory)
 
+        # --- ID-based fallback: scan YAML files and match by id field -----
+        for directory, _label in self.get_search_paths():
+            if not directory.exists():
+                continue
+            for filepath in sorted(directory.glob("*.yaml")) + sorted(
+                directory.glob("*.yml")
+            ):
+                try:
+                    tpl = self.load_template(filepath)
+                    if tpl.id == stem:
+                        logger.debug(
+                            "resolve_template(%r) → %s (matched by id)",
+                            name,
+                            filepath,
+                        )
+                        return filepath.resolve()
+                except Exception:
+                    continue
+
         raise TemplateNotFoundError(name, searched)
 
     # ------------------------------------------------------------------

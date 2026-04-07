@@ -640,6 +640,10 @@ class NotificationDispatcher:
 
         Environment variables:
             NOTIFY_OPENCLAW_ENABLED            — "1", "true", "yes" to enable
+            NOTIFY_OPENCLAW_DAEMON_ENABLED     — "1", "true", "yes" to re-enable OpenClaw
+                                                 notifications in daemon runs (opt-in override;
+                                                 the daemon clears NOTIFY_OPENCLAW_ENABLED at
+                                                 startup unless this is set — see Issue #660)
             NOTIFY_OPENCLAW_GATEWAY_URL        — gateway base URL (falls back to OPENCLAW_GATEWAY_URL)
             NOTIFY_OPENCLAW_GATEWAY_TOKEN      — bearer token
             NOTIFY_OPENCLAW_SESSION            — target session (default: agent:main:main)

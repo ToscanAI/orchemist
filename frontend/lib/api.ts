@@ -24,6 +24,8 @@ import type {
   TemplateValidateRequest,
   TemplateValidateResponse,
   TemplateDeleteResponse,
+  CreateTemplateRequest,
+  UpdateTemplateRequest,
   StartRunRequest,
   RunRecord,
   RunsListResponse,
@@ -229,6 +231,25 @@ export function deleteTemplate(name: string): Promise<TemplateDeleteResponse> {
   );
 }
 
+/**
+ * Duplicate an existing template.
+ *
+ * `POST /api/v1/templates/{name}/duplicate`
+ *
+ * Creates a copy of the template with a `-copy` suffix in the project
+ * templates directory.
+ *
+ * @param name  Template name (file stem) or template ID.
+ * @returns     Full template detail of the new copy.
+ * @throws      `ApiError` 404 when source template is not found.
+ */
+export function duplicateTemplate(name: string): Promise<TemplateDetail> {
+  return _fetch<TemplateDetail>(
+    `/api/v1/templates/${encodeURIComponent(name)}/duplicate`,
+    { method: 'POST' },
+  );
+}
+
 // ── Pipeline Runs ─────────────────────────────────────────────────────────────
 
 /**
@@ -326,6 +347,98 @@ export function resumeRun(runId: string): Promise<RunRecord> {
   return _fetch<RunRecord>(
     `/api/v1/runs/${encodeURIComponent(runId)}/resume`,
     { method: 'POST' },
+  );
+}
+
+// ── Gate management (#743) ──────────────────────────────────────────────────
+
+/** Gate record from the API. */
+export interface GateRecord {
+  readonly run_id: string;
+  readonly pipeline_id: string;
+  readonly branch: string;
+  readonly base_branch: string;
+  readonly status: string;
+  readonly scoring_status: string | null;
+  readonly scoring_score: number | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly message: string | null;
+  readonly commits: readonly string[];
+}
+
+/** Paginated gate list response. */
+export interface GatesListResponse {
+  readonly items: readonly GateRecord[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+}
+
+export interface ListGatesParams {
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * List all merge gates.
+ *
+ * `GET /api/v1/gates`
+ */
+export function listGates(params?: ListGatesParams): Promise<GatesListResponse> {
+  const qs = new URLSearchParams();
+  if (params?.status !== undefined) qs.set('status', params.status);
+  if (params?.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params?.offset !== undefined) qs.set('offset', String(params.offset));
+  const query = qs.toString();
+  return _fetch<GatesListResponse>(`/api/v1/gates${query ? `?${query}` : ''}`);
+}
+
+/**
+ * Get a single gate by run ID.
+ *
+ * `GET /api/v1/gates/{run_id}`
+ */
+export function getGate(runId: string): Promise<GateRecord> {
+  return _fetch<GateRecord>(`/api/v1/gates/${encodeURIComponent(runId)}`);
+}
+
+/**
+ * Approve a merge gate.
+ *
+ * `POST /api/v1/gates/{run_id}/approve`
+ */
+export function approveGate(
+  runId: string,
+  opts?: { message?: string; force?: boolean },
+): Promise<GateRecord> {
+  return _fetch<GateRecord>(
+    `/api/v1/gates/${encodeURIComponent(runId)}/approve`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts ?? {}),
+    },
+  );
+}
+
+/**
+ * Reject a merge gate.
+ *
+ * `POST /api/v1/gates/{run_id}/reject`
+ */
+export function rejectGate(
+  runId: string,
+  opts?: { reason?: string },
+): Promise<GateRecord> {
+  return _fetch<GateRecord>(
+    `/api/v1/gates/${encodeURIComponent(runId)}/reject`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts ?? {}),
+    },
   );
 }
 

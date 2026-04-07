@@ -1204,7 +1204,7 @@ class TestDiscoverySanityGuards:
     def test_ds03_exactly_6_expected_filenames_present(self):
         """DS-03: exactly the 6 known templates are present (no missing)."""
         expected = {
-            "content-pipeline-v28.yaml",       # templates/
+            "content-pipeline.yaml",       # templates/
             "code-development-pipeline.yaml",  # examples/
             "code-review-pipeline.yaml",
             "content-pipeline-v2.yaml",

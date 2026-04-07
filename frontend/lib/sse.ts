@@ -147,10 +147,13 @@ function parseRawEvent(eventType: string, data: string): SseEvent | null {
  *
  * Re-mounts (i.e. a new `EventSource`) whenever `runId` changes.
  *
- * @param runId  Pipeline run ID (8-char UUID prefix).
- * @returns      `{ events, status, connected }`.
+ * @param runId    Pipeline run ID (8-char UUID prefix).
+ * @param enabled  Whether to open the SSE connection. Default `true`.
+ *                 Pass `false` for completed/historical runs to avoid
+ *                 unnecessary HTTP connections.
+ * @returns        `{ events, status, connected }`.
  */
-export function useRunEvents(runId: string): UseRunEventsResult {
+export function useRunEvents(runId: string, enabled = true): UseRunEventsResult {
   const [events, setEvents] = useState<SseEvent[]>([]);
   const [status, setStatus] = useState<RunEventStatus>('connecting');
   const [connected, setConnected] = useState<boolean>(false);
@@ -164,6 +167,8 @@ export function useRunEvents(runId: string): UseRunEventsResult {
     setEvents([]);
     setStatus('connecting');
     setConnected(false);
+
+    if (!enabled) return;
 
     const url = `${BASE_URL}/api/v1/runs/${encodeURIComponent(runId)}/stream`;
     const es = new EventSource(url);
@@ -212,7 +217,7 @@ export function useRunEvents(runId: string): UseRunEventsResult {
       esRef.current = null;
       setConnected(false);
     };
-  }, [runId]);
+  }, [runId, enabled]);
 
   return { events, status, connected };
 }

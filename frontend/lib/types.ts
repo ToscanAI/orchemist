@@ -21,6 +21,7 @@ export interface TemplateSummary {
   readonly phases_count: number;
   readonly category: string;
   readonly author: string;
+  readonly source?: string;
 }
 
 /** Phase detail embedded inside `TemplateDetail`. */
@@ -40,12 +41,27 @@ export interface TemplateDetail extends TemplateSummary {
   readonly example_input: Record<string, unknown> | null;
   readonly config_schema: Record<string, unknown>;
   readonly tags: readonly string[];
+  readonly source?: string;
+  readonly yaml_content?: string;
+}
+
+/** Body for `POST /api/v1/templates` — create a new template. */
+export interface CreateTemplateRequest {
+  readonly content: string;
+  readonly source?: 'user' | 'project';
+  readonly overwrite?: boolean;
+}
+
+/** Body for `PUT /api/v1/templates/{name}` — update an existing template. */
+export interface UpdateTemplateRequest {
+  readonly content: string;
+  readonly source?: 'user' | 'project';
 }
 
 // ── Run types ─────────────────────────────────────────────────────────────────
 
 /** Allowed execution modes for a pipeline run. */
-export type RunMode = 'dry-run' | 'standalone' | 'openclaw';
+export type RunMode = 'dry-run' | 'standalone' | 'openclaw' | 'openrouter';
 
 /** Body for `POST /api/v1/runs`. */
 export interface StartRunRequest {
@@ -55,6 +71,8 @@ export interface StartRunRequest {
   readonly output_dir?: string;
   readonly gateway_url?: string;
   readonly skip_scoring?: boolean;
+  readonly api_key?: string;
+  readonly model_map?: Record<string, string>;
 }
 
 /** Possible run statuses. */
@@ -119,6 +137,10 @@ export interface SsePhaseStartedEvent {
   readonly cost_usd: number | null;
   readonly state: string | null;
   readonly created_at: string | null;
+  // Enriched fields (#747)
+  readonly model_tier: string | null;
+  readonly phase_name: string | null;
+  readonly thinking_level: string | null;
 }
 
 /**
@@ -134,6 +156,15 @@ export interface SsePhaseCompletedEvent {
   readonly cost_usd: number | null;
   readonly state: string | null;
   readonly created_at: string | null;
+  // Enriched fields (#747)
+  readonly model_tier: string | null;
+  readonly model_used: string | null;
+  readonly phase_name: string | null;
+  readonly thinking_level: string | null;
+  readonly elapsed_seconds: number | null;
+  readonly tokens_in: number | null;
+  readonly tokens_out: number | null;
+  readonly word_count: number | null;
 }
 
 /**

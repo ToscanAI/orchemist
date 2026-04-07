@@ -511,9 +511,12 @@ class TestUpdateTemplate:
     def test_update_invalid_content_returns_422(self, crud_client):
         client, user_dir = crud_client
         self._write_user_template(user_dir)
+        invalid_with_matching_id = INVALID_TEMPLATE.replace(
+            "id: bad-template", "id: test-crud-template"
+        )
         res = client.put(
             "/api/v1/templates/test-crud-template",
-            json={"content": INVALID_TEMPLATE},
+            json={"content": invalid_with_matching_id},
         )
         assert res.status_code == 422
 
@@ -531,9 +534,12 @@ class TestUpdateTemplate:
         client, user_dir = crud_client
         dest = self._write_user_template(user_dir)
         original_content = dest.read_text(encoding="utf-8")
+        invalid_with_matching_id = INVALID_TEMPLATE.replace(
+            "id: bad-template", "id: test-crud-template"
+        )
         client.put(
             "/api/v1/templates/test-crud-template",
-            json={"content": INVALID_TEMPLATE},
+            json={"content": invalid_with_matching_id},
         )
         assert dest.read_text(encoding="utf-8") == original_content
 

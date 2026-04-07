@@ -46,7 +46,7 @@ class ExecutorRetryConfig:
     backoff_max: float = 60.0
     """Cap on computed backoff (seconds)."""
 
-    circuit_breaker_threshold: int = 3
+    circuit_breaker_threshold: int = 5
     """Consecutive failures required to open the circuit breaker."""
 
     circuit_breaker_reset_seconds: int = 300

@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
 TEMPLATES_DIR = REPO_ROOT.joinpath("templates")
 HELLO_YAML = EXAMPLES_DIR / "hello-pipeline.yaml"
-CONTENT_YAML = TEMPLATES_DIR / "content-pipeline-v28.yaml"
+CONTENT_YAML = TEMPLATES_DIR / "content-pipeline.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ class TestTemplatesList:
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["templates", "list"])
         assert result.exit_code == 0, result.output
-        assert "Content Pipeline v2.8" in result.output
+        assert "Content Pipeline" in result.output
 
     def test_list_finds_hello_pipeline(self, monkeypatch):
         """templates list finds hello-pipeline in ./examples/."""
@@ -68,7 +68,7 @@ class TestTemplatesList:
         monkeypatch.chdir(REPO_ROOT)
         result = _invoke(["templates", "list"])
         assert result.exit_code == 0
-        assert "2.8.0" in result.output  # content-pipeline version
+        assert "2.9.0" in result.output  # content-pipeline version
 
     def test_list_shows_phase_count(self, monkeypatch):
         """templates list shows phase count."""
@@ -118,7 +118,7 @@ class TestTemplatesList:
         result = _invoke(["templates", "list", "--json"])
         data = json.loads(result.output)
         names = [e["name"] for e in data]
-        assert "Content Pipeline v2.8" in names
+        assert "Content Pipeline" in names
         assert "Hello Pipeline" in names
 
     def test_list_json_phases_is_integer(self, monkeypatch):
@@ -231,7 +231,7 @@ class TestTemplatesInfo:
         assert "author_name" in result.output
 
     def test_info_content_pipeline_shows_phases_table(self):
-        """templates info shows key phase IDs for content-pipeline v2.8."""
+        """templates info shows key phase IDs for content-pipeline."""
         result = _invoke(["templates", "info", str(CONTENT_YAML)])
         for phase_id in ("research", "draft", "fact_check", "red_team", "voice_check"):
             assert phase_id in result.output, (
@@ -239,7 +239,7 @@ class TestTemplatesInfo:
             )
 
     def test_info_content_pipeline_execution_order_6_waves(self):
-        """content-pipeline v2.8 has 7 phases across 6 waves."""
+        """content-pipeline has 7 phases across 6 waves."""
         result = _invoke(["templates", "info", str(CONTENT_YAML)])
         assert "Wave 6" in result.output
 
@@ -253,9 +253,9 @@ class TestTemplatesInfo:
     def test_info_name_lookup_by_id(self, monkeypatch):
         """templates info finds template by ID (e.g. 'content-pipeline')."""
         monkeypatch.chdir(REPO_ROOT)
-        result = _invoke(["templates", "info", "content-pipeline-v28"])
+        result = _invoke(["templates", "info", "content-pipeline"])
         assert result.exit_code == 0, result.output
-        assert "Content Pipeline v2.8" in result.output
+        assert "Content Pipeline" in result.output
 
     def test_info_name_lookup_by_name(self, monkeypatch):
         """templates info finds template by name (case-insensitive)."""
@@ -297,9 +297,9 @@ class TestTemplatesInfo:
         # "content-pipe" doesn't exactly match "content-pipeline"
         # but IS a substring of it → should show as suggestion
         result = _invoke(["templates", "info", "content-pipe"])
-        # Should suggest "Content Pipeline v2.8"
+        # Should suggest "Content Pipeline"
         assert result.exit_code != 0
-        assert "Content Pipeline v2.8" in result.output or "content-pipeline" in result.output
+        assert "Content Pipeline" in result.output or "content-pipeline" in result.output
 
     def test_info_missing_file_path_exits_nonzero(self):
         """templates info with a non-existent .yaml path exits with error."""

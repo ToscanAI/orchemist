@@ -241,7 +241,7 @@ def create_api_app(
         template_id: Optional[str] = None
         """Alias for ``template``.  When provided, used as the template identifier."""
 
-        mode: Literal["standalone", "openclaw", "dry-run"] = "dry-run"
+        mode: Literal["standalone", "openclaw", "openrouter", "dry-run"] = "dry-run"
         """Execution mode passed to the daemon subprocess."""
 
         input: Dict[str, Any] = {}
@@ -255,6 +255,21 @@ def create_api_app(
 
         skip_scoring: bool = False
         """Skip auto-scoring even if the template declares a scenario."""
+
+        executor: Optional[str] = None
+        """Executor backend for standalone mode (api/claudecode/auto)."""
+
+        api_key: Optional[str] = None
+        """API key passed to daemon as env var. ANTHROPIC_API_KEY (standalone) or OPENROUTER_API_KEY (openrouter). Never persisted."""
+
+        model_map: Optional[Dict[str, str]] = None
+        """Custom model tier overrides for openrouter mode."""
+
+        issue_number: Optional[int] = None
+        """GitHub issue number to auto-fetch as pipeline input."""
+
+        repo: Optional[str] = None
+        """GitHub repository slug (owner/repo) for issue lookup."""
 
         @property
         def resolved_template(self) -> Optional[str]:
@@ -583,6 +598,18 @@ def create_api_app(
                     status_code=404,
                     detail=f"Template file not found: {name_or_path}",
                 )
+            # Sandbox check: ensure path is within allowed template directories
+            engine = _make_engine()
+            resolved = p.resolve()
+            allowed = any(
+                resolved.is_relative_to(d.resolve())
+                for d, _ in engine.get_search_paths()
+            )
+            if not allowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Path outside template directories",
+                )
             return p
 
         engine = _make_engine()
@@ -616,6 +643,7 @@ def create_api_app(
         db: Any,
         skip_scoring: bool = False,
         output_dir_override: Optional[str] = None,
+        extra_env: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Core pipeline launch logic: DB row + daemon spawn + return run dict.
 
@@ -661,6 +689,7 @@ def create_api_app(
         )
 
         log_file_path = output_dir / ".orch-daemon.log"
+        daemon_env = {**os.environ, **(extra_env or {})}
         with open(str(log_file_path), "a") as log_fh:
             proc = subprocess.Popen(
                 [
@@ -673,6 +702,7 @@ def create_api_app(
                 start_new_session=True,
                 stdout=log_fh,
                 stderr=log_fh,
+                env=daemon_env,
             )
 
         db.update_pipeline_run(run_id, pid=proc.pid)
@@ -855,25 +885,35 @@ def create_api_app(
 
         Raises 404 when the template is not found.
         """
-        engine = TemplateEngine()
+        engine = _make_engine()
 
         # Try by file stem, then by template id field.
         template = None
+        template_path: Optional[Path] = None
         try:
-            path = engine.resolve_template(name)
-            template = engine.load_template(path)
+            template_path = engine.resolve_template(name)
+            template = engine.load_template(template_path)
         except (TemplateNotFoundError, FileNotFoundError):
             # Scan by id
             for entry in engine.list_templates():
                 if entry["id"] == name:
                     try:
-                        template = engine.load_template(Path(entry["path"]))
+                        template_path = Path(entry["path"])
+                        template = engine.load_template(template_path)
                     except Exception:
                         pass
                     break
 
         if template is None:
             raise HTTPException(status_code=404, detail=f"Template '{name}' not found")
+
+        # Determine source label for this template
+        source = _template_source(engine, template_path) if template_path else "unknown"
+
+        # Read raw YAML content from disk
+        yaml_content = ""
+        if template_path and template_path.exists():
+            yaml_content = template_path.read_text(encoding="utf-8")
 
         phases_data = [
             {
@@ -899,6 +939,8 @@ def create_api_app(
                 "phases": phases_data,
                 "example_input": template.example_input,
                 "config_schema": template.config_schema or {},
+                "source": source,
+                "yaml_content": yaml_content,
             }
         )
 
@@ -1142,6 +1184,15 @@ def create_api_app(
                 detail={"message": "YAML parse error", "errors": [str(exc)]},
             )
 
+        # 3b. Verify YAML id matches URL name parameter (#781)
+        if not raw or not isinstance(raw, dict):
+            raise HTTPException(400, "Invalid YAML content")
+        yaml_id = raw.get("id")
+        if not yaml_id:
+            raise HTTPException(400, "Template YAML must contain an 'id' field")
+        if yaml_id != name:
+            raise HTTPException(400, f"YAML id '{yaml_id}' does not match URL name '{name}'")
+
         # 4. Load and validate new content
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
             tmp.write(req.content)
@@ -1239,6 +1290,123 @@ def create_api_app(
         # HTTP 204 No Content — must return an empty body.
         return Response(status_code=204)
 
+    @app.post("/api/v1/templates/{name}/duplicate", status_code=201)
+    async def duplicate_template_api(name: str) -> JSONResponse:
+        """Duplicate an existing template.
+
+        Creates a copy of the template with a new unique ID (appends
+        ``-copy`` or ``-copy-N`` suffix).  The duplicate is always written
+        to the project templates directory.
+
+        Path parameter:
+            name (str): Template name (file stem) or template ID.
+
+        Returns:
+            201 with the full template detail of the new copy.
+            404 when the source template is not found.
+        """
+        engine = _make_engine()
+
+        # 1. Resolve and load the original template
+        existing_path = _resolve_template(name)
+        try:
+            template = engine.load_template(existing_path)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load template: {exc}",
+            )
+
+        # 2. Read original YAML content
+        original_content = existing_path.read_text(encoding="utf-8")
+        raw = yaml.safe_load(original_content)
+        if not isinstance(raw, dict):
+            raise HTTPException(
+                status_code=422,
+                detail="Original template is not a valid YAML mapping",
+            )
+
+        # 3. Generate a unique duplicate ID
+        base_id = template.id
+        candidate = f"{base_id}-copy"
+        counter = 1
+        existing_ids = {t["id"] for t in engine.list_templates()}
+        while candidate in existing_ids:
+            counter += 1
+            candidate = f"{base_id}-copy-{counter}"
+
+        # 4. Modify the YAML to set the new id and name
+        raw["id"] = candidate
+        base_name = raw.get('name', template.name)
+        _copy_match = re.match(r'^(.*?)\s*\(Copy(?:\s+(\d+))?\)$', base_name)
+        if _copy_match:
+            base_name = _copy_match.group(1)
+            _copy_counter = int(_copy_match.group(2) or 1) + 1
+            raw["name"] = f"{base_name} (Copy {_copy_counter})"
+        else:
+            raw["name"] = f"{base_name} (Copy)"
+        new_content = yaml.dump(raw, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+        # 5. Write to user templates dir (user-writable) — exclusive create to avoid TOCTOU race
+        dest = _writable_template_path(engine, candidate, "user")
+        try:
+            with dest.open('x', encoding='utf-8') as f:
+                f.write(new_content)
+        except FileExistsError:
+            # Retry with incremented counter suffix
+            for _retry in range(2, 100):
+                retry_candidate = f"{base_id}-copy-{_retry}"
+                dest = _writable_template_path(engine, retry_candidate, "user")
+                try:
+                    with dest.open('x', encoding='utf-8') as f:
+                        f.write(new_content)
+                    raw["id"] = retry_candidate
+                    break
+                except FileExistsError:
+                    continue
+            else:
+                raise HTTPException(500, "Could not find a unique filename for duplicate")
+
+        # 6. Load the new template and return full detail
+        try:
+            new_template = engine.load_template(dest)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Duplicate was written but failed to load: {exc}",
+            )
+
+        source = _template_source(engine, dest)
+        phases_data = [
+            {
+                "id": p.id,
+                "name": p.name,
+                "description": p.description,
+                "model_tier": p.model_tier,
+                "thinking_level": p.thinking_level,
+                "depends_on": p.depends_on,
+                "task_type": p.task_type,
+            }
+            for p in new_template.phases
+        ]
+
+        return JSONResponse(
+            {
+                "id": new_template.id,
+                "name": new_template.name,
+                "version": new_template.version,
+                "description": new_template.description,
+                "author": new_template.author,
+                "tags": new_template.tags,
+                "phases": phases_data,
+                "example_input": new_template.example_input,
+                "config_schema": new_template.config_schema or {},
+                "source": source,
+                "yaml_content": new_content,
+            },
+            status_code=201,
+        )
+
     # ---- Pipeline Runs -----------------------------------------------
 
     @app.post("/api/v1/runs", status_code=201)
@@ -1277,18 +1445,34 @@ def create_api_app(
                 detail={"message": "Template has validation errors", "errors": errors},
             )
 
-        # 2. Launch via shared helper (DB row + daemon spawn)
+        # 2. Prepare input data with executor and model map overrides
+        launch_input = dict(req.input)
+        if req.executor:
+            launch_input['_executor_type'] = req.executor
+        if req.model_map:
+            launch_input['_model_map'] = req.model_map
+
+        # Build extra env vars for API key (never persisted to DB)
+        extra_env: Dict[str, str] = {}
+        if req.api_key:
+            if req.mode == 'openrouter':
+                extra_env['OPENROUTER_API_KEY'] = req.api_key
+            else:
+                extra_env['ANTHROPIC_API_KEY'] = req.api_key
+
+        # 2b. Launch via shared helper (DB row + daemon spawn)
         db = Database(Path(effective_db_path))
         effective_gw_url = req.gateway_url or os.environ.get("OPENCLAW_GATEWAY_URL")
         run_dict = _launch_pipeline_from_trigger(
             template_file=template_file,
             template=template,
-            input_data=req.input,
+            input_data=launch_input,
             mode=req.mode,
             gateway_url=effective_gw_url,
             db=db,
             skip_scoring=req.skip_scoring,
             output_dir_override=req.output_dir,
+            extra_env=extra_env or None,
         )
 
         # 3. Return the created run record
@@ -1805,6 +1989,15 @@ def create_api_app(
                 )
                 for evt in events:
                     last_event_id = evt["id"]
+                    # Parse metadata JSON for enriched fields (#747)
+                    meta = {}
+                    raw_meta = evt.get("metadata_json")
+                    if raw_meta:
+                        try:
+                            meta = json.loads(raw_meta) if isinstance(raw_meta, str) else (raw_meta or {})
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
                     payload = {
                         "run_id": run_id,
                         "phase_id": evt.get("phase_id"),
@@ -1816,6 +2009,15 @@ def create_api_app(
                             if hasattr(evt.get("created_at"), "isoformat")
                             else evt.get("created_at")
                         ),
+                        # Enriched fields (#747)
+                        "model_tier": meta.get("model_tier"),
+                        "model_used": meta.get("model_used"),
+                        "phase_name": meta.get("phase_name"),
+                        "thinking_level": meta.get("thinking_level"),
+                        "elapsed_seconds": meta.get("elapsed_seconds"),
+                        "tokens_in": meta.get("tokens_in"),
+                        "tokens_out": meta.get("tokens_out"),
+                        "word_count": meta.get("word_count"),
                     }
                     yield {
                         "event": evt["event_type"],
@@ -2849,5 +3051,99 @@ def create_api_app(
             },
             status_code=201,
         )
+
+    # ------------------------------------------------------------------
+    # Merge Gate endpoints (#743)
+    # ------------------------------------------------------------------
+
+    class GateApproveRequest(BaseModel):
+        message: Optional[str] = None
+        force: bool = False
+
+    class GateRejectRequest(BaseModel):
+        reason: Optional[str] = None
+
+    @app.get("/api/v1/gates")
+    async def list_gates(
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ):
+        """List all merge gates with optional status filter and pagination."""
+        from ..git_integration import GitContext
+
+        all_gates = GitContext.list_gates()
+        if status:
+            all_gates = [g for g in all_gates if g.get("status") == status]
+        total = len(all_gates)
+        items = all_gates[offset : offset + limit]
+        return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+    @app.get("/api/v1/gates/{run_id}")
+    async def get_gate(run_id: str):
+        """Get a single gate by run ID."""
+        from ..git_integration import GitContext
+
+        gate = GitContext.load_gate(run_id)
+        if gate is None:
+            raise HTTPException(status_code=404, detail=f"No gate found for run ID '{run_id}'")
+        return gate
+
+    @app.post("/api/v1/gates/{run_id}/approve")
+    async def approve_gate(run_id: str, req: GateApproveRequest = GateApproveRequest()):
+        """Approve a merge gate."""
+        from ..git_integration import GitContext, GitError
+
+        gate = GitContext.load_gate(run_id)
+        if gate is None:
+            raise HTTPException(status_code=404, detail=f"No gate found for run ID '{run_id}'")
+
+        current_status = gate.get("status")
+        if current_status != "awaiting_approval":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Gate is in status '{current_status}', can only approve 'awaiting_approval' gates",
+            )
+
+        scoring_status = gate.get("scoring_status")
+        if scoring_status == "failed" and not req.force:
+            raise HTTPException(
+                status_code=409,
+                detail="Score gate FAILED \u2014 approval blocked. Use force=true to override.",
+            )
+
+        try:
+            updated = GitContext.update_gate_status(
+                run_id, "approved", message=req.message or "Approved via API"
+            )
+        except GitError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        return updated
+
+    @app.post("/api/v1/gates/{run_id}/reject")
+    async def reject_gate(run_id: str, req: GateRejectRequest = GateRejectRequest()):
+        """Reject a merge gate."""
+        from ..git_integration import GitContext, GitError
+
+        gate = GitContext.load_gate(run_id)
+        if gate is None:
+            raise HTTPException(status_code=404, detail=f"No gate found for run ID '{run_id}'")
+
+        current_status = gate.get("status")
+        if current_status != "awaiting_approval":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Gate is in status '{current_status}', can only reject 'awaiting_approval' gates",
+            )
+
+        try:
+            updated = GitContext.update_gate_status(
+                run_id, "rejected", message=req.reason or "Rejected via API"
+            )
+        except GitError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        return updated
 
     return app
