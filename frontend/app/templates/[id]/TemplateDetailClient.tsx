@@ -161,6 +161,7 @@ export default function TemplateDetailClient() {
         ...(apiKey ? { api_key: apiKey } : {}),
         ...(Object.keys(modelMap).length > 0 ? { model_map: modelMap } : {}),
       });
+      setApiKey('');
       router.push(`/runs/${run.run_id}`);
     } catch (err: unknown) {
       if (err instanceof ApiError) {
@@ -429,8 +430,8 @@ export default function TemplateDetailClient() {
           {/* Provider credentials */}
           <ProviderSelector
             mode={selectedMode}
+            apiKey={apiKey}
             onApiKeyChange={setApiKey}
-
           />
 
           {/* Schema-driven input form */}
