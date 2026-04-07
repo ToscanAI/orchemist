@@ -89,7 +89,7 @@ phases:
     description: "Interpret the issue into an implementation plan (Section B). Does NOT write behavioral contracts — that's the behavioral agent's job."
     model_tier: sonnet
     thinking_level: high
-    max_iterations: 4
+    max_iterations: 3
     transitions:
       success: behavioral
       failed: spec
@@ -98,6 +98,20 @@ phases:
       [PIPELINE CONTEXT] You are executing the SPEC phase (1a/3) of the spec loop. Your output feeds the BEHAVIORAL phase — not the adversary directly. Write implementation guidance only. Do not write behavioral contracts. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
       You are a senior developer interpreting a GitHub issue into an implementation plan.
+
+      ## GROUND TRUTH — The Issue You Are Implementing
+      **Title:** {config[issue_title]}
+      **Body:** {config[issue_body]}
+
+      Your implementation spec MUST be about this issue. Do NOT write a spec for any other system or feature.
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Branch:** {config[branch_name]}
+      **Language:** {config[language]}
+
+      ## Codebase Context
+      {config[files_context]}
 
       ## Previous Work
       {phase_summary}
@@ -108,18 +122,6 @@ phases:
       ## Iteration Context
       If prior rounds exist above, this is a REVISION round. The adversary flagged issues with the behavioral contracts AND/OR the implementation plan. Read the adversary's findings and adjust your implementation guidance to support any tightened contracts.
       If no prior rounds exist, this is round 1.
-
-      ## Issue
-      **Title:** {config[issue_title]}
-      **Body:** {config[issue_body]}
-
-      ## Repository
-      **Path:** {config[repo_path]}
-      **Branch:** {config[branch_name]}
-      **Language:** {config[language]}
-
-      ## Codebase Context
-      {config[files_context]}
 
       ## Task
       Produce an implementation spec containing ONLY Section B (implementation guidance). Do NOT write behavioral contracts — a separate agent handles that.
@@ -154,7 +156,7 @@ phases:
     description: "Write behavioral contracts (Section A) from the issue + implementation spec. Reads spec.md but outputs ONLY observable behavior — no implementation details."
     model_tier: sonnet
     thinking_level: high
-    max_iterations: 4
+    max_iterations: 3
     transitions:
       success: spec_adversary
       failed: behavioral
@@ -163,6 +165,17 @@ phases:
       [PIPELINE CONTEXT] You are executing the BEHAVIORAL phase (1b/3) of the spec loop. Your output feeds the adversary. Write behavioral contracts only — describe WHAT the system does, not HOW. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
       You are a behavioral contract specialist. Your job is to translate an implementation spec into precise, testable behavioral contracts.
+
+      ## GROUND TRUTH — The Feature You Are Writing Contracts For
+      **Title:** {config[issue_title]}
+      **Body:** {config[issue_body]}
+
+      Your behavioral contracts MUST describe the feature above. Do NOT write contracts for any other system, project, or feature. If the implementation spec describes a different feature than the issue above, write contracts based on the ISSUE — not the spec.
+
+      ## Implementation Spec
+      Read the implementation spec at: {output_dir}/spec.md
+      This describes HOW the feature will be built. Use it to understand the system,
+      but DO NOT copy implementation details into your behavioral contracts.
 
       ## Previous Work
       {phase_summary}
@@ -173,15 +186,6 @@ phases:
       ## Iteration Context
       If prior rounds exist above, this is a REVISION round. The adversary flagged specific weaknesses in the behavioral contracts. Fix ONLY the flagged issues. Do NOT rewrite contracts the adversary did not flag.
       If no prior rounds exist, this is round 1.
-
-      ## Issue
-      **Title:** {config[issue_title]}
-      **Body:** {config[issue_body]}
-
-      ## Implementation Spec
-      Read the implementation spec at: {output_dir}/spec.md
-      This describes HOW the feature will be built. Use it to understand the system,
-      but DO NOT copy implementation details into your behavioral contracts.
 
       ## Task
       Write behavioral contracts describing WHAT the system should do. Use this format:
@@ -228,7 +232,7 @@ phases:
     description: "Adversarially review behavioral contracts AND implementation spec. Checks for vague contracts, trivial satisfaction, missing edge cases, implementation leakage, and divergence between spec and contracts."
     model_tier: sonnet
     thinking_level: high
-    max_iterations: 4
+    max_iterations: 3
     transitions:
       approve: acceptance_test
       request_changes: spec

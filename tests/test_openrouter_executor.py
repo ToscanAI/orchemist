@@ -82,14 +82,14 @@ class TestModelTierResolution:
             assert sent_body["model"] == "anthropic/claude-opus-4-6"
 
     def test_haiku_resolves_to_anthropic_haiku(self):
-        """Given model_tier='haiku', resolves to anthropic/claude-haiku-4-5-20251001."""
+        """Given model_tier='haiku', resolves to anthropic/claude-haiku-4.5."""
         executor = OpenRouterExecutor(api_key="sk-or-test")
         task = _make_task()
         with patch("urllib.request.urlopen") as mock_url:
             mock_url.return_value = _mock_urlopen(_mock_response())
             executor.execute(task, model_tier="haiku")
             sent_body = json.loads(mock_url.call_args[0][0].data)
-            assert sent_body["model"] == "anthropic/claude-haiku-4-5-20251001"
+            assert sent_body["model"] == "anthropic/claude-haiku-4.5"
 
     def test_unknown_tier_passes_through_as_literal(self):
         """Given unknown model_tier, passes it directly as model name."""

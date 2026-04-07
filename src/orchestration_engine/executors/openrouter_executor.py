@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Default model tier → OpenRouter model ID mapping (Anthropic models)
 DEFAULT_MODEL_MAP: Dict[str, str] = {
-    "haiku": "anthropic/claude-haiku-4-5-20251001",
+    "haiku": "anthropic/claude-haiku-4.5",
     "sonnet": "anthropic/claude-sonnet-4-6",
     "opus": "anthropic/claude-opus-4-6",
 }
@@ -77,7 +77,7 @@ class OpenRouterExecutor:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model_map: Optional[Dict[str, str]] = None,
-        timeout_seconds: int = 300,
+        timeout_seconds: int = 600,
         max_tokens: int = 16384,
     ):
         """Initialize the OpenRouter executor.
