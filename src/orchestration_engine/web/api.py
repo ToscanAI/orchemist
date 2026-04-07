@@ -1186,12 +1186,12 @@ def create_api_app(
 
         # 3b. Verify YAML id matches URL name parameter (#781)
         if not raw or not isinstance(raw, dict):
-            raise HTTPException(400, "Invalid YAML content")
+            raise HTTPException(422, detail={"message": "Invalid YAML content", "errors": ["YAML did not produce a mapping"]})
         yaml_id = raw.get("id")
         if not yaml_id:
-            raise HTTPException(400, "Template YAML must contain an 'id' field")
+            raise HTTPException(422, detail={"message": "Validation error", "errors": ["Template YAML must contain an 'id' field"]})
         if yaml_id != name:
-            raise HTTPException(400, f"YAML id '{yaml_id}' does not match URL name '{name}'")
+            raise HTTPException(422, detail={"message": "Validation error", "errors": [f"YAML id '{yaml_id}' does not match URL name '{name}'"]})
 
         # 4. Load and validate new content
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
