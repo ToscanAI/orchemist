@@ -362,14 +362,14 @@ class TestTemplateValidation:
 
     # --- Issue #295: mandatory scenario for coding pipelines ---
 
-    def test_code_category_without_scenario_produces_error(self, engine):
-        """A category=code template with no scenario must produce a validation error."""
+    def test_code_category_without_scenario_no_error(self, engine):
+        """A category=code template without scenario should not produce an error (scenario is optional)."""
         tpl = _simple_template("build")
         tpl.category = "code"
         tpl.scenario = None
         errors = engine.validate_template(tpl)
-        assert any("require a scenario" in e for e in errors), (
-            f"Expected 'require a scenario' error for code template without scenario, got: {errors}"
+        assert not any("scenario" in e.lower() for e in errors), (
+            f"Unexpected scenario-related error for code template without scenario: {errors}"
         )
 
     def test_code_category_with_scenario_no_error(self, engine):
@@ -400,15 +400,15 @@ class TestTemplateValidation:
         errors = engine.validate_template(tpl)
         assert not any("require a scenario" in e for e in errors)
 
-    def test_code_category_case_insensitive(self, engine):
-        """The mandatory-scenario check is case-insensitive (e.g. 'Code', 'CODE')."""
+    def test_code_category_without_scenario_case_insensitive_no_error(self, engine):
+        """Scenario is optional for code category regardless of casing."""
         for cat in ("Code", "CODE", " code ", "cOdE"):
             tpl = _simple_template("build")
             tpl.category = cat
             tpl.scenario = None
             errors = engine.validate_template(tpl)
-            assert any("require a scenario" in e for e in errors), (
-                f"Expected error for category={cat!r}, got: {errors}"
+            assert not any("scenario" in e.lower() for e in errors), (
+                f"Unexpected scenario error for category={cat!r}: {errors}"
             )
 
 
