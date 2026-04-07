@@ -1441,11 +1441,8 @@ class TemplateEngine:
                         f"Path traversal is not permitted."
                     )
 
-        # Issue #295: coding templates must declare a scenario for quality gating
-        if template.category.strip().lower() == "code" and not template.scenario:
-            errors.append(
-                "Coding pipelines require a scenario for quality gating"
-            )
+        # Issue #295: scenario field is optional — auto-scoring is skipped when absent.
+        # Scenarios can still be invoked explicitly via `orch scenario run`.
 
         # Issue #330.1: Validate on_complete block structure
         if template.on_complete is not None:
