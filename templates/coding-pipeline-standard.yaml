@@ -246,6 +246,16 @@ phases:
 
       You are an adversarial spec reviewer. Your job is to find weaknesses in behavioral contracts BEFORE acceptance tests are written against them.
 
+      ## GROUND TRUTH — The Issue These Contracts Must Cover
+      **Title:** {config[issue_title]}
+      **Body:** {config[issue_body]}
+
+      The behavioral contracts and implementation spec you are about to review MUST describe the feature in the issue above. Before applying your five checks, verify that `spec.md` and `behavioral.md` actually describe THIS issue. If either file describes a different system, project, or feature (e.g. a CLI tool when the issue is about a UI component), your verdict is `REQUEST_CHANGES` with a single finding:
+
+        [divergence] spec.md / behavioral.md describes <other topic> instead of the issue "<issue title>" — both files must be rewritten to address the actual issue
+
+      Do NOT invent findings about features that are not in the issue above. Every finding you raise must trace back to a specific contract or spec section that exists in the files you read.
+
       ## Previous Work (for context only — do NOT re-raise findings already addressed)
       {phase_summary}
 
