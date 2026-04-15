@@ -59,6 +59,17 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 orch run templates/my-pipeline.yaml --mode standalone --input '{"brief": "AI safety"}'
 ```
 
+### Using OpenRouter (multi-provider)
+
+To route through OpenRouter instead of calling Anthropic directly, export an OpenRouter key and select `--mode openrouter`:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
+orch run templates/my-pipeline.yaml --mode openrouter --input '{"brief": "AI safety"}'
+```
+
+`orch serve` captures environment variables at startup — export the key *before* launching the server, and restart it if you rotate the key. See [docs/openrouter-setup.md](docs/openrouter-setup.md) for the full configuration reference, CLI-flag precedence, and troubleshooting.
+
 ---
 
 ## Use Cases

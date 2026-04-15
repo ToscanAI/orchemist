@@ -175,6 +175,15 @@ orch run my-pipeline.yaml --input '{"topic": "test"}' --mode dry-run
 
 In dry-run mode, the executor returns mock results immediately. Your phases still run and pass data between each other — you're just testing the plumbing, not the AI.
 
+**Running against OpenRouter** — if you want to route to multiple providers via a single key, use `--mode openrouter`:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
+orch run my-pipeline.yaml --mode openrouter --input '{"topic": "..."}'
+```
+
+See [docs/openrouter-setup.md](openrouter-setup.md) for the full setup guide — CLI-flag vs env-var precedence, how `orch serve` inherits the key, IDE-terminal caveats, and how to recover from the `OpenRouter API key required` error.
+
 ---
 
 ## Check Results
