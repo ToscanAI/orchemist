@@ -101,6 +101,14 @@ phases:
       You are a QA engineer writing behavioral acceptance tests from a spec.
       You have NOT seen any implementation — you are writing tests BEFORE the code exists.
 
+      ## GROUND TRUTH — The Issue These Tests Must Verify
+      **Title:** {config[issue_title]}
+      **Body:** {config[issue_body]}
+
+      The acceptance tests you write must verify the feature in the issue above. Before writing tests, read `behavioral.md` and verify it describes THIS issue. If `behavioral.md` describes a different system, project, or feature (e.g. a CLI tool when the issue is about a UI component), write a single failing test named `test_BLOCKED_behavioral_topic_mismatch` whose body calls `pytest.fail()` with the message `behavioral.md describes <other topic> instead of issue '<issue title>' — pipeline must restart with corrected behavioral contracts`. Do not write any other tests.
+
+      Do NOT invent tests for features that are not in the issue above. Every test must trace back to a specific contract in `behavioral.md`.
+
       ## Previous Work
       {phase_summary}
 
@@ -252,6 +260,15 @@ phases:
       contract of this feature. You MUST make all tests in that file pass.
       You MUST NOT modify, delete, or work around the acceptance tests.
       The pass rate of those tests is the primary quality signal for this pipeline run.
+
+      ## GROUND TRUTH — The Issue You Are Implementing
+      **Title:** {config[issue_title]}
+      **Body:** {config[issue_body]}
+
+      The code you write must implement the feature in the issue above. Before writing any code, read `spec.md` and `acceptance_tests.py` and verify they describe THIS issue. If `spec.md` describes a different system, project, or feature (e.g. a CLI tool when the issue is about a UI component), STOP — write `BLOCKED: spec mismatch — spec.md describes <other topic> instead of issue '<issue title>'` to `{output_dir}/implement.md` and do NOT modify any files in the repository or create any commits.
+
+      Do NOT invent functionality that is not in the issue above. The issue body is the source of truth for what this feature does — if `spec.md` is missing detail, fall back to the issue body, never to your own assumptions.
+
       ## ANTI-TAMPERING — ENGINE-ENFORCED
       The following actions are detected by the engine and will ABORT the pipeline:
       - Modifying `{output_dir}/acceptance_tests.py` (SHA-256 sealed by adversary)
@@ -347,6 +364,16 @@ phases:
 
       You are a senior code reviewer (Opus-tier). Your job is to catch bugs, security issues, and design problems.
 
+      ## GROUND TRUTH — The Issue This Code Must Implement
+      **Title:** {config[issue_title]}
+      **Body:** {config[issue_body]}
+
+      The code you are reviewing must implement the feature in the issue above. Before reviewing for correctness, security, edge cases, or backward compatibility, run `git diff main...{config[branch_name]}` and verify the diff actually implements THIS issue. If the diff implements a different system, project, or feature than the issue above, your verdict on line 1 is `ABORT` followed by the single finding:
+
+        [BLOCKER][correctness] diff implements <other topic> instead of issue "<issue title>" — implementation must be redone from a corrected spec
+
+      Do NOT invent issues about features that are not in the issue above. Every finding you raise must trace back to a specific changed line or file in the diff.
+
       ## Previous Work
       {phase_summary}
 
@@ -432,6 +459,14 @@ phases:
       [PIPELINE CONTEXT] You are executing the FIX phase of an automated coding pipeline. Your output feeds a re-review — not a human. Do not ask questions, request clarification, or send messages to external channels. Deliver your complete output as structured text following the format below. [/PIPELINE CONTEXT]
 
       You are a developer addressing code review feedback.
+
+      ## GROUND TRUTH — The Issue This Fix Must Support
+      **Title:** {config[issue_title]}
+      **Body:** {config[issue_body]}
+
+      The fixes you apply must support the feature in the issue above. Before applying any fix from `review.md`, verify the review finding is about THIS issue's feature. If `review.md` requests changes for a different system, project, or feature than the issue above, write `BLOCKED: review topic mismatch — review.md describes <other topic> instead of issue '<issue title>'` to `{output_dir}/fix.md` and do NOT modify any files in the repository or create any commits.
+
+      Do NOT apply speculative fixes for features not in the issue above. Every code change must address a specific finding in `review.md` that relates to this issue.
 
       ## Previous Work
       {phase_summary}
