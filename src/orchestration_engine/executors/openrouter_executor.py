@@ -23,7 +23,6 @@ import logging
 import os
 import re
 import signal
-import tempfile
 import threading
 import time
 import urllib.error
@@ -35,7 +34,6 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from ..schemas import (
-    ConfidenceLevel,
     ModelTier,
     TaskError,
     TaskResult,
@@ -589,7 +587,7 @@ class OpenRouterExecutor:
                 retries_completed += 1
                 continue
 
-    def _do_post(self, body: Dict[str, Any]) -> dict:
+    def _do_post(self, body: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}/chat/completions"
         data = json.dumps(body).encode("utf-8")
         headers = {
@@ -600,7 +598,8 @@ class OpenRouterExecutor:
         }
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=self.timeout_seconds) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            parsed: Dict[str, Any] = json.loads(resp.read().decode("utf-8"))
+            return parsed
 
     def _call_api(
         self,

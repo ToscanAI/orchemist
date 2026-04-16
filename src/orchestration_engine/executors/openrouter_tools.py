@@ -18,17 +18,15 @@ NOT a security boundary. For adversarial isolation, run the engine inside
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -284,7 +282,7 @@ def _path_within_lexical(child: Path, parent: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def handle_read_file(args: dict, roots: dict[str, str], **_kwargs) -> dict:
+def handle_read_file(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
     path_arg = args.get("path", "")
     resolved, err = _validate_path(path_arg, roots)
     if err is not None:
@@ -314,7 +312,7 @@ def handle_read_file(args: dict, roots: dict[str, str], **_kwargs) -> dict:
     return {"content": content, "size_bytes": len(raw_bytes)}
 
 
-def handle_write_file(args: dict, roots: dict[str, str], **_kwargs) -> dict:
+def handle_write_file(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
     path_arg = args.get("path", "")
     content = args.get("content")
     if not isinstance(path_arg, str) or path_arg == "":
@@ -337,7 +335,7 @@ def handle_write_file(args: dict, roots: dict[str, str], **_kwargs) -> dict:
         return {"error": "write_error", "message": f"{exc}"}
 
 
-def handle_edit_file(args: dict, roots: dict[str, str], **_kwargs) -> dict:
+def handle_edit_file(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
     path_arg = args.get("path", "")
     old_string = args.get("old_string")
     new_string = args.get("new_string")
@@ -395,7 +393,11 @@ def handle_edit_file(args: dict, roots: dict[str, str], **_kwargs) -> dict:
     return {"replacements": count if replace_all else 1}
 
 
-def handle_bash(args: dict, roots: dict[str, str], is_cancelled=None, **_kwargs) -> dict:
+def handle_bash(
+    args: dict, roots: dict[str, str],
+    is_cancelled: Optional[Callable[[], bool]] = None,
+    **_kwargs: Any,
+) -> dict:
     command = args.get("command")
     if not isinstance(command, str) or command == "":
         return {"error": "invalid_tool_call", "message": "command argument must be non-empty"}
@@ -436,7 +438,10 @@ def handle_bash(args: dict, roots: dict[str, str], is_cancelled=None, **_kwargs)
     return _run_bash(command, cwd, timeout_seconds, is_cancelled)
 
 
-def _run_bash(command: str, cwd: str, timeout_seconds: int, is_cancelled=None) -> dict:
+def _run_bash(
+    command: str, cwd: str, timeout_seconds: int,
+    is_cancelled: Optional[Callable[[], bool]] = None,
+) -> dict:
     proc = subprocess.Popen(
         command,
         shell=True,
@@ -541,7 +546,7 @@ def _truncate_stream(data: bytes, label: str) -> tuple[str, bool]:
     return (truncated + f"\n[... {label} truncated, {dropped} bytes dropped ...]\n", True)
 
 
-def handle_grep(args: dict, roots: dict[str, str], **_kwargs) -> dict:
+def handle_grep(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
     pattern = args.get("pattern")
     if not isinstance(pattern, str) or pattern == "":
         return {"error": "invalid_tool_call", "message": "pattern argument must be non-empty"}
@@ -608,7 +613,7 @@ def handle_grep(args: dict, roots: dict[str, str], **_kwargs) -> dict:
     return {"count": match_count, "truncated": False}
 
 
-def handle_glob(args: dict, roots: dict[str, str], **_kwargs) -> dict:
+def handle_glob(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
     pattern = args.get("pattern")
     if not isinstance(pattern, str) or pattern == "":
         return {"error": "invalid_tool_call", "message": "pattern argument must be non-empty"}
