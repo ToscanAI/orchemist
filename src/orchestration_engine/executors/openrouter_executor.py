@@ -276,6 +276,7 @@ class OpenRouterExecutor:
         total_prompt_tokens = 0
         total_completion_tokens = 0
         final_text = ""
+        final_captured = False  # True only on a clean break (no-leak, no-tool_calls response)
 
         with _CancellationContext() as cancel:
             for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
@@ -370,6 +371,7 @@ class OpenRouterExecutor:
                         })
                         continue
                     final_text = content
+                    final_captured = True
                     break
 
                 # Parallel tool_calls observed when the model returns >1 despite parallel_tool_calls=false
@@ -439,7 +441,28 @@ class OpenRouterExecutor:
                         "tool_call_id": tool_id,
                         "content": json.dumps(tool_result),
                     })
-            # End for loop (normal completion — model returned final text)
+            # End for loop.
+            # If we got here without final_captured, every iteration was an XML-leak
+            # nudge that never produced a real final response. Surface as failure
+            # rather than returning empty output masquerading as success.
+            if not final_captured:
+                return self._failed_mid_loop_result(
+                    task, worker_id, start_time,
+                    error_code="xml_leak_loop_exhausted",
+                    error_message=(
+                        f"model emitted <tool_call> XML as text for all {MAX_TOOL_ITERATIONS} "
+                        "iterations without producing a valid response or using the real tool API"
+                    ),
+                    metadata={
+                        "tool_call_count": tool_call_count,
+                        "round_trip_count": round_trip_count,
+                        "retry_count": retry_count_total,
+                        "xml_leak_detected": xml_leak_detected,
+                        "xml_leak_content_snippet": xml_leak_snippet or "",
+                        "parallel_tool_calls_observed": parallel_tool_calls_observed,
+                        "jsonl_write_failed": jsonl_write_failed,
+                    },
+                )
 
         duration = time.time() - start_time
         return TaskResult(
@@ -494,86 +517,77 @@ class OpenRouterExecutor:
         thinking_level: str,
         cancel: _CancellationContext,
     ) -> "_CallResult":
-        """Single logical round-trip: initial attempt + up to 3 retries on 5xx/429, with cancellable backoff."""
+        """Single logical round-trip: initial attempt + up to 3 retries on 5xx/429.
+
+        Per-RT 400-with-thinking retry is "free" — it does NOT consume a retry slot.
+        `retries` in the returned _CallResult counts RETRIES ACTUALLY COMPLETED (not
+        the initial attempt; not aborted-during-backoff attempts that never ran).
+        """
         attempt_body = body
         thinking_stripped = False
         last_error_msg = ""
-        last_error_code = "openrouter_error_mid_loop"
+        retries_completed = 0
+        MAX_RETRIES = 3
 
-        for attempt in range(0, 4):  # 1 initial + 3 retries
+        while True:  # manual attempt counting so free thinking-strip doesn't cost a slot
             if cancel.cancelled:
-                return _CallResult(response=None, error=None, error_code=None, retries=attempt, aborted=True)
+                return _CallResult(response=None, error=None, error_code=None, retries=retries_completed, aborted=True)
             try:
                 response = self._do_post(attempt_body)
-                return _CallResult(response=response, error=None, error_code=None, retries=attempt, aborted=False)
+                return _CallResult(response=response, error=None, error_code=None, retries=retries_completed, aborted=False)
             except urllib.error.HTTPError as http_err:
                 code = http_err.code
                 err_text = _read_http_error_body(http_err)
                 last_error_msg = f"HTTP {code}: {err_text}"
 
-                # 400 with thinking: retry once without thinking, per-round-trip (no retry count bump).
+                # 400 with thinking: retry once WITHOUT thinking. FREE retry — does NOT
+                # consume a retry slot (retries_completed unchanged).
                 if code == 400 and use_thinking and not thinking_stripped:
                     logger.info("400 from OpenRouter with thinking; retrying without thinking")
                     attempt_body = dict(attempt_body)
                     attempt_body.pop("thinking", None)
                     thinking_stripped = True
-                    # Do NOT consume a retry slot for this.
                     continue
 
                 if code in (429, 500, 502, 503, 504):
-                    # Retriable — back off and retry.
-                    if attempt < 3:
-                        backoff = RETRY_BACKOFF_SECONDS[attempt]
-                        cancelled = cancel.sleep(backoff)
-                        if cancelled:
-                            return _CallResult(
-                                response=None, error=None, error_code=None,
-                                retries=attempt + 1, aborted=True,
-                            )
-                        continue
-                    # Out of retries.
-                    return _CallResult(
-                        response=None,
-                        error=last_error_msg,
-                        error_code="openrouter_error_mid_loop",
-                        retries=attempt,
-                        aborted=False,
-                    )
-                # Non-retriable (other 4xx).
-                return _CallResult(
-                    response=None,
-                    error=last_error_msg,
-                    error_code="openrouter_error_mid_loop",
-                    retries=attempt,
-                    aborted=False,
-                )
-            except (urllib.error.URLError, TimeoutError, OSError) as net_err:
-                last_error_msg = f"network error: {net_err}"
-                if attempt < 3:
-                    backoff = RETRY_BACKOFF_SECONDS[attempt]
+                    if retries_completed >= MAX_RETRIES:
+                        return _CallResult(
+                            response=None, error=last_error_msg,
+                            error_code="openrouter_error_mid_loop",
+                            retries=retries_completed, aborted=False,
+                        )
+                    backoff = RETRY_BACKOFF_SECONDS[retries_completed]
                     cancelled = cancel.sleep(backoff)
                     if cancelled:
                         return _CallResult(
                             response=None, error=None, error_code=None,
-                            retries=attempt + 1, aborted=True,
+                            retries=retries_completed, aborted=True,
                         )
+                    retries_completed += 1
                     continue
+                # Non-retriable (other 4xx).
                 return _CallResult(
-                    response=None,
-                    error=last_error_msg,
+                    response=None, error=last_error_msg,
                     error_code="openrouter_error_mid_loop",
-                    retries=attempt,
-                    aborted=False,
+                    retries=retries_completed, aborted=False,
                 )
-
-        # Unreachable, but satisfy type-checkers.
-        return _CallResult(
-            response=None,
-            error=last_error_msg,
-            error_code=last_error_code,
-            retries=3,
-            aborted=False,
-        )
+            except (urllib.error.URLError, TimeoutError, OSError) as net_err:
+                last_error_msg = f"network error: {net_err}"
+                if retries_completed >= MAX_RETRIES:
+                    return _CallResult(
+                        response=None, error=last_error_msg,
+                        error_code="openrouter_error_mid_loop",
+                        retries=retries_completed, aborted=False,
+                    )
+                backoff = RETRY_BACKOFF_SECONDS[retries_completed]
+                cancelled = cancel.sleep(backoff)
+                if cancelled:
+                    return _CallResult(
+                        response=None, error=None, error_code=None,
+                        retries=retries_completed, aborted=True,
+                    )
+                retries_completed += 1
+                continue
 
     def _do_post(self, body: Dict[str, Any]) -> dict:
         url = f"{self.base_url}/chat/completions"

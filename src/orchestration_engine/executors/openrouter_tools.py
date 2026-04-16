@@ -548,9 +548,12 @@ def handle_grep(args: dict, roots: dict[str, str], **_kwargs) -> dict:
     ignore_case = bool(args.get("ignore_case", False))
     output_mode = args.get("output_mode", "content")
     if output_mode not in {"content", "files_with_matches", "count"}:
-        return {"error": "invalid_tool_call", "message": f"output_mode must be one of content/files_with_matches/count"}
+        return {"error": "invalid_tool_call", "message": "output_mode must be one of content/files_with_matches/count"}
 
-    path_arg = args.get("path") or roots.get("repo_path") or roots.get("tmp_dir") or tempfile.gettempdir()
+    supplied = args.get("path")
+    if supplied is not None and (not isinstance(supplied, str) or supplied == ""):
+        return {"error": "invalid_tool_call", "message": "path must be a non-empty string when provided"}
+    path_arg = supplied or roots.get("repo_path") or roots.get("tmp_dir") or tempfile.gettempdir()
     resolved, err = _validate_path(path_arg, roots)
     if err is not None:
         return err
@@ -610,7 +613,10 @@ def handle_glob(args: dict, roots: dict[str, str], **_kwargs) -> dict:
     if not isinstance(pattern, str) or pattern == "":
         return {"error": "invalid_tool_call", "message": "pattern argument must be non-empty"}
 
-    path_arg = args.get("path") or roots.get("repo_path") or roots.get("tmp_dir") or tempfile.gettempdir()
+    supplied = args.get("path")
+    if supplied is not None and (not isinstance(supplied, str) or supplied == ""):
+        return {"error": "invalid_tool_call", "message": "path must be a non-empty string when provided"}
+    path_arg = supplied or roots.get("repo_path") or roots.get("tmp_dir") or tempfile.gettempdir()
     resolved, err = _validate_path(path_arg, roots)
     if err is not None:
         return err
@@ -680,4 +686,6 @@ def summarise_result(tool_name: str, result: dict) -> str:
 
 
 def iso_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{int(datetime.now(timezone.utc).microsecond/1000):03d}Z"
+    # Single datetime.now() call — avoids tick-boundary race between seconds and microseconds.
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{int(now.microsecond / 1000):03d}Z"
