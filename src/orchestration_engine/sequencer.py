@@ -16,6 +16,7 @@ reentrant locks so wave-level concurrency is safe.
 
 import logging
 import re
+import tempfile
 import threading
 import time
 import uuid
@@ -297,6 +298,7 @@ class PhaseSequencer:
                     "phase_id": phase.id,
                     "pipeline_id": self.template.id,
                     "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
+                    "sandbox_roots": self._sandbox_roots(),  # #794: tool-call sandbox
                     **self._build_command_extras(phase, initial_input),
                 },
                 priority=Priority.HIGH,
@@ -502,6 +504,7 @@ class PhaseSequencer:
                     "phase_id": phase.id,
                     "pipeline_id": self.template.id,
                     "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
+                    "sandbox_roots": self._sandbox_roots(),  # #794: tool-call sandbox
                     **self._build_command_extras(phase, initial_input),
                 },
                 priority=Priority.HIGH,
@@ -2296,6 +2299,21 @@ class PhaseSequencer:
             "allowed_commands": list(phase.allowed_commands),
             "working_dir": working_dir or None,
             "output_dir": output_dir_str,
+        }
+
+    def _sandbox_roots(self) -> Dict[str, Optional[str]]:
+        """Build the ``sandbox_roots`` payload dict consumed by tool-calling executors (#794).
+
+        Values are absolute path strings for roots that are set, or Python ``None``
+        (not the literal string ``"None"``) for roots that are unset. ``tmp_dir``
+        is always populated so executors always have at least one usable root.
+        """
+        repo_path = self.config.get("repo_path") if isinstance(self.config, dict) else None
+        output_dir = str(self.output_dir) if self.output_dir else None
+        return {
+            "repo_path": str(repo_path) if repo_path else None,
+            "output_dir": output_dir,
+            "tmp_dir": tempfile.gettempdir(),
         }
 
     @staticmethod
