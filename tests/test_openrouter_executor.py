@@ -25,11 +25,17 @@ from orchestration_engine.executors.openrouter_executor import (
 from orchestration_engine.schemas import TaskSpec, TaskState, TaskType
 
 
-def _make_task(prompt="Write a hello world", task_type=TaskType.CODE):
-    """Create a minimal TaskSpec for testing."""
+def _make_task(prompt="Write a hello world", task_type=TaskType.CODE, disable_tools=True):
+    """Create a minimal TaskSpec for testing.
+
+    ``disable_tools=True`` by default so this legacy test suite exercises the
+    single-shot code path whose error codes (auth_error, rate_limit, overloaded,
+    bad_request, timeout, empty_response) it was written against. The new
+    tool-loop path in #794 uses a different error-code taxonomy by design.
+    """
     return TaskSpec(
         type=task_type,
-        payload={"prompt": prompt},
+        payload={"prompt": prompt, "disable_tools": disable_tools},
     )
 
 
