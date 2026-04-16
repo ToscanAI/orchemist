@@ -1010,6 +1010,7 @@ class PhaseSequencer:
                     "phase_id": f"{phase.id}__supervisor",
                     "pipeline_id": self.template.id,
                     "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
+                    "sandbox_roots": self._sandbox_roots(),  # #794: tool-call sandbox
                 },
                 priority=Priority.HIGH,
                 preferred_model=preferred_model,
@@ -1102,6 +1103,7 @@ class PhaseSequencer:
                         "phase_id": phase.id,
                         "pipeline_id": self.template.id,
                         "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
+                        "sandbox_roots": self._sandbox_roots(),  # #794: tool-call sandbox
                         **self._build_command_extras(phase, initial_input),
                     },
                     priority=Priority.HIGH,
@@ -3488,6 +3490,7 @@ class StateMachineSequencer(PhaseSequencer):
                         "phase_id": phase.id,
                         "pipeline_id": self.template.id,
                         "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
+                        "sandbox_roots": self._sandbox_roots(),  # #794: tool-call sandbox
                         **self._build_command_extras(phase, initial_input),
                     },
                     priority=Priority.HIGH,
