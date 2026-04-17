@@ -156,6 +156,8 @@ class OpenRouterExecutor:
 
     # ── TaskExecutor ABC ─────────────────────────────────────────────
 
+    _COMMAND_TASK_TYPES = frozenset({TaskType.COMMAND, TaskType.ACCEPTANCE_RUN})
+
     def can_handle(self, task_type: TaskType) -> bool:
         return True
 
@@ -193,6 +195,20 @@ class OpenRouterExecutor:
 
         disable_tools = bool(payload.get("disable_tools", False))
         phase_id = payload.get("phase_id") or task_id
+
+        # Fast-path: COMMAND/ACCEPTANCE_RUN task types with a concrete command
+        # run locally via subprocess — zero LLM tokens, zero cost.
+        # Note: ACCEPTANCE_RUN phases in the template often have NO command field
+        # (the engine is supposed to handle them internally). When command is empty,
+        # the fast-path is skipped and the task falls through to the LLM path.
+        task_type = task.type if hasattr(task, "type") else None
+        if task_type in self._COMMAND_TASK_TYPES:
+            cmd = payload.get("command", "")
+            if cmd:
+                return self._execute_command_locally(
+                    cmd, payload.get("working_dir") or os.getcwd(),
+                    task, worker_id, start_time, phase_id,
+                )
 
         # Normalise sandbox_roots once up front; detect fallback and warn ONCE per instance.
         roots, fallback_triggered = normalise_sandbox_roots(payload.get("sandbox_roots"))
@@ -586,6 +602,63 @@ class OpenRouterExecutor:
                     )
                 retries_completed += 1
                 continue
+
+    # ── Command fast-path (no LLM) ─────────────────────────────────
+
+    _MAX_COMMAND_OUTPUT_BYTES = 1_000_000  # 1 MB — matches CommandExecutor.MAX_OUTPUT_BYTES
+
+    def _execute_command_locally(
+        self, command: str, working_dir: str,
+        task: TaskSpec, worker_id: str, start_time: float, phase_id: str,
+    ) -> TaskResult:
+        """Run a shell command locally via subprocess — zero token cost."""
+        import subprocess as _sp
+
+        logger.info("OpenRouterExecutor: local command for phase %s: %s", phase_id, command[:200])
+        cwd = working_dir or os.getcwd()
+        try:
+            proc = _sp.run(command, shell=True, cwd=cwd, capture_output=True, timeout=self.timeout_seconds)
+            stdout_raw = proc.stdout[:self._MAX_COMMAND_OUTPUT_BYTES]
+            stderr_raw = proc.stderr[:self._MAX_COMMAND_OUTPUT_BYTES]
+            stdout = stdout_raw.decode("utf-8", errors="replace")
+            stderr = stderr_raw.decode("utf-8", errors="replace")
+            exit_code = proc.returncode
+            state = TaskState.SUCCESS if exit_code == 0 else TaskState.FAILED
+        except _sp.TimeoutExpired as exc:
+            stdout = ((exc.stdout or b"")[:self._MAX_COMMAND_OUTPUT_BYTES]).decode("utf-8", errors="replace")
+            stderr = ((exc.stderr or b"")[:self._MAX_COMMAND_OUTPUT_BYTES]).decode("utf-8", errors="replace")
+            exit_code = -1
+            state = TaskState.FAILED
+        except Exception as exc:
+            stdout, stderr, exit_code, state = "", str(exc), -1, TaskState.FAILED
+
+        duration = time.time() - start_time
+        output_text = stdout if stdout else stderr
+        errors = []
+        if state == TaskState.FAILED:
+            errors.append(TaskError(
+                code="command_failed" if exit_code != -1 else "command_timeout",
+                message=f"exit {exit_code}: {stderr[:500]}" if stderr else f"exit {exit_code}",
+                severity="error",
+            ))
+        return TaskResult(
+            task_id=task.id, task_type=task.type, state=state,
+            confidence=1.0 if state == TaskState.SUCCESS else 0.0,
+            result={"output": output_text}, model_used="local-subprocess",
+            execution_time_seconds=duration, tokens_consumed=0, cost_usd=Decimal("0"),
+            started_at=datetime.now(), completed_at=datetime.now(),
+            errors=errors if errors else [],
+            metadata={
+                "worker_id": worker_id, "exit_code": exit_code,
+                "stdout_chars": len(stdout), "stderr_chars": len(stderr),
+                "command": command[:200],
+                "tool_call_count": 0, "round_trip_count": 0, "retry_count": 0,
+                "xml_leak_detected": False, "xml_leak_content_snippet": "",
+                "parallel_tool_calls_observed": False, "jsonl_write_failed": False,
+            },
+        )
+
+    # ── HTTP call helpers ─────────────────────────────────────────────
 
     def _do_post(self, body: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self.base_url}/chat/completions"
