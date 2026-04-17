@@ -1,6 +1,6 @@
 # Orchemist
 
-### Like Docker Compose for AI pipelines — define phases in YAML, the engine handles the rest.
+### Scenario-driven orchestration for multi-agent AI pipelines.
 
 [![CI](https://github.com/ToscanAI/orchemist/actions/workflows/ci.yml/badge.svg)](https://github.com/ToscanAI/orchemist/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/orchemist)](https://pypi.org/project/orchemist/)
@@ -10,11 +10,36 @@
 
 ---
 
+## Why Orchemist?
+
+AI agents hallucinate, drift off-topic across long chains, and produce work that looks correct until you test it. Orchemist solves this with three architectural principles:
+
+- **Ground-truth anchoring.** Every phase prompt is anchored to the original issue body. Agents cannot invent features that aren't in the spec.
+- **Adversarial quality gates.** Spec adversary, acceptance-test adversary, and code review phases catch weaknesses BEFORE they become implementation bugs.
+- **Acceptance-test-driven development.** Tests are written before implementation by a separate agent. The implementing agent must pass them — it cannot modify or bypass them.
+
+300+ pipeline runs across content, coding, research, and compliance workflows have validated this approach.
+
+---
+
 ## What Is It?
 
-**Orchemist** is a YAML-first orchestration engine for multi-agent AI pipelines.
+**Orchemist** is a platform with three layers:
 
-You declare your pipeline — phases, dependencies, model tiers, and acceptance criteria — in a single YAML file. The engine handles phase sequencing, dependency resolution, output forwarding, automatic retries, fallback executors, and scenario grading. No boilerplate. Works standalone with the Anthropic API or via OpenClaw sub-agent spawning. Git-native pipeline handoff for reliable multi-phase execution.
+1. **Orchestration Engine** (this repo) — a Python engine that sequences multi-phase AI pipelines from YAML templates. Handles phase transitions, retries, tool execution, cost tracking, and adversarial review loops.
+2. **Pipeline Templates** (`templates/`) — YAML definitions for coding, content, research, and compliance pipelines. The coding pipeline (`coding-pipeline-standard`) runs 11 phases: spec, behavioral contracts, adversary review, acceptance tests, implementation, test execution, code review, fixes, and final verification.
+3. **Orchemist IDE** ([ToscanAI/orchemist-ide](https://github.com/ToscanAI/orchemist-ide)) — a VS Code fork with a purpose-built Pipeline Explorer, live log streaming, and template editor for managing pipelines visually.
+
+You declare your pipeline in a single YAML file. The engine handles phase sequencing, dependency resolution, output forwarding, automatic retries, tool-calling, and scenario grading.
+
+### Execution modes
+
+| Mode | Backend | Status |
+|---|---|---|
+| **openclaw** | Claude sub-agents via OpenClaw gateway | Battle-tested (300+ runs) |
+| **openrouter** | Any model via OpenRouter (Anthropic, OpenAI, Google, etc.) | New — first successful end-to-end coding pipeline run 2026-04-17 |
+| **standalone** | Direct Anthropic API | Available for simple pipelines |
+| **dry-run** | Mock execution for template validation | Stable |
 
 > **Note:** The YAML below is simplified for illustration. Orchemist's template format is evolving to support an expanding range of workloads — from content pipelines to coding, research, compliance, and beyond. See [Template Authoring](docs/template-authoring.md) for the full schema and working examples.
 
@@ -263,13 +288,36 @@ This is a deliberate architectural choice: git provides immutability, diffing, a
 
 ---
 
+## Current Status
+
+Orchemist is in **active development (alpha)**. What works, what doesn't:
+
+| Area | Status |
+|---|---|
+| Coding pipeline (openclaw mode) | Battle-tested across 300+ runs on content, coding, research, compliance pipelines |
+| Coding pipeline (openrouter mode) | First successful end-to-end run 2026-04-17 — produced correct code with 32/32 acceptance tests passing |
+| Pipeline templates | `coding-pipeline-standard` (11 phases) and `coding-pipeline-skip-spec` stable; content and research templates available |
+| Web UI | Functional for template browsing, run monitoring, and pipeline launching |
+| Orchemist IDE | Phases 2-5 complete (shell scaffold, pipeline explorer, live log streaming, template editor); schema-driven launch form in progress |
+| OpenRouter tool calling | Shipped 2026-04-16 (PR #795) — 6 tools with path sandbox, retry, JSONL logging |
+| Cost optimization | In progress — command/acceptance_run phases being routed away from LLM (#798) |
+| Documentation | Partial — OpenRouter setup guide, getting started, template authoring available; end-to-end tutorial pending |
+| Community templates | Not yet — contributions welcome |
+
+Known limitations:
+- Spec adversary occasionally doesn't comply with first-line verdict format (pipeline compensates via retry loops at cost of extra rounds)
+- Cost reporting fallback overestimates by ~3x when OpenRouter doesn't return `usage.total_cost` (#801)
+- Bash tool sandbox is a UX guardrail, not a security boundary — production deployments should use OS-level isolation (firejail, containers)
+
+---
+
 ## Contributing
 
 Pull requests are welcome! Here's how to get started:
 
 ```bash
-git clone https://github.com/ToscanAI/orchestration-engine.git
-cd orchestration-engine
+git clone https://github.com/ToscanAI/orchemist.git
+cd orchemist
 pip install -e ".[dev]"
 pytest
 ```
