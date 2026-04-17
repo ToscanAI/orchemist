@@ -403,10 +403,47 @@ class TestConfiguration:
             assert request_url.startswith("https://my-proxy.com/v1/")
 
     def test_can_handle_returns_true_for_all_types(self):
-        """The executor can handle all task types."""
+        """The executor accepts all task types (fast-paths command types locally)."""
         executor = OpenRouterExecutor(api_key="sk-or-test")
         for task_type in TaskType:
             assert executor.can_handle(task_type) is True
+
+    def test_command_task_type_runs_locally_without_llm(self):
+        """COMMAND tasks run via subprocess, not LLM — zero tokens, zero cost."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        task = _make_task(prompt="unused", task_type=TaskType.COMMAND, disable_tools=False)
+        task.payload["command"] = "echo hello-from-local"
+        task.payload["working_dir"] = "/tmp"
+        result = executor.execute(task, model_tier="sonnet")
+        assert result.model_used == "local-subprocess"
+        assert result.tokens_consumed == 0
+        assert result.cost_usd == 0
+        assert "hello-from-local" in (result.result or {}).get("output", "")
+        assert result.metadata.get("exit_code") == 0
+
+    def test_command_task_type_nonzero_exit_returns_failed(self):
+        """COMMAND with non-zero exit → TaskState.FAILED + error details."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        task = _make_task(prompt="unused", task_type=TaskType.COMMAND, disable_tools=False)
+        task.payload["command"] = "exit 42"
+        task.payload["working_dir"] = "/tmp"
+        result = executor.execute(task, model_tier="sonnet")
+        assert result.state == TaskState.FAILED
+        assert result.model_used == "local-subprocess"
+        assert result.tokens_consumed == 0
+        assert result.metadata.get("exit_code") == 42
+
+    def test_acceptance_run_without_command_falls_through_to_llm(self):
+        """ACCEPTANCE_RUN with no command field falls through to the LLM path (not fast-pathed)."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        task = _make_task(prompt="test prompt", task_type=TaskType.ACCEPTANCE_RUN, disable_tools=True)
+        # No "command" key in payload → should NOT fast-path → uses LLM (disable_tools=True → single-shot)
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_url.return_value = _mock_urlopen(_mock_response(content="llm response"))
+            result = executor.execute(task, model_tier="sonnet")
+        assert result.model_used != "local-subprocess", (
+            "ACCEPTANCE_RUN without command should fall through to LLM, not fast-path"
+        )
 
     def test_configurable_timeout(self):
         """Given timeout_seconds, uses it for HTTP calls."""
