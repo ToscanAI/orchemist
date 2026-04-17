@@ -78,7 +78,7 @@ _THINKING_SUPPORTED_PREFIXES = (
 _FALLBACK_COST_PER_1K_TOKENS = 0.01
 
 # Tool-loop limits
-MAX_TOOL_ITERATIONS = 30
+MAX_TOOL_ITERATIONS = 100
 RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0)  # before retries 1, 2, 3
 
 # XML-leak detection pattern — model emitting Anthropic-style tool_use XML as text
