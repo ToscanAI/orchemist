@@ -1,0 +1,62 @@
+id: spec-review-dialogue
+name: "Spec Review (cross-model dialogue)"
+description: |
+  Single-phase pipeline demonstrating Track B of the Orchemist pivot:
+  a drafter ↔ reviewer dialogue across two different model providers,
+  iterating until the reviewer emits APPROVED or max_rounds is reached.
+
+  Drafter: Claude Opus (via OpenRouter).
+  Reviewer: Gemini 3.1 Pro (via local gemini CLI).
+
+  Input: a rough spec.  Output: a refined spec.
+author: "Toscan"
+version: "0.1.0"
+category: "code"
+tags: [dialogue, spec, cross-model, adversarial, prototype, issue-677]
+
+use_cases:
+  - "Refine an early-stage spec via cross-model adversarial review"
+  - "Demonstrate the Track B wedge — two providers, one phase boundary"
+
+config_schema:
+  type: object
+  required: [rough_spec]
+  properties:
+    rough_spec:
+      type: string
+      description: "Initial draft of the specification to be refined"
+
+example_input:
+  rough_spec: |
+    We need a CLI that lints YAML pipeline files and reports unused phases.
+
+phases:
+  - id: spec_review
+    name: "Spec review dialogue"
+    description: "Drafter proposes a refined spec; reviewer critiques until APPROVED."
+    type: dialogue
+    max_rounds: 4
+    convergence_signal: APPROVED
+    drafter:
+      executor: openrouter
+      model_tier: opus
+      thinking_level: medium
+      role: |
+        You are a senior software engineer producing implementation specs.
+        You write specs that are concrete, testable, and grounded in the
+        requirements — never vague, never trivially-satisfiable.
+    reviewer:
+      executor: gemini_cli
+      model: gemini-3.1-pro-preview
+      role: |
+        You are a principal architect performing adversarial review of
+        implementation specs.  Your job is to find weaknesses: vagueness,
+        trivially-satisfiable contracts, missing edge cases, implementation
+        leakage, divergence from the original requirement.  Be specific and
+        actionable.  When the spec is genuinely good, emit `APPROVED` on its
+        own line to terminate the dialogue.
+    prompt_template: |
+      Refine the following rough spec into an implementation-ready specification.
+
+      Rough spec:
+      {config[rough_spec]}
