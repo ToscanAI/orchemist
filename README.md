@@ -24,11 +24,12 @@ AI agents hallucinate, drift off-topic across long chains, and produce work that
 
 ## What Is It?
 
-**Orchemist** is a platform with three layers:
+**Orchemist** is a platform with four components:
 
 1. **Orchestration Engine** (this repo) — a Python engine that sequences multi-phase AI pipelines from YAML templates. Handles phase transitions, retries, tool execution, cost tracking, and adversarial review loops.
 2. **Pipeline Templates** (`templates/`) — YAML definitions for coding, content, research, and compliance pipelines. The coding pipeline (`coding-pipeline-standard`) runs 11 phases: spec, behavioral contracts, adversary review, acceptance tests, implementation, test execution, code review, fixes, and final verification.
-3. **Orchemist IDE** ([ToscanAI/orchemist-ide](https://github.com/ToscanAI/orchemist-ide)) — a VS Code fork with a purpose-built Pipeline Explorer, live log streaming, and template editor for managing pipelines visually.
+3. **Skills Pack** ([ToscanAI/orchemist-skills](https://github.com/ToscanAI/orchemist-skills)) — the coding pipeline repackaged as Claude Code `.claude/skills/` and `.claude/agents/`. Pure markdown, no Python runtime. Drop it into Claude Code and `/orchemist:run` walks the same 11-phase loop. Best on-ramp if you already use Claude Code.
+4. **Orchemist IDE** ([ToscanAI/orchemist-ide](https://github.com/ToscanAI/orchemist-ide)) — a VS Code fork with a purpose-built Pipeline Explorer, live log streaming, and template editor for managing pipelines visually.
 
 You declare your pipeline in a single YAML file. The engine handles phase sequencing, dependency resolution, output forwarding, automatic retries, tool-calling, and scenario grading.
 
@@ -233,27 +234,36 @@ orch health
 
 ## Installation
 
-### From PyPI
+Three install paths, ordered by setup cost. Most readers want **Path A** if they already use Claude Code.
+
+### Path A — Claude Code Skills Pack (no Python, ~1 minute)
+
+If you already have [Claude Code](https://claude.com/claude-code), the simplest way to try the Orchemist coding pipeline is the Skills Pack — pure markdown, no engine, no server, BYO model:
+
+```bash
+git clone https://github.com/ToscanAI/orchemist-skills.git
+cd orchemist-skills
+./install.sh                 # drops skills into ~/.claude/skills/ and ~/.claude/agents/
+claude                       # then: /orchemist:run examples/example-issue.md
+```
+
+Trades off: no web UI, no queue, no daemon, no multi-provider model selection. Use the engine (Path B / C) for those.
+
+### Path B — From PyPI (engine + CLI, ~5 minutes)
 
 ```bash
 pip install orchemist
+orch --help
+orch serve                   # local web UI at http://localhost:8000
 ```
 
-### From Source
+### Path C — From Source (development, ~10 minutes)
 
 ```bash
-# Development repo (latest)
-git clone https://github.com/ToscanAI/orchestration-engine.git
-# Or stable releases:
-# git clone https://github.com/connylazo/orchestration-engine.git
-cd orchestration-engine
+git clone https://github.com/ToscanAI/orchemist.git
+cd orchemist
 python3 -m venv .venv && source .venv/bin/activate
 pip install .
-```
-
-### Verify
-
-```bash
 orch --help
 ```
 
