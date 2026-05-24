@@ -12,6 +12,7 @@ import { listTemplates, ApiError } from '@/lib/api';
 import type { TemplateSummary } from '@/lib/types';
 import { TemplateCard } from '@/components/pipeline/TemplateCard';
 import { Button } from '@/components/ui/Button';
+import { HarnessShell } from '@/components/harness/HarnessShell';
 
 export default function TemplatesPage() {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
@@ -44,6 +45,11 @@ export default function TemplatesPage() {
   }, [templates, search]);
 
   return (
+    <HarnessShell
+      title="Pipeline templates · YAML source of truth"
+      screenIndex={2}
+      breadcrumb={[{ label: 'Fleet', href: '/' }, { label: 'Templates' }]}
+    >
     <div className="flex flex-col gap-6">
       <section>
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
@@ -111,5 +117,6 @@ export default function TemplatesPage() {
         </div>
       )}
     </div>
+    </HarnessShell>
   );
 }
