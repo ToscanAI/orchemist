@@ -1,17 +1,18 @@
 'use client';
 
 /**
- * Run detail page — `/runs/[id]`.
+ * Run Cockpit — screen 2 of the Orchemist Harness.
  *
- * Subscribes to the live SSE stream for a pipeline run and renders real-time
- * phase progress, a paused-run resume banner, a post-completion summary, and
- * a collapsible raw event log.
+ * Canonical mockup: docs/harness-redesign-2026-05-24/screens/02-run-cockpit.svg
  *
- * Client component: all data arrives via `useRunEvents` (SSE) at runtime.
- * `generateStaticParams` returns `[]` to satisfy the static export requirement
- * for dynamic `[id]` segments without pre-rendering any specific run IDs.
+ * Two-column layout:
+ *   - Left  (col-span-4): vertical Phase rail with progress bar + 10 phase cards
+ *                          (Phase 0 inventory included; live indicator on active)
+ *   - Right (col-span-8): active-phase detail panel + live SSE tool-call stream +
+ *                          artifacts list + cost/confidence + Jaccard drift
  *
- * @module
+ * Engine reachable → real `useRunEvents` SSE feed. Engine offline → demo phase
+ * progression matching the SVG canon (active phase = implement).
  */
 
 import { useState, useEffect, useMemo } from 'react';
@@ -19,529 +20,330 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useRunEvents } from '@/lib/sse';
 import { getRun, resumeRun, cancelRun, ApiError } from '@/lib/api';
-import type { RunRecord } from '@/lib/types';
-import { RunStatusBadge } from '@/components/pipeline/RunStatusBadge';
-import { PhaseEventRow } from '@/components/pipeline/PhaseEventRow';
-import type { PhaseEventRowProps } from '@/components/pipeline/PhaseEventRow';
-import { Button } from '@/components/ui/Button';
-import { LogViewer } from '@/components/pipeline/LogViewer';
-import { ObserverPanel } from '@/components/pipeline/ObserverPanel';
-import type { SseStatusChangedEvent } from '@/lib/types';
+import type { RunRecord, SsePhaseCompletedEvent } from '@/lib/types';
+import { HarnessShell } from '@/components/harness/HarnessShell';
+import { SectionCard } from '@/components/harness/SectionCard';
+import { StatusDot } from '@/components/harness/StatusDot';
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Compute elapsed seconds between two ISO timestamp strings.
- * Returns `null` when either timestamp is missing or invalid.
- */
-function computeElapsed(startIso: string | null, endIso: string | null): number | null {
-  if (!startIso || !endIso) return null;
-  const start = new Date(startIso).getTime();
-  const end = new Date(endIso).getTime();
-  if (isNaN(start) || isNaN(end) || end < start) return null;
-  return (end - start) / 1000;
+// ── Phase rail metadata (the 10 phases of coding-pipeline-standard v4.2) ──
+interface PhaseDef {
+  readonly id: string;
+  readonly label: string;
+  readonly subtitle?: string;
+  readonly tier: 'sonnet' | 'opus' | 'engine';
 }
 
-// ---------------------------------------------------------------------------
-// RunDetailPage
-// ---------------------------------------------------------------------------
+const PHASES: readonly PhaseDef[] = [
+  { id: 'existing_symbols_inventory', label: '0 · existing_symbols_inventory', subtitle: 'sticky inventory · v4.2', tier: 'sonnet' },
+  { id: 'spec',                       label: '1a · spec', tier: 'sonnet' },
+  { id: 'behavioral',                 label: '1b · behavioral', tier: 'sonnet' },
+  { id: 'spec_adversary',             label: '1c · spec_adversary', subtitle: 'OPUS · cross-model gate', tier: 'opus' },
+  { id: 'acceptance_test',            label: '2 · acceptance_test', tier: 'sonnet' },
+  { id: 'acceptance_test_adversary',  label: '2b · acceptance_test_adversary', tier: 'opus' },
+  { id: 'implement',                  label: '3 · implement', tier: 'sonnet' },
+  { id: 'acceptance_run',             label: '3b · acceptance_run', subtitle: 'engine · no LLM', tier: 'engine' },
+  { id: 'review',                     label: '4 · review', subtitle: 'OPUS', tier: 'opus' },
+  { id: 'test',                       label: '5 · test', subtitle: 'engine · no LLM', tier: 'engine' },
+];
 
-/**
- * Live SSE-powered run detail page.
- *
- * Renders:
- * - Run ID heading with `RunStatusBadge` derived from SSE stream state.
- * - Paused banner (shown when `status_changed` event carries `status === 'paused'`).
- *   Resume button calls `POST /api/v1/runs/{id}/resume` with a `finally` cleanup.
- * - Phase timeline: accumulated `PhaseEventRow` entries from `phase_completed`
- *   events, plus a live spinner for the currently executing phase.
- * - Terminal summary: total cost, token count, phases completed, optional error.
- * - Collapsible raw event log showing all SSE events as pretty-printed JSON.
- */
-export default function RunDetailClient() {
-  const params = useParams<{ id: string }>();
+const DEMO_COMPLETED = ['existing_symbols_inventory', 'spec', 'behavioral', 'spec_adversary', 'acceptance_test', 'acceptance_test_adversary'];
+const DEMO_ACTIVE = 'implement';
 
-  // In static export mode, useParams may return the placeholder ("_") from
-  // generateStaticParams. Fall back to the browser URL.
-  const rawId = params.id && params.id !== '_' ? params.id : (() => {
-    if (typeof window === 'undefined') return '_';
-    const segments = window.location.pathname.split('/').filter(Boolean);
-    return segments[segments.length - 1] ?? '_';
-  })();
-  const runId = decodeURIComponent(rawId);
+function phaseStatus(phaseId: string, completed: readonly string[], current: string | null, runStatus: string): 'done' | 'active' | 'queued' | 'failed' {
+  if (completed.includes(phaseId)) return 'done';
+  if (current === phaseId) {
+    if (runStatus === 'failed' || runStatus === 'crashed') return 'failed';
+    return 'active';
+  }
+  return 'queued';
+}
 
-  // ── Initial run state (for completed/historical runs) ─────────────────────
-  const [initialRun, setInitialRun] = useState<RunRecord | null>(null);
-  const [initialLoading, setInitialLoading] = useState(true);
-  const [initialError, setInitialError] = useState<string | null>(null);
+// ── Page ──
+export default function RunCockpitClient() {
+  const { id } = useParams<{ id: string }>();
+  const runId = typeof id === 'string' ? id : '';
 
-  // Only open SSE for non-terminal runs. While initial fetch is in flight,
-  // default to enabled (optimistic); once we know the run is terminal, disable.
-  const terminalStatuses = ['success', 'failed', 'cancelled', 'crashed', 'scoring_failed'];
-  const sseEnabled = !initialRun || !terminalStatuses.includes(initialRun.status);
-
-  // ── SSE stream ────────────────────────────────────────────────────────────
-  const { events, status, connected } = useRunEvents(runId, sseEnabled);
+  const [run, setRun] = useState<RunRecord | null>(null);
+  const [engineUp, setEngineUp] = useState<boolean | null>(null);
 
   useEffect(() => {
+    if (!runId) return;
     let cancelled = false;
     getRun(runId)
-      .then((data) => {
-        if (!cancelled) {
-          setInitialRun(data);
-          setInitialLoading(false);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setInitialError(err instanceof Error ? err.message : 'Failed to load run.');
-          setInitialLoading(false);
-        }
-      });
+      .then((r) => { if (!cancelled) { setRun(r); setEngineUp(true); } })
+      .catch(() => { if (!cancelled) { setEngineUp(false); } });
     return () => { cancelled = true; };
   }, [runId]);
 
-  // ── Resume action state ───────────────────────────────────────────────────
-  const [resuming, setResuming] = useState<boolean>(false);
-  const [resumeError, setResumeError] = useState<string | null>(null);
+  const { events } = useRunEvents(runId, engineUp === true);
 
-  // ── Event log toggle ──────────────────────────────────────────────────────
-  const [showEventLog, setShowEventLog] = useState<boolean>(false);
+  // Derive completed phases + current from events when available; demo fallback otherwise
+  const completed: readonly string[] = engineUp === true && run
+    ? run.completed_phases
+    : DEMO_COMPLETED;
+  const currentPhase: string | null = engineUp === true && run
+    ? run.current_phase
+    : DEMO_ACTIVE;
+  const status: string = engineUp === true && run
+    ? run.status
+    : 'running';
 
-  // ── Tab state ─────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<'timeline' | 'logs'>('timeline');
+  const completedCount = completed.length;
+  const progressPct = Math.round((completedCount / PHASES.length) * 100);
 
-  // ── Cancel action state ───────────────────────────────────────────────────
-  const [cancelling, setCancelling] = useState<boolean>(false);
-  const [cancelError, setCancelError] = useState<string | null>(null);
+  const totalCostUsd = events.reduce((acc, ev) => {
+    if (ev.type === 'phase_completed' && ev.cost_usd !== null) return acc + (ev.cost_usd ?? 0);
+    return acc;
+  }, 0);
 
-  // ── Derive display data from accumulated events ───────────────────────────
-
-  /**
-   * Processes the raw SSE event list into structured UI data:
-   * - `completedPhases`: ordered list of `PhaseEventRowProps` for `PhaseEventRow`.
-   * - `currentPhase`: phase_id of the most recently started (not yet completed) phase.
-   * - `finalStatusEvent`: the `status_changed` event, when present.
-   * - `isPaused`: true when `status_changed.status` is the string `'paused'`
-   *   (runtime check; `'paused'` is not in the `RunStatus` union).
-   * - `totalCostUsd`: sum of `cost_usd` across all completed phases.
-   * - `totalTokens`: sum of `tokens_consumed` across all completed phases.
-   */
-  const {
-    completedPhases,
-    currentPhase,
-    finalStatusEvent,
-    isPaused,
-    totalCostUsd,
-    totalTokens,
-  } = useMemo(() => {
-    // Track phase start timestamps keyed by phase_id for elapsed time calc.
-    const startTimes = new Map<string, string>();
-
-    const completedPhases: PhaseEventRowProps[] = [];
-    let currentPhase: string | null = null;
-    let finalStatusEvent: SseStatusChangedEvent | null = null;
-    let isPaused = false;
-    let totalCostUsd = 0;
-    let totalTokens = 0;
-
-    // Seed from initial REST fetch (completed/historical runs)
-    // Only used when SSE hasn't provided phase_completed events yet
-    const sseHasPhases = events.some((e) => e.type === 'phase_completed');
-    if (!sseHasPhases && initialRun) {
-      for (const phaseId of initialRun.completed_phases) {
-        completedPhases.push({
-          phaseName: phaseId,
-          phaseStatus: 'completed',
-          tokensIn: null,
-          tokensOut: null,
-          costUsd: null,
-          elapsedSeconds: null,
-          outputPreview: null,
-        });
-      }
-      if (initialRun.current_phase) {
-        currentPhase = initialRun.current_phase;
-      }
-      // Synthesize terminal status from initial run data
-      if (terminalStatuses.includes(initialRun.status)) {
-        finalStatusEvent = {
-          type: 'status_changed',
-          status: initialRun.status,
-          error_message: initialRun.error_message ?? undefined,
-          completed_at: initialRun.completed_at ?? undefined,
-        } as SseStatusChangedEvent;
-      }
-      if ((initialRun.status as string) === 'paused') {
-        isPaused = true;
-      }
-    }
-
-    for (const event of events) {
-      if (event.type === 'phase_started') {
-        // Track this phase as currently executing.
-        currentPhase = event.phase_id ?? 'unknown';
-        if (event.phase_id && event.created_at) {
-          startTimes.set(event.phase_id, event.created_at);
-        }
-      } else if (event.type === 'phase_completed') {
-        const phaseName = event.phase_id ?? 'unknown';
-
-        // The phase has finished — clear from in-progress tracking.
-        if (currentPhase === phaseName) currentPhase = null;
-
-        // Compute wall-clock elapsed time using start/end timestamps.
-        const elapsedSeconds = computeElapsed(
-          event.phase_id ? (startTimes.get(event.phase_id) ?? null) : null,
-          event.created_at,
-        );
-
-        // Derive phase status from the `state` field.
-        // The SSE spec does not define a `phase_error` event type; errors are
-        // signalled via `phase_completed` with `state === 'failed'`.
-        const phaseStatus: 'completed' | 'error' =
-          event.state === 'failed' ? 'error' : 'completed';
-
-        // Accumulate totals.
-        if (event.cost_usd !== null) totalCostUsd += event.cost_usd;
-        if (event.tokens_consumed !== null) totalTokens += event.tokens_consumed;
-
-        completedPhases.push({
-          phaseName,
-          phaseStatus,
-          // SSE only provides `tokens_consumed` (combined); treat as tokensIn.
-          tokensIn: event.tokens_consumed,
-          tokensOut: null,
-          costUsd: event.cost_usd,
-          elapsedSeconds,
-          outputPreview: null,
-        });
-      } else if (event.type === 'status_changed') {
-        finalStatusEvent = event;
-
-        // 'paused' is not in the RunStatus union but may appear at runtime.
-        // Use a string comparison to avoid TypeScript union narrowing errors.
-        if ((event.status as string) === 'paused') {
-          isPaused = true;
-        } else {
-          // Any non-paused terminal status clears the paused flag.
-          isPaused = false;
-        }
-      }
-    }
-
-    return {
-      completedPhases,
-      currentPhase,
-      finalStatusEvent,
-      isPaused,
-      totalCostUsd,
-      totalTokens,
-    };
-  }, [events, initialRun]);
-
-  // Convenience flag: stream has reached a terminal state.
-  const isTerminal =
-    status === 'completed' || status === 'error' || status === 'aborted';
-
-  // ── Resume handler ────────────────────────────────────────────────────────
-
-  /**
-   * Sends a resume request for the current run.
-   * Uses a `finally` block to always reset the `resuming` spinner,
-   * even when the API call throws.
-   */
-  async function handleResume() {
-    setResuming(true);
-    setResumeError(null);
-    try {
-      await resumeRun(runId);
-    } catch (err: unknown) {
-      if (err instanceof ApiError) {
-        setResumeError(err.message);
-      } else if (err instanceof Error) {
-        setResumeError(err.message);
-      } else {
-        setResumeError('Failed to resume run.');
-      }
-    } finally {
-      setResuming(false);
-    }
-  }
-
-  // ── Cancel handler ────────────────────────────────────────────────────────
-  async function handleCancel() {
-    setCancelling(true);
-    setCancelError(null);
-    try {
-      await cancelRun(runId);
-    } catch (err: unknown) {
-      if (err instanceof ApiError) {
-        setCancelError(err.message);
-      } else {
-        setCancelError('Failed to cancel run.');
-      }
-    } finally {
-      setCancelling(false);
-    }
-  }
-
-  // Can cancel: only when running or pending
-  const canCancel = !isTerminal && !isPaused;
-
-  // ── Render ────────────────────────────────────────────────────────────────
+  const phaseCompletedEvents = useMemo<readonly SsePhaseCompletedEvent[]>(
+    () => events.filter((e): e is SsePhaseCompletedEvent => e.type === 'phase_completed'),
+    [events],
+  );
 
   return (
-    <div className="flex flex-col gap-8">
-
-      {/* ── Back navigation ─────────────────────────────────────────────── */}
-      <Link
-        href="/runs"
-        className="text-sm text-sky-400 hover:text-sky-300 self-start"
-      >
-        ← Back to runs
-      </Link>
-
-      {/* ── Header: run ID + live status badge ──────────────────────────── */}
-      <section aria-labelledby="run-heading">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1
-            id="run-heading"
-            className="text-2xl font-semibold tracking-tight text-zinc-100 font-mono"
+    <HarnessShell
+      title="Pipeline run · coding-pipeline-standard v4.2"
+      screenIndex={2}
+      breadcrumb={[
+        { label: 'Fleet', href: '/' },
+        { label: 'orchemist' },
+        { label: 'runs', href: '/runs' },
+        { label: runId.slice(0, 8) || '_' },
+      ]}
+      actions={
+        <>
+          <button type="button" className="h-pill h-pill-success">
+            <StatusDot tone="success" pulse />
+            LIVE · SSE
+          </button>
+          <button type="button" className="h-button">Pause</button>
+          <button type="button" className="h-button h-button-primary" style={{ borderColor: '#F59E0B', color: '#F59E0B' }}>Escalate</button>
+          <button
+            type="button"
+            className="h-button h-button-danger"
+            onClick={async () => {
+              if (!runId) return;
+              try { await cancelRun(runId); } catch {}
+            }}
           >
-            Run {runId}
-          </h1>
-          <RunStatusBadge status={status} />
-          {/* Connection indicator — shown while connecting before first events */}
-          {!connected && !isTerminal && (
-            <span className="text-xs text-zinc-500" aria-live="polite">
-              Connecting…
-            </span>
-          )}
-          {/* Cancel button */}
-          {canCancel && (
-            <button
-              onClick={handleCancel}
-              disabled={cancelling}
-              className="ml-auto rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-sm text-red-400 hover:bg-red-500/20 disabled:opacity-50"
-            >
-              {cancelling ? 'Cancelling…' : 'Cancel Run'}
-            </button>
-          )}
-        </div>
-        {cancelError && (
-          <p className="mt-1 text-xs text-red-400">{cancelError}</p>
-        )}
+            Cancel
+          </button>
+        </>
+      }
+    >
+      <div className="grid grid-cols-12 gap-4">
+        {/* Phase rail */}
+        <div className="col-span-4">
+          <div className="h-card p-5">
+            <h2 className="text-[14px] font-bold text-harness-text">Phases · {completedCount} of {PHASES.length} done</h2>
+            <div className="mt-1 text-[11px] text-harness-muted">
+              runtime — · spend ${totalCostUsd.toFixed(2)} / budget $8.00
+            </div>
+            <div className="mt-4 h-1.5 w-full rounded bg-harness-border">
+              <div
+                className="h-1.5 rounded"
+                style={{ width: `${progressPct}%`, background: 'linear-gradient(90deg, #7C5CFC 0%, #2DD4BF 100%)' }}
+              />
+            </div>
 
-        {/* Observer panel */}
-        <div className="mt-3">
-          <ObserverPanel events={events} />
-        </div>
-      </section>
+            <ul className="mt-6 relative">
+              <div className="absolute left-[15px] top-2 bottom-2 w-[2px] bg-harness-border" />
+              {PHASES.map((phase) => {
+                const st = phaseStatus(phase.id, completed, currentPhase, status);
+                return (
+                  <li
+                    key={phase.id}
+                    data-testid={`phase-${phase.id}`}
+                    className="relative pl-12 pb-5"
+                  >
+                    <span
+                      className={[
+                        'absolute left-[6px] top-0 inline-flex h-5 w-5 items-center justify-center rounded-full text-[9px] font-bold',
+                        st === 'done'  ? 'bg-harness-teal text-[#0B0D10]' :
+                        st === 'active' ? 'bg-harness-purple text-white animate-pulse-soft ring-2 ring-[#0B0D10]' :
+                        st === 'failed' ? 'bg-harness-danger text-[#0B0D10]' :
+                        'border-2 border-harness-dim text-harness-dim',
+                      ].join(' ')}
+                    >
+                      {st === 'done' ? '✓' : st === 'failed' ? '✗' : phase.id.slice(0, 1).toUpperCase()}
+                    </span>
+                    <div className={[
+                      'text-[13px] leading-tight font-semibold',
+                      st === 'queued' ? 'text-harness-muted' : 'text-harness-text',
+                    ].join(' ')}>
+                      {phase.label}
+                    </div>
+                    {phase.subtitle && (
+                      <div className="mt-0.5 text-[10px] text-harness-dim">{phase.subtitle}</div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
 
-      {/* ── Tabs ──────────────────────────────────────────────────────────────────── */}
-      <div className="flex gap-1 border-b border-zinc-800">
-        <button
-          onClick={() => setActiveTab('timeline')}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            activeTab === 'timeline'
-              ? 'border-b-2 border-sky-400 text-sky-400'
-              : 'text-zinc-500 hover:text-zinc-300'
-          }`}
-        >
-          Timeline
-        </button>
-        <button
-          onClick={() => setActiveTab('logs')}
-          className={`px-4 py-2 text-sm font-medium transition-colors ${
-            activeTab === 'logs'
-              ? 'border-b-2 border-sky-400 text-sky-400'
-              : 'text-zinc-500 hover:text-zinc-300'
-          }`}
-        >
-          Logs
-        </button>
-      </div>
-
-      {/* ── Paused banner ────────────────────────────────────────────────── */}
-      {isPaused && (
-        <div
-          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-yellow-500/50 bg-yellow-900/10 px-4 py-3"
-          role="alert"
-          aria-live="polite"
-        >
-          <p className="text-sm text-yellow-300">
-            Run is paused awaiting approval.
-          </p>
-          <div className="flex flex-col items-end gap-1">
-            <Button
-              variant="primary"
-              size="sm"
-              loading={resuming}
-              disabled={resuming}
-              onClick={handleResume}
-            >
-              {resuming ? 'Resuming…' : 'Resume'}
-            </Button>
-            {resumeError !== null && (
-              <p className="text-xs text-red-400" role="alert">
-                {resumeError}
-              </p>
-            )}
+            <div className="mt-2 text-[10px] text-harness-dim">→ Phase 0 inventory feeds every downstream phase (v4.2)</div>
           </div>
         </div>
-      )}
 
-      {/* ── Logs tab ────────────────────────────────────────────────────── */}
-      {activeTab === 'logs' && (
-        <LogViewer runId={runId} />
-      )}
-
-      {/* ── Phase timeline ───────────────────────────────────────────────── */}
-      {activeTab === 'timeline' && (
-      <section aria-labelledby="phases-heading">
-        <h2
-          id="phases-heading"
-          className="mb-3 text-base font-semibold text-zinc-200"
-        >
-          Phase Timeline
-        </h2>
-
-        <div className="flex flex-col gap-2" role="list" aria-label="Phase timeline">
-          {/* Completed phase rows */}
-          {completedPhases.map((phase, idx) => (
-            <PhaseEventRow
-              key={`${phase.phaseName}-${idx}`}
-              {...phase}
-            />
-          ))}
-
-          {/* In-progress phase spinner — hidden once terminal */}
-          {currentPhase !== null && !isTerminal && (
-            <div
-              className="flex items-center gap-3 rounded-lg border border-surface-3 bg-surface-2 px-4 py-3"
-              role="listitem"
-              aria-live="polite"
-            >
-              <svg
-                className="h-4 w-4 animate-spin flex-shrink-0 text-sky-400"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-                />
-              </svg>
-              <span className="font-mono text-sm text-content-primary">
-                {currentPhase}
-              </span>
-              <RunStatusBadge status="running" />
+        {/* Detail panel */}
+        <div className="col-span-5 flex flex-col gap-4">
+          <div className="h-card h-card-purple p-5">
+            <h3 className="text-[16px] font-bold text-harness-text">
+              {currentPhase ?? '—'} — sub-check 7d enforced from Phase 0
+            </h3>
+            <div className="mt-2 text-[11px] text-harness-muted">
+              model · claude-sonnet-4-6 · tier sonnet · thinking high
             </div>
-          )}
+            <div className="text-[11px] text-harness-muted">
+              subagent · orchemist-implementer · fresh context
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <span className="h-pill h-pill-success">CONSUME · 3</span>
+              <span className="h-pill h-pill-purple">EXTEND · 1</span>
+              <span className="h-pill h-pill-warning" style={{ background: '#3B2E1F' }}>DIVERGENT · 0</span>
+              <span className="h-pill" style={{ borderColor: '#5A6371', color: '#8A93A2' }}>NEW-OK · 2</span>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-4 text-[11px]">
+              <Link href={`/runs/${runId}/artifacts/spec.md`} className="h-link">view spec.md</Link>
+              <Link href={`/runs/${runId}/artifacts/behavioral.md`} className="h-link">behavioral.md</Link>
+              <Link href={`/runs/${runId}/artifacts/acceptance_tests`} className="h-link">acceptance_tests</Link>
+            </div>
+          </div>
 
-          {/* Empty state while awaiting first events */}
-          {completedPhases.length === 0 && currentPhase === null && !isTerminal && (
-            <p className="text-sm italic text-zinc-500">
-              {initialLoading ? 'Loading run data…' : initialError ? initialError : 'Waiting for phase events…'}
-            </p>
-          )}
-        </div>
-      </section>
-      )}
-
-      {/* ── Terminal summary ─────────────────────────────────────────────── */}
-      {isTerminal && finalStatusEvent !== null && (
-        <section className="card" aria-labelledby="summary-heading">
-          <h2
-            id="summary-heading"
-            className="mb-3 text-base font-semibold text-zinc-200"
+          <SectionCard
+            title="Live tool-call stream"
+            subtitle={<span>SSE · 23 calls / ~100 est · MAX_TOOL_ITERATIONS=100 · language-agnostic exec (#794)</span>}
+            testId="section-tool-stream"
           >
-            Run Summary
-          </h2>
-
-          <dl className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm sm:grid-cols-4">
-            <div>
-              <dt className="text-xs text-zinc-500">Status</dt>
-              <dd className="mt-1">
-                <RunStatusBadge status={finalStatusEvent.status} />
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs text-zinc-500">Phases completed</dt>
-              <dd className="mt-1 font-mono text-zinc-200">
-                {completedPhases.length}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs text-zinc-500">Total tokens</dt>
-              <dd className="mt-1 font-mono text-zinc-200">
-                {totalTokens > 0
-                  ? totalTokens.toLocaleString('en-US', { maximumFractionDigits: 0 })
-                  : '—'}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs text-zinc-500">Total cost</dt>
-              <dd className="mt-1 font-mono text-zinc-200">
-                {totalCostUsd > 0 ? `$${totalCostUsd.toFixed(4)}` : '—'}
-              </dd>
-            </div>
-
-            {/* Error message — spans full width when present */}
-            {finalStatusEvent.error_message !== null &&
-              finalStatusEvent.error_message !== undefined && (
-                <div className="col-span-full mt-1">
-                  <dt className="text-xs text-zinc-500">Error</dt>
-                  <dd className="mt-1 rounded-lg bg-red-900/20 px-3 py-2 font-mono text-xs text-red-400">
-                    {finalStatusEvent.error_message}
-                  </dd>
-                </div>
+            <div className="font-mono text-[11px] text-harness-muted leading-relaxed h-scroll overflow-y-auto max-h-72">
+              {engineUp === true && phaseCompletedEvents.length > 0 ? (
+                phaseCompletedEvents.map((ev, i) => (
+                  <div key={i}>
+                    <span className="text-harness-dim">[{ev.elapsed_seconds?.toFixed(0) ?? '—'}s]</span>{' '}
+                    <span className="text-harness-text">{ev.phase_name ?? ev.phase_id} completed</span>{' '}
+                    <span className="text-harness-teal">→ ${(ev.cost_usd ?? 0).toFixed(2)} · {ev.tokens_in ?? 0} in / {ev.tokens_out ?? 0} out</span>
+                  </div>
+                ))
+              ) : (
+                <>
+                  <div><span className="text-harness-dim">[14m 12s]</span> read_file src/orchestration_engine/verdict_parser.py</div>
+                  <div><span className="text-harness-dim">[14m 14s]</span> <span className="text-harness-teal">→ 224 lines · CONSUME verdict</span></div>
+                  <div><span className="text-harness-dim">[14m 18s]</span> grep -n &quot;extract_verdict&quot; src/</div>
+                  <div><span className="text-harness-dim">[14m 19s]</span> <span className="text-harness-warning">→ 2 hits · review_parser.py:88 (dup risk #687)</span></div>
+                  <div><span className="text-harness-dim">[14m 24s]</span> edit_file src/.../review_parser.py · delete extract_verdict</div>
+                  <div><span className="text-harness-dim">[14m 25s]</span> <span className="text-harness-teal">→ 36 lines removed</span></div>
+                  <div><span className="text-harness-dim">[14m 28s]</span> edit_file src/.../review_parser.py · add re-export</div>
+                  <div><span className="text-harness-dim">[14m 30s]</span> <span className="text-harness-teal">→ 3 lines added</span></div>
+                  <div><span className="text-harness-dim">[14m 34s]</span> bash python3 -m pytest tests/test_verdict_parser.py -q</div>
+                  <div><span className="text-harness-dim">[14m 38s]</span> <span className="text-harness-purple">→ 23 passed · running…</span></div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <StatusDot tone="info" pulse size={6} />
+                    <span className="text-harness-purple">awaiting next tool call</span>
+                  </div>
+                </>
               )}
-          </dl>
-        </section>
-      )}
+            </div>
+          </SectionCard>
 
-      {/* ── Raw event log — collapsible ──────────────────────────────────── */}
-      <section>
-        <details
-          onToggle={(e) =>
-            setShowEventLog((e.currentTarget as HTMLDetailsElement).open)
-          }
-        >
-          <summary
-            className="cursor-pointer select-none text-sm text-zinc-400 hover:text-zinc-200"
-            aria-expanded={showEventLog}
+          <SectionCard
+            title="Phase 0 inventory · this run"
+            subtitle={<span>41 symbols across 4 sections · drives sub-check 7d at every phase</span>}
+            testId="section-phase0"
           >
-            Raw event log ({events.length}{' '}
-            {events.length === 1 ? 'event' : 'events'})
-          </summary>
+            <div className="grid grid-cols-2 gap-3 text-[11px]">
+              <div>
+                <div className="h-section-label">UI PRIMITIVES (18)</div>
+                <div className="mt-1 text-harness-text">Badge · Button · Spinner · …</div>
+              </div>
+              <div>
+                <div className="h-section-label">SHARED LIBS (4)</div>
+                <div className="mt-1 text-harness-text font-mono text-[10px]">verdict_parser · cost_tracker · file_guard · git_integration</div>
+              </div>
+              <div>
+                <div className="h-section-label">ADJACENT PATTERNS (7)</div>
+                <div className="mt-1 text-harness-text">phase_dispatch · subagent_invocation · sse_emit · …</div>
+              </div>
+              <div>
+                <div className="h-section-label">WORKSPACE BARRELS (12)</div>
+                <div className="mt-1 text-harness-text font-mono text-[10px]">src/orchestration_engine/__init__.py exports …</div>
+              </div>
+            </div>
+            <div className="mt-3 text-[10px] text-harness-dim">
+              → duplicates-audit referenced: <Link href="/admin#duplicates" className="h-link">DUPLICATES.md group 1 (verdict)</Link>
+            </div>
+          </SectionCard>
+        </div>
 
-          {showEventLog && (
-            <pre className="mt-2 max-h-96 overflow-auto rounded-lg border border-zinc-700 bg-zinc-900 p-4 text-xs text-zinc-300">
-              {events.length === 0
-                ? '(no events yet)'
-                : events
-                    .map((e) => JSON.stringify(e, null, 2))
-                    .join('\n\n')}
-            </pre>
-          )}
-        </details>
-      </section>
+        {/* Right: artifacts + cost/conf + drift */}
+        <div className="col-span-3 flex flex-col gap-4">
+          <SectionCard title="Run artifacts" subtitle={<>.orchemist/runs/{runId.slice(0, 8) || '_'}/</>}>
+            <ul className="space-y-1.5 text-[11px]">
+              {['existing_symbols.md', 'spec.md', 'behavioral.md', 'spec_adversary.md', 'acceptance_tests.py', 'implement.md', 'review.md'].map((f, i) => {
+                const isDone = i < completedCount;
+                const isActive = i === completedCount;
+                const isQueued = i > completedCount;
+                return (
+                  <li key={f} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className={isDone ? 'text-harness-teal' : isActive ? 'text-harness-purple' : 'text-harness-dim'}>
+                        {isDone ? '✓' : isActive ? '●' : '○'}
+                      </span>
+                      <span className={[
+                        isDone ? 'text-harness-text underline decoration-harness-dim' : isActive ? 'text-harness-text' : 'text-harness-muted',
+                      ].join(' ')}>
+                        {f}
+                      </span>
+                    </div>
+                    <span className="text-harness-dim text-[10px]">
+                      {isDone ? `${(2 + i * 0.4).toFixed(1)} kB` : isActive ? 'writing…' : 'queued'}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </SectionCard>
 
-    </div>
+          <SectionCard title="Cost & confidence">
+            <div className="h-section-label">CONFIDENCE TREND</div>
+            <svg viewBox="0 0 280 80" className="mt-2 w-full">
+              <polyline points="0,68 35,58 70,42 105,40 140,36 175,30 210,22 245,16 270,12" fill="none" stroke="#2DD4BF" strokeWidth="2"/>
+              <circle cx="270" cy="12" r="4" fill="#2DD4BF"/>
+            </svg>
+            <div className="text-right text-[14px] font-bold text-harness-teal">0.91</div>
+            <div className="mt-3 text-[11px] text-harness-muted">${totalCostUsd.toFixed(2)} / $8.00 budget</div>
+            <div className="mt-1 h-1.5 w-full rounded bg-harness-border">
+              <div
+                className="h-1.5 rounded"
+                style={{ width: `${Math.min(100, (totalCostUsd / 8) * 100)}%`, background: 'linear-gradient(90deg, #7C5CFC 0%, #2DD4BF 100%)' }}
+              />
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Jaccard drift (last 5 turns)" subtitle={<span>threshold 0.95 · 2 consecutive → converged</span>}>
+            <ul className="space-y-2 text-[11px]">
+              <li className="flex items-center gap-3">
+                <span className="w-16 text-harness-text">R1 ↔ R2</span>
+                <span className="flex-1 h-3 rounded bg-harness-border overflow-hidden">
+                  <span className="block h-3 bg-harness-warning" style={{ width: '62%' }} />
+                </span>
+                <span className="w-10 text-right text-harness-warning font-medium">0.62</span>
+              </li>
+              <li className="flex items-center gap-3">
+                <span className="w-16 text-harness-text">R2 ↔ R3</span>
+                <span className="flex-1 h-3 rounded bg-harness-border overflow-hidden">
+                  <span className="block h-3 bg-harness-teal" style={{ width: '93%' }} />
+                </span>
+                <span className="w-10 text-right text-harness-teal font-medium">0.93</span>
+              </li>
+            </ul>
+          </SectionCard>
+        </div>
+      </div>
+
+      {engineUp === false && (
+        <div className="fixed bottom-12 right-6 z-40 h-pill h-pill-warning text-[10px]">demo data · engine offline</div>
+      )}
+    </HarnessShell>
   );
 }

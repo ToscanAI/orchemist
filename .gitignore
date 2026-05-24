@@ -60,6 +60,9 @@ input-intent-*.json
 frontend/node_modules/
 frontend/.next/
 frontend/out/
+frontend/test-results/
+frontend/playwright-report/
+frontend/playwright/.cache/
 .claude/
 .orch-daemon.log
 

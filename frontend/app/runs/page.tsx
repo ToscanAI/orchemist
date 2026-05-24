@@ -15,6 +15,7 @@ import { useRouter } from 'next/navigation';
 import { listRuns, ApiError } from '@/lib/api';
 import type { RunRecord, RunStatus, RunsListResponse, ListRunsParams } from '@/lib/types';
 import { RunStatusBadge } from '@/components/pipeline/RunStatusBadge';
+import { HarnessShell } from '@/components/harness/HarnessShell';
 
 const PAGE_SIZE = 20;
 
@@ -112,10 +113,15 @@ export default function RunsPage() {
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
   return (
-    <div>
+    <HarnessShell
+      title="All pipeline runs"
+      screenIndex={2}
+      breadcrumb={[{ label: 'Fleet', href: '/' }, { label: 'All runs' }]}
+    >
+      <div>
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-zinc-100">Pipeline Runs</h1>
-        <span className="text-sm text-zinc-500">{total} total</span>
+        <h1 className="text-[14px] font-semibold text-harness-text">Pipeline Runs</h1>
+        <span className="text-[12px] text-harness-muted">{total} total</span>
       </div>
 
       {/* Filters */}
@@ -237,6 +243,7 @@ export default function RunsPage() {
           </button>
         </div>
       )}
-    </div>
+      </div>
+    </HarnessShell>
   );
 }

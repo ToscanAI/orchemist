@@ -3,7 +3,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* CSS custom properties — design system baseline */
+/* ─── Design system baseline (legacy palette — kept) ──────────────────────── */
 :root {
   /* Surface */
   --surface-0: #09090b;
@@ -17,7 +17,7 @@
   --content-secondary: #a1a1aa;
   --content-tertiary: #71717a;
 
-  /* Brand */
+  /* Legacy brand (sky) */
   --brand: #0ea5e9;
   --brand-hover: #38bdf8;
 
@@ -33,10 +33,27 @@
   --border-strong: #52525b;
 }
 
+/* ─── Harness palette (canonical — matches SVG mockups) ───────────────────── */
+:root {
+  --h-bg: #0b0d10;
+  --h-surface: #14171c;
+  --h-surface-2: #1b1f26;
+  --h-surface-3: #161a21;
+  --h-border: #20242c;
+  --h-text: #e8ecf3;
+  --h-muted: #8a93a2;
+  --h-dim: #5a6371;
+  --h-purple: #7c5cfc;
+  --h-teal: #2dd4bf;
+  --h-warning: #f59e0b;
+  --h-danger: #ef4444;
+}
+
 /* Base reset — dark theme first */
 html,
 body {
-  @apply bg-surface-1 text-content-primary;
+  background-color: var(--h-bg);
+  color: var(--h-text);
   font-family: var(--font-geist-sans), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -44,60 +61,138 @@ body {
 
 /* Focus ring — consistent across interactive elements */
 :focus-visible {
-  @apply outline-none ring-2 ring-brand-500 ring-offset-2 ring-offset-surface-1;
+  outline: none;
+  box-shadow: 0 0 0 2px var(--h-bg), 0 0 0 4px var(--h-purple);
 }
 
-/* Utility layers */
+/* ─── Utility layers ──────────────────────────────────────────────────────── */
 @layer utilities {
-  /* Text color shortcuts */
+  /* Legacy text shortcuts */
   .text-primary { @apply text-content-primary; }
   .text-secondary { @apply text-content-secondary; }
   .text-tertiary { @apply text-content-tertiary; }
 
-  /* Surface shortcuts */
   .bg-surface-0 { background-color: var(--surface-0); }
   .bg-surface-1 { background-color: var(--surface-1); }
   .bg-surface-2 { background-color: var(--surface-2); }
   .bg-surface-3 { background-color: var(--surface-3); }
 
-  /* Border shortcuts */
   .border-subtle { border-color: var(--border-subtle); }
   .border-default { border-color: var(--border-default); }
   .border-strong { border-color: var(--border-strong); }
+
+  /* Harness scrollbar */
+  .h-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+  .h-scroll::-webkit-scrollbar-track { background: var(--h-surface); }
+  .h-scroll::-webkit-scrollbar-thumb { background: var(--h-border); border-radius: 4px; }
+  .h-scroll::-webkit-scrollbar-thumb:hover { background: var(--h-dim); }
 }
 
+/* ─── Component layer ─────────────────────────────────────────────────────── */
 @layer components {
-  /* Status badges */
+  /* Legacy badges (kept for backward compatibility) */
   .badge {
     @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
   }
-  .badge-success {
-    @apply badge bg-green-900/30 text-green-400 ring-1 ring-green-500/30;
-  }
-  .badge-warning {
-    @apply badge bg-amber-900/30 text-amber-400 ring-1 ring-amber-500/30;
-  }
-  .badge-error {
-    @apply badge bg-red-900/30 text-red-400 ring-1 ring-red-500/30;
-  }
-  .badge-info {
-    @apply badge bg-blue-900/30 text-blue-400 ring-1 ring-blue-500/30;
-  }
-  .badge-neutral {
-    @apply badge bg-zinc-800 text-zinc-400 ring-1 ring-zinc-600/30;
-  }
+  .badge-success { @apply badge bg-green-900/30 text-green-400 ring-1 ring-green-500/30; }
+  .badge-warning { @apply badge bg-amber-900/30 text-amber-400 ring-1 ring-amber-500/30; }
+  .badge-error { @apply badge bg-red-900/30 text-red-400 ring-1 ring-red-500/30; }
+  .badge-info { @apply badge bg-blue-900/30 text-blue-400 ring-1 ring-blue-500/30; }
+  .badge-neutral { @apply badge bg-zinc-800 text-zinc-400 ring-1 ring-zinc-600/30; }
 
-  /* Card surface */
   .card {
     @apply rounded-xl border border-zinc-800 bg-zinc-900 p-4;
   }
 
-  /* Nav item */
   .nav-item {
     @apply rounded-md px-3 py-2 text-sm font-medium text-zinc-400 transition-colors
            hover:bg-zinc-800 hover:text-zinc-100 focus-visible:ring-2 focus-visible:ring-sky-500;
   }
   .nav-item-active {
     @apply nav-item bg-zinc-800 text-zinc-100;
+  }
+
+  /* ─── Harness primitives (new) ─────────────────────────────────────────── */
+  .h-card {
+    background-image: linear-gradient(180deg, #1b1f26 0%, #14171c 100%);
+    border: 1px solid var(--h-border);
+    border-radius: 0.625rem;
+  }
+  .h-card-purple { border-color: var(--h-purple); }
+  .h-card-teal { border-color: var(--h-teal); }
+  .h-card-warning { border-color: var(--h-warning); }
+  .h-card-danger { border-color: var(--h-danger); }
+
+  .h-pill {
+    @apply inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium;
+    border: 1px solid var(--h-border);
+    background-color: var(--h-surface-2);
+  }
+  .h-pill-success {
+    border-color: var(--h-teal);
+    background-color: #1b2a1f;
+    color: var(--h-teal);
+  }
+  .h-pill-warning {
+    border-color: var(--h-warning);
+    background-color: #3b2e1f;
+    color: var(--h-warning);
+  }
+  .h-pill-danger {
+    border-color: var(--h-danger);
+    background-color: #2a1f1f;
+    color: var(--h-danger);
+  }
+  .h-pill-purple {
+    border-color: var(--h-purple);
+    background-color: #22321f;
+    color: var(--h-purple);
+  }
+
+  .h-section-label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    color: var(--h-dim);
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .h-link {
+    color: var(--h-purple);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+  .h-link:hover { color: #9577ff; }
+
+  .h-button {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors;
+    border: 1px solid var(--h-border);
+    background-color: var(--h-surface-2);
+    color: var(--h-text);
+  }
+  .h-button:hover { border-color: var(--h-dim); }
+  .h-button-primary {
+    border-color: var(--h-purple);
+    color: var(--h-purple);
+  }
+  .h-button-primary:hover { background-color: #22321f; }
+  .h-button-danger {
+    border-color: var(--h-danger);
+    color: var(--h-danger);
+  }
+  .h-button-danger:hover { background-color: #2a1f1f; }
+  .h-button-success {
+    border-color: var(--h-teal);
+    color: var(--h-teal);
+  }
+  .h-button-success:hover { background-color: #1b2a1f; }
+
+  .h-toggle-on {
+    background-color: var(--h-teal);
+  }
+  .h-toggle-off {
+    background-color: #3b2e1f;
+    border: 1px solid var(--h-warning);
   }
 }
