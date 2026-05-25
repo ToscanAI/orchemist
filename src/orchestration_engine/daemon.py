@@ -1733,9 +1733,11 @@ def _dispatch_auto_merge(
             )
             return
         review_text = _extract_output_text(review_out).strip()
-        from .review_parser import extract_verdict as _extract_verdict  # noqa: PLC0415
-        _verdict = _extract_verdict(review_text)
-        if _verdict != "APPROVE":
+        # Issue #687: canonical verdict extractor lives in verdict_parser and
+        # returns lowercase ("approve" / "request_changes" / "abort" / None).
+        from .verdict_parser import extract_verdict as _extract_verdict  # noqa: PLC0415
+        _verdict = _extract_verdict(text=review_text)
+        if _verdict != "approve":
             logger.info(
                 "Auto-merge skipped for run '%s': review phase '%s' did not "
                 "return APPROVE verdict (got: %r).",
