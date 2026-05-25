@@ -35,7 +35,6 @@ The root directory for all test stores is resolved as follows:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -46,6 +45,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from .errors import OrchestratorError
+from .file_guard import compute_hash
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -233,7 +233,7 @@ class TestStore:
             shutil.copy2(src, dest_test)
 
             # Hash the *copy* (not the source) to detect any copy corruption
-            test_hash = self._compute_hash(dest_test)
+            test_hash = compute_hash(dest_test)
 
             # Build and serialise the manifest
             manifest = TestManifest(
@@ -310,7 +310,7 @@ class TestStore:
         if not dest_test.exists():
             raise TestStoreError(f"Sealed test file not found for run '{run_id}'")
 
-        actual_hash = self._compute_hash(dest_test)
+        actual_hash = compute_hash(dest_test)
         return actual_hash == manifest.test_file_hash
 
     def get_test_path(self, run_id: str) -> Path:
@@ -390,28 +390,6 @@ class TestStore:
             spec_hash=data["spec_hash"],
             manifest_version=data["manifest_version"],
         )
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _compute_hash(path: Path) -> str:
-        """Compute the SHA-256 hex digest of *path*.
-
-        Reads the file in 64 KB chunks to avoid loading large files into memory.
-
-        Args:
-            path: Path to an existing, readable file.
-
-        Returns:
-            Lowercase hex-encoded SHA-256 digest string.
-        """
-        h = hashlib.sha256()
-        with path.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(65536), b""):
-                h.update(chunk)
-        return h.hexdigest()
 
 
 # ---------------------------------------------------------------------------

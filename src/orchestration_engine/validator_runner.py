@@ -7,7 +7,8 @@ This module is the validator subprocess. It:
 
 Isolation requirements:
 - MUST NOT import from validator.py, sequencer.py, daemon.py, or errors.py.
-- Imports ONLY from ipc.py and test_store.py (plus stdlib).
+- Imports ONLY from ipc.py, test_store.py, and file_guard.py (plus stdlib).
+  (file_guard.py is a stdlib-only leaf utility — safe to import.)
 
 Invoked as:
     python3 -m orchestration_engine.validator_runner
@@ -19,7 +20,6 @@ Protocol:
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import subprocess
@@ -27,7 +27,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Only import from ipc and test_store — never from validator, sequencer, daemon, or errors
+# Only import from ipc, test_store, and file_guard — never from validator, sequencer, daemon, or errors
+from orchestration_engine.file_guard import compute_hash
 from orchestration_engine.ipc import (
     HealthRequest,
     HealthResult,
@@ -55,15 +56,6 @@ _ERR_INVALID_PARAMS = -32602
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
-
-
-def _compute_hash(path: Path) -> str:
-    """Compute SHA-256 hex digest of a file."""
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _run_pytest_on_file(
@@ -360,7 +352,7 @@ def _handle_validate(request: ValidationRequest) -> ValidationResult:
 
     # Verify hash integrity if expected_hash is provided
     if expected_hash:
-        actual_hash = _compute_hash(test_file_path)
+        actual_hash = compute_hash(test_file_path)
         if actual_hash != expected_hash:
             msg = (
                 f"test store integrity check failed: "
