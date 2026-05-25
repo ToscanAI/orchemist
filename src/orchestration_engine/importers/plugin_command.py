@@ -45,9 +45,8 @@ Edit the module-level ``META_SECTIONS`` frozenset to extend the skip list.
 
 from __future__ import annotations
 
-import re
+import re  # noqa: F401  — still used by other helpers below
 import textwrap
-import unicodedata
 from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
@@ -122,49 +121,9 @@ class _ParsedCommand:
 # ---------------------------------------------------------------------------
 
 
-def slugify(text: str) -> str:
-    """Convert *text* to a URL-safe, hyphenated slug.
-
-    Algorithm: NFKD-normalise → encode to ASCII (drops combining diacritics,
-    transliterates accented Latin characters) → lowercase → replace runs of
-    non-alphanumeric characters with ``-`` → strip leading/trailing hyphens.
-
-    Transliteration covers the common case of accented Latin characters
-    (``Ü`` → ``U``, ``é`` → ``e``, etc.), preventing silent ID collisions
-    between titles that differ only in diacritics.  Characters with no ASCII
-    approximation (CJK, emoji, etc.) are dropped after transliteration, so
-    purely non-ASCII titles may still produce a short or empty slug — callers
-    should handle the empty-string case (see ``_make_unique_id``).
-
-    Examples::
-
-        slugify("Campaign Plan")      # "campaign-plan"
-        slugify("  Hello, World! ")   # "hello-world"
-        slugify("Brand Voice & Tone") # "brand-voice-tone"
-        slugify("Über Plan")          # "uber-plan"
-        slugify("🎯 Campaign")        # "campaign"
-    """
-    # Transliterate: decompose Unicode, drop non-ASCII combining characters
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9]+", "-", text)
-    return text.strip("-")
-
-
-def snake_case(text: str) -> str:
-    """Convert *text* to a snake_case identifier.
-
-    Algorithm: lowercase → replace runs of non-alphanumeric characters with
-    ``_`` → strip leading/trailing underscores.
-
-    Examples::
-
-        snake_case("Campaign goal")  # "campaign_goal"
-        snake_case("Target audience (optional)")  # "target_audience_optional"
-    """
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
-    return text.strip("_")
+# slugify + snake_case live in the shared text_utils module (see #813 dedup audit
+# Group 3); re-exported here so existing callers keep working unchanged.
+from ..text_utils import slugify, snake_case  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
