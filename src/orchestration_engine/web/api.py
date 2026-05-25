@@ -2242,6 +2242,31 @@ def create_api_app(
     # the `review_outcomes` table (each row IS a decision: APPROVE / REQUEST_CHANGES
     # by a specific reviewer at a specific time) so we don't need a new table.
 
+    # SQLite's `CURRENT_TIMESTAMP` writes naive UTC strings ("YYYY-MM-DDTHH:MM:SS").
+    # JavaScript's `new Date("2026-...")` interprets timezone-less strings as
+    # *local* time, so a CEST client (UTC+2) sees every "X min ago" off by +2h.
+    # We normalise on the way out: any string that looks like a naive ISO
+    # timestamp gets a trailing `Z` appended so the client knows it's UTC.
+    # Already-tagged timestamps (`...Z`, `...+00:00`, `...-05:00`) pass through.
+    _NAIVE_ISO_RE = __import__("re").compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$")
+
+    def _normalize_ts(value: Any) -> Any:
+        """Best-effort UTC normalization of a single field value."""
+        if isinstance(value, str) and _NAIVE_ISO_RE.match(value):
+            return value + "Z"
+        return value
+
+    def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
+        """Z-suffix any naive ISO timestamp on a single DB row."""
+        if not isinstance(row, dict):
+            return row
+        out = dict(row)
+        for key in ("created_at", "updated_at", "completed_at", "started_at",
+                    "last_run_at", "last_updated"):
+            if key in out:
+                out[key] = _normalize_ts(out[key])
+        return out
+
     @app.get("/api/v1/regressions")
     async def list_regressions_endpoint(
         status: Optional[str] = None,
@@ -2251,7 +2276,7 @@ def create_api_app(
         """List regression records (from `regressions` table, newest first).
 
         Backs the Fleet Dashboard "Regression queue" card. Returns the
-        canonical engine shape; the harness maps it to the table row.
+        canonical engine shape with timestamps normalised to UTC `Z` strings.
 
         Optional ``status`` filter (e.g. ``'detected'``, ``'fixing'``,
         ``'resolved'``). Limit clamped to [1, 200].
@@ -2259,17 +2284,26 @@ def create_api_app(
         limit = max(1, min(limit, 200))
         offset = max(0, offset)
         db = Database(Path(effective_db_path))
-        items = db.list_regressions(status=status, limit=limit, offset=offset)
-        # Total without pagination — counting via a second query is cheap on
-        # this table (typically a few hundred rows at most).
-        total_query = "SELECT COUNT(*) FROM regressions"
-        params: List[Any] = []
-        if status:
-            total_query += " WHERE status = ?"
-            params.append(status)
+        # Single _locked() block so items + total share a snapshot — prevents
+        # the race where a concurrent insert/delete makes total != len(items)
+        # or hides a row that's visible elsewhere.
         with db._locked():
             conn = db.get_connection()
-            total = conn.execute(total_query, params).fetchone()[0]
+            base = "SELECT * FROM regressions"
+            where: List[Any] = []
+            params: List[Any] = []
+            if status:
+                where.append("status = ?")
+                params.append(status)
+            wclause = (" WHERE " + " AND ".join(where)) if where else ""
+            # Stable secondary sort by id — `created_at` has 1-second resolution
+            # and adjacent rows often share a timestamp, so without a tiebreaker
+            # offset-based pagination skips or repeats rows.
+            list_q = base + wclause + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+            count_q = "SELECT COUNT(*) FROM regressions" + wclause
+            rows = conn.execute(list_q, params + [limit, offset]).fetchall()
+            total = conn.execute(count_q, params).fetchone()[0]
+        items = [_normalize_row(db._row_to_dict(r)) for r in rows]
         return JSONResponse({
             "items": items,
             "total": int(total),
@@ -2305,11 +2339,20 @@ def create_api_app(
         renders the key as a single composed label and the confidence
         as a bar relative to the threshold.
 
+        Ordered ``last_run_at DESC NULLS LAST`` so the most-recently-active
+        profiles surface first when the side panel slices the top N.
+
         No pagination — the active profile set is bounded by the number
         of (repo, template, task) tuples in use, typically O(10s).
         """
         db = Database(Path(effective_db_path))
-        items = db.list_trust_profiles()
+        with db._locked():
+            conn = db.get_connection()
+            rows = conn.execute(
+                "SELECT * FROM trust_profiles "
+                "ORDER BY (last_run_at IS NULL), last_run_at DESC, id ASC"
+            ).fetchall()
+        items = [_normalize_row(db._row_to_dict(r)) for r in rows]
         return JSONResponse({"items": items, "total": len(items)})
 
     @app.get("/api/v1/decisions")
@@ -2321,121 +2364,228 @@ def create_api_app(
         `review_outcomes` table by the engine when a reviewer phase
         completes.
 
-        Limit clamped to [1, 100].
+        Returns the canonical `review_outcomes` row shape: ``review_id``,
+        ``run_id``, ``phase_id``, ``reviewer_model``, ``verdict``,
+        ``issues_found`` (list of dicts), ``fix_verified`` (0/1), and
+        ``created_at`` (UTC `Z` string). Limit clamped to [1, 100].
+
+        Ordered by ``created_at DESC, review_id DESC`` for stable pagination.
         """
         limit = max(1, min(limit, 100))
         offset = max(0, offset)
         db = Database(Path(effective_db_path))
-        items = db.list_review_outcomes(limit=limit, offset=offset)
-        return JSONResponse({"items": items, "limit": limit, "offset": offset})
+        with db._locked():
+            conn = db.get_connection()
+            rows = conn.execute(
+                "SELECT * FROM review_outcomes "
+                "ORDER BY created_at DESC, review_id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+            total = conn.execute("SELECT COUNT(*) FROM review_outcomes").fetchone()[0]
+        items = [_normalize_row(db._row_to_dict(r)) for r in rows]
+        return JSONResponse({
+            "items": items,
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+        })
+
+    # ── Admin config defaults + helpers ─────────────────────────────────────
+    # `admin.json` is operator-editable; we treat every field independently and
+    # never trust the file's shape. The defaults below are the canonical fallback.
+    _ADMIN_DEFAULTS: Dict[str, Any] = {
+        "autonomy_level": "4.3",
+        "feature_flags": {
+            "phase0_hard_gate": False,
+            "extend_verdict": True,
+            "dialogue_phase": False,
+            "cross_repo": False,
+        },
+        "modes": {
+            "openrouter": True,
+            "standalone": True,
+            "openclaw": False,
+            "dry_run": True,
+        },
+    }
+    _ADMIN_KNOWN_FLAGS = frozenset(_ADMIN_DEFAULTS["feature_flags"].keys())
+    _ADMIN_KNOWN_MODES = frozenset(_ADMIN_DEFAULTS["modes"].keys())
+    # Serialise admin writes — read-modify-write races otherwise lose patches
+    # when an operator clicks two toggles fast or has two tabs open. asyncio
+    # is the right primitive because FastAPI runs handlers on a single loop.
+    _admin_lock = __import__("asyncio").Lock()
+
+    def _coerce_admin_doc(loaded: Any) -> Dict[str, Any]:
+        """Merge a possibly-malformed loaded JSON value over the defaults.
+
+        Defensive against every shape that a hand-edited `admin.json` can
+        take: not-a-dict, nested key is the wrong type, scalar where dict
+        expected, missing keys. The output is ALWAYS the same shape as
+        ``_ADMIN_DEFAULTS`` with every value type-coerced.
+        """
+        if not isinstance(loaded, dict):
+            return dict(_ADMIN_DEFAULTS)
+        merged: Dict[str, Any] = {
+            "autonomy_level": str(loaded.get("autonomy_level", _ADMIN_DEFAULTS["autonomy_level"])),
+            "feature_flags": dict(_ADMIN_DEFAULTS["feature_flags"]),
+            "modes": dict(_ADMIN_DEFAULTS["modes"]),
+        }
+        ff = loaded.get("feature_flags")
+        if isinstance(ff, dict):
+            for k in _ADMIN_KNOWN_FLAGS:
+                if k in ff:
+                    merged["feature_flags"][k] = _coerce_bool(ff[k])
+        mm = loaded.get("modes")
+        if isinstance(mm, dict):
+            for k in _ADMIN_KNOWN_MODES:
+                if k in mm:
+                    merged["modes"][k] = _coerce_bool(mm[k])
+        return merged
+
+    def _coerce_bool(value: Any) -> bool:
+        """Strict bool coercion: accept Python bool, JSON bool, 0/1, or
+        common string spellings of true/false. Anything else falls back to
+        bool(value) to match prior behaviour, but logs an audit warning."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            low = value.strip().lower()
+            if low in ("true", "1", "yes", "on"): return True
+            if low in ("false", "0", "no", "off", ""): return False
+        return bool(value)
 
     @app.get("/api/v1/admin/state")
     async def get_admin_state() -> JSONResponse:
         """Aggregate admin-console read state.
 
-        Combines settings the harness Admin / Activation page displays:
-
-        * `autonomy_level` — current operator-set level (3 / 4 / 4.3 / 5)
-        * `feature_flags` — known flags + their current values
-        * `modes` — provider mode toggles (openrouter / standalone / openclaw / dryrun)
-
-        Values are read from a JSON config file under the engine's data
-        directory (`~/.orchestration-engine/admin.json`). If the file is
-        missing or unreadable, sensible defaults are returned and the
-        response includes `"source": "default"` so the UI can warn that
-        edits won't persist until the file is writable.
-
-        This endpoint is the read side of `PUT /admin/feature-flags`
-        below; both touch the same JSON file.
+        Returns the operator-set values (or canonical defaults) regardless
+        of how malformed the on-disk JSON is. Defensive against:
+        - missing file
+        - unparseable JSON
+        - top-level value that isn't a dict (e.g. a string, list, number)
+        - nested ``feature_flags`` / ``modes`` keys that aren't dicts
+        - flag values that aren't bools (coerced via `_coerce_bool`)
+        - unknown extra keys (preserved under ``"extra"``)
         """
         import json as _json
-        from pathlib import Path as _Path
-        admin_path = _Path.home() / ".orchestration-engine" / "admin.json"
-        defaults = {
-            "autonomy_level": "4.3",
-            "feature_flags": {
-                "phase0_hard_gate": False,
-                "extend_verdict": True,
-                "dialogue_phase": False,
-                "cross_repo": False,
-            },
-            "modes": {
-                "openrouter": True,
-                "standalone": True,
-                "openclaw": False,
-                "dry_run": True,
-            },
-        }
+        admin_path = Path.home() / ".orchestration-engine" / "admin.json"
+        raw_loaded: Any = None
+        source = "default"
         if admin_path.exists():
             try:
-                loaded = _json.loads(admin_path.read_text())
-                # shallow-merge over defaults so we tolerate partial files
-                merged = {**defaults, **{k: v for k, v in loaded.items() if k in defaults}}
-                # for nested dicts, also shallow-merge
-                for k in ("feature_flags", "modes"):
-                    if isinstance(loaded.get(k), dict):
-                        merged[k] = {**defaults[k], **loaded[k]}
-                return JSONResponse({**merged, "source": "file", "path": str(admin_path)})
+                raw_loaded = _json.loads(admin_path.read_text())
+                source = "file"
             except (OSError, ValueError):
-                # Fall through to defaults
-                pass
-        return JSONResponse({**defaults, "source": "default", "path": str(admin_path)})
+                raw_loaded = None
+        merged = _coerce_admin_doc(raw_loaded)
+        # Preserve any unknown top-level keys for forward-compat (the next
+        # release may add new admin settings; downgraded engines shouldn't
+        # silently drop them on read).
+        extra: Dict[str, Any] = {}
+        if isinstance(raw_loaded, dict):
+            extra = {
+                k: v for k, v in raw_loaded.items()
+                if k not in {"autonomy_level", "feature_flags", "modes"}
+            }
+        return JSONResponse({
+            **merged,
+            "extra": extra,
+            "source": source,
+            "path": str(admin_path),
+        })
 
     @app.put("/api/v1/admin/feature-flags")
     async def update_feature_flags(request: Request) -> JSONResponse:
-        """Persist a feature-flag patch to `admin.json`.
+        """Persist a feature-flag patch to `admin.json` with atomic write.
 
-        Body: `{"phase0_hard_gate": true, ...}` — any subset of the known
-        flags. Unknown keys are rejected (400).
+        Body: ``{"phase0_hard_gate": true, ...}`` — any subset of the known
+        flags. Strict bool coercion: accepts Python/JSON bools, 0/1, and
+        the strings ``"true"``/``"false"`` (case-insensitive); anything
+        else is rejected with 400.
 
-        Writes are atomic via tempfile + rename. The runtime engine does
-        NOT yet honour these flags — they are operator preferences read
-        by the harness for display. Flags become live when the
-        sequencer / pipeline YAML reads them (separate epic).
+        Concurrency: serialised by a module-scope `asyncio.Lock` so two
+        simultaneous PUTs cannot lose each other's patches via the
+        read-modify-write window.
+
+        Atomicity: tempfile + ``os.replace`` ensures the on-disk file is
+        never half-written. Tempfile cleanup uses ``Path.unlink(missing_ok=True)``
+        inside a guarded ``finally`` so the original exception is preserved
+        even if cleanup itself fails.
         """
         import json as _json
         import os as _os
         import tempfile as _tempfile
-        from pathlib import Path as _Path
 
-        known_flags = {"phase0_hard_gate", "extend_verdict", "dialogue_phase", "cross_repo"}
         try:
             body = await request.json()
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid JSON body")
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Body must be a JSON object")
-        bad_keys = set(body.keys()) - known_flags
+        bad_keys = set(body.keys()) - _ADMIN_KNOWN_FLAGS
         if bad_keys:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unknown flag(s): {sorted(bad_keys)}. Known: {sorted(known_flags)}",
+                detail=f"Unknown flag(s): {sorted(bad_keys)}. Known: {sorted(_ADMIN_KNOWN_FLAGS)}",
             )
-        # Coerce values to bool
-        patch = {k: bool(v) for k, v in body.items()}
+        # Reject values that aren't already JSON-typed booleans or known
+        # spelling variants. We accept Python bool, int 0/1, and common
+        # string spellings but reject ambiguous things like the string
+        # "false" being silently coerced to True via bool() (the prior
+        # behaviour).
+        patch: Dict[str, bool] = {}
+        for k, v in body.items():
+            if isinstance(v, bool):
+                patch[k] = v
+            elif isinstance(v, (int, float)) and v in (0, 1):
+                patch[k] = bool(v)
+            elif isinstance(v, str) and v.strip().lower() in ("true", "false", "1", "0", "yes", "no", "on", "off"):
+                patch[k] = _coerce_bool(v)
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Flag {k!r} expects a boolean (or 0/1, or 'true'/'false') — "
+                        f"got {type(v).__name__}: {v!r}"
+                    ),
+                )
 
-        admin_dir = _Path.home() / ".orchestration-engine"
-        admin_dir.mkdir(parents=True, exist_ok=True)
+        admin_dir = Path.home() / ".orchestration-engine"
         admin_path = admin_dir / "admin.json"
-        current: Dict[str, Any] = {}
-        if admin_path.exists():
-            try:
-                current = _json.loads(admin_path.read_text())
-            except (OSError, ValueError):
-                current = {}
-        flags = dict(current.get("feature_flags", {}))
-        flags.update(patch)
-        current["feature_flags"] = flags
 
-        # Atomic write — same pattern as templates / file_guard.
-        fd, tmp = _tempfile.mkstemp(prefix="admin.", dir=str(admin_dir))
-        try:
-            with _os.fdopen(fd, "w") as fh:
-                _json.dump(current, fh, indent=2)
-            _os.replace(tmp, admin_path)
-        except Exception:
-            _os.unlink(tmp) if _os.path.exists(tmp) else None
-            raise
+        async with _admin_lock:
+            admin_dir.mkdir(parents=True, exist_ok=True)
+            # Re-read inside the lock so we see other tabs' writes.
+            current: Dict[str, Any] = {}
+            if admin_path.exists():
+                try:
+                    loaded = _json.loads(admin_path.read_text())
+                    if isinstance(loaded, dict):
+                        current = loaded
+                except (OSError, ValueError):
+                    current = {}
+            # Preserve unknown top-level keys; only mutate feature_flags.
+            existing_flags = current.get("feature_flags")
+            flags: Dict[str, bool] = dict(existing_flags) if isinstance(existing_flags, dict) else {}
+            flags.update(patch)
+            current["feature_flags"] = flags
+
+            # Atomic write: tempfile in the same directory + os.replace.
+            fd, tmp = _tempfile.mkstemp(prefix="admin.", suffix=".tmp", dir=str(admin_dir))
+            try:
+                with _os.fdopen(fd, "w") as fh:
+                    _json.dump(current, fh, indent=2)
+                _os.replace(tmp, admin_path)
+                tmp = None  # ownership transferred to the destination
+            finally:
+                # Clean up the tempfile if the replace failed. Path.unlink
+                # with missing_ok=True avoids the TOCTOU window of the prior
+                # `if os.path.exists(): os.unlink()` pattern and won't mask
+                # the original exception with its own.
+                if tmp is not None:
+                    Path(tmp).unlink(missing_ok=True)
         return JSONResponse({"feature_flags": flags, "path": str(admin_path)})
 
     @app.get("/api/v1/runs/{run_id}/stream")

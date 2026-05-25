@@ -519,19 +519,31 @@ export function listTrustProfiles(): Promise<TrustProfilesResponse> {
   return _fetch<TrustProfilesResponse>('/api/v1/trust-profiles');
 }
 
-/** One row from `review_outcomes` — the audit trail of approve/reject verdicts. */
+/**
+ * One row from `review_outcomes` — the audit trail of approve/reject verdicts.
+ * Mirrors the actual `review_outcomes` schema (confirmed via live curl 2026-05-25):
+ *
+ *   review_id, run_id, phase_id, reviewer_model, verdict, issues_found,
+ *   fix_verified, created_at
+ *
+ * There is NO `id` column (primary key is `review_id`) and NO `confidence`
+ * column. `issues_found` is a JSON array of objects (NOT plain strings); the
+ * harness treats it as opaque structured data — counts only, no rendering.
+ */
 export interface DecisionRecord {
-  readonly id: number;
+  readonly review_id: string;
   readonly run_id: string;
-  readonly verdict: string;
-  readonly created_at: string;
+  readonly phase_id: string;
   readonly reviewer_model: string | null;
-  readonly issues_found: readonly string[] | null;
-  readonly confidence: number | null;
+  readonly verdict: string;
+  readonly issues_found: readonly Record<string, unknown>[] | null;
+  readonly fix_verified: number;  // 0/1 from SQLite
+  readonly created_at: string;    // UTC ISO with Z suffix after normalisation
 }
 
 export interface DecisionsResponse {
   readonly items: readonly DecisionRecord[];
+  readonly total: number;
   readonly limit: number;
   readonly offset: number;
 }
@@ -560,6 +572,8 @@ export interface AdminState {
     readonly openclaw: boolean;
     readonly dry_run: boolean;
   };
+  /** Forward-compat: top-level keys the engine doesn't recognise are preserved here. */
+  readonly extra: Record<string, unknown>;
   readonly source: 'default' | 'file';
   readonly path: string;
 }
