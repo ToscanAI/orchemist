@@ -19,7 +19,16 @@ import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useRunEvents } from '@/lib/sse';
-import { getRun, resumeRun, cancelRun, ApiError } from '@/lib/api';
+import {
+  getRun,
+  resumeRun,
+  cancelRun,
+  ApiError,
+  listRunArtifacts,
+  getRunPhase0,
+  type RunArtifactListEntry,
+  type RunPhase0,
+} from '@/lib/api';
 import type { RunRecord, SsePhaseCompletedEvent } from '@/lib/types';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
@@ -65,13 +74,31 @@ export default function RunCockpitClient() {
 
   const [run, setRun] = useState<RunRecord | null>(null);
   const [engineUp, setEngineUp] = useState<boolean | null>(null);
+  const [artifacts, setArtifacts] = useState<readonly RunArtifactListEntry[] | null>(null);
+  const [phase0, setPhase0] = useState<RunPhase0 | null>(null);
 
   useEffect(() => {
     if (!runId) return;
     let cancelled = false;
-    getRun(runId)
-      .then((r) => { if (!cancelled) { setRun(r); setEngineUp(true); } })
-      .catch(() => { if (!cancelled) { setEngineUp(false); } });
+    // Fetch all three concurrently — getRun is the only required call;
+    // artifacts and phase0 may legitimately 404 (run not started, or
+    // skip-spec pipeline with no Phase 0).
+    Promise.allSettled([
+      getRun(runId),
+      listRunArtifacts(runId),
+      getRunPhase0(runId),
+    ]).then(([runRes, artRes, phase0Res]) => {
+      if (cancelled) return;
+      if (runRes.status === 'fulfilled') {
+        setRun(runRes.value);
+        setEngineUp(true);
+      } else {
+        // engineUp stays false → demo path renders
+        setEngineUp(false);
+      }
+      if (artRes.status === 'fulfilled') setArtifacts(artRes.value.files);
+      if (phase0Res.status === 'fulfilled') setPhase0(phase0Res.value);
+    });
     return () => { cancelled = true; };
   }, [runId]);
 
@@ -199,10 +226,10 @@ export default function RunCockpitClient() {
               subagent · orchemist-implementer · fresh context
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              <span className="h-pill h-pill-success">CONSUME · 3</span>
-              <span className="h-pill h-pill-purple">EXTEND · 1</span>
-              <span className="h-pill h-pill-warning" style={{ background: '#3B2E1F' }}>DIVERGENT · 0</span>
-              <span className="h-pill" style={{ borderColor: '#5A6371', color: '#8A93A2' }}>NEW-OK · 2</span>
+              <span className="h-pill h-pill-success">CONSUME · {phase0 ? phase0.verdicts.CONSUME : 3}</span>
+              <span className="h-pill h-pill-purple">EXTEND · {phase0 ? phase0.verdicts.EXTEND : 1}</span>
+              <span className="h-pill h-pill-warning" style={{ background: '#3B2E1F' }}>DIVERGENT · {phase0 ? phase0.verdicts.DIVERGENT : 0}</span>
+              <span className="h-pill" style={{ borderColor: '#5A6371', color: '#8A93A2' }}>NEW-OK · {phase0 ? phase0.verdicts.NEW_OK : 2}</span>
             </div>
             <div className="mt-4 flex flex-wrap gap-4 text-[11px]">
               <Link href={`/runs/${runId}/artifacts/spec.md`} className="h-link">view spec.md</Link>
@@ -248,25 +275,48 @@ export default function RunCockpitClient() {
 
           <SectionCard
             title="Phase 0 inventory · this run"
-            subtitle={<span>41 symbols across 4 sections · drives sub-check 7d at every phase</span>}
+            subtitle={
+              phase0
+                ? <span>{
+                    phase0.sections.ui_primitives.count + phase0.sections.shared_libs.count +
+                    phase0.sections.adjacent_patterns.count + phase0.sections.workspace_barrels.count
+                  } symbols across 4 sections · drives sub-check 7d at every phase</span>
+                : <span>41 symbols across 4 sections · drives sub-check 7d at every phase <span className="ml-2 text-harness-warning">(demo — no Phase 0 artifact)</span></span>
+            }
             testId="section-phase0"
           >
             <div className="grid grid-cols-2 gap-3 text-[11px]">
               <div>
-                <div className="h-section-label">UI PRIMITIVES (18)</div>
-                <div className="mt-1 text-harness-text">Badge · Button · Spinner · …</div>
+                <div className="h-section-label">UI PRIMITIVES ({phase0 ? phase0.sections.ui_primitives.count : 18})</div>
+                <div className="mt-1 text-harness-text truncate" title={phase0?.sections.ui_primitives.entries.join(' · ')}>
+                  {phase0 && phase0.sections.ui_primitives.entries.length > 0
+                    ? phase0.sections.ui_primitives.entries.slice(0, 4).map((e) => e.split(' ← ')[0]).join(' · ') + (phase0.sections.ui_primitives.entries.length > 4 ? ' · …' : '')
+                    : 'Badge · Button · Spinner · …'}
+                </div>
               </div>
               <div>
-                <div className="h-section-label">SHARED LIBS (4)</div>
-                <div className="mt-1 text-harness-text font-mono text-[10px]">verdict_parser · cost_tracker · file_guard · git_integration</div>
+                <div className="h-section-label">SHARED LIBS ({phase0 ? phase0.sections.shared_libs.count : 4})</div>
+                <div className="mt-1 text-harness-text font-mono text-[10px] truncate" title={phase0?.sections.shared_libs.entries.join(' · ')}>
+                  {phase0 && phase0.sections.shared_libs.entries.length > 0
+                    ? phase0.sections.shared_libs.entries.slice(0, 4).map((e) => e.split(' ← ')[0]).join(' · ') + (phase0.sections.shared_libs.entries.length > 4 ? ' · …' : '')
+                    : 'verdict_parser · cost_tracker · file_guard · git_integration'}
+                </div>
               </div>
               <div>
-                <div className="h-section-label">ADJACENT PATTERNS (7)</div>
-                <div className="mt-1 text-harness-text">phase_dispatch · subagent_invocation · sse_emit · …</div>
+                <div className="h-section-label">ADJACENT PATTERNS ({phase0 ? phase0.sections.adjacent_patterns.count : 7})</div>
+                <div className="mt-1 text-harness-text truncate" title={phase0?.sections.adjacent_patterns.entries.join(' · ')}>
+                  {phase0 && phase0.sections.adjacent_patterns.entries.length > 0
+                    ? phase0.sections.adjacent_patterns.entries.slice(0, 4).map((e) => e.split(' ← ')[0]).join(' · ') + (phase0.sections.adjacent_patterns.entries.length > 4 ? ' · …' : '')
+                    : 'phase_dispatch · subagent_invocation · sse_emit · …'}
+                </div>
               </div>
               <div>
-                <div className="h-section-label">WORKSPACE BARRELS (12)</div>
-                <div className="mt-1 text-harness-text font-mono text-[10px]">src/orchestration_engine/__init__.py exports …</div>
+                <div className="h-section-label">WORKSPACE BARRELS ({phase0 ? phase0.sections.workspace_barrels.count : 12})</div>
+                <div className="mt-1 text-harness-text font-mono text-[10px] truncate" title={phase0?.sections.workspace_barrels.entries.join(' · ')}>
+                  {phase0 && phase0.sections.workspace_barrels.entries.length > 0
+                    ? phase0.sections.workspace_barrels.entries.slice(0, 4).map((e) => e.split(' ← ')[0]).join(' · ') + (phase0.sections.workspace_barrels.entries.length > 4 ? ' · …' : '')
+                    : 'src/orchestration_engine/__init__.py exports …'}
+                </div>
               </div>
             </div>
             <div className="mt-3 text-[10px] text-harness-dim">
@@ -279,24 +329,35 @@ export default function RunCockpitClient() {
         <div className="col-span-3 flex flex-col gap-4">
           <SectionCard title="Run artifacts" subtitle={<>.orchemist/runs/{runId.slice(0, 8) || '_'}/</>}>
             <ul className="space-y-1.5 text-[11px]">
-              {['existing_symbols.md', 'spec.md', 'behavioral.md', 'spec_adversary.md', 'acceptance_tests.py', 'implement.md', 'review.md'].map((f, i) => {
-                const isDone = i < completedCount;
-                const isActive = i === completedCount;
-                const isQueued = i > completedCount;
+              {(artifacts && artifacts.length > 0
+                ? artifacts.map((f) => ({ name: f.name, kB: f.size_bytes / 1024, isReal: true }))
+                : ['existing_symbols.md', 'spec.md', 'behavioral.md', 'spec_adversary.md', 'acceptance_tests.py', 'implement.md', 'review.md'].map((name, i) => ({
+                    name,
+                    kB: 2 + i * 0.4,
+                    isReal: false,
+                  }))
+              ).map((f, i) => {
+                const isDone = f.isReal || i < completedCount;
+                const isActive = !f.isReal && i === completedCount;
                 return (
-                  <li key={f} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
+                  <li key={f.name} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 min-w-0">
                       <span className={isDone ? 'text-harness-teal' : isActive ? 'text-harness-purple' : 'text-harness-dim'}>
                         {isDone ? '✓' : isActive ? '●' : '○'}
                       </span>
-                      <span className={[
-                        isDone ? 'text-harness-text underline decoration-harness-dim' : isActive ? 'text-harness-text' : 'text-harness-muted',
-                      ].join(' ')}>
-                        {f}
-                      </span>
+                      <Link
+                        href={`/runs/${runId}/artifacts/${encodeURIComponent(f.name)}`}
+                        className={[
+                          'truncate',
+                          isDone ? 'text-harness-text underline decoration-harness-dim' : isActive ? 'text-harness-text' : 'text-harness-muted',
+                        ].join(' ')}
+                        title={f.name}
+                      >
+                        {f.name}
+                      </Link>
                     </div>
-                    <span className="text-harness-dim text-[10px]">
-                      {isDone ? `${(2 + i * 0.4).toFixed(1)} kB` : isActive ? 'writing…' : 'queued'}
+                    <span className="text-harness-dim text-[10px] ml-2 shrink-0">
+                      {f.isReal ? `${f.kB.toFixed(1)} kB` : isDone ? `${f.kB.toFixed(1)} kB` : isActive ? 'writing…' : 'queued'}
                     </span>
                   </li>
                 );

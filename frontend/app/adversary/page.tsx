@@ -5,42 +5,111 @@
  *
  * Canonical mockup: docs/harness-redesign-2026-05-24/screens/03-adversary-loop.svg
  *
- * Shows the cross-model drafter↔reviewer dialogue at the spec_adversary
- * boundary. This is the marquee screen — the trust-engine wedge made visible.
- *
  * Data sources:
- *   - Track A (skills pack) — reads spec_adversary.md from the run's output_dir
- *     and reconstructs verdict turns. Single-model context per turn.
- *   - Track B (dialogue phase PR #808) — reads dialogue_phase.md with full
- *     turn-by-turn drafter/reviewer message pairs and Jaccard scores.
- *
- * Today this page renders the canonical demo data (one full round-trip with
- * convergence) so the IA is reviewable before #808 lands. Real-data wiring is
- * orchemist#810 sub-issue "Adversary loop visualizer".
+ *   - With `?run=<id>` in the URL: fetch real dialogue rounds from
+ *     `GET /api/v1/runs/{id}/dialogue` (Track B dialogue phase artifact).
+ *     If the run has no dialogue artifact, falls back to demo data with a
+ *     "no dialogue artifact" banner so the IA stays reviewable.
+ *   - Without `?run=`: renders the canonical demo round-trip from the
+ *     SVG mockup so visitors can see what the screen looks like.
  */
 
+import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
+import { getRunDialogue, type RunDialogue, type RunDialogueRound } from '@/lib/api';
 
-export default function AdversaryLoopPage() {
+function AdversaryLoopInner() {
+  const search = useSearchParams();
+  const runIdParam = search?.get('run') ?? null;
+
+  const [dialogue, setDialogue] = useState<RunDialogue | null>(null);
+  const [loadState, setLoadState] = useState<'idle' | 'loading' | 'ok' | 'none' | 'error'>('idle');
+
+  useEffect(() => {
+    if (!runIdParam) { setLoadState('idle'); return; }
+    let cancelled = false;
+    setLoadState('loading');
+    getRunDialogue(runIdParam)
+      .then((d) => { if (!cancelled) { setDialogue(d); setLoadState('ok'); } })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        // 404 is the common case — most runs have no dialogue artifact
+        const status = (err as { status?: number })?.status;
+        setLoadState(status === 404 ? 'none' : 'error');
+      });
+    return () => { cancelled = true; };
+  }, [runIdParam]);
+
+  const usingLive = loadState === 'ok' && dialogue !== null && dialogue.rounds.length > 0;
+  const drafterModel = usingLive
+    ? dialogue!.rounds.find((r) => r.side === 'drafter')?.model ?? 'unknown drafter model'
+    : 'claude-sonnet-4-6';
+  const reviewerModel = usingLive
+    ? dialogue!.rounds.find((r) => r.side === 'reviewer')?.model ?? 'unknown reviewer model'
+    : 'gemini-3-pro';
+  const finalVerdict = usingLive
+    ? [...dialogue!.rounds].reverse().find((r) => r.side === 'reviewer' && r.verdict)?.verdict ?? null
+    : 'approve';
+
   return (
     <HarnessShell
-      title="Cross-model dialogue · drafter ↔ reviewer"
+      title={
+        runIdParam
+          ? `Cross-model dialogue · run ${runIdParam.slice(0, 8)}${usingLive ? '' : ' · no dialogue artifact'}`
+          : 'Cross-model dialogue · drafter ↔ reviewer'
+      }
       screenIndex={3}
-      breadcrumb={[
-        { label: 'Fleet', href: '/' },
-        { label: 'Run b90a3719', href: '/runs/b90a3719-orchemist-802' },
-        { label: 'Adversary Loop · 1c spec_adversary' },
-      ]}
+      breadcrumb={
+        runIdParam
+          ? [
+              { label: 'Fleet', href: '/' },
+              { label: `Run ${runIdParam.slice(0, 8)}`, href: `/runs/${encodeURIComponent(runIdParam)}` },
+              { label: 'Adversary Loop · 1c spec_adversary' },
+            ]
+          : [
+              { label: 'Fleet', href: '/' },
+              { label: 'Adversary Loop (demo)' },
+            ]
+      }
       actions={
         <>
-          <span className="h-pill h-pill-success">APPROVED · R2</span>
+          {finalVerdict ? (
+            <span className={[
+              'h-pill text-[11px]',
+              finalVerdict === 'approve' ? 'h-pill-success' :
+              finalVerdict === 'revise' || finalVerdict === 'request_changes' ? 'h-pill-warning' :
+              'h-pill-danger',
+            ].join(' ')}>
+              {finalVerdict.toUpperCase()} · R{usingLive ? Math.max(...dialogue!.rounds.map((r) => r.index)) : 2}
+            </span>
+          ) : (
+            <span className="h-pill text-harness-muted text-[11px]">no verdict yet</span>
+          )}
           <button type="button" className="h-button">Export ↗</button>
           <button type="button" className="h-button h-button-primary">Replay run</button>
         </>
       }
     >
+      {runIdParam && loadState === 'loading' && (
+        <div className="mb-4 h-pill h-pill-purple text-[11px]">loading dialogue artifact for run {runIdParam.slice(0, 8)}…</div>
+      )}
+      {runIdParam && loadState === 'none' && (
+        <div className="mb-4 h-pill h-pill-warning text-[11px]">
+          run {runIdParam.slice(0, 8)} has no dialogue artifact (Track B not enabled for this run) — showing demo
+        </div>
+      )}
+      {runIdParam && loadState === 'error' && (
+        <div className="mb-4 h-pill h-pill-danger text-[11px]">
+          failed to load dialogue for run {runIdParam.slice(0, 8)} — showing demo
+        </div>
+      )}
+      {!runIdParam && (
+        <div className="mb-4 h-pill text-harness-muted text-[11px]">demo data · pass <code className="font-mono">?run=&lt;run-id&gt;</code> to render a real dialogue</div>
+      )}
+
       {/* Model identity header */}
       <SectionCard
         title="Model identities · this round-trip"
@@ -49,13 +118,13 @@ export default function AdversaryLoopPage() {
         <div className="grid grid-cols-12 items-center gap-3">
           <div className="col-span-5 h-card h-card-purple p-4" style={{ background: 'linear-gradient(180deg, #1F1B2E 0%, #181425 100%)' }}>
             <div className="h-section-label" style={{ color: '#8A93A2' }}>DRAFTER</div>
-            <div className="mt-1 text-[14px] font-bold text-harness-text">claude-sonnet-4-6 · spec author</div>
+            <div className="mt-1 text-[14px] font-bold text-harness-text">{drafterModel} · spec author</div>
             <div className="mt-1 text-[11px] text-harness-muted">fresh context per round · no reviewer history carry</div>
           </div>
           <div className="col-span-2 text-center text-harness-muted text-lg">⇆</div>
           <div className="col-span-5 h-card h-card-teal p-4" style={{ background: 'linear-gradient(180deg, #1A2A28 0%, #142220 100%)' }}>
             <div className="h-section-label" style={{ color: '#8A93A2' }}>REVIEWER · DIFFERENT FAMILY</div>
-            <div className="mt-1 text-[14px] font-bold text-harness-text">gemini-3-pro · deep-think (Track B)</div>
+            <div className="mt-1 text-[14px] font-bold text-harness-text">{reviewerModel} · deep-think (Track B)</div>
             <div className="mt-1 text-[11px] text-harness-muted">fresh context per round · orchemist-adversary subagent</div>
           </div>
         </div>
@@ -162,52 +231,95 @@ export default function AdversaryLoopPage() {
             </tr>
           </thead>
           <tbody className="border-t border-harness-border">
-            <tr className="border-b border-harness-border">
-              <td className="py-2 pr-3 text-harness-text">R1·1</td>
-              <td className="py-2 pr-3 text-harness-purple">drafter</td>
-              <td className="py-2 pr-3 text-harness-text">claude-sonnet-4-6</td>
-              <td className="py-2 pr-3 text-harness-text">1300 / 480</td>
-              <td className="py-2 pr-3 text-harness-text">0.18</td>
-              <td className="py-2 pr-3 text-harness-muted">draft</td>
-              <td className="py-2 pr-3 text-harness-dim">—</td>
-              <td className="py-2 text-right text-harness-dim">—</td>
-            </tr>
-            <tr className="border-b border-harness-border">
-              <td className="py-2 pr-3 text-harness-text">R1·2</td>
-              <td className="py-2 pr-3 text-harness-teal">reviewer</td>
-              <td className="py-2 pr-3 text-harness-text">gemini-3-pro</td>
-              <td className="py-2 pr-3 text-harness-text">2600 / 920</td>
-              <td className="py-2 pr-3 text-harness-text">0.34</td>
-              <td className="py-2 pr-3 text-harness-danger">REVISE</td>
-              <td className="py-2 pr-3 text-harness-dim">—</td>
-              <td className="py-2 text-right text-harness-danger">2 · 7d / verdict label</td>
-            </tr>
-            <tr className="border-b border-harness-border">
-              <td className="py-2 pr-3 text-harness-text">R2·1</td>
-              <td className="py-2 pr-3 text-harness-purple">drafter</td>
-              <td className="py-2 pr-3 text-harness-text">claude-sonnet-4-6</td>
-              <td className="py-2 pr-3 text-harness-text">1400 / 520</td>
-              <td className="py-2 pr-3 text-harness-text">0.14</td>
-              <td className="py-2 pr-3 text-harness-muted">revised</td>
-              <td className="py-2 pr-3 text-harness-warning">0.62</td>
-              <td className="py-2 text-right text-harness-dim">—</td>
-            </tr>
-            <tr>
-              <td className="py-2 pr-3 text-harness-text">R2·2</td>
-              <td className="py-2 pr-3 text-harness-teal">reviewer</td>
-              <td className="py-2 pr-3 text-harness-text">gemini-3-pro</td>
-              <td className="py-2 pr-3 text-harness-text">2100 / 640</td>
-              <td className="py-2 pr-3 text-harness-text">0.28</td>
-              <td className="py-2 pr-3 text-harness-teal">APPROVE</td>
-              <td className="py-2 pr-3 text-harness-teal">0.93</td>
-              <td className="py-2 text-right text-harness-teal">0 · sealed</td>
-            </tr>
+            {usingLive ? (
+              dialogue!.rounds.map((r, i) => (
+                <tr key={`${r.index}-${r.side}-${i}`} className="border-b border-harness-border last:border-0">
+                  <td className="py-2 pr-3 text-harness-text">R{r.index}·{r.side === 'drafter' ? '1' : '2'}</td>
+                  <td className={['py-2 pr-3', r.side === 'drafter' ? 'text-harness-purple' : 'text-harness-teal'].join(' ')}>{r.side || '—'}</td>
+                  <td className="py-2 pr-3 text-harness-text">{r.model ?? '—'}</td>
+                  <td className="py-2 pr-3 text-harness-dim">— / —</td>
+                  <td className="py-2 pr-3 text-harness-dim">—</td>
+                  <td className={[
+                    'py-2 pr-3',
+                    r.verdict === 'approve' ? 'text-harness-teal' :
+                    r.verdict === 'request_changes' || r.verdict === 'revise' ? 'text-harness-danger' :
+                    'text-harness-muted',
+                  ].join(' ')}>
+                    {r.verdict ? r.verdict.toUpperCase() : (r.side === 'drafter' ? 'draft' : '—')}
+                  </td>
+                  <td className={[
+                    'py-2 pr-3',
+                    r.jaccard === null ? 'text-harness-dim' :
+                    r.jaccard >= 0.9 ? 'text-harness-teal' :
+                    r.jaccard >= 0.7 ? 'text-harness-warning' :
+                    'text-harness-danger',
+                  ].join(' ')}>
+                    {r.jaccard === null ? '—' : r.jaccard.toFixed(2)}
+                  </td>
+                  <td className="py-2 text-right text-harness-dim">—</td>
+                </tr>
+              ))
+            ) : (
+              <>
+                <tr className="border-b border-harness-border">
+                  <td className="py-2 pr-3 text-harness-text">R1·1</td>
+                  <td className="py-2 pr-3 text-harness-purple">drafter</td>
+                  <td className="py-2 pr-3 text-harness-text">claude-sonnet-4-6</td>
+                  <td className="py-2 pr-3 text-harness-text">1300 / 480</td>
+                  <td className="py-2 pr-3 text-harness-text">0.18</td>
+                  <td className="py-2 pr-3 text-harness-muted">draft</td>
+                  <td className="py-2 pr-3 text-harness-dim">—</td>
+                  <td className="py-2 text-right text-harness-dim">—</td>
+                </tr>
+                <tr className="border-b border-harness-border">
+                  <td className="py-2 pr-3 text-harness-text">R1·2</td>
+                  <td className="py-2 pr-3 text-harness-teal">reviewer</td>
+                  <td className="py-2 pr-3 text-harness-text">gemini-3-pro</td>
+                  <td className="py-2 pr-3 text-harness-text">2600 / 920</td>
+                  <td className="py-2 pr-3 text-harness-text">0.34</td>
+                  <td className="py-2 pr-3 text-harness-danger">REVISE</td>
+                  <td className="py-2 pr-3 text-harness-dim">—</td>
+                  <td className="py-2 text-right text-harness-danger">2 · 7d / verdict label</td>
+                </tr>
+                <tr className="border-b border-harness-border">
+                  <td className="py-2 pr-3 text-harness-text">R2·1</td>
+                  <td className="py-2 pr-3 text-harness-purple">drafter</td>
+                  <td className="py-2 pr-3 text-harness-text">claude-sonnet-4-6</td>
+                  <td className="py-2 pr-3 text-harness-text">1400 / 520</td>
+                  <td className="py-2 pr-3 text-harness-text">0.14</td>
+                  <td className="py-2 pr-3 text-harness-muted">revised</td>
+                  <td className="py-2 pr-3 text-harness-warning">0.62</td>
+                  <td className="py-2 text-right text-harness-dim">—</td>
+                </tr>
+                <tr>
+                  <td className="py-2 pr-3 text-harness-text">R2·2</td>
+                  <td className="py-2 pr-3 text-harness-teal">reviewer</td>
+                  <td className="py-2 pr-3 text-harness-text">gemini-3-pro</td>
+                  <td className="py-2 pr-3 text-harness-text">2100 / 640</td>
+                  <td className="py-2 pr-3 text-harness-text">0.28</td>
+                  <td className="py-2 pr-3 text-harness-teal">APPROVE</td>
+                  <td className="py-2 pr-3 text-harness-teal">0.93</td>
+                  <td className="py-2 text-right text-harness-teal">0 · sealed</td>
+                </tr>
+              </>
+            )}
           </tbody>
         </table>
         <div className="mt-4 text-[10px] text-harness-dim">
-          Total · 7400 tok in · 2560 tok out · $0.94 · 4m 12s · 2 rounds · APPROVE → handoff acceptance_test
+          {usingLive
+            ? <>Live · {dialogue!.rounds.length} turns from {dialogue!.filename}</>
+            : <>Total · 7400 tok in · 2560 tok out · $0.94 · 4m 12s · 2 rounds · APPROVE → handoff acceptance_test</>}
         </div>
       </SectionCard>
     </HarnessShell>
+  );
+}
+
+// `useSearchParams` requires a Suspense boundary in Next.js 14 static export.
+export default function AdversaryLoopPage() {
+  return (
+    <Suspense fallback={null}>
+      <AdversaryLoopInner />
+    </Suspense>
   );
 }

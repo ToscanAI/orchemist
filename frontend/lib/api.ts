@@ -317,6 +317,134 @@ export function getRunLogs(runId: string): Promise<{ run_id: string; log: string
   );
 }
 
+// ── Run artifact endpoints (PR #825) ─────────────────────────────────────────
+
+/** One file in a run's output_dir. */
+export interface RunArtifactListEntry {
+  readonly name: string;
+  readonly size_bytes: number;
+  readonly mtime: number;
+}
+
+/** Response from `GET /api/v1/runs/{id}/artifacts`. */
+export interface RunArtifactList {
+  readonly run_id: string;
+  readonly output_dir: string;
+  readonly files: readonly RunArtifactListEntry[];
+}
+
+/**
+ * List files in a run's output_dir.
+ *
+ * `GET /api/v1/runs/{run_id}/artifacts`
+ *
+ * @throws `ApiError` 404 if the run or its output_dir is missing.
+ */
+export function listRunArtifacts(runId: string): Promise<RunArtifactList> {
+  return _fetch<RunArtifactList>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/artifacts`,
+  );
+}
+
+/** Response from `GET /api/v1/runs/{id}/artifacts/{filename}`. */
+export interface RunArtifactContent {
+  readonly run_id: string;
+  readonly filename: string;
+  readonly size_bytes: number;
+  readonly content: string;
+}
+
+/**
+ * Read a single artifact file from a run's output_dir.
+ *
+ * `GET /api/v1/runs/{run_id}/artifacts/{filename}`
+ *
+ * Body capped at 1 MiB server-side; oversize artifacts get a trailing
+ * `[…truncated…]` marker appended.
+ *
+ * @throws `ApiError` 400 on path-traversal attempt; 404 if missing.
+ */
+export function getRunArtifact(
+  runId: string,
+  filename: string,
+): Promise<RunArtifactContent> {
+  return _fetch<RunArtifactContent>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(filename)}`,
+  );
+}
+
+/** Per-section parsed Phase 0 inventory. */
+export interface RunPhase0Section {
+  readonly count: number;
+  readonly entries: readonly string[];
+}
+
+/** Response from `GET /api/v1/runs/{id}/phase0`. */
+export interface RunPhase0 {
+  readonly run_id: string;
+  readonly filename: string;
+  readonly sections: {
+    readonly ui_primitives: RunPhase0Section;
+    readonly shared_libs: RunPhase0Section;
+    readonly adjacent_patterns: RunPhase0Section;
+    readonly workspace_barrels: RunPhase0Section;
+  };
+  readonly verdicts: {
+    readonly CONSUME: number;
+    readonly EXTEND: number;
+    readonly DIVERGENT: number;
+    readonly NEW_OK: number;
+    readonly BLOCKED: number;
+  };
+  readonly raw: string;
+}
+
+/**
+ * Parse the Phase 0 existing-symbols inventory for a run.
+ *
+ * `GET /api/v1/runs/{run_id}/phase0`
+ *
+ * @throws `ApiError` 404 when the run did not produce a Phase 0 artifact
+ *         (e.g. `coding-pipeline-skip-spec` which has no Phase 0).
+ */
+export function getRunPhase0(runId: string): Promise<RunPhase0> {
+  return _fetch<RunPhase0>(`/api/v1/runs/${encodeURIComponent(runId)}/phase0`);
+}
+
+/** One round in the cross-model dialogue artifact. */
+export interface RunDialogueRound {
+  readonly index: number;
+  readonly side: 'drafter' | 'reviewer' | '';
+  readonly model: string | null;
+  readonly verdict: 'approve' | 'request_changes' | 'revise' | 'abort' | null;
+  readonly content: string;
+  readonly jaccard: number | null;
+}
+
+/** Response from `GET /api/v1/runs/{id}/dialogue`. */
+export interface RunDialogue {
+  readonly run_id: string;
+  readonly filename: string;
+  readonly rounds: readonly RunDialogueRound[];
+  readonly raw: string;
+}
+
+/**
+ * Return the cross-model dialogue artifact for a run, if present.
+ *
+ * `GET /api/v1/runs/{run_id}/dialogue`
+ *
+ * Only runs that used the Track B dialogue phase (PR #808) produce this
+ * artifact — most runs return 404.
+ *
+ * @throws `ApiError` 404 when no dialogue artifact exists.
+ */
+export function getRunDialogue(runId: string): Promise<RunDialogue> {
+  return _fetch<RunDialogue>(
+    `/api/v1/runs/${encodeURIComponent(runId)}/dialogue`,
+  );
+}
+
 /**
  * Cancel a running or pending pipeline run.
  *
