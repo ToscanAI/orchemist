@@ -804,54 +804,7 @@ def post_github_comment(repo: str, issue_number: int, body: str) -> Optional[str
 # ---------------------------------------------------------------------------
 
 
-def slugify_branch(title: str, max_length: int = 40) -> str:
-    """Convert an issue title to a git-branch-safe slug.
-
-    Normalises Unicode characters, strips non-alphanumeric characters
-    (keeping hyphens), collapses consecutive hyphens, and truncates to
-    *max_length* characters.  Returns ``"issue"`` for empty inputs.
-
-    Args:
-        title:      Raw title string (may contain Unicode, spaces, special chars).
-        max_length: Maximum length of the returned slug.  Defaults to ``40``.
-
-    Returns:
-        A lowercase, hyphen-separated slug safe for use in a git branch name.
-        Never starts or ends with a hyphen.
-
-    Examples::
-
-        slugify_branch("Fix null pointer in pipeline runner")
-        # → "fix-null-pointer-in-pipeline-runner"
-
-        slugify_branch("Add résumé parser 🚀")
-        # → "add-resume-parser"
-
-        slugify_branch("")
-        # → "issue"
-    """
-    import unicodedata
-
-    if not title or not title.strip():
-        return "issue"
-
-    # Normalise to ASCII — decompose accented chars then strip non-ASCII
-    nfkd = unicodedata.normalize("NFKD", title)
-    ascii_str = nfkd.encode("ascii", "ignore").decode("ascii")
-
-    # Lowercase
-    lower = ascii_str.lower()
-
-    # Replace any non-alphanumeric, non-hyphen character with a hyphen
-    slug = re.sub(r"[^a-z0-9]+", "-", lower)
-
-    # Strip leading/trailing hyphens
-    slug = slug.strip("-")
-
-    # Truncate to max_length, then strip trailing hyphens again
-    slug = slug[:max_length].rstrip("-")
-
-    return slug or "issue"
+from .text_utils import slugify_branch  # noqa: F401 — re-export for backward compat
 
 
 # ---------------------------------------------------------------------------
