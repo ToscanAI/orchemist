@@ -781,7 +781,43 @@ def create_api_app(
 
         Returns:
             A :class:`RunResponse`-shaped dict for the newly created run.
+
+        Raises:
+            HTTPException(429): When ``ORCH_MAX_DAEMONS`` active runs are
+                already executing (#839 backpressure). The launcher does
+                NOT spawn another daemon process while this many are
+                already in flight — unbounded concurrent daemons trip
+                SQLite WAL contention and produce zombie runs (#754).
         """
+        # ── Backpressure check (#839) ────────────────────────────────
+        # Default cap matches the empirical safe ceiling for SQLite WAL
+        # on a 4-core dev laptop; production deployments raise it via
+        # the env var. A value of 0 disables the cap entirely (legacy
+        # behaviour). We read the env var on every launch so an operator
+        # can tune live without restarting the server.
+        try:
+            _max_daemons = int(os.environ.get("ORCH_MAX_DAEMONS", "8"))
+        except ValueError:
+            _max_daemons = 8
+        if _max_daemons > 0:
+            _active = db.count_active_pipeline_runs()
+            if _active >= _max_daemons:
+                logger.warning(
+                    "Launch rejected (#839 backpressure): %d active runs "
+                    ">= ORCH_MAX_DAEMONS=%d. Wait for in-flight runs to "
+                    "complete or raise the cap.",
+                    _active, _max_daemons,
+                )
+                raise HTTPException(
+                    status_code=429,
+                    detail=(
+                        f"Backpressure: {_active} pipeline runs already active "
+                        f"(cap ORCH_MAX_DAEMONS={_max_daemons}). Wait for "
+                        f"in-flight runs to complete or raise the cap."
+                    ),
+                    headers={"Retry-After": "30"},
+                )
+
         run_id = str(uuid.uuid4())[:8]
         if output_dir_override:
             output_dir = Path(output_dir_override)
