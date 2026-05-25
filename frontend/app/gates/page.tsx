@@ -19,14 +19,30 @@ import { useEffect, useMemo, useState } from 'react';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
 import { listGates, approveGate, rejectGate, ApiError } from '@/lib/api';
-import type { GateRecord } from '@/lib/api';
+import type { GateRecord, GateStatus } from '@/lib/api';
 import {
   DEMO_GATES,
   DEMO_TRUST_PROFILES,
   DEMO_DECISIONS,
 } from '@/lib/demo-data';
 
+/**
+ * Operator-facing filter vocabulary. Maps to canonical engine `GateStatus`
+ * values (see `lib/api.ts`) so the API actually filters server-side
+ * instead of every pill returning the same rows.
+ *
+ *   'pending'     → awaiting_approval   (the queue we ask operators to triage)
+ *   'auto-merged' → merged              (audit trail of auto-completed gates)
+ *   'held'        → rejected            (operator-rejected, kept for audit)
+ *   'all'         → no status filter
+ */
 type Filter = 'all' | 'pending' | 'auto-merged' | 'held';
+
+const FILTER_TO_STATUS: Record<Exclude<Filter, 'all'>, GateStatus> = {
+  pending: 'awaiting_approval',
+  'auto-merged': 'merged',
+  held: 'rejected',
+};
 
 /** Shape consumed by the rendering layer (normalized across real + demo). */
 interface GateRow {
@@ -83,9 +99,10 @@ export default function TrustAndGatesPage() {
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  async function refresh() {
+  async function refresh(currentFilter: Filter = filter) {
     try {
-      const r = await listGates({ limit: 50 });
+      const statusParam = currentFilter === 'all' ? undefined : FILTER_TO_STATUS[currentFilter];
+      const r = await listGates({ limit: 50, status: statusParam });
       setLiveGates(r.items);
       setEngineUp(true);
     } catch (e) {
@@ -93,7 +110,9 @@ export default function TrustAndGatesPage() {
     }
   }
 
-  useEffect(() => { void refresh(); }, []);
+  // Re-fetch whenever the filter changes so the queue actually narrows
+  // (audit 2026-05-25: filter pills previously had no effect on results).
+  useEffect(() => { void refresh(filter); }, [filter]);
 
   const usingLive = engineUp === true && liveGates !== null && liveGates.length > 0;
 
@@ -195,6 +214,12 @@ export default function TrustAndGatesPage() {
               'h-pill text-[11px]',
               filter === f ? 'h-pill-purple' : 'text-harness-muted',
             ].join(' ')}
+            data-testid={`gates-filter-${f}`}
+            title={
+              f === 'all'
+                ? 'No status filter — show all gates'
+                : `Status filter: ${FILTER_TO_STATUS[f]}`
+            }
           >
             {f}
           </button>
