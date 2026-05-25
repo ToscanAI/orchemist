@@ -2277,6 +2277,11 @@ def create_api_app(
         # If a column declared as TEXT-of-JSON-list ends up as a non-list (parse
         # failure or hand-edit), substitute the empty list so the frontend
         # contract holds.
+        # `commits` is included for forward-compat: gate dicts (a different
+        # response shape) have that key, and if any future endpoint
+        # passes those rows through `_normalize_row` we want the
+        # array-typed contract preserved. Currently no harness endpoint
+        # actually returns rows with `commits`.
         for list_key in ("affected_files", "issues_found", "commits"):
             if list_key in out and not isinstance(out[list_key], list):
                 out[list_key] = []
@@ -2299,25 +2304,34 @@ def create_api_app(
         limit = max(1, min(limit, 200))
         offset = max(0, offset)
         db = Database(Path(effective_db_path))
-        # Single _locked() block so items + total share a snapshot — prevents
-        # the race where a concurrent insert/delete makes total != len(items)
-        # or hides a row that's visible elsewhere.
+        # NOTE on consistency: `_locked()` is a no-op for file-based DBs
+        # (production); SQLite's default isolation gives us autocommit
+        # snapshot semantics per statement. To make items + total truly
+        # consistent we wrap both in an explicit BEGIN DEFERRED ... COMMIT
+        # transaction so they share one snapshot. The transaction is
+        # read-only, so contention with writers is minimal.
+        base = "SELECT * FROM regressions"
+        where: List[str] = []
+        params: List[Any] = []
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        wclause = (" WHERE " + " AND ".join(where)) if where else ""
+        # Stable secondary sort by id — `created_at` has 1-second resolution
+        # and adjacent rows often share a timestamp, so without a tiebreaker
+        # offset-based pagination skips or repeats rows.
+        list_q = base + wclause + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        count_q = "SELECT COUNT(*) FROM regressions" + wclause
         with db._locked():
             conn = db.get_connection()
-            base = "SELECT * FROM regressions"
-            where: List[Any] = []
-            params: List[Any] = []
-            if status:
-                where.append("status = ?")
-                params.append(status)
-            wclause = (" WHERE " + " AND ".join(where)) if where else ""
-            # Stable secondary sort by id — `created_at` has 1-second resolution
-            # and adjacent rows often share a timestamp, so without a tiebreaker
-            # offset-based pagination skips or repeats rows.
-            list_q = base + wclause + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
-            count_q = "SELECT COUNT(*) FROM regressions" + wclause
-            rows = conn.execute(list_q, params + [limit, offset]).fetchall()
-            total = conn.execute(count_q, params).fetchone()[0]
+            try:
+                conn.execute("BEGIN DEFERRED")
+                rows = conn.execute(list_q, params + [limit, offset]).fetchall()
+                total = conn.execute(count_q, params).fetchone()[0]
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
         items = [_normalize_row(db._row_to_dict(r)) for r in rows]
         return JSONResponse({
             "items": items,
@@ -2389,14 +2403,22 @@ def create_api_app(
         limit = max(1, min(limit, 100))
         offset = max(0, offset)
         db = Database(Path(effective_db_path))
+        # See `/regressions` for the same BEGIN DEFERRED rationale —
+        # share one read snapshot across items + total.
         with db._locked():
             conn = db.get_connection()
-            rows = conn.execute(
-                "SELECT * FROM review_outcomes "
-                "ORDER BY created_at DESC, review_id DESC LIMIT ? OFFSET ?",
-                (limit, offset),
-            ).fetchall()
-            total = conn.execute("SELECT COUNT(*) FROM review_outcomes").fetchone()[0]
+            try:
+                conn.execute("BEGIN DEFERRED")
+                rows = conn.execute(
+                    "SELECT * FROM review_outcomes "
+                    "ORDER BY created_at DESC, review_id DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
+                total = conn.execute("SELECT COUNT(*) FROM review_outcomes").fetchone()[0]
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
         items = [_normalize_row(db._row_to_dict(r)) for r in rows]
         return JSONResponse({
             "items": items,
@@ -2425,10 +2447,19 @@ def create_api_app(
     }
     _ADMIN_KNOWN_FLAGS = frozenset(_ADMIN_DEFAULTS["feature_flags"].keys())
     _ADMIN_KNOWN_MODES = frozenset(_ADMIN_DEFAULTS["modes"].keys())
-    # Serialise admin writes — read-modify-write races otherwise lose patches
-    # when an operator clicks two toggles fast or has two tabs open. asyncio
-    # is the right primitive because FastAPI runs handlers on a single loop.
-    _admin_lock = __import__("asyncio").Lock()
+    # Concurrency model (round-3 simplification):
+    # - PUT /admin/feature-flags has zero `await` points inside its
+    #   read-modify-write critical section, so FastAPI's single-event-loop
+    #   scheduling already serialises it (a coroutine without `await` can't
+    #   be preempted by asyncio).
+    # - `os.replace()` is atomic on POSIX, so even in the multi-process case
+    #   the on-disk file is always well-formed (last-writer-wins semantics
+    #   are acceptable for operator-preferred admin flags).
+    # No asyncio.Lock — the round-2 one was performative (the BLOCKER round 3
+    # caught) and its accompanying "concurrent PUT" test couldn't fail
+    # whether the lock was there or not. Both deleted; the new
+    # `test_two_simultaneous_puts_no_loss` exercises the actual property
+    # we care about (both patches land + disk stays well-formed).
 
     def _coerce_admin_doc(loaded: Any) -> Dict[str, Any]:
         """Merge a possibly-malformed loaded JSON value over the defaults.
@@ -2439,9 +2470,20 @@ def create_api_app(
         ALWAYS the same shape as ``_ADMIN_DEFAULTS`` with every value
         type-validated; unparseable values fall back to the per-key default
         (NOT to `bool(value)` which would silently coerce "maybe" → True).
+
+        Returns a freshly-constructed dict — callers may mutate it without
+        affecting subsequent requests. The previous version's
+        ``return dict(_ADMIN_DEFAULTS)`` shallow-copied and shared the
+        inner ``feature_flags`` / ``modes`` dicts with the module-level
+        defaults; that's been fixed by always constructing inner dicts
+        from scratch via ``dict(_ADMIN_DEFAULTS["..."])``.
         """
         if not isinstance(loaded, dict):
-            return dict(_ADMIN_DEFAULTS)
+            return {
+                "autonomy_level": _ADMIN_DEFAULTS["autonomy_level"],
+                "feature_flags": dict(_ADMIN_DEFAULTS["feature_flags"]),
+                "modes": dict(_ADMIN_DEFAULTS["modes"]),
+            }
         merged: Dict[str, Any] = {
             "autonomy_level": str(loaded.get("autonomy_level", _ADMIN_DEFAULTS["autonomy_level"])),
             "feature_flags": dict(_ADMIN_DEFAULTS["feature_flags"]),
@@ -2582,44 +2624,47 @@ def create_api_app(
         admin_dir = Path.home() / ".orchestration-engine"
         admin_path = admin_dir / "admin.json"
 
-        async with _admin_lock:
-            admin_dir.mkdir(parents=True, exist_ok=True)
-            # Re-read inside the lock so we see other tabs' writes.
-            current: Dict[str, Any] = {}
-            if admin_path.exists():
-                try:
-                    loaded = _json.loads(admin_path.read_text())
-                    if isinstance(loaded, dict):
-                        current = loaded
-                except (OSError, ValueError):
-                    current = {}
-            # Preserve unknown top-level keys; only mutate feature_flags.
-            existing_flags = current.get("feature_flags")
-            disk_flags: Dict[str, Any] = dict(existing_flags) if isinstance(existing_flags, dict) else {}
-            disk_flags.update(patch)
-            current["feature_flags"] = disk_flags
-
-            # Atomic write: tempfile in the same directory + os.replace.
-            fd, tmp = _tempfile.mkstemp(prefix="admin.", suffix=".tmp", dir=str(admin_dir))
+        admin_dir.mkdir(parents=True, exist_ok=True)
+        current: Dict[str, Any] = {}
+        if admin_path.exists():
             try:
-                with _os.fdopen(fd, "w") as fh:
-                    _json.dump(current, fh, indent=2)
-                _os.replace(tmp, admin_path)
-                tmp = None  # ownership transferred to the destination
-            finally:
-                # Clean up the tempfile if the replace failed. Path.unlink
-                # with missing_ok=True avoids the TOCTOU window of the prior
-                # `if os.path.exists(): os.unlink()` pattern and won't mask
-                # the original exception with its own.
-                if tmp is not None:
-                    Path(tmp).unlink(missing_ok=True)
-        # Return the canonical shape (all 4 flags, all bool) so the response
-        # matches the AdminState['feature_flags'] TS contract regardless of
-        # what was previously on disk. _coerce_admin_doc normalises any
-        # lingering string values written by an operator's hand-edit.
-        canonical = _coerce_admin_doc(current)
+                loaded = _json.loads(admin_path.read_text())
+                if isinstance(loaded, dict):
+                    current = loaded
+            except (OSError, ValueError):
+                current = {}
+        # Canonicalise the merged feature_flags BEFORE writing so disk and
+        # response always agree. Round-3 audit caught: if the operator had
+        # hand-edited a flag to `"maybe"`, the response normalised it via
+        # _coerce_admin_doc but the disk file still held the bad value —
+        # any downstream tool reading admin.json directly saw a different
+        # answer than the API. We now write the canonical shape.
+        existing_flags = current.get("feature_flags")
+        disk_flags: Dict[str, Any] = dict(existing_flags) if isinstance(existing_flags, dict) else {}
+        disk_flags.update(patch)
+        # Build canonical via _coerce_admin_doc — strict-coerces every value
+        # to a real bool and fills in any missing flag with its default.
+        canonical_flags = _coerce_admin_doc({"feature_flags": disk_flags})["feature_flags"]
+        current["feature_flags"] = canonical_flags
+
+        # Atomic write: tempfile in the same directory + os.replace.
+        # No asyncio.Lock — see _ADMIN_DEFAULTS / concurrency-model comment
+        # above for why this handler is already serialised by the event loop.
+        fd, tmp = _tempfile.mkstemp(prefix="admin.", suffix=".tmp", dir=str(admin_dir))
+        try:
+            with _os.fdopen(fd, "w") as fh:
+                _json.dump(current, fh, indent=2)
+            _os.replace(tmp, admin_path)
+            tmp = None  # ownership transferred to the destination
+        finally:
+            # Clean up the tempfile if the replace failed. Path.unlink
+            # with missing_ok=True avoids the TOCTOU window of the prior
+            # `if os.path.exists(): os.unlink()` pattern and won't mask
+            # the original exception with its own.
+            if tmp is not None:
+                Path(tmp).unlink(missing_ok=True)
         return JSONResponse({
-            "feature_flags": canonical["feature_flags"],
+            "feature_flags": canonical_flags,
             "path": str(admin_path),
         })
 
