@@ -2232,6 +2232,212 @@ def create_api_app(
             "raw": raw,
         })
 
+    # ── Harness aggregate endpoints (items 4, 6, 7 from the post-0.10 audit) ──
+    # These three close the read-side data gaps the harness was rendering as
+    # demo content. They are pure DB reads with reasonable pagination caps —
+    # no writes (with one exception, see /admin/feature-flags below).
+    #
+    # The trust + regression endpoints unblock the Trust & Gates side panel
+    # and the Fleet Dashboard regression queue. The /decisions endpoint reuses
+    # the `review_outcomes` table (each row IS a decision: APPROVE / REQUEST_CHANGES
+    # by a specific reviewer at a specific time) so we don't need a new table.
+
+    @app.get("/api/v1/regressions")
+    async def list_regressions_endpoint(
+        status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> JSONResponse:
+        """List regression records (from `regressions` table, newest first).
+
+        Backs the Fleet Dashboard "Regression queue" card. Returns the
+        canonical engine shape; the harness maps it to the table row.
+
+        Optional ``status`` filter (e.g. ``'detected'``, ``'fixing'``,
+        ``'resolved'``). Limit clamped to [1, 200].
+        """
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
+        db = Database(Path(effective_db_path))
+        items = db.list_regressions(status=status, limit=limit, offset=offset)
+        # Total without pagination — counting via a second query is cheap on
+        # this table (typically a few hundred rows at most).
+        total_query = "SELECT COUNT(*) FROM regressions"
+        params: List[Any] = []
+        if status:
+            total_query += " WHERE status = ?"
+            params.append(status)
+        with db._locked():
+            conn = db.get_connection()
+            total = conn.execute(total_query, params).fetchone()[0]
+        return JSONResponse({
+            "items": items,
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+        })
+
+    @app.get("/api/v1/stale-findings")
+    async def list_stale_findings_endpoint() -> JSONResponse:
+        """List stale-detection findings (ROADMAP §3.5).
+
+        Returns an empty list until the stale scanner ships (it's the
+        last open Phase-3 item in ROADMAP.md). The endpoint exists today
+        so the harness Fleet Dashboard stale card can hit a real URL and
+        get an empty list with a status marker, instead of hardcoding
+        demo data forever.
+
+        Response shape mirrors `/api/v1/regressions` for consistency.
+        """
+        return JSONResponse({
+            "items": [],
+            "total": 0,
+            "scan_status": "no_scanner_yet",
+            "next_scan_at": None,
+        })
+
+    @app.get("/api/v1/trust-profiles")
+    async def list_trust_profiles_endpoint() -> JSONResponse:
+        """Return all trust calibration profiles.
+
+        Backs the Trust & Gates side panel. Profiles are keyed by
+        (repo, template_id, task_type) per `trust.py` — the harness
+        renders the key as a single composed label and the confidence
+        as a bar relative to the threshold.
+
+        No pagination — the active profile set is bounded by the number
+        of (repo, template, task) tuples in use, typically O(10s).
+        """
+        db = Database(Path(effective_db_path))
+        items = db.list_trust_profiles()
+        return JSONResponse({"items": items, "total": len(items)})
+
+    @app.get("/api/v1/decisions")
+    async def list_decisions_endpoint(limit: int = 50, offset: int = 0) -> JSONResponse:
+        """List recent review outcomes ('decisions') for the audit trail.
+
+        Backs the Trust & Gates "Recent decisions" card. Each row is one
+        APPROVE / REQUEST_CHANGES verdict on one run, recorded in the
+        `review_outcomes` table by the engine when a reviewer phase
+        completes.
+
+        Limit clamped to [1, 100].
+        """
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
+        db = Database(Path(effective_db_path))
+        items = db.list_review_outcomes(limit=limit, offset=offset)
+        return JSONResponse({"items": items, "limit": limit, "offset": offset})
+
+    @app.get("/api/v1/admin/state")
+    async def get_admin_state() -> JSONResponse:
+        """Aggregate admin-console read state.
+
+        Combines settings the harness Admin / Activation page displays:
+
+        * `autonomy_level` — current operator-set level (3 / 4 / 4.3 / 5)
+        * `feature_flags` — known flags + their current values
+        * `modes` — provider mode toggles (openrouter / standalone / openclaw / dryrun)
+
+        Values are read from a JSON config file under the engine's data
+        directory (`~/.orchestration-engine/admin.json`). If the file is
+        missing or unreadable, sensible defaults are returned and the
+        response includes `"source": "default"` so the UI can warn that
+        edits won't persist until the file is writable.
+
+        This endpoint is the read side of `PUT /admin/feature-flags`
+        below; both touch the same JSON file.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+        admin_path = _Path.home() / ".orchestration-engine" / "admin.json"
+        defaults = {
+            "autonomy_level": "4.3",
+            "feature_flags": {
+                "phase0_hard_gate": False,
+                "extend_verdict": True,
+                "dialogue_phase": False,
+                "cross_repo": False,
+            },
+            "modes": {
+                "openrouter": True,
+                "standalone": True,
+                "openclaw": False,
+                "dry_run": True,
+            },
+        }
+        if admin_path.exists():
+            try:
+                loaded = _json.loads(admin_path.read_text())
+                # shallow-merge over defaults so we tolerate partial files
+                merged = {**defaults, **{k: v for k, v in loaded.items() if k in defaults}}
+                # for nested dicts, also shallow-merge
+                for k in ("feature_flags", "modes"):
+                    if isinstance(loaded.get(k), dict):
+                        merged[k] = {**defaults[k], **loaded[k]}
+                return JSONResponse({**merged, "source": "file", "path": str(admin_path)})
+            except (OSError, ValueError):
+                # Fall through to defaults
+                pass
+        return JSONResponse({**defaults, "source": "default", "path": str(admin_path)})
+
+    @app.put("/api/v1/admin/feature-flags")
+    async def update_feature_flags(request: Request) -> JSONResponse:
+        """Persist a feature-flag patch to `admin.json`.
+
+        Body: `{"phase0_hard_gate": true, ...}` — any subset of the known
+        flags. Unknown keys are rejected (400).
+
+        Writes are atomic via tempfile + rename. The runtime engine does
+        NOT yet honour these flags — they are operator preferences read
+        by the harness for display. Flags become live when the
+        sequencer / pipeline YAML reads them (separate epic).
+        """
+        import json as _json
+        import os as _os
+        import tempfile as _tempfile
+        from pathlib import Path as _Path
+
+        known_flags = {"phase0_hard_gate", "extend_verdict", "dialogue_phase", "cross_repo"}
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="Body must be a JSON object")
+        bad_keys = set(body.keys()) - known_flags
+        if bad_keys:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown flag(s): {sorted(bad_keys)}. Known: {sorted(known_flags)}",
+            )
+        # Coerce values to bool
+        patch = {k: bool(v) for k, v in body.items()}
+
+        admin_dir = _Path.home() / ".orchestration-engine"
+        admin_dir.mkdir(parents=True, exist_ok=True)
+        admin_path = admin_dir / "admin.json"
+        current: Dict[str, Any] = {}
+        if admin_path.exists():
+            try:
+                current = _json.loads(admin_path.read_text())
+            except (OSError, ValueError):
+                current = {}
+        flags = dict(current.get("feature_flags", {}))
+        flags.update(patch)
+        current["feature_flags"] = flags
+
+        # Atomic write — same pattern as templates / file_guard.
+        fd, tmp = _tempfile.mkstemp(prefix="admin.", dir=str(admin_dir))
+        try:
+            with _os.fdopen(fd, "w") as fh:
+                _json.dump(current, fh, indent=2)
+            _os.replace(tmp, admin_path)
+        except Exception:
+            _os.unlink(tmp) if _os.path.exists(tmp) else None
+            raise
+        return JSONResponse({"feature_flags": flags, "path": str(admin_path)})
+
     @app.get("/api/v1/runs/{run_id}/stream")
     async def stream_run(run_id: str, request: Request) -> EventSourceResponse:
         """Stream live phase-transition events for a pipeline run via SSE.
@@ -2250,6 +2456,15 @@ def create_api_app(
         * ``status_changed`` — run-level status transition (emitted once on
           terminal state: ``success``, ``failed``, ``cancelled``, ``crashed``,
           ``scoring_failed``, ``pending_review``, ``rejected``).
+        * ``tool_call_started`` — (Issue #818-followup) emitted by tool-aware
+          executors when a model invokes a tool. Schema: ``{run_id, phase_id,
+          tool_name, tool_args, iteration}``. Currently NOT emitted by any
+          executor — the SSE handler will forward these once executors hook
+          the emission. Frontend already tolerates them via discriminated
+          union with default-passthrough behaviour.
+        * ``tool_call_completed`` — companion event with ``{run_id, phase_id,
+          tool_name, result_summary, elapsed_ms, iteration}``. Same
+          executor-cooperation requirement.
         * ``error`` — run not found or unexpected failure.
 
         **Data** is a JSON object with at minimum ``run_id`` and ``phase_id``
