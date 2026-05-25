@@ -445,6 +445,140 @@ export function getRunDialogue(runId: string): Promise<RunDialogue> {
   );
 }
 
+// ── Harness aggregate endpoints (PR #828) ─────────────────────────────────────
+
+/** Regression row from the `regressions` table. */
+export interface RegressionRecord {
+  readonly id: string;
+  readonly commit_sha: string;
+  readonly ci_run_url: string;
+  readonly failure_type: string;
+  readonly affected_files: readonly string[];
+  readonly diagnosis: string | null;
+  readonly fix_run_id: string | null;
+  readonly status: string;
+  readonly fix_attempt_count: number;
+  readonly created_at: string;
+}
+
+export interface RegressionsResponse {
+  readonly items: readonly RegressionRecord[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+}
+
+/** `GET /api/v1/regressions[?status&limit&offset]` — backs Fleet regression queue. */
+export function listRegressions(params?: { status?: string; limit?: number; offset?: number }): Promise<RegressionsResponse> {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set('status', params.status);
+  if (params?.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params?.offset !== undefined) qs.set('offset', String(params.offset));
+  const q = qs.toString();
+  return _fetch<RegressionsResponse>(`/api/v1/regressions${q ? `?${q}` : ''}`);
+}
+
+/** Stale-detection placeholder until the scanner ships (ROADMAP §3.5). */
+export interface StaleFindingsResponse {
+  readonly items: readonly { id: string; severity: 'warn' | 'info'; summary: string; hint: string }[];
+  readonly total: number;
+  readonly scan_status: 'no_scanner_yet' | 'idle' | 'scanning' | 'error';
+  readonly next_scan_at: string | null;
+}
+
+/** `GET /api/v1/stale-findings` — backs Fleet stale-detection card. */
+export function listStaleFindings(): Promise<StaleFindingsResponse> {
+  return _fetch<StaleFindingsResponse>('/api/v1/stale-findings');
+}
+
+/** Trust profile row mirroring the `trust_profiles` table. */
+export interface TrustProfileRecord {
+  readonly id: number;
+  readonly repo: string;
+  readonly template_id: string;
+  readonly task_type: string;
+  readonly auto_merge_threshold: number;
+  readonly human_review_threshold: number;
+  readonly trust_score: number;
+  readonly total_runs: number;
+  readonly successful_merges: number;
+  readonly regressions: number;
+  readonly reverted_prs: number;
+  readonly last_run_at: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+export interface TrustProfilesResponse {
+  readonly items: readonly TrustProfileRecord[];
+  readonly total: number;
+}
+
+/** `GET /api/v1/trust-profiles` — backs Trust & Gates side panel. */
+export function listTrustProfiles(): Promise<TrustProfilesResponse> {
+  return _fetch<TrustProfilesResponse>('/api/v1/trust-profiles');
+}
+
+/** One row from `review_outcomes` — the audit trail of approve/reject verdicts. */
+export interface DecisionRecord {
+  readonly id: number;
+  readonly run_id: string;
+  readonly verdict: string;
+  readonly created_at: string;
+  readonly reviewer_model: string | null;
+  readonly issues_found: readonly string[] | null;
+  readonly confidence: number | null;
+}
+
+export interface DecisionsResponse {
+  readonly items: readonly DecisionRecord[];
+  readonly limit: number;
+  readonly offset: number;
+}
+
+/** `GET /api/v1/decisions[?limit&offset]` — backs Trust & Gates audit trail. */
+export function listDecisions(params?: { limit?: number; offset?: number }): Promise<DecisionsResponse> {
+  const qs = new URLSearchParams();
+  if (params?.limit !== undefined) qs.set('limit', String(params.limit));
+  if (params?.offset !== undefined) qs.set('offset', String(params.offset));
+  const q = qs.toString();
+  return _fetch<DecisionsResponse>(`/api/v1/decisions${q ? `?${q}` : ''}`);
+}
+
+/** Admin state aggregated from `~/.orchestration-engine/admin.json`. */
+export interface AdminState {
+  readonly autonomy_level: string;
+  readonly feature_flags: {
+    readonly phase0_hard_gate: boolean;
+    readonly extend_verdict: boolean;
+    readonly dialogue_phase: boolean;
+    readonly cross_repo: boolean;
+  };
+  readonly modes: {
+    readonly openrouter: boolean;
+    readonly standalone: boolean;
+    readonly openclaw: boolean;
+    readonly dry_run: boolean;
+  };
+  readonly source: 'default' | 'file';
+  readonly path: string;
+}
+
+/** `GET /api/v1/admin/state` — backs Admin / Activation read view. */
+export function getAdminState(): Promise<AdminState> {
+  return _fetch<AdminState>('/api/v1/admin/state');
+}
+
+/** `PUT /api/v1/admin/feature-flags` — atomic patch. */
+export function updateAdminFeatureFlags(
+  patch: Partial<AdminState['feature_flags']>,
+): Promise<{ feature_flags: AdminState['feature_flags']; path: string }> {
+  return _fetch<{ feature_flags: AdminState['feature_flags']; path: string }>(
+    '/api/v1/admin/feature-flags',
+    { method: 'PUT', body: JSON.stringify(patch) },
+  );
+}
+
 /**
  * Cancel a running or pending pipeline run.
  *

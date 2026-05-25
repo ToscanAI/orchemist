@@ -20,10 +20,12 @@
  */
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
 import { AutonomyRamp } from '@/components/harness/AutonomyRamp';
+import { getAdminState, updateAdminFeatureFlags } from '@/lib/api';
+import type { AdminState } from '@/lib/api';
 
 interface ToggleProps {
   readonly label: string;
@@ -63,12 +65,24 @@ function Toggle({ label, sublabel, value, tone = value ? 'on' : 'off', onToggle,
 }
 
 export default function AdminActivationPage() {
-  // local UI state; in production these mutations call PATCH endpoints
+  // Kill switches + autonomy ramp UI live in local state — these don't have
+  // backend write endpoints today (they're not yet honoured by the runtime;
+  // separate epic). Modes are also local: provider availability is governed
+  // by env vars at server boot, not by runtime toggles.
   const [autoMerge, setAutoMerge] = useState(true);
   const [issueSpawn, setIssueSpawn] = useState(true);
   const [regressionAutoFix, setRegressionAutoFix] = useState(true);
   const [skillsMode, setSkillsMode] = useState(true);
 
+  // Feature flags + modes hydrate from /api/v1/admin/state on mount.
+  // `engineUp === null` is loading; `false` means we fell back to local-only
+  // state (offline / endpoint missing).
+  const [adminState, setAdminState] = useState<AdminState | null>(null);
+  const [engineUp, setEngineUp] = useState<boolean | null>(null);
+  const [flagBusy, setFlagBusy] = useState<string | null>(null);
+  const [flagError, setFlagError] = useState<string | null>(null);
+
+  // Modes — initial defaults; replaced from adminState once it loads.
   const [openrouter, setOpenrouter] = useState(true);
   const [standalone, setStandalone] = useState(true);
   const [openclaw, setOpenclaw] = useState(false);
@@ -77,6 +91,47 @@ export default function AdminActivationPage() {
   const [phase0Hard, setPhase0Hard] = useState(false);
   const [extendVerdict, setExtendVerdict] = useState(true);
   const [crossRepo, setCrossRepo] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getAdminState()
+      .then((s) => {
+        if (cancelled) return;
+        setAdminState(s);
+        setEngineUp(true);
+        setOpenrouter(s.modes.openrouter);
+        setStandalone(s.modes.standalone);
+        setOpenclaw(s.modes.openclaw);
+        setDryRun(s.modes.dry_run);
+        setPhase0Hard(s.feature_flags.phase0_hard_gate);
+        setExtendVerdict(s.feature_flags.extend_verdict);
+        setCrossRepo(s.feature_flags.cross_repo);
+      })
+      .catch(() => { if (!cancelled) setEngineUp(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Wrap each feature-flag toggle so the PUT goes to the engine and the
+  // optimistic update reverts on failure.
+  async function persistFlag(
+    key: 'phase0_hard_gate' | 'extend_verdict' | 'cross_repo',
+    next: boolean,
+    localSetter: (v: boolean) => void,
+  ) {
+    localSetter(next);
+    if (engineUp !== true) return; // local-only mode
+    setFlagBusy(key);
+    setFlagError(null);
+    try {
+      await updateAdminFeatureFlags({ [key]: next });
+    } catch (e) {
+      // Revert on failure
+      localSetter(!next);
+      setFlagError(e instanceof Error ? e.message : `Failed to persist ${key}`);
+    } finally {
+      setFlagBusy(null);
+    }
+  }
 
   return (
     <HarnessShell
@@ -235,36 +290,48 @@ export default function AdminActivationPage() {
 
         {/* Section 6: Feature flags */}
         <div className="col-span-4">
-          <SectionCard title="6 · Feature flags · v4.2" subtitle={<span>pipeline structural toggles</span>}>
+          <SectionCard
+            title="6 · Feature flags · v4.2"
+            subtitle={
+              adminState
+                ? <span>persisted to {adminState.source === 'file' ? adminState.path : 'in-memory defaults'} · live</span>
+                : engineUp === false
+                  ? <span className="text-harness-warning">engine offline · toggles local-only</span>
+                  : <span>pipeline structural toggles · loading…</span>
+            }
+          >
+            {flagError && (
+              <div className="mb-3 text-[11px] text-harness-danger">{flagError}</div>
+            )}
             <div className="flex flex-col gap-4">
               <Toggle
-                label="phase0_hard_gate"
+                label={`phase0_hard_gate${flagBusy === 'phase0_hard_gate' ? ' ·' : ''}`}
                 sublabel="HALT on missing inventory"
                 value={phase0Hard}
-                tone="off"
-                onToggle={setPhase0Hard}
+                tone={phase0Hard ? 'on' : 'off'}
+                onToggle={(next) => persistFlag('phase0_hard_gate', next, setPhase0Hard)}
                 testId="flag-phase0"
               />
               <Toggle
-                label="EXTEND verdict"
+                label={`EXTEND verdict${flagBusy === 'extend_verdict' ? ' ·' : ''}`}
                 sublabel="v4.2 four-verdict schema"
                 value={extendVerdict}
-                onToggle={setExtendVerdict}
+                onToggle={(next) => persistFlag('extend_verdict', next, setExtendVerdict)}
                 testId="flag-extend"
               />
               <Toggle
                 label="dialogue phase (#808)"
-                sublabel="Gemini reviewer prototype"
+                sublabel="Gemini reviewer prototype · not yet persisted"
                 value={true}
                 tone="dev"
                 testId="flag-dialogue"
               />
               <Toggle
-                label="cross-repo orchestration"
+                label={`cross-repo orchestration${flagBusy === 'cross_repo' ? ' ·' : ''}`}
                 sublabel="Sprint 12 · #563-#567"
                 value={crossRepo}
-                tone="off"
-                onToggle={setCrossRepo}
+                tone={crossRepo ? 'on' : 'off'}
+                onToggle={(next) => persistFlag('cross_repo', next, setCrossRepo)}
                 testId="flag-crossrepo"
               />
             </div>

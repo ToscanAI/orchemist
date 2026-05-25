@@ -18,8 +18,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
-import { listGates, approveGate, rejectGate, ApiError } from '@/lib/api';
-import type { GateRecord, GateStatus } from '@/lib/api';
+import {
+  listGates,
+  approveGate,
+  rejectGate,
+  listTrustProfiles,
+  listDecisions,
+  ApiError,
+} from '@/lib/api';
+import type { GateRecord, GateStatus, TrustProfileRecord, DecisionRecord } from '@/lib/api';
 import {
   DEMO_GATES,
   DEMO_TRUST_PROFILES,
@@ -95,6 +102,8 @@ function fromGateRecord(g: GateRecord): GateRow {
 export default function TrustAndGatesPage() {
   const [filter, setFilter] = useState<Filter>('all');
   const [liveGates, setLiveGates] = useState<readonly GateRecord[] | null>(null);
+  const [trustProfiles, setTrustProfiles] = useState<readonly TrustProfileRecord[] | null>(null);
+  const [decisions, setDecisions] = useState<readonly DecisionRecord[] | null>(null);
   const [engineUp, setEngineUp] = useState<boolean | null>(null);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -113,6 +122,19 @@ export default function TrustAndGatesPage() {
   // Re-fetch whenever the filter changes so the queue actually narrows
   // (audit 2026-05-25: filter pills previously had no effect on results).
   useEffect(() => { void refresh(filter); }, [filter]);
+
+  // Trust profiles + decisions are filter-independent — fetch once on mount.
+  // Both fail soft: 404 / engine-offline → null, demo data renders.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.allSettled([listTrustProfiles(), listDecisions({ limit: 20 })])
+      .then(([profRes, decRes]) => {
+        if (cancelled) return;
+        if (profRes.status === 'fulfilled') setTrustProfiles(profRes.value.items);
+        if (decRes.status === 'fulfilled') setDecisions(decRes.value.items);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   const usingLive = engineUp === true && liveGates !== null && liveGates.length > 0;
 
@@ -322,11 +344,36 @@ export default function TrustAndGatesPage() {
         <div className="col-span-4">
           <SectionCard
             title="Trust profiles"
-            subtitle={<span>per (repo, template, task_type) · static while trust.py endpoint lands</span>}
+            subtitle={
+              trustProfiles && trustProfiles.length > 0
+                ? <span>per (repo, template, task) · {trustProfiles.length} live from /api/v1/trust-profiles</span>
+                : <span>per (repo, template, task) · <span className="text-harness-warning">demo · no trust profiles in engine yet</span></span>
+            }
             testId="section-trust"
           >
             <ul className="space-y-4 text-[11px]">
-              {DEMO_TRUST_PROFILES.map((p) => {
+              {trustProfiles && trustProfiles.length > 0 ? trustProfiles.slice(0, 8).map((p) => {
+                const pct = Math.min(100, p.trust_score * 100);
+                // Verdict logic: trust_score >= auto_merge_threshold → auto-merge eligible.
+                // Below human_review_threshold → review-all stance.
+                // Between → hold (waiting on threshold drift or operator decision).
+                const verdict: 'auto' | 'hold' | 'review-all' =
+                  p.trust_score >= p.auto_merge_threshold ? 'auto' :
+                  p.trust_score < p.human_review_threshold ? 'review-all' : 'hold';
+                const tone = verdict === 'auto' ? 'bg-harness-teal' : verdict === 'hold' ? 'bg-harness-warning' : 'bg-harness-danger';
+                const key = `${p.repo} · ${p.template_id} · ${p.task_type}`;
+                return (
+                  <li key={p.id}>
+                    <div className="font-semibold text-harness-text">{key}</div>
+                    <div className="mt-1 h-1.5 w-full rounded bg-harness-border">
+                      <div className={['h-1.5 rounded', tone].join(' ')} style={{ width: `${pct}%` }} />
+                    </div>
+                    <div className="mt-1 text-[10px] text-harness-dim text-right">
+                      {p.trust_score.toFixed(2)} {verdict === 'auto' ? '≥' : verdict === 'hold' ? '·' : '<'} {p.auto_merge_threshold.toFixed(2)} ({verdict})
+                    </div>
+                  </li>
+                );
+              }) : DEMO_TRUST_PROFILES.map((p) => {
                 const pct = Math.min(100, p.confidence * 100);
                 const tone = p.verdict === 'auto' ? 'bg-harness-teal' : p.verdict === 'hold' ? 'bg-harness-warning' : 'bg-harness-danger';
                 return (
@@ -375,11 +422,49 @@ export default function TrustAndGatesPage() {
         <div className="col-span-6">
           <SectionCard
             title="Recent decisions · audit trail"
-            subtitle={<span>closes ROADMAP §4.5 audit trail &amp; compliance export (issue #565)</span>}
+            subtitle={
+              decisions && decisions.length > 0
+                ? <span>{decisions.length} live from /api/v1/decisions · closes ROADMAP §4.5</span>
+                : <span>closes ROADMAP §4.5 audit trail &amp; compliance export (issue #565) · <span className="text-harness-warning">demo · no decisions logged yet</span></span>
+            }
             testId="section-decisions"
           >
             <ul className="space-y-2 text-[11px]">
-              {DEMO_DECISIONS.map((d, i) => (
+              {decisions && decisions.length > 0 ? decisions.map((d) => {
+                // Map APPROVE / REQUEST_CHANGES (engine canonical) onto the
+                // approve / reject / auto vocabulary the demo data uses.
+                const v = (d.verdict ?? '').toLowerCase();
+                const kind: 'approve' | 'reject' | 'auto' =
+                  v === 'approve' ? 'approve' :
+                  v === 'request_changes' || v === 'reject' ? 'reject' :
+                  'auto';
+                const ago = (() => {
+                  const t = new Date(d.created_at).getTime();
+                  if (!Number.isFinite(t)) return '—';
+                  const min = Math.floor((Date.now() - t) / 60000);
+                  if (min < 60) return `${min} min ago`;
+                  const h = Math.floor(min / 60);
+                  if (h < 24) return `${h}h ago`;
+                  const days = Math.floor(h / 24);
+                  return `${days}d ago`;
+                })();
+                return (
+                  <li key={d.id} className="flex items-center gap-3">
+                    <span className={[
+                      'w-16',
+                      kind === 'approve' ? 'text-harness-teal' :
+                      kind === 'reject' ? 'text-harness-danger' :
+                      'text-harness-purple',
+                    ].join(' ')}>
+                      {kind === 'approve' ? '✓ approve' : kind === 'reject' ? '✗ reject' : '⏏ auto'}
+                    </span>
+                    <span className="flex-1 text-harness-text truncate" title={d.run_id}>
+                      run {d.run_id.slice(0, 8)} · {d.reviewer_model ?? 'reviewer'} {d.confidence !== null ? `· ${d.confidence.toFixed(2)}` : ''}
+                    </span>
+                    <span className="text-harness-dim text-[10px]">{ago}</span>
+                  </li>
+                );
+              }) : DEMO_DECISIONS.map((d, i) => (
                 <li key={i} className="flex items-center gap-3">
                   <span className={[
                     'w-16',
