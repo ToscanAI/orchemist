@@ -2767,6 +2767,10 @@ def create_api_app(
         # wasn't in _ADMIN_KNOWN_FLAGS.
         existing_flags = current.get("feature_flags")
         disk_flags: Dict[str, Any] = dict(existing_flags) if isinstance(existing_flags, dict) else {}
+        before_canonical: Dict[str, Any] = {
+            k: disk_flags.get(k, _ADMIN_DEFAULTS["feature_flags"][k])
+            for k in _ADMIN_KNOWN_FLAGS
+        }
         disk_flags.update(patch)
         merged_flags = _merge_feature_flags_with_passthrough(disk_flags)
         current["feature_flags"] = merged_flags
@@ -2790,9 +2794,77 @@ def create_api_app(
             # the original exception with its own.
             if tmp is not None:
                 Path(tmp).unlink(missing_ok=True)
+        # Append-only audit log (#838) — record only the keys that
+        # ACTUALLY changed value, so audit rows are scannable.
+        changed_keys = sorted(
+            k for k, v in canonical_flags.items()
+            if before_canonical.get(k) != v
+        )
+        if changed_keys:
+            try:
+                db = Database(Path(effective_db_path))
+                db.append_admin_audit(
+                    action="update_feature_flags",
+                    target=",".join(changed_keys),
+                    before={k: before_canonical[k] for k in changed_keys},
+                    after={k: canonical_flags[k] for k in changed_keys},
+                )
+            except Exception as _exc:  # noqa: BLE001 — audit log is best-effort
+                logger.warning("admin audit-log append failed: %s", _exc)
         return JSONResponse({
             "feature_flags": canonical_flags,
             "path": str(admin_path),
+        })
+
+    @app.get("/api/v1/admin/audit-log")
+    async def get_admin_audit_log(limit: int = 100, offset: int = 0) -> JSONResponse:
+        """Return the admin-state audit log (#838).
+
+        Append-only record of every mutation made via the admin API. Each
+        row carries the before/after JSON, the action verb, the target
+        surface, and the OS pid of the FastAPI worker that served the
+        request (best-effort attribution — the engine has no per-user
+        auth today).
+
+        Query params:
+            limit (int): Max rows to return (default 100, max 1000).
+            offset (int): Skip this many newest rows (default 0).
+
+        Response::
+
+            {
+                "rows": [
+                    {
+                        "id": 42,
+                        "action": "update_feature_flags",
+                        "target": "phase0_hard_gate,dialogue_phase",
+                        "before": {...},
+                        "after": {...},
+                        "source_pid": 12345,
+                        "created_at": "2026-05-25 18:31:12"
+                    },
+                    ...
+                ],
+                "limit": 100,
+                "offset": 0
+            }
+        """
+        if limit < 1 or limit > 1000:
+            raise HTTPException(
+                status_code=400,
+                detail="limit must be between 1 and 1000",
+            )
+        if offset < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="offset must be >= 0",
+            )
+        db = Database(Path(effective_db_path))
+        rows = db.list_admin_audit(limit=limit, offset=offset)
+        return JSONResponse({
+            "rows": rows,
+            "limit": limit,
+            "offset": offset,
         })
 
     @app.get("/api/v1/runs/{run_id}/stream")
