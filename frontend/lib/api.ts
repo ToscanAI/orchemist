@@ -480,19 +480,41 @@ export function resumeRun(runId: string): Promise<RunRecord> {
 
 // ── Gate management (#743) ──────────────────────────────────────────────────
 
-/** Gate record from the API. */
+/**
+ * Canonical backend gate-status values written by `daemon.py` and
+ * `routing.py`. Anywhere a status filter is sent to the engine, it MUST be
+ * one of these strings — the harness's user-facing filter labels
+ * (pending / auto-merged / held / all) are mapped to one of these before
+ * the API call.
+ */
+export type GateStatus = 'awaiting_approval' | 'approved' | 'merged' | 'rejected';
+
+/**
+ * Gate record from `/api/v1/gates`. Mirrors `_gate_to_dict()` on the
+ * engine side (audited 2026-05-25). Optional fields are those the engine
+ * omits on `null` values; types match the JSON shape exactly.
+ */
 export interface GateRecord {
   readonly run_id: string;
   readonly pipeline_id: string;
+  readonly status: GateStatus | string;
   readonly branch: string;
   readonly base_branch: string;
-  readonly status: string;
+  readonly diff_stats: string;
+  readonly commits: readonly string[];
+  readonly output_dir: string;
+  readonly repo_path: string;
+  readonly created_at: string;
+  readonly approve_command: string;
+  readonly reject_command: string;
+  readonly create_pr: boolean;
+  readonly issue_number: number | null;
   readonly scoring_status: string | null;
   readonly scoring_score: number | null;
-  readonly created_at: string;
-  readonly updated_at: string;
-  readonly message: string | null;
-  readonly commits: readonly string[];
+  // Legacy fields the harness used to read; both retained as optional so
+  // existing callers don't break. The engine may add these back later.
+  readonly updated_at?: string;
+  readonly message?: string | null;
 }
 
 /** Paginated gate list response. */

@@ -15,9 +15,9 @@
  * progression matching the SVG canon (active phase = implement).
  */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, Suspense } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import { useRunEvents } from '@/lib/sse';
 import {
   getRun,
@@ -67,10 +67,46 @@ function phaseStatus(phaseId: string, completed: readonly string[], current: str
   return 'queued';
 }
 
+// ── Resolve run id ──
+// Production (`output: 'export'`): the engine's FastAPI catch-all serves
+// `out/runs/_/index.html` for any unknown `/runs/<id>` path. The browser's
+// `window.location.pathname` still carries the real id, and `useParams`
+// returns the URL segment intact.
+//
+// Development (`next dev`): the dev server is strict about generateStaticParams
+// and would 500 on any id not in the placeholder set. Our `next.config.js`
+// rewrite sends `/runs/:id` → `/runs/_?run=:id`, so the real id arrives via
+// useSearchParams instead. This helper picks the right one.
+function resolveRunId(pathParamId: string | undefined, searchRun: string | null): string {
+  if (pathParamId && pathParamId !== '_') return pathParamId;
+  if (searchRun) return searchRun;
+  if (typeof window !== 'undefined') {
+    const m = window.location.pathname.match(/\/runs\/([^/]+)/);
+    if (m && m[1] !== '_') return m[1];
+  }
+  return '';
+}
+
 // ── Page ──
-export default function RunCockpitClient() {
+function RunCockpitInner() {
   const { id } = useParams<{ id: string }>();
-  const runId = typeof id === 'string' ? id : '';
+  const search = useSearchParams();
+
+  // Compute runId in a way that produces the SAME value on SSR and the first
+  // client render (both: ignore window). After mount, useEffect populates the
+  // real id from window.location if needed. Without this two-step approach we
+  // hit a React hydration mismatch on `/runs/<id>` paths: server renders the
+  // placeholder `_`, client renders the real id, React complains.
+  const [runId, setRunId] = useState<string>(() => {
+    if (id && id !== '_') return id;
+    if (search?.get('run')) return search.get('run')!;
+    return '';
+  });
+  useEffect(() => {
+    const resolved = resolveRunId(id, search?.get('run') ?? null);
+    if (resolved && resolved !== runId) setRunId(resolved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, search]);
 
   const [run, setRun] = useState<RunRecord | null>(null);
   const [engineUp, setEngineUp] = useState<boolean | null>(null);
@@ -406,5 +442,14 @@ export default function RunCockpitClient() {
         <div className="fixed bottom-12 right-6 z-40 h-pill h-pill-warning text-[10px]">demo data · engine offline</div>
       )}
     </HarnessShell>
+  );
+}
+
+// `useSearchParams` requires a Suspense boundary under Next 14 static export.
+export default function RunCockpitClient() {
+  return (
+    <Suspense fallback={null}>
+      <RunCockpitInner />
+    </Suspense>
   );
 }
