@@ -152,7 +152,7 @@ export default function AdminActivationPage() {
       <section className="grid grid-cols-12 gap-4">
         <div className="col-span-8">
           <SectionCard
-            title="1 · Autonomy ramp · current Level 4.3"
+            title={`1 · Autonomy ramp · current Level ${adminState?.autonomy_level ?? '4.3'}`}
             subtitle={<span>L3 = review-all · L4 = auto-merge ≥ threshold · L5 = dark factory (full Tuesday-morning scenario)</span>}
           >
             <AutonomyRamp />

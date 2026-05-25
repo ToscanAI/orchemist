@@ -2257,7 +2257,16 @@ def create_api_app(
         return value
 
     def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
-        """Z-suffix any naive ISO timestamp on a single DB row."""
+        """Defensive post-processor for one DB row before serialisation.
+
+        Two normalisations:
+        1. Z-suffix any naive ISO timestamp (JS interprets TZ-less strings as
+           local time, off by client UTC offset).
+        2. JSON-list fields that failed `_row_to_dict` parse keep their raw
+           string. The TS interfaces declare them as arrays; coerce
+           unparseable values back to ``[]`` so the frontend's `.length` /
+           `.slice()` / `.map()` calls don't throw on a corrupt row.
+        """
         if not isinstance(row, dict):
             return row
         out = dict(row)
@@ -2265,6 +2274,12 @@ def create_api_app(
                     "last_run_at", "last_updated"):
             if key in out:
                 out[key] = _normalize_ts(out[key])
+        # If a column declared as TEXT-of-JSON-list ends up as a non-list (parse
+        # failure or hand-edit), substitute the empty list so the frontend
+        # contract holds.
+        for list_key in ("affected_files", "issues_found", "commits"):
+            if list_key in out and not isinstance(out[list_key], list):
+                out[list_key] = []
         return out
 
     @app.get("/api/v1/regressions")
@@ -2420,8 +2435,10 @@ def create_api_app(
 
         Defensive against every shape that a hand-edited `admin.json` can
         take: not-a-dict, nested key is the wrong type, scalar where dict
-        expected, missing keys. The output is ALWAYS the same shape as
-        ``_ADMIN_DEFAULTS`` with every value type-coerced.
+        expected, missing keys, values that aren't bools. The output is
+        ALWAYS the same shape as ``_ADMIN_DEFAULTS`` with every value
+        type-validated; unparseable values fall back to the per-key default
+        (NOT to `bool(value)` which would silently coerce "maybe" → True).
         """
         if not isinstance(loaded, dict):
             return dict(_ADMIN_DEFAULTS)
@@ -2434,27 +2451,44 @@ def create_api_app(
         if isinstance(ff, dict):
             for k in _ADMIN_KNOWN_FLAGS:
                 if k in ff:
-                    merged["feature_flags"][k] = _coerce_bool(ff[k])
+                    coerced = _strict_coerce_bool(ff[k])
+                    if coerced is not None:
+                        merged["feature_flags"][k] = coerced
+                    # else: keep default for this flag (round-2 review fix)
         mm = loaded.get("modes")
         if isinstance(mm, dict):
             for k in _ADMIN_KNOWN_MODES:
                 if k in mm:
-                    merged["modes"][k] = _coerce_bool(mm[k])
+                    coerced = _strict_coerce_bool(mm[k])
+                    if coerced is not None:
+                        merged["modes"][k] = coerced
         return merged
 
-    def _coerce_bool(value: Any) -> bool:
-        """Strict bool coercion: accept Python bool, JSON bool, 0/1, or
-        common string spellings of true/false. Anything else falls back to
-        bool(value) to match prior behaviour, but logs an audit warning."""
+    def _strict_coerce_bool(value: Any) -> Optional[bool]:
+        """Strict bool coercion. Returns the bool when the input is one of
+        the canonical truthy/falsy values, or ``None`` to signal
+        "unrecognised — caller must decide what to substitute".
+
+        Accepts: ``bool`` (any), ``int``/``float`` ∈ {0, 1}, and the strings
+        ``true``/``false``/``yes``/``no``/``on``/``off``/``1``/``0`` plus
+        the empty string (→ False). Everything else returns ``None`` —
+        callers handle the substitute (per-field default in
+        ``_coerce_admin_doc``, 400 response in the PUT handler).
+        """
         if isinstance(value, bool):
             return value
-        if isinstance(value, (int, float)):
-            return value != 0
+        # `bool` is a subclass of `int`; the bool check above wins. Numbers
+        # outside {0, 1} are explicitly rejected to avoid e.g. `2` becoming
+        # True.
+        if isinstance(value, int) and value in (0, 1):
+            return bool(value)
+        if isinstance(value, float) and value in (0.0, 1.0):
+            return bool(value)
         if isinstance(value, str):
             low = value.strip().lower()
             if low in ("true", "1", "yes", "on"): return True
             if low in ("false", "0", "no", "off", ""): return False
-        return bool(value)
+        return None
 
     @app.get("/api/v1/admin/state")
     async def get_admin_state() -> JSONResponse:
@@ -2530,20 +2564,12 @@ def create_api_app(
                 status_code=400,
                 detail=f"Unknown flag(s): {sorted(bad_keys)}. Known: {sorted(_ADMIN_KNOWN_FLAGS)}",
             )
-        # Reject values that aren't already JSON-typed booleans or known
-        # spelling variants. We accept Python bool, int 0/1, and common
-        # string spellings but reject ambiguous things like the string
-        # "false" being silently coerced to True via bool() (the prior
-        # behaviour).
+        # Reject any value that isn't an explicit canonical boolean. The
+        # strict-coerce helper returns None on unrecognised input → 400.
         patch: Dict[str, bool] = {}
         for k, v in body.items():
-            if isinstance(v, bool):
-                patch[k] = v
-            elif isinstance(v, (int, float)) and v in (0, 1):
-                patch[k] = bool(v)
-            elif isinstance(v, str) and v.strip().lower() in ("true", "false", "1", "0", "yes", "no", "on", "off"):
-                patch[k] = _coerce_bool(v)
-            else:
+            coerced = _strict_coerce_bool(v)
+            if coerced is None:
                 raise HTTPException(
                     status_code=400,
                     detail=(
@@ -2551,6 +2577,7 @@ def create_api_app(
                         f"got {type(v).__name__}: {v!r}"
                     ),
                 )
+            patch[k] = coerced
 
         admin_dir = Path.home() / ".orchestration-engine"
         admin_path = admin_dir / "admin.json"
@@ -2568,9 +2595,9 @@ def create_api_app(
                     current = {}
             # Preserve unknown top-level keys; only mutate feature_flags.
             existing_flags = current.get("feature_flags")
-            flags: Dict[str, bool] = dict(existing_flags) if isinstance(existing_flags, dict) else {}
-            flags.update(patch)
-            current["feature_flags"] = flags
+            disk_flags: Dict[str, Any] = dict(existing_flags) if isinstance(existing_flags, dict) else {}
+            disk_flags.update(patch)
+            current["feature_flags"] = disk_flags
 
             # Atomic write: tempfile in the same directory + os.replace.
             fd, tmp = _tempfile.mkstemp(prefix="admin.", suffix=".tmp", dir=str(admin_dir))
@@ -2586,7 +2613,15 @@ def create_api_app(
                 # the original exception with its own.
                 if tmp is not None:
                     Path(tmp).unlink(missing_ok=True)
-        return JSONResponse({"feature_flags": flags, "path": str(admin_path)})
+        # Return the canonical shape (all 4 flags, all bool) so the response
+        # matches the AdminState['feature_flags'] TS contract regardless of
+        # what was previously on disk. _coerce_admin_doc normalises any
+        # lingering string values written by an operator's hand-edit.
+        canonical = _coerce_admin_doc(current)
+        return JSONResponse({
+            "feature_flags": canonical["feature_flags"],
+            "path": str(admin_path),
+        })
 
     @app.get("/api/v1/runs/{run_id}/stream")
     async def stream_run(run_id: str, request: Request) -> EventSourceResponse:
@@ -2606,15 +2641,12 @@ def create_api_app(
         * ``status_changed`` — run-level status transition (emitted once on
           terminal state: ``success``, ``failed``, ``cancelled``, ``crashed``,
           ``scoring_failed``, ``pending_review``, ``rejected``).
-        * ``tool_call_started`` — (Issue #818-followup) emitted by tool-aware
-          executors when a model invokes a tool. Schema: ``{run_id, phase_id,
-          tool_name, tool_args, iteration}``. Currently NOT emitted by any
-          executor — the SSE handler will forward these once executors hook
-          the emission. Frontend already tolerates them via discriminated
-          union with default-passthrough behaviour.
-        * ``tool_call_completed`` — companion event with ``{run_id, phase_id,
-          tool_name, result_summary, elapsed_ms, iteration}``. Same
-          executor-cooperation requirement.
+        * ``tool_call_started`` / ``tool_call_completed`` — reserved schema
+          for tool-aware executors to emit per-tool-call progress. Schema:
+          ``{run_id, phase_id, tool_name, tool_args | result_summary,
+          iteration}``. NOT emitted by any executor today and NOT rendered
+          by the harness frontend; the handler will forward them transparently
+          when both sides land in a follow-up PR.
         * ``error`` — run not found or unexpected failure.
 
         **Data** is a JSON object with at minimum ``run_id`` and ``phase_id``
