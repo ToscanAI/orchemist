@@ -378,6 +378,8 @@ pip install -e ".[dev]"
 pytest
 ```
 
+**Maintainers cutting a release:** see [docs/RELEASE-SOP.md](docs/RELEASE-SOP.md).
+
 **Areas where contributions are especially welcome:**
 
 - 📦 **Community templates** — add a YAML template to `templates/` and submit a PR
