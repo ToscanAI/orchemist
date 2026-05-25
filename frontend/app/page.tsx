@@ -41,6 +41,11 @@ export default function FleetDashboardPage() {
   const [gateCount, setGateCount] = useState<number | null>(null);
   const [regressions, setRegressions] = useState<readonly RegressionRecord[] | null>(null);
   const [regressionsTotal, setRegressionsTotal] = useState<number | null>(null);
+  // Round-2 audit fix: the previous code used `regressions.filter(r =>
+  // r.status === 'fixing').length` on a list that was pre-filtered to
+  // `status=detected`, which always returned 0. Track the fixing count via
+  // a separate API call so the KPI sublabel reflects reality.
+  const [fixingTotal, setFixingTotal] = useState<number | null>(null);
   const [staleFindings, setStaleFindings] = useState<StaleFindingsResponse | null>(null);
 
   useEffect(() => {
@@ -49,14 +54,15 @@ export default function FleetDashboardPage() {
       listRuns({ status: 'running', limit: 20 }),
       listRuns({ limit: 1 }),
       listGates({ limit: 1 }),
-      // Only-pending regressions for the KPI — we don't want resolved
-      // ones inflating the count. Limit=10 for the card; KPI reads `total`.
+      // Detected (queue) — KPI uses `total`, card uses items.
       listRegressions({ status: 'detected', limit: 10 }),
+      // Fixing — separate call so the sublabel can honestly say "N auto-fix
+      // in flight" instead of always-zero.
+      listRegressions({ status: 'fixing', limit: 1 }),
       listStaleFindings(),
-    ]).then(([runningRes, totalsRes, gatesRes, regRes, staleRes]) => {
+    ]).then(([runningRes, totalsRes, gatesRes, regRes, fixRes, staleRes]) => {
       if (cancelled) return;
-      // engine is "up" if any call succeeded
-      const anyOk = [runningRes, totalsRes, gatesRes, regRes, staleRes].some((r) => r.status === 'fulfilled');
+      const anyOk = [runningRes, totalsRes, gatesRes, regRes, fixRes, staleRes].some((r) => r.status === 'fulfilled');
       setEngineUp(anyOk);
       if (runningRes.status === 'fulfilled') setLiveRuns(runningRes.value.items);
       if (totalsRes.status === 'fulfilled') setTotalRuns(totalsRes.value.total);
@@ -65,6 +71,7 @@ export default function FleetDashboardPage() {
         setRegressions(regRes.value.items);
         setRegressionsTotal(regRes.value.total);
       }
+      if (fixRes.status === 'fulfilled') setFixingTotal(fixRes.value.total);
       if (staleRes.status === 'fulfilled') setStaleFindings(staleRes.value);
     });
     return () => { cancelled = true; };
@@ -120,7 +127,7 @@ export default function FleetDashboardPage() {
             regressionsTotal !== null
               ? regressionsTotal === 0
                 ? <span>queue empty · no detected regressions</span>
-                : <span>{(regressions ?? []).filter((r) => r.status === 'fixing').length} auto-fix in flight · {regressionsTotal} total</span>
+                : <span>{fixingTotal ?? 0} auto-fix in flight · {regressionsTotal} detected</span>
               : <span>auto-fix pipelines spawned · 1 PR open</span>
           }
           testId="kpi-regressions"
@@ -237,8 +244,16 @@ export default function FleetDashboardPage() {
                         )}
                       </div>
                       <div className="mt-1 text-[11px] text-harness-muted">
-                        {r.commit_sha.slice(0, 8)} · {r.affected_files.slice(0, 2).join(', ')}
-                        {r.affected_files.length > 2 && ` +${r.affected_files.length - 2} more`}
+                        {r.commit_sha.slice(0, 8)} · {
+                          // Defensive: server-side `_normalize_row` coerces
+                          // a malformed JSON list back to [], but the type
+                          // signature still allows `readonly string[]` and a
+                          // future change could let a non-array leak through.
+                          Array.isArray(r.affected_files)
+                            ? r.affected_files.slice(0, 2).join(', ') +
+                              (r.affected_files.length > 2 ? ` +${r.affected_files.length - 2} more` : '')
+                            : '—'
+                        }
                         {' '}· status {r.status}
                       </div>
                     </li>

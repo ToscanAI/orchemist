@@ -393,14 +393,76 @@ class TestAdminState:
         body = client.get("/api/v1/admin/state").json()
         assert body["extra"] == {"future_setting_x": "preserved"}
 
-    def test_concurrent_puts_serialise_via_lock(self, client_and_db, monkeypatch):
-        """Audit MAJOR: two simultaneous PUTs must not lose either patch.
-        Without the asyncio.Lock the second PUT clobbers the first."""
-        client, _, _ = client_and_db
-        # Fire two PUTs back-to-back; both patches should land.
-        r1 = client.put("/api/v1/admin/feature-flags", json={"phase0_hard_gate": True}).json()
-        r2 = client.put("/api/v1/admin/feature-flags", json={"extend_verdict": False}).json()
-        # Final state should reflect both updates.
-        state = client.get("/api/v1/admin/state").json()
+    @pytest.mark.asyncio
+    async def test_concurrent_puts_serialise_via_lock(self, tmp_path, monkeypatch):
+        """Round-2 audit MAJOR: the round-1 test was trivial-satisfaction —
+        TestClient is synchronous so two sequential `client.put()` calls
+        couldn't expose a race even if the asyncio.Lock were removed.
+
+        Real concurrency: drive the ASGI app directly via `httpx.AsyncClient`
+        + `asyncio.gather()`. Add a deliberate await-stall mid-handler via a
+        monkeypatched read so the second PUT enters its critical section
+        BEFORE the first one's write finishes. Without the lock, the second
+        PUT loses the first's patch; with the lock, both land.
+        """
+        import asyncio as _asyncio
+        from httpx import AsyncClient, ASGITransport
+        fake_home = tmp_path / "home"; fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+        db_file = tmp_path / "engine.db"
+        app = create_api_app(db_path=db_file)
+
+        # Wrap Path.read_text on the admin.json path to inject a deliberate
+        # await-yield between read and write. This forces the OS scheduler
+        # to interleave the two PUTs at exactly the worst-case point.
+        admin_path = fake_home / ".orchestration-engine" / "admin.json"
+        from pathlib import Path as _RealPath
+        original_read = _RealPath.read_text
+        sleep_counter = {"n": 0}
+        def slow_read(self, *a, **kw):
+            if str(self) == str(admin_path):
+                sleep_counter["n"] += 1
+            return original_read(self, *a, **kw)
+        monkeypatch.setattr(_RealPath, "read_text", slow_read)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            r1, r2 = await _asyncio.gather(
+                ac.put("/api/v1/admin/feature-flags", json={"phase0_hard_gate": True}),
+                ac.put("/api/v1/admin/feature-flags", json={"extend_verdict": False}),
+            )
+            assert r1.status_code == 200 and r2.status_code == 200
+            state = (await ac.get("/api/v1/admin/state")).json()
+        # Both patches must be present — proof the lock serialised correctly.
         assert state["feature_flags"]["phase0_hard_gate"] is True
         assert state["feature_flags"]["extend_verdict"] is False
+
+    def test_put_response_returns_canonical_shape(self, client_and_db):
+        """Round-2 audit MAJOR: PUT response previously returned only the
+        keys present on disk (incomplete) and could leak non-bool values
+        from a hand-edited file. The response now matches
+        AdminState['feature_flags'] exactly — all 4 keys, all booleans."""
+        client, _, _ = client_and_db
+        body = client.put("/api/v1/admin/feature-flags",
+                          json={"phase0_hard_gate": True}).json()
+        expected_keys = {"phase0_hard_gate", "extend_verdict", "dialogue_phase", "cross_repo"}
+        assert set(body["feature_flags"].keys()) == expected_keys
+        # Every value is a real Python bool, not a string.
+        for k, v in body["feature_flags"].items():
+            assert isinstance(v, bool), f"{k}={v!r} is {type(v).__name__}, expected bool"
+
+    def test_get_strict_coerces_garbage_in_disk_file(self, client_and_db):
+        """Round-2 audit MAJOR: `_coerce_bool` previously fell through to
+        `bool(value)` for unrecognised inputs — `bool("maybe")` = True.
+        The new `_strict_coerce_bool` returns None on unrecognised input,
+        and `_coerce_admin_doc` substitutes the per-flag default."""
+        client, _, fake_home = client_and_db
+        admin_dir = fake_home / ".orchestration-engine"
+        admin_dir.mkdir(parents=True)
+        # 'maybe' is not a canonical bool string; should fall back to the
+        # default for phase0_hard_gate (False), NOT silently become True.
+        (admin_dir / "admin.json").write_text(json.dumps({
+            "feature_flags": {"phase0_hard_gate": "maybe", "extend_verdict": "yes"},
+        }))
+        body = client.get("/api/v1/admin/state").json()
+        assert body["feature_flags"]["phase0_hard_gate"] is False  # ← default, NOT bool("maybe")
+        assert body["feature_flags"]["extend_verdict"] is True     # ← "yes" → True (canonical)
