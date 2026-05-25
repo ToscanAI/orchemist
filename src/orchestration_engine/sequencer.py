@@ -288,7 +288,36 @@ class PhaseSequencer:
             # Phases with ``type: dialogue`` in their YAML carry a parsed
             # DialoguePhaseConfig.  These bypass the normal task-runner path
             # entirely and run a drafter ↔ reviewer loop via ``dialogue_phase``.
+            # Gated by the ``dialogue_phase`` feature flag (#840) — when
+            # False (default), the phase is SKIPPED with a synthetic result
+            # that downstream handlers treat as a clean exit, and the linear
+            # wave proceeds to the next phase.
             if getattr(phase, "dialogue_config", None) is not None:
+                from . import feature_flags as _ff
+                if not _ff.is_enabled("dialogue_phase"):
+                    # INFO not WARNING: the default-disabled state IS a clean
+                    # exit (per CHANGELOG framing). Recurring WARNINGs on a
+                    # default-state run train operators to ignore the level.
+                    logger.info(
+                        "Pipeline %s: dialogue phase '%s' SKIPPED — admin "
+                        "feature_flags.dialogue_phase is False. Enable it in "
+                        "the admin console (or write `feature_flags.dialogue_phase`"
+                        " = true to ~/.orchestration-engine/admin.json) to run "
+                        "this phase.",
+                        self.template.id, phase_id,
+                    )
+                    result = {
+                        "state": "skipped_by_feature_flag",
+                        "result": "",
+                        "skipped_reason": "feature_flags.dialogue_phase is False",
+                        "cost_usd": 0.0,
+                        "tokens_consumed": 0,
+                        "execution_time_seconds": 0.0,
+                    }
+                    with self._phase_outputs_lock:
+                        self.phase_outputs[phase_id] = result
+                    self._invoke_on_phase_complete(phase_id, result)
+                    continue
                 phase_input = self._build_phase_input(phase, initial_input)
                 result = self._execute_dialogue_phase(phase, phase_input)
                 with self._phase_outputs_lock:
@@ -514,6 +543,39 @@ class PhaseSequencer:
 
             # Notify caller that phase is about to start
             self._invoke_on_phase_start(phase_id, phase, wave_index)
+
+            # ── Dialogue phase dispatch + gate (Track B + #840) ──────────
+            # Mirrors the serial path (sequencer.py:_execute_wave_sequential).
+            # A type:dialogue phase in a parallel wave bypasses the task
+            # queue entirely — and bypasses the gate if not checked here.
+            if getattr(phase, "dialogue_config", None) is not None:
+                from . import feature_flags as _ff
+                if not _ff.is_enabled("dialogue_phase"):
+                    logger.info(
+                        "Pipeline %s: dialogue phase '%s' SKIPPED (parallel "
+                        "wave) — admin feature_flags.dialogue_phase is False.",
+                        self.template.id, phase_id,
+                    )
+                    result = {
+                        "state": "skipped_by_feature_flag",
+                        "result": "",
+                        "skipped_reason": "feature_flags.dialogue_phase is False",
+                        "cost_usd": 0.0,
+                        "tokens_consumed": 0,
+                        "execution_time_seconds": 0.0,
+                    }
+                    with self._phase_outputs_lock:
+                        self.phase_outputs[phase_id] = result
+                    self._invoke_on_phase_complete(phase_id, result)
+                    return result
+                # Dispatch via the canonical dialogue runner (gated above).
+                with self._phase_outputs_lock:
+                    phase_input = self._build_phase_input(phase, initial_input)
+                result = self._execute_dialogue_phase(phase, phase_input)
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+                self._invoke_on_phase_complete(phase_id, result)
+                return result
 
             # Build prompt — read phase_outputs under lock to avoid races
             with self._phase_outputs_lock:
@@ -3585,6 +3647,28 @@ class StateMachineSequencer(PhaseSequencer):
                         self._maybe_snapshot_on_approve(
                             phase, _exhausted_next, is_exhausted=True
                         )
+                        # ── Phase 0 hard-gate (#840) ─────────────────────────
+                        # When the exhausted phase is the existing_symbols
+                        # inventory AND the admin feature_flags.phase0_hard_gate
+                        # is True, OVERRIDE the YAML's graceful-degradation
+                        # fallback (typically exhausted → spec) and HALT the
+                        # pipeline. This is what consumers who care about
+                        # sub-check 7d rigour want: an empty/missing inventory
+                        # is a BLOCKER, not "fall through and grep ad-hoc".
+                        from . import feature_flags as _ff
+                        if (
+                            current_phase_id == _ff.PHASE_0_ID
+                            and _exhausted_next is not None
+                        ):
+                            if _ff.is_enabled("phase0_hard_gate"):
+                                logger.warning(
+                                    "Pipeline %s: Phase 0 exhausted AND "
+                                    "feature_flags.phase0_hard_gate=True — "
+                                    "overriding YAML's exhausted→%s fallback "
+                                    "and HALTING (sub-check 7d hard gate).",
+                                    self.template.id, _exhausted_next,
+                                )
+                                _exhausted_next = None
                         if _exhausted_next is not None:
                             logger.info(
                                 f"Pipeline {self.template.id}: MAX_ITERATIONS_EXCEEDED "
@@ -3671,6 +3755,64 @@ class StateMachineSequencer(PhaseSequencer):
                 self._invoke_on_phase_start(
                     current_phase_id, phase, len(executed_sequence) - 1
                 )
+
+                # ── Dialogue phase dispatch + gate (Track B + #840) ──────────
+                # State-machine path: a type:dialogue phase routed via
+                # transitions hits this dispatch site. The gate must be checked
+                # here so the flag applies regardless of which sequencer the
+                # consumer uses (PhaseSequencer linear / parallel paths cover
+                # the non-state-machine case in _execute_wave_*).
+                if getattr(phase, "dialogue_config", None) is not None:
+                    from . import feature_flags as _ff
+                    if not _ff.is_enabled("dialogue_phase"):
+                        logger.info(
+                            "Pipeline %s: dialogue phase '%s' SKIPPED "
+                            "(state-machine path) — admin "
+                            "feature_flags.dialogue_phase is False.",
+                            self.template.id, current_phase_id,
+                        )
+                        result = {
+                            "state": "skipped_by_feature_flag",
+                            "result": "",
+                            "skipped_reason": "feature_flags.dialogue_phase is False",
+                            "cost_usd": 0.0,
+                            "tokens_consumed": 0,
+                            "execution_time_seconds": 0.0,
+                        }
+                        with self._phase_outputs_lock:
+                            self.phase_outputs[current_phase_id] = result
+                        self._invoke_on_phase_complete(current_phase_id, result)
+                        # Route via SUCCESS transition (skip == clean exit).
+                        next_phase_id = self._resolve_next_phase(
+                            phase, PhaseOutcome.SUCCESS, result,
+                        )
+                        if next_phase_id is None:
+                            current_phase_id = None
+                        else:
+                            current_phase_id = next_phase_id
+                        continue
+                    self._current_build_iter = current_iter
+                    phase_input = self._build_phase_input(phase, initial_input)
+                    result = self._execute_dialogue_phase(phase, phase_input)
+                    with self._phase_outputs_lock:
+                        self.phase_outputs[current_phase_id] = result
+                    self._invoke_on_phase_complete(current_phase_id, result)
+                    phase_state = result.get("state", "unknown")
+                    if phase_state != "success":
+                        return {
+                            "phase_outputs": self.phase_outputs,
+                            "final_output": result,
+                            "failed_phase": current_phase_id,
+                            "aborted": True,
+                        }
+                    next_phase_id = self._resolve_next_phase(
+                        phase, PhaseOutcome.SUCCESS, result,
+                    )
+                    if next_phase_id is None:
+                        current_phase_id = None
+                    else:
+                        current_phase_id = next_phase_id
+                    continue
 
                 # ── Build prompt and submit task ──────────────────────────────
                 # Set current iteration so _build_phase_input override can inject
