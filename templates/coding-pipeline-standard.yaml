@@ -73,7 +73,7 @@ config_schema:
     phase0_hard_gate:
       type: boolean
       default: false
-      description: "Reserved policy flag (added v2.1, ported from skills v4.2). Currently advisory only — the engine does NOT yet read this flag at runtime (tracked by #840 admin feature_flags runtime wiring). The actual hard-gate vs graceful-degradation behaviour is controlled solely by the YAML `transitions.exhausted` key on the `existing_symbols_inventory` phase (default `spec` = graceful; override to `null` = halt). Consumers MAY set this in their config dict for forward compatibility, but it is a no-op today."
+      description: "Per-template documentation hint. The operational control lives in admin.json (#840 wired the flag into the engine). When admin.feature_flags.phase0_hard_gate=True AND the existing_symbols_inventory phase exhausts, the engine OVERRIDES this YAML's transitions.exhausted (default `spec`) and HALTS the pipeline. When False (admin default), transitions.exhausted=spec takes effect (graceful degradation — downstream phases revert to ad-hoc grep). The per-template config field is informational — change the admin console toggle or edit `~/.orchestration-engine/admin.json` to take effect."
 
 example_input:
   issue_title: "Sample issue title"
@@ -115,7 +115,7 @@ phases:
       success: spec
       failed: existing_symbols_inventory
       timeout: existing_symbols_inventory
-      exhausted: spec  # graceful degradation — if inventory fails twice, fall through to SPEC. Downstream phases (SPEC, BEHAVIORAL, SPEC_ADVERSARY, IMPLEMENT, REVIEW, FIX) check whether `existing_symbols.md` exists and treat its absence (or empty stub sections) as "no inventory constraint, revert to ad-hoc grep". Consumers wanting HARD GATE (halt on Phase 0 failure) can fork-override this transitions key to `null`. Note: `config.phase0_hard_gate` is a reserved-but-unimplemented forward-compat flag (#840) — only the `transitions.exhausted` key controls halt behaviour today.
+      exhausted: spec  # graceful-degradation default — if inventory fails twice, fall through to SPEC. Downstream phases (SPEC, BEHAVIORAL, SPEC_ADVERSARY, IMPLEMENT, REVIEW, FIX) check whether `existing_symbols.md` exists and treat its absence (or empty stub sections) as "no inventory constraint, revert to ad-hoc grep". To enable HARD GATE behaviour (halt on Phase 0 failure), set admin.feature_flags.phase0_hard_gate=True in `~/.orchestration-engine/admin.json` — the engine overrides this transition and HALTs (wired in #840). Fork-overriding this key to `null` in the template YAML is the other path (and is honoured even without the flag).
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the EXISTING_SYMBOLS_INVENTORY phase (Phase 0). Your output feeds every subsequent phase. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 

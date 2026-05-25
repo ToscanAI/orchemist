@@ -2571,7 +2571,8 @@ def create_api_app(
         - unknown extra keys (preserved under ``"extra"``)
         """
         import json as _json
-        admin_path = Path.home() / ".orchestration-engine" / "admin.json"
+        from .. import feature_flags as _ff
+        admin_path = _ff._admin_json_path()  # honours ORCH_ADMIN_PATH (#840)
         raw_loaded: Any = None
         source = "default"
         if admin_path.exists():
@@ -2654,8 +2655,9 @@ def create_api_app(
                 )
             patch[k] = coerced
 
-        admin_dir = Path.home() / ".orchestration-engine"
-        admin_path = admin_dir / "admin.json"
+        from .. import feature_flags as _ff
+        admin_path = _ff._admin_json_path()  # honours ORCH_ADMIN_PATH (#840)
+        admin_dir = admin_path.parent
 
         admin_dir.mkdir(parents=True, exist_ok=True)
         current: Dict[str, Any] = {}
