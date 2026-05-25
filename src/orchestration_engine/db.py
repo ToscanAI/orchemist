@@ -1398,6 +1398,33 @@ class Database:
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def count_active_pipeline_runs(self) -> int:
+        """Count pipeline_runs in non-terminal states (Issue #839).
+
+        Active = ``status`` in {``"pending"``, ``"running"``,
+        ``"pending_review"``}. Used by the API launch path to enforce
+        a backpressure cap (``ORCH_MAX_DAEMONS``, default 8) before
+        spawning another daemon process. Without backpressure,
+        unbounded concurrent daemons trip SQLite WAL contention
+        (``SQLITE_BUSY``) and manifest as zombie runs (#754).
+
+        Returns:
+            Integer count of active runs. Returns 0 on any
+            ``OperationalError`` (defensive — a backpressure check
+            should never raise from a launch-path code path).
+        """
+        try:
+            with self._locked():
+                conn = self.get_connection()
+                cur = conn.execute(
+                    "SELECT COUNT(*) AS n FROM pipeline_runs "
+                    "WHERE status IN ('pending', 'running', 'pending_review')"
+                )
+                row = cur.fetchone()
+                return int(row["n"]) if row else 0
+        except sqlite3.OperationalError:
+            return 0
+
     def list_pipeline_runs_filtered(
         self,
         status: Optional[str] = None,
