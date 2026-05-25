@@ -115,6 +115,43 @@ def is_process_alive(pid: int) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def apply_config_schema_defaults(config: Dict[str, Any], config_schema: Any) -> None:
+    """Fill missing keys in *config* from *config_schema* property defaults.
+
+    Mutates ``config`` in place. For every key declared under
+    ``config_schema.properties.<key>.default``, the key is added to
+    ``config`` if (and only if) it is not already present.
+
+    Why this exists (#835):
+        Prompt templates render via ``str.format(config=_SafeDict(config), …)``.
+        Without applying schema defaults, an existing consumer who has not
+        migrated their config dict to include a newly-added optional field
+        would see the literal string ``<MISSING:fieldname>`` substituted into
+        the rendered prompt (``_SafeDict.__missing__`` fallback) — a silent
+        backward-compat regression. Filling defaults here keeps non-migrated
+        consumers running cleanly when the YAML adds new optional fields.
+
+    Safety:
+        - Existing keys in ``config`` are never overwritten.
+        - Properties without a ``default`` are not touched.
+        - Non-dict ``config_schema``, non-dict ``properties``, and missing
+          ``properties`` are all no-ops (defensive — schemas are operator-
+          editable YAML).
+    """
+    if not isinstance(config_schema, dict):
+        return
+    props = config_schema.get('properties')
+    if not isinstance(props, dict):
+        return
+    for key, spec in props.items():
+        if (
+            isinstance(spec, dict)
+            and 'default' in spec
+            and key not in config
+        ):
+            config[key] = spec['default']
+
+
 def _get_effective_max_retries(template: Any) -> int:
     """Compute the effective max_retries cap from the template's routing config.
 
@@ -302,6 +339,9 @@ def run_daemon(run_id: str, db_path: str) -> None:
     except Exception as exc:
         _fail(db, run_id, pid_path, f"Input JSON parse error: {exc}")
         return
+
+    # --- Apply config_schema defaults (#835) ---
+    apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
 
     # --- Instantiate CostTracker (Issue #5.2.2) ---
     try:

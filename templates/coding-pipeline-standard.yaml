@@ -1,8 +1,8 @@
 id: coding-pipeline-standard
 name: "Coding Pipeline Standard"
-description: "10-phase coding pipeline with 3-phase spec loop: spec → behavioral → adversary. Each agent writes ONE file, eliminating the bifurcation bug where secondary artifacts (spec-behavioral.md) were never written to disk. Adversarial spec review, engine-verified behavioral validation after EVERY code change."
+description: "Coding pipeline with 12 phase definitions (10 happy-path phases + 2 exhaustion postmortems). Phase 0 (existing_symbols_inventory) produces a sticky `existing_symbols.md` artifact that SPEC, BEHAVIORAL, SPEC_ADVERSARY, ACCEPTANCE_TEST, IMPLEMENT, REVIEW, and FIX all read to prevent sub-check 7d (re-implementation of existing symbols). 3-phase spec loop: spec → behavioral → adversary. Each agent writes ONE file, eliminating the bifurcation bug where secondary artifacts (spec-behavioral.md) were never written to disk. Adversarial spec review, engine-verified behavioral validation after EVERY code change."
 author: "Toscan"
-version: "2.0.0"
+version: "2.1.0"
 category: "code"
 tags: [code, development, review, testing, pipeline]
 use_cases:
@@ -54,6 +54,26 @@ config_schema:
       type: integer
       default: 3
       description: "Max implement→acceptance_run loop iterations (set max_iterations on implement and acceptance_run phases)"
+    ui_primitive_paths:
+      type: string
+      default: ""
+      description: "Sub-check 7d inventory inputs (Phase-0 existing_symbols_inventory). Newline-separated glob patterns pointing at the project's UI primitive package(s) — e.g. `packages/ui/src/components/*.{tsx,jsx,vue,svelte}` or `apps/web/components/ui/*.tsx`. Phase 0 greps these for existing primitives (Dialog, Badge, Alert, Popover, Card, Tooltip, etc.) so downstream phases can consume rather than re-author. Empty default = Phase 0 skips the UI-primitive section (acceptable for backend-only projects)."
+    lib_paths:
+      type: string
+      default: ""
+      description: "Sub-check 7d inventory inputs. Newline-separated globs pointing at project shared libraries — e.g. `apps/web/lib/*.ts`, `packages/*/src/utils/*.ts`. Phase 0 greps these for exported helpers so downstream phases can detect helper-name collisions early."
+    action_dirs:
+      type: string
+      default: ""
+      description: "Sub-check 7d inventory inputs. Newline-separated globs pointing at adjacent action/server-route/hook patterns to mirror — e.g. `apps/web/app/actions/*.ts`, `app/api/**/*.ts`. Phase 0 inventories these so SPEC + IMPLEMENT mirror canonical patterns instead of re-inventing."
+    workspace_barrels:
+      type: string
+      default: ""
+      description: "Sub-check 7d inventory inputs. Newline-separated glob patterns pointing at workspace package barrels — e.g. `packages/*/src/index.ts`, `pkg/*/index.go`. Phase 0 enumerates the exported symbols so SPEC + IMPLEMENT consume cross-package symbols rather than duplicating."
+    phase0_hard_gate:
+      type: boolean
+      default: false
+      description: "Reserved policy flag (added v2.1, ported from skills v4.2). Currently advisory only — the engine does NOT yet read this flag at runtime (tracked by #840 admin feature_flags runtime wiring). The actual hard-gate vs graceful-degradation behaviour is controlled solely by the YAML `transitions.exhausted` key on the `existing_symbols_inventory` phase (default `spec` = graceful; override to `null` = halt). Consumers MAY set this in their config dict for forward compatibility, but it is a no-op today."
 
 example_input:
   issue_title: "Sample issue title"
@@ -64,6 +84,155 @@ example_input:
   repo_url: "https://github.com/ToscanAI/orchestration-engine"
 
 phases:
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # PHASE 0 — EXISTING-SYMBOLS INVENTORY (sub-check 7d sticky artifact)
+  #
+  # Ported from orchemist-skills/pipelines/coding-pipeline-standard.yaml v4.2
+  # (2026-05-25, engine #835). The skills pack derived this phase from
+  # Wave 5/6 retro data in the ToscanAI/value-investing consumer where 32
+  # PRs over 19 days produced 13 new duplication groups; the dominant
+  # failure mode was sub-check 7d (re-implementation of existing symbol)
+  # catching only at REVIEW. Phase 0 produces a sticky
+  # `{output_dir}/existing_symbols.md` artifact BEFORE Phase 1a SPEC so
+  # the catch moves from POST-AUTHORING → AT-AUTHORING.
+  #
+  # The phase is OPTIONAL: if all 4 config inputs
+  # (ui_primitive_paths / lib_paths / action_dirs / workspace_barrels)
+  # are empty, Phase 0 still runs and writes a minimal stub artifact;
+  # downstream phases treat empty sections as "no constraint".
+  #
+  # The CONSUME / EXTEND / DIVERGENT / NEW-OK verdict labels are
+  # consumed verbatim by SPEC, SPEC_ADVERSARY, IMPLEMENT, and REVIEW.
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  - id: existing_symbols_inventory
+    name: "Existing-symbols inventory (sub-check 7d pre-flight)"
+    description: "Greps the project for existing UI primitives, shared libraries, adjacent action/hook patterns, and workspace-barrel exports. Writes a sticky `existing_symbols.md` artifact read by every subsequent phase. Resolves the late-catch problem for sub-check 7d (re-implementation of existing symbol)."
+    model_tier: sonnet
+    thinking_level: medium
+    max_iterations: 2
+    transitions:
+      success: spec
+      failed: existing_symbols_inventory
+      timeout: existing_symbols_inventory
+      exhausted: spec  # graceful degradation — if inventory fails twice, fall through to SPEC. Downstream phases (SPEC, BEHAVIORAL, SPEC_ADVERSARY, IMPLEMENT, REVIEW, FIX) check whether `existing_symbols.md` exists and treat its absence (or empty stub sections) as "no inventory constraint, revert to ad-hoc grep". Consumers wanting HARD GATE (halt on Phase 0 failure) can fork-override this transitions key to `null`. Note: `config.phase0_hard_gate` is a reserved-but-unimplemented forward-compat flag (#840) — only the `transitions.exhausted` key controls halt behaviour today.
+    prompt_template: |
+      [PIPELINE CONTEXT] You are executing the EXISTING_SYMBOLS_INVENTORY phase (Phase 0). Your output feeds every subsequent phase. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      You are a codebase-survey specialist. Your job is to produce a STRUCTURED inventory of existing symbols (UI primitives, shared libraries, adjacent action/hook patterns, workspace barrels) so downstream phases can CONSUME rather than RE-AUTHOR them.
+
+      ## GROUND TRUTH — The Issue This Inventory Serves
+      **Title:** {config[issue_title]}
+      **Body:** {config[issue_body]}
+
+      The inventory you produce must surface symbols RELEVANT to this issue (don't dump the entire codebase — focus on symbols a SPEC author would plausibly want to use when implementing this feature).
+
+      ## Repository
+      **Path:** {config[repo_path]}
+      **Language:** {config[language]}
+
+      ## Grep targets (from config; newline-separated globs)
+
+      ### UI primitives
+      {config[ui_primitive_paths]}
+
+      ### Project shared libraries
+      {config[lib_paths]}
+
+      ### Adjacent action / hook / route patterns
+      {config[action_dirs]}
+
+      ### Workspace barrels
+      {config[workspace_barrels]}
+
+      If a section's config input is EMPTY, write the section header + a single line `(empty — consumer did not provide inventory inputs for this category)` and move to the next section. Downstream phases will treat the empty section as "no constraint" but still benefit from the non-empty ones.
+
+      ## Task
+
+      For each non-empty section, expand the globs (use `ls`, `find`, or shell glob expansion via Bash), then for each matching file extract the exported public symbols. Recommended pattern per language:
+
+      - **TypeScript / JavaScript**: grep `^export (const|function|class|interface|type|default)`; record symbol name + the file it's exported from.
+      - **Python**: grep `^def `/`^class ` at module top-level + scan `__all__` if present.
+      - **Go**: grep `^func [A-Z]`/`^type [A-Z]` (capitalized = public); scan package barrels.
+      - **For UI primitives**: extract component name + props-type name + the file path so SPEC can reference precisely (e.g. `Dialog` from `packages/ui/src/components/dialog.tsx` with `DialogProps` type).
+
+      Aim for a curated, high-signal inventory:
+      - ≤ 50 entries per section (if a section has >50 candidates, group them or filter to most-likely-relevant).
+      - Each entry: `<symbol-name>` ← `<file-path>:<line>` ← (optional) one-line description.
+      - For UI primitives: include the prop-type name AND any variants/options (so SPEC can reference `<Badge variant="..." />` shapes precisely).
+      - For adjacent action patterns: extract the canonical try/catch/auth/ownership boilerplate as a code-snippet anchor (file:line range), so SPEC + IMPLEMENT can `mirror byte-shape`.
+
+      ## Output
+
+      Write your inventory to `{output_dir}/existing_symbols.md`. Use this exact section structure (so downstream phases have stable anchors):
+
+      ```markdown
+      # Existing-symbols inventory for issue #{config[issue_number]}
+
+      Inventory date: <ISO-8601 date>
+      Repository: {config[repo_path]}
+      Issue: {config[issue_title]}
+
+      ## 1. UI primitives (consume — do NOT re-author)
+
+      <one entry per primitive, OR `(empty — consumer did not provide inventory inputs)` if the config input is empty>
+
+      ## 2. Project shared libraries
+
+      <one entry per exported helper, OR empty stub>
+
+      ## 3. Adjacent action / hook / route patterns (mirror byte-shape)
+
+      <one entry per pattern + the file:line range to mirror, OR empty stub>
+
+      ## 4. Workspace barrels (consumable cross-package imports)
+
+      <one entry per exported package symbol, OR empty stub>
+
+      ## 5. Consume-vs-author guidance (sub-check 7d enforcement)
+
+      Sub-check 7d (HARD RULE in IMPLEMENT phase) defines a closed set of verdict labels used at SPEC time and an IMPLEMENT-time escape. There are exactly **four SPEC-author verdicts** (recorded in §6 below) and **one IMPLEMENT-time escape** (BLOCKED, not a §6 verdict).
+
+      ### The four SPEC-author verdicts (one MUST appear in §6 for every proposed new symbol)
+
+      Three of these apply when the new symbol overlaps with sections 1-4 above (grep returned plausibly-related symbols):
+
+      1. **CONSUME** (preferred) — import the existing symbol byte-identical, no signature change. SPEC's Files-to-Modify lists the import-add at the call site; nothing else changes.
+      2. **EXTEND** (added v4.2, 2026-05-24) — parameterize the existing symbol (add an options arg / safe-superset wrapper / accept a path or callback) so the existing call site AND the new call site both consume the same source. The existing symbol moves nowhere; its contract widens. SPEC's Files-to-Modify describes the parameterization in Implementation Steps; SPEC's Files-to-Create lists nothing new. Use when CONSUME is "almost" but the new use site needs one more arg / one slightly different code path.
+      3. **DIVERGENT** — a near-equivalent that has a contract-required difference (different sort order, different precision, different sealed string). NOT duplication — but the spec MUST include a `## Divergence justification` subsection naming the existing symbol and the contract-required difference. SPEC's Files-to-Create lists the new symbol with a clear divergence rationale.
+
+      The fourth applies when there is NO overlap with sections 1-4:
+
+      4. **NEW-OK** — genuinely new; no overlap with sections 1-4 (grep returned zero plausibly-related symbols). Recorded in §6 with `Existing: (none — genuinely new)`. Files-to-Create lists the new symbol.
+
+      ### The IMPLEMENT-time escape (NOT a §6 verdict)
+
+      - **BLOCKED** — IMPLEMENT-phase escape when CONSUME/EXTEND are both impossible at authoring time (cross-package boundary not in scope, the existing copy is test-scope but you need prod-scope). IMPLEMENT writes `BLOCKED: 7d-duplication — <new-symbol> duplicates <existing path:line>; consolidating needs <shared module> not in the spec; recommend spec amendment.` to its output and routes back to the orchestrator for a scope decision. BLOCKED is never recorded in §6 — it is a runtime escape, not a SPEC-time annotation.
+
+      ## 6. SPEC's proposed new symbols (filled in by Phase 1a SPEC; cross-checked at every subsequent phase)
+
+      Each entry uses this format so verdicts are scannable:
+
+      ```
+      - **<symbol-name>** (verdict: CONSUME | EXTEND | DIVERGENT | NEW-OK)
+        Existing: <path:line or "(none — genuinely new)">
+        Rationale: <one line>
+      ```
+
+      <initially empty; SPEC adds entries as it authors new files/symbols>
+      ```
+
+      Be terse: this file is read by every downstream agent, so concision matters. Aim for ≤ 200 lines total.
+
+      ## CRITICAL: do NOT make up symbols
+
+      Only record symbols you have empirically verified via grep / find / cat. Do NOT speculate. If a section is empty (config input absent OR globs match nothing), use the stub line — do NOT invent placeholder entries.
+
+      After writing the file, respond with a brief 3-line summary:
+      1. Total symbols inventoried per section (e.g. "UI: 18, Lib: 4, Actions: 7, Barrels: 12")
+      2. Highest-signal entries the SPEC author should consider for this issue
+      3. Any grep target where the config input pointed at a non-existent path (orchestrator escalation candidate)
+
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   # SPEC LOOP: spec → behavioral → adversary (3-phase, each writes ONE file)
   #
@@ -112,6 +281,21 @@ phases:
 
       ## Codebase Context
       {config[files_context]}
+
+      ## Existing-symbols inventory (Phase 0 artifact — sub-check 7d sticky reference)
+
+      Read `{output_dir}/existing_symbols.md` BEFORE proposing any new file/symbol/component. Sections 1-4 enumerate the project's UI primitives, shared libraries, adjacent action/hook patterns, and workspace barrels available for consumption. If the file is absent OR all four sections contain only the empty-stub line ("(empty — consumer did not provide inventory inputs)"), fall back to ad-hoc grep against the project's `lib/` / `utils/` / UI primitive package(s) — Phase 0 may have exhausted (graceful degradation) or the consumer may not have provided grep paths.
+
+      For EVERY new symbol your spec proposes (in §B.3 Files-to-Create or §B.2 Files-to-Modify), assign exactly ONE of the four SPEC-author verdicts defined in existing_symbols.md §5 ("The four SPEC-author verdicts"):
+
+      1. **CONSUME** (preferred) — import the existing symbol byte-identical. Cite the existing entry in spec.md (e.g. "uses `Dialog` from `packages/ui/src/components/dialog.tsx`"). Files-to-Modify lists the import-add at the call site.
+      2. **EXTEND** — parameterize the existing symbol (add an options arg / safe-superset wrapper / accept a path or callback) so the existing call site AND the new call site both consume the same source. Document the parameterization in Implementation Steps. Files-to-Create lists NOTHING new; the existing symbol's contract widens. Use when CONSUME is "almost" but the new use site needs one more arg / one slightly different code path.
+      3. **DIVERGENT** — near-equivalent with a contract-required difference (different sort order, different sealed string, different precision). Add a `## Divergence justification` subsection naming the existing symbol + the contract-required reason. Files-to-Create lists the new symbol explicitly.
+      4. **NEW-OK** — genuinely new; no overlap with sections 1-4. Files-to-Create lists the new symbol. Use only when grep returned zero plausibly-related symbols.
+
+      **Append every proposed new symbol** to inventory §6 ("SPEC's proposed new symbols") with the verdict so Phase 1b BEHAVIORAL + every subsequent phase has a stable reference.
+
+      A new symbol that overlaps with sections 1-4 WITHOUT one of the four explicit verdicts will be flagged `[divergence]` at SPEC_ADVERSARY (R1 cost: re-spec round) and `[MAJOR][correctness]` at REVIEW (cost: refactor commit). The early catch via existing_symbols.md saves the round-trip.
 
       ## Previous Work
       {phase_summary}
@@ -177,6 +361,12 @@ phases:
       Read the implementation spec at: {output_dir}/spec.md
       This describes HOW the feature will be built. Use it to understand the system,
       but DO NOT copy implementation details into your behavioral contracts.
+
+      ## Existing-symbols inventory (Phase 0 sticky reference)
+
+      Read `{output_dir}/existing_symbols.md` (sections 1-4 = inventory; §6 = SPEC's proposed new symbols). When a behavioral contract names a symbol, CITE the canonical entry from the inventory when one exists. For example: prefer "When user clicks the `Restore this version` button (within the `Dialog` primitive from `packages/ui/src/components/dialog.tsx`), ..." over "When user clicks the popover restore button, ..." — the contract is more precise AND establishes the consume-not-rebuild expectation downstream phases will verify.
+
+      For NEW symbols the spec proposes (inventory §6), cite them under their proposed name; the IMPLEMENT phase will author them. If `existing_symbols.md` is absent or its sections are all empty stubs, skip the inventory citations and continue — the inventory is a hint, not a precondition.
 
       ## Previous Work
       {phase_summary}
@@ -281,6 +471,19 @@ phases:
       4. **Leakage** — Does behavioral.md name internal methods, class names, or implementation details from spec.md? If yes → REJECT. (You must read spec.md to detect what constitutes "internal details".)
       5. **Alignment** — Do behavioral contracts match what spec.md describes? Are there implementation paths in spec.md with no corresponding behavioral contract? Divergence → REJECT
 
+      ### 7d — Sticky enforcement against existing-symbols inventory (Phase 0)
+
+      Read `{output_dir}/existing_symbols.md` and cross-check every symbol the spec proposes against inventory sections 1-4 (UI primitives, shared libraries, adjacent actions/hooks, workspace barrels). The spec MUST assign exactly ONE of the four SPEC-author verdicts defined in inventory §5 ("The four SPEC-author verdicts"):
+
+      - **CONSUME** — Files-to-Modify cites the existing entry; no new symbol created. Cross-check: the import is concrete (named import; not a re-namespacing).
+      - **EXTEND** — Files-to-Modify describes the parameterization (added arg / options object / safe-superset wrapper) of the existing symbol so it accommodates the new call site. Cross-check: Files-to-Create is empty for this concept; Implementation Steps names the new arg and how the existing call site stays byte-equivalent. EXTEND-with-non-empty-Files-to-Create is a `[divergence]` finding with `[verdict-mismatch]` qualifier.
+      - **DIVERGENT** — spec has a `## Divergence justification` subsection naming the existing symbol + the contract-required difference (cite a sealed string / sort order / precision / type narrowing — not just "different use case").
+      - **NEW-OK** — genuinely new; inventory §6 entry explicitly records "(none found)" with rationale.
+
+      Any proposed-new symbol that overlaps with sections 1-4 WITHOUT one of the four explicit verdicts is `[divergence]` with the specific inventory-entry pointer.
+
+      **Backward-compat short-circuit:** if `{output_dir}/existing_symbols.md` is absent OR sections 1-4 are all empty-stubs, skip this 7d check (Phase 0 may have exhausted or the consumer did not provide grep paths). The IMPLEMENT phase still has its own 7d HARD RULE with ad-hoc grep as a fallback. Do NOT fabricate an inventory-entry pointer when no inventory exists.
+
       ## Output Format
 
       Your response MUST start with one of these on the very first line:
@@ -378,6 +581,16 @@ phases:
       This file contains ONLY the behavioral contracts — what the system should do.
       You have no access to implementation details. This is by design.
 
+      ## Existing-symbols inventory (Phase 0 sticky reference — sub-check 7d gate)
+
+      Also read `{output_dir}/existing_symbols.md`. For every CANONICAL existing symbol named in behavioral contracts (citing inventory §1-4), the acceptance test MUST include a consume-assertion verifying the IMPLEMENT phase will CONSUME the existing symbol rather than re-author it. Examples:
+
+      - If a behavioral contract says "uses `Dialog` from `packages/ui/src/components/dialog.tsx`", the test asserts the import line is present in the implementation file (e.g. via a `grep` invocation or a `count_matches_re` helper in a bash verify-script).
+      - If a SPEC-proposed-new symbol in inventory §6 cites a divergence justification, the test asserts the new symbol IS authored at the proposed path (file-existence assert).
+      - If both an existing AND a new equivalent are expected (one consumed, one authored), pin BOTH assertions.
+
+      Skip this section if `existing_symbols.md` is absent or its sections are all empty stubs — the IMPLEMENT phase still has its 7d HARD RULE as a fallback. Do NOT invent inventory entries when none exist.
+
       ## Task
       1. Read the behavioral contracts carefully
       2. Write a Python test file `{output_dir}/acceptance_tests.py` that:
@@ -426,7 +639,6 @@ phases:
       success: acceptance_run
       failed: implement
       timeout: implement
-      timeout: implement
       exhausted: postmortem_review
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the IMPLEMENT phase. Your output feeds the review phase — not a human. Do not ask questions or send messages. [/PIPELINE CONTEXT]
@@ -458,6 +670,23 @@ phases:
       **Path:** {config[repo_path]}
       **Branch:** {config[branch_name]}
       **Style:** {config[style_guide]}
+
+      ### HARD RULE — Re-implementation of existing symbol (sub-check 7d)
+
+      **FIRST read `{output_dir}/existing_symbols.md`** (Phase-0 sticky inventory). Sections 1-4 enumerate UI primitives, shared libraries, adjacent action/hook patterns, and workspace barrels in this project. Section 5 is the consume-vs-author guidance. Section 6 lists the SPEC-proposed new symbols. Cross-check every new symbol you're about to author against the inventory BEFORE grepping the repo. If the inventory has an exact-match entry: CONSUME (preferred) OR return BLOCKED per the consume-vs-author guidance.
+
+      For symbols NOT in the inventory (OR if the inventory is absent / sections are all empty stubs because the consumer didn't provide grep paths OR Phase 0 exhausted), fall back to ad-hoc grep: scan sibling files, `_loaders/`, `__tests__/`, `e2e/`, `packages/*/src/`, `lib/`, `utils/`, AND project UI primitive packages. If a byte-identical or near-identical implementation already exists:
+
+      1. **Consume or extend it** (no BLOCKED needed) — import the existing symbol, or parametrise it (add an options arg) so both call sites share one source. When variants diverge, adopt the *safe superset* (e.g. a try/catch wrapper) — never silently narrow behaviour. Consume-and-extend is the GREEN path; proceed inline.
+      2. If consuming is impossible WITHOUT a shared module the spec did not anticipate (no `_shared/`, cross-package boundary, existing copy is test-scope but you need prod-scope), STOP and return BLOCKED:
+
+             BLOCKED: 7d-duplication — <symbol> duplicates <existing path:line>; consolidating needs <shared module> not in the spec; recommend spec amendment.
+
+         Do NOT copy-paste "to consolidate later." A copy carrying a `// Mirrors <other file> verbatim` comment is the exact anti-pattern this rule exists to stop.
+
+      **7d UI-primitive widening:** when authoring React/Vue/Svelte components, hooks, or browser-side helpers, the grep MUST include the project's UI primitive package(s) (Dialog, Badge, Alert, Popover, Toast, Skeleton, etc.) AND the project's `lib/` / `utils/` directories. Reinventing a primitive that already exists in the shared UI package is the same sub-check 7d violation as reimplementing a backend symbol.
+
+      Genuine divergence is NOT duplication: if the near-copy has a real contract-required difference (Ascending vs Descending sort, 1-dp vs 2-dp format), keep it separate AND document why in a leading comment. This rule targets accidental copy-paste, not intentional twins.
 
       ## Task
       1. Read the spec carefully
@@ -557,6 +786,20 @@ phases:
          - **Backward compatibility** — Does it break existing behavior?
          - **Test coverage** — Are the changes adequately tested?
 
+      ### 7d — Re-implementation of existing symbol (sticky enforcement via Phase 0 inventory)
+
+      Verify every NEW top-level helper / loader / formatter / type / component / hook / utility in the diff was checked against existing equivalents.
+
+      Read `{output_dir}/existing_symbols.md` and cross-check EVERY new file/symbol in the diff against inventory sections 1-4. For each new symbol, verify ONE of:
+
+      - (a) **Consume verified** — the diff imports the canonical existing symbol from its inventory path.
+      - (b) **Divergence justified** — spec.md has a `## Divergence justification` subsection naming the existing symbol + the contract-required difference; the diff implements the divergence as documented.
+      - (c) **Authored as new** — the new symbol IS recorded in inventory §6 ("SPEC's proposed new symbols") with rationale (path + rationale); the diff authors it at the proposed path. A §6 entry that merely says "new symbol" without the path AND the rationale is NOT a valid arm-(c) — flag as `[MAJOR][test_coverage]` against inventory hygiene.
+
+      Any new symbol in the diff that overlaps with inventory §1-4 WITHOUT one of (a)/(b)/(c) is `[MAJOR][correctness]` — recommend refactor to consume the existing primitive.
+
+      **Backward-compat short-circuit:** if `{output_dir}/existing_symbols.md` is absent OR sections 1-4 are ALL empty-stubs ("(empty — consumer did not provide inventory inputs)"), the 3-arm test does NOT short-circuit to "no findings". Instead fall back to ad-hoc grep against the standard targets (project UI primitive package(s), `lib/`/`utils/`, sibling files, workspace barrels) and apply the same 3-arm logic. The Phase-0 inventory is the PRIMARY signal but not the ONLY signal — v2.0-fallback consumers still get the late-catch via this ad-hoc grep.
+
       ## Output
       Write your review to {output_dir}/review.md.
 
@@ -636,6 +879,7 @@ phases:
 
       Read the code review at: {output_dir}/review.md
       Read the original spec at: {output_dir}/spec.md
+      Read the existing-symbols inventory at: `{output_dir}/existing_symbols.md` (Phase-0 sticky reference; sub-check 7d applies to FIX too — any fix that introduces a NEW symbol overlapping inventory §1-4 is the same 7d violation IMPLEMENT would have raised BLOCKED on. Read §1-4 + §6 BEFORE authoring any new symbol while addressing review findings; if a fix requires duplication, write a `BLOCKED: 7d-duplication — <new-symbol> duplicates <existing path:line>` line to `{output_dir}/fix.md` instead of authoring the duplicate. Skip this rule if `existing_symbols.md` is absent or all sections are empty stubs — fall back to ad-hoc grep against the standard targets.)
 
       ## Repository
       **Path:** {config[repo_path]}
