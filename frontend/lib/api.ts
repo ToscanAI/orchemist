@@ -160,6 +160,59 @@ export function getTemplate(name: string): Promise<TemplateDetail> {
 }
 
 /**
+ * Single phase entry returned by `GET /api/v1/phases` (#842).
+ *
+ * `model_tier` defaults to `'sonnet'` on the backend (see
+ * `PhaseDefinition.model_tier` in `src/orchestration_engine/templates.py`);
+ * engine phases (no LLM dispatch) still carry a `model_tier` field for
+ * historical reasons. UI components should derive the badge ('engine'
+ * vs LLM) from `task_type` rather than from `model_tier` — the YAML's
+ * `model_tier` is not a reliable signal of "is this an LLM phase?".
+ *
+ * Known `model_tier` values are `haiku`, `sonnet`, `opus` (per
+ * `KNOWN_MODEL_TIERS` in the backend); the type is a string union
+ * rather than `string` for autocomplete + drift detection.
+ */
+export interface PhaseMetaRecord {
+  readonly id: string;
+  readonly name: string;
+  readonly model_tier: 'haiku' | 'sonnet' | 'opus';
+  readonly task_type: string | null;
+  readonly depends_on: readonly string[];
+  readonly order: number;
+}
+
+/**
+ * Response shape for `GET /api/v1/phases`.
+ */
+export interface PhasesResponse {
+  readonly pipeline: string;
+  readonly version: string;
+  readonly phases: readonly PhaseMetaRecord[];
+}
+
+/**
+ * Fetch the ordered phase list for a pipeline template.
+ *
+ * `GET /api/v1/phases?pipeline=<id>`
+ *
+ * Used by RunDetailClient (`/runs/<id>`) and Skills Pack Mode
+ * (`/skills`) to hydrate phase metadata at boot — replaces the
+ * hardcoded PHASES / PHASE_CARDS arrays that drifted from the
+ * canonical YAML.
+ *
+ * @param pipeline  Pipeline template id. Default
+ *                  `coding-pipeline-standard`.
+ */
+export function listPhases(
+  pipeline: string = 'coding-pipeline-standard',
+): Promise<PhasesResponse> {
+  return _fetch<PhasesResponse>(
+    `/api/v1/phases?pipeline=${encodeURIComponent(pipeline)}`,
+  );
+}
+
+/**
  * Validate a template body without writing it to disk.
  *
  * `POST /api/v1/templates/validate`

@@ -6,15 +6,17 @@
  * Canonical mockup: docs/harness-redesign-2026-05-24/screens/06-skills-pack-mode.svg
  *
  * Track A surface: lets users see the locally-installed Claude Code skills
- * pack and replay a local run through the remote engine. The page is largely
- * static metadata (pipeline phase definitions are fixed in the pack) but the
- * local-run history list can become API-driven via `GET /api/v1/local-runs`
- * (future).
+ * pack and replay a local run through the remote engine. The page hydrates
+ * phase metadata from `GET /api/v1/phases` (#842) so the phase grid stays
+ * in lockstep with the engine's canonical YAML.
  */
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
+import { listPhases } from '@/lib/api';
+import { derivePhaseDefs, type PhaseDef } from '@/lib/phaseLabels';
 
 interface PhaseCard {
   readonly tag: string;
@@ -23,20 +25,79 @@ interface PhaseCard {
   readonly highlight?: 'phase0' | 'opus' | 'engine';
 }
 
-const PHASE_CARDS: readonly PhaseCard[] = [
-  { tag: 'PHASE 0 · v4.2', title: 'existing_symbols', subtitle: 'sticky inventory', highlight: 'phase0' },
+/**
+ * Render-time mapping from PhaseDef (canonical, backend-driven) to the
+ * Skills page's card shape. Keeps the existing visual styling (PHASE
+ * tag prefix + subtitle slot) while sourcing the data from /api/v1/phases.
+ *
+ * Tag derivation uses the label's prefix segment (everything before the
+ * first '·'); for phases whose label is the synthesised default
+ * (`${order} · ${id}`), this resolves to the order number. For phases
+ * with custom overrides in `STANDARD_PIPELINE_OVERRIDES` it picks up the
+ * sub-letter ordering (`1a`, `1b`, `3b`, etc.).
+ */
+function asCard(p: PhaseDef, index: number): PhaseCard {
+  const highlight: PhaseCard['highlight'] =
+    p.id === 'existing_symbols_inventory' ? 'phase0' :
+    p.tier === 'opus' ? 'opus' :
+    p.tier === 'engine' ? 'engine' :
+    undefined;
+  const title = p.id === 'existing_symbols_inventory' ? 'existing_symbols' : p.id;
+  // Pull the prefix segment from the label. If no '·' is present (e.g.
+  // a non-canonical pipeline whose phases lack an override), fall back
+  // to the index — never the full phase id, which would produce ugly
+  // tags like "PHASE existing_symbols_inventory".
+  const labelParts = p.label.split('·');
+  const tagPrefix = labelParts.length >= 2
+    ? (labelParts[0]?.trim() ?? String(index))
+    : String(index);
+  const isOpus = p.tier === 'opus';
+  const isPhase0 = p.id === 'existing_symbols_inventory';
+  const tag = isPhase0
+    ? `PHASE ${tagPrefix} · v4.2`
+    : isOpus
+    ? `PHASE ${tagPrefix} · OPUS`
+    : `PHASE ${tagPrefix}`;
+  const subtitle = p.subtitle
+    ?? (p.tier === 'engine' ? 'engine · no LLM'
+      : isOpus ? 'orchemist-adversary'
+      : 'general-purpose');
+  return { tag, title, subtitle, highlight };
+}
+
+// Must match what derivePhaseDef + asCard would produce for the canonical
+// 12-phase set — only `review` is at opus today (spec_adversary sonnet
+// pending VISION pillar 8 bump). Drift here makes hydration visibly
+// rerender badges/labels.
+const FALLBACK_CARDS: readonly PhaseCard[] = [
+  { tag: 'PHASE 0 · v4.2', title: 'existing_symbols', subtitle: 'sticky inventory · v4.2', highlight: 'phase0' },
   { tag: 'PHASE 1a', title: 'spec', subtitle: 'general-purpose' },
   { tag: 'PHASE 1b', title: 'behavioral', subtitle: 'general-purpose' },
-  { tag: 'PHASE 1c · OPUS', title: 'adversary', subtitle: 'orchemist-adversary', highlight: 'opus' },
+  { tag: 'PHASE 1c', title: 'spec_adversary', subtitle: 'OPUS · cross-model gate' },
+  { tag: 'PHASE 1d', title: 'postmortem_spec', subtitle: 'exhaustion analysis' },
   { tag: 'PHASE 2', title: 'acceptance_test', subtitle: 'orchemist-tester' },
-  { tag: 'PHASE 3a', title: 'acceptance_run', subtitle: 'engine · no LLM', highlight: 'engine' },
   { tag: 'PHASE 3', title: 'implement', subtitle: 'orchemist-implementer' },
-  { tag: 'PHASE 4 · OPUS', title: 'review', subtitle: 'general-purpose', highlight: 'opus' },
+  { tag: 'PHASE 3b', title: 'acceptance_run', subtitle: 'engine · no LLM', highlight: 'engine' },
+  { tag: 'PHASE 4 · OPUS', title: 'review', subtitle: 'OPUS', highlight: 'opus' },
   { tag: 'PHASE 4b', title: 'fix', subtitle: 'general-purpose' },
+  { tag: 'PHASE 4c', title: 'postmortem_review', subtitle: 'exhaustion analysis' },
   { tag: 'PHASE 5', title: 'test', subtitle: 'engine · no LLM', highlight: 'engine' },
 ];
 
 export default function SkillsPackModePage() {
+  const [cards, setCards] = useState<readonly PhaseCard[]>(FALLBACK_CARDS);
+  useEffect(() => {
+    let cancelled = false;
+    listPhases().then(
+      (res) => {
+        if (!cancelled) {
+          setCards(derivePhaseDefs(res.phases).map((p, i) => asCard(p, i)));
+        }
+      },
+      () => { /* engine offline — keep FALLBACK_CARDS */ },
+    );
+    return () => { cancelled = true; };
+  }, []);
   return (
     <HarnessShell
       title="Track A · run the pipeline locally inside Claude Code"
@@ -90,7 +151,7 @@ export default function SkillsPackModePage() {
             subtitle={<span>each skill delegates to a fresh subagent per <em>feedback_fresh_subagent_per_phase</em></span>}
           >
             <div className="grid grid-cols-5 gap-3">
-              {PHASE_CARDS.map((p) => (
+              {cards.map((p) => (
                 <div
                   key={p.title}
                   className={[
