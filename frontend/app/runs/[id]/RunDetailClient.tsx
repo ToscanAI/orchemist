@@ -26,33 +26,35 @@ import {
   ApiError,
   listRunArtifacts,
   getRunPhase0,
+  listPhases,
   type RunArtifactListEntry,
   type RunPhase0,
 } from '@/lib/api';
 import type { RunRecord, SsePhaseCompletedEvent } from '@/lib/types';
+import { derivePhaseDefs, type PhaseDef } from '@/lib/phaseLabels';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
 import { StatusDot } from '@/components/harness/StatusDot';
 
-// ── Phase rail metadata (the 10 phases of coding-pipeline-standard v4.2) ──
-interface PhaseDef {
-  readonly id: string;
-  readonly label: string;
-  readonly subtitle?: string;
-  readonly tier: 'sonnet' | 'opus' | 'engine';
-}
-
-const PHASES: readonly PhaseDef[] = [
+// ── Phase rail metadata (#842) ──
+// Hydrated from `GET /api/v1/phases` at component mount via `listPhases()`.
+// FALLBACK_PHASES MUST match the canonical 12-phase pipeline AND the actual
+// tier values (only `review` is opus today; spec_adversary is sonnet
+// pending VISION pillar 8 bump). Drift here makes hydration visibly
+// rerender — the phantom-phase problem this issue exists to fix.
+const FALLBACK_PHASES: readonly PhaseDef[] = [
   { id: 'existing_symbols_inventory', label: '0 · existing_symbols_inventory', subtitle: 'sticky inventory · v4.2', tier: 'sonnet' },
-  { id: 'spec',                       label: '1a · spec', tier: 'sonnet' },
-  { id: 'behavioral',                 label: '1b · behavioral', tier: 'sonnet' },
-  { id: 'spec_adversary',             label: '1c · spec_adversary', subtitle: 'OPUS · cross-model gate', tier: 'opus' },
-  { id: 'acceptance_test',            label: '2 · acceptance_test', tier: 'sonnet' },
-  { id: 'acceptance_test_adversary',  label: '2b · acceptance_test_adversary', tier: 'opus' },
-  { id: 'implement',                  label: '3 · implement', tier: 'sonnet' },
-  { id: 'acceptance_run',             label: '3b · acceptance_run', subtitle: 'engine · no LLM', tier: 'engine' },
-  { id: 'review',                     label: '4 · review', subtitle: 'OPUS', tier: 'opus' },
-  { id: 'test',                       label: '5 · test', subtitle: 'engine · no LLM', tier: 'engine' },
+  { id: 'spec',               label: '1a · spec',                tier: 'sonnet' },
+  { id: 'behavioral',         label: '1b · behavioral',          tier: 'sonnet' },
+  { id: 'spec_adversary',     label: '1c · spec_adversary',      subtitle: 'OPUS · cross-model gate', tier: 'sonnet' },
+  { id: 'postmortem_spec',    label: '1d · postmortem_spec',     subtitle: 'exhaustion analysis', tier: 'sonnet' },
+  { id: 'acceptance_test',    label: '2 · acceptance_test',      tier: 'sonnet' },
+  { id: 'implement',          label: '3 · implement',            tier: 'sonnet' },
+  { id: 'acceptance_run',     label: '3b · acceptance_run',      subtitle: 'engine · no LLM', tier: 'engine' },
+  { id: 'review',             label: '4 · review',               subtitle: 'OPUS', tier: 'opus' },
+  { id: 'fix',                label: '4b · fix',                 tier: 'sonnet' },
+  { id: 'postmortem_review',  label: '4c · postmortem_review',   subtitle: 'exhaustion analysis', tier: 'sonnet' },
+  { id: 'test',               label: '5 · test',                 subtitle: 'engine · no LLM', tier: 'engine' },
 ];
 
 const DEMO_COMPLETED = ['existing_symbols_inventory', 'spec', 'behavioral', 'spec_adversary', 'acceptance_test', 'acceptance_test_adversary'];
@@ -112,18 +114,24 @@ function RunCockpitInner() {
   const [engineUp, setEngineUp] = useState<boolean | null>(null);
   const [artifacts, setArtifacts] = useState<readonly RunArtifactListEntry[] | null>(null);
   const [phase0, setPhase0] = useState<RunPhase0 | null>(null);
+  // Phase rail metadata — hydrated from `GET /api/v1/phases` at mount.
+  // Falls back to FALLBACK_PHASES until the live response arrives (or
+  // when engine is offline). Replaces the hardcoded PHASES array (#842).
+  const [phases, setPhases] = useState<readonly PhaseDef[]>(FALLBACK_PHASES);
 
   useEffect(() => {
     if (!runId) return;
     let cancelled = false;
-    // Fetch all three concurrently — getRun is the only required call;
+    // Fetch all four concurrently — getRun is the only required call;
     // artifacts and phase0 may legitimately 404 (run not started, or
-    // skip-spec pipeline with no Phase 0).
+    // skip-spec pipeline with no Phase 0); listPhases failures fall back
+    // to FALLBACK_PHASES.
     Promise.allSettled([
       getRun(runId),
       listRunArtifacts(runId),
       getRunPhase0(runId),
-    ]).then(([runRes, artRes, phase0Res]) => {
+      listPhases(),
+    ]).then(([runRes, artRes, phase0Res, phasesRes]) => {
       if (cancelled) return;
       if (runRes.status === 'fulfilled') {
         setRun(runRes.value);
@@ -134,6 +142,9 @@ function RunCockpitInner() {
       }
       if (artRes.status === 'fulfilled') setArtifacts(artRes.value.files);
       if (phase0Res.status === 'fulfilled') setPhase0(phase0Res.value);
+      if (phasesRes.status === 'fulfilled') {
+        setPhases(derivePhaseDefs(phasesRes.value.phases));
+      }
     });
     return () => { cancelled = true; };
   }, [runId]);
@@ -152,7 +163,7 @@ function RunCockpitInner() {
     : 'running';
 
   const completedCount = completed.length;
-  const progressPct = Math.round((completedCount / PHASES.length) * 100);
+  const progressPct = Math.round((completedCount / phases.length) * 100);
 
   const totalCostUsd = events.reduce((acc, ev) => {
     if (ev.type === 'phase_completed' && ev.cost_usd !== null) return acc + (ev.cost_usd ?? 0);
@@ -199,7 +210,7 @@ function RunCockpitInner() {
         {/* Phase rail */}
         <div className="col-span-4">
           <div className="h-card p-5">
-            <h2 className="text-[14px] font-bold text-harness-text">Phases · {completedCount} of {PHASES.length} done</h2>
+            <h2 className="text-[14px] font-bold text-harness-text">Phases · {completedCount} of {phases.length} done</h2>
             <div className="mt-1 text-[11px] text-harness-muted">
               runtime — · spend ${totalCostUsd.toFixed(2)} / budget $8.00
             </div>
@@ -212,7 +223,7 @@ function RunCockpitInner() {
 
             <ul className="mt-6 relative">
               <div className="absolute left-[15px] top-2 bottom-2 w-[2px] bg-harness-border" />
-              {PHASES.map((phase) => {
+              {phases.map((phase) => {
                 const st = phaseStatus(phase.id, completed, currentPhase, status);
                 return (
                   <li

@@ -4,6 +4,9 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 
 ## [Unreleased]
 
+### Added
+- **`GET /api/v1/phases` endpoint + frontend hydration** (#842) — `web/api.py:list_phases_api` returns the ordered phase list for a pipeline template (default `coding-pipeline-standard`) so the frontend stops hardcoding it. Response: `{pipeline, version, phases[{id, name, model_tier, task_type, depends_on, order}]}`. Frontend wrapper `listPhases()` in `lib/api.ts`; presentation-derivation utility `lib/phaseLabels.ts` with `derivePhaseDef()` + `STANDARD_PIPELINE_OVERRIDES` for the special labels ("1a", "1c · OPUS · cross-model gate"). `RunDetailClient.tsx` and `skills/page.tsx` now hydrate from the endpoint at mount with `FALLBACK_PHASES` for engine-offline / first-paint. 12 backend tests + functional probes for engine task_type detection + 404 path-traversal guard. Resolves DUPLICATES_REFRESHED.md NEW Group A (phase metadata duplicated across YAML + 2 TSX files).
+
 ### Changed
 - **Consolidated `_VERDICT_KEYWORDS` into single source-of-truth** (#836) — `verdict_parser._VERDICT_KEYWORDS` (lowercase set) is the canonical definition. Removed the parallel uppercase tuple from `transitions.py:95`; `transitions` now re-exports the canonical set via `from .verdict_parser import _VERDICT_KEYWORDS`. Updated `sequencer.py:3363` to compare lowercase (was `.upper()` — would have silently missed all verdicts after the consolidation). 9 regression tests at `tests/test_verdict_keywords_consolidation.py` enforce two-hop single-definition invariant + functional case-coverage + in-place mutation propagation. Latent divergence risk eliminated.
 - **`feature_flags` are now consumed at runtime** (#840) — new `src/orchestration_engine/feature_flags.py` module reads `~/.orchestration-engine/admin.json` with 30s TTL cache (path overridable via `ORCH_ADMIN_PATH`). Two of the four canonical flags are wired:
