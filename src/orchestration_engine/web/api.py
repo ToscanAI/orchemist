@@ -2567,7 +2567,7 @@ def create_api_app(
         - unparseable JSON
         - top-level value that isn't a dict (e.g. a string, list, number)
         - nested ``feature_flags`` / ``modes`` keys that aren't dicts
-        - flag values that aren't bools (coerced via `_coerce_bool`)
+        - flag values that aren't bools (coerced via `_strict_coerce_bool`)
         - unknown extra keys (preserved under ``"extra"``)
         """
         import json as _json
