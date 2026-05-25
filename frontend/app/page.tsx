@@ -19,7 +19,8 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { listRuns, listGates } from '@/lib/api';
+import { listRuns, listGates, listRegressions, listStaleFindings } from '@/lib/api';
+import type { RegressionRecord, StaleFindingsResponse } from '@/lib/api';
 import type { RunRecord } from '@/lib/types';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { KPICard } from '@/components/harness/KPICard';
@@ -38,6 +39,8 @@ export default function FleetDashboardPage() {
   const [engineUp, setEngineUp] = useState<boolean | null>(null);
   const [totalRuns, setTotalRuns] = useState<number | null>(null);
   const [gateCount, setGateCount] = useState<number | null>(null);
+  const [regressions, setRegressions] = useState<readonly RegressionRecord[] | null>(null);
+  const [staleFindings, setStaleFindings] = useState<StaleFindingsResponse | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,14 +48,18 @@ export default function FleetDashboardPage() {
       listRuns({ status: 'running', limit: 20 }),
       listRuns({ limit: 1 }),
       listGates({ limit: 1 }),
-    ]).then(([runningRes, totalsRes, gatesRes]) => {
+      listRegressions({ limit: 20 }),
+      listStaleFindings(),
+    ]).then(([runningRes, totalsRes, gatesRes, regRes, staleRes]) => {
       if (cancelled) return;
-      // engine is "up" if at least one call succeeded
-      const anyOk = [runningRes, totalsRes, gatesRes].some((r) => r.status === 'fulfilled');
+      // engine is "up" if any call succeeded
+      const anyOk = [runningRes, totalsRes, gatesRes, regRes, staleRes].some((r) => r.status === 'fulfilled');
       setEngineUp(anyOk);
       if (runningRes.status === 'fulfilled') setLiveRuns(runningRes.value.items);
       if (totalsRes.status === 'fulfilled') setTotalRuns(totalsRes.value.total);
       if (gatesRes.status === 'fulfilled') setGateCount(gatesRes.value.total);
+      if (regRes.status === 'fulfilled') setRegressions(regRes.value.items);
+      if (staleRes.status === 'fulfilled') setStaleFindings(staleRes.value);
     });
     return () => { cancelled = true; };
   }, []);
@@ -101,9 +108,15 @@ export default function FleetDashboardPage() {
         />
         <KPICard
           label="Regressions detected"
-          value={DEMO_REGRESSIONS.length}
-          tone="danger"
-          sublabel={<span>auto-fix pipelines spawned · 1 PR open</span>}
+          value={regressions !== null ? regressions.length : DEMO_REGRESSIONS.length}
+          tone={(regressions !== null ? regressions.length : DEMO_REGRESSIONS.length) > 0 ? 'danger' : 'success'}
+          sublabel={
+            regressions !== null
+              ? regressions.length === 0
+                ? <span>none in last 24h</span>
+                : <span>{regressions.filter((r) => r.status === 'fixing').length} auto-fix in flight</span>
+              : <span>auto-fix pipelines spawned · 1 PR open</span>
+          }
           testId="kpi-regressions"
         />
         <KPICard
@@ -189,34 +202,61 @@ export default function FleetDashboardPage() {
         <div className="col-span-6">
           <SectionCard
             title="Regression queue"
-            subtitle={<span className="text-harness-danger">{DEMO_REGRESSIONS.length} detected · auto-fix pipelines spawned</span>}
+            subtitle={
+              regressions !== null
+                ? regressions.length > 0
+                  ? <span className="text-harness-danger">{regressions.length} detected · live from /api/v1/regressions</span>
+                  : <span className="text-harness-teal">all clear · 0 active regressions</span>
+                : <span className="text-harness-danger">{DEMO_REGRESSIONS.length} detected · auto-fix pipelines spawned (demo)</span>
+            }
             testId="section-regressions"
           >
-            <ul className="flex flex-col gap-3">
-              {DEMO_REGRESSIONS.map((r, i) => (
-                <li key={i} className="rounded-md border border-harness-danger bg-harness-surface2 p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="font-semibold text-[13px] text-harness-text">
-                      {r.repo} · {r.branch}
+            {regressions !== null ? (
+              regressions.length === 0 ? (
+                <div className="text-[12px] text-harness-muted py-3">No regressions detected in last 24h. <Link href="/runs" className="h-link">View all runs</Link></div>
+              ) : (
+                <ul className="flex flex-col gap-3">
+                  {regressions.slice(0, 4).map((r) => (
+                    <li key={r.id} className="rounded-md border border-harness-danger bg-harness-surface2 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-semibold text-[13px] text-harness-text">
+                          {r.failure_type}
+                        </div>
+                        {r.fix_run_id ? (
+                          <Link href={`/runs/${r.fix_run_id}`} className="h-link text-[11px]">
+                            fix run ↗
+                          </Link>
+                        ) : (
+                          <span className="text-harness-warning text-[11px]">no fix yet</span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-[11px] text-harness-muted">
+                        {r.commit_sha.slice(0, 8)} · {r.affected_files.slice(0, 2).join(', ')}
+                        {r.affected_files.length > 2 && ` +${r.affected_files.length - 2} more`}
+                        {' '}· status {r.status}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : (
+              <ul className="flex flex-col gap-3">
+                {DEMO_REGRESSIONS.map((r, i) => (
+                  <li key={i} className="rounded-md border border-harness-danger bg-harness-surface2 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="font-semibold text-[13px] text-harness-text">
+                        {r.repo} · {r.branch}
+                      </div>
+                      {r.prUrl && (
+                        <a href={r.prUrl} target="_blank" rel="noreferrer" className="h-link text-[11px]">PR ↗</a>
+                      )}
+                      {r.retryStatus && <span className="text-harness-warning text-[11px]">{r.retryStatus}</span>}
                     </div>
-                    {r.prUrl && (
-                      <a
-                        href={r.prUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="h-link text-[11px]"
-                      >
-                        PR ↗
-                      </a>
-                    )}
-                    {r.retryStatus && (
-                      <span className="text-harness-warning text-[11px]">{r.retryStatus}</span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-[11px] text-harness-muted">{r.summary}{r.sinceCommit && ` (${r.hoursAgo}h ago)`}</div>
-                </li>
-              ))}
-            </ul>
+                    <div className="mt-1 text-[11px] text-harness-muted">{r.summary}{r.sinceCommit && ` (${r.hoursAgo}h ago)`}</div>
+                  </li>
+                ))}
+              </ul>
+            )}
             <div className="mt-4 text-[10px] text-harness-dim">
               closes ROADMAP §3.3 (regression.py) · UI surface for §3.4
             </div>
@@ -225,21 +265,35 @@ export default function FleetDashboardPage() {
         <div className="col-span-6">
           <SectionCard
             title="Stale detection · proactive maintenance"
-            subtitle={<span>ROADMAP §3.5 · scan cadence 24h · next 04:00 UTC</span>}
+            subtitle={
+              staleFindings !== null
+                ? staleFindings.scan_status === 'no_scanner_yet'
+                  ? <span className="text-harness-warning">ROADMAP §3.5 · scanner not yet implemented (live API placeholder)</span>
+                  : <span>ROADMAP §3.5 · {staleFindings.items.length} findings · scan {staleFindings.scan_status}</span>
+                : <span>ROADMAP §3.5 · scan cadence 24h · next 04:00 UTC (demo)</span>
+            }
             testId="section-stale"
           >
-            <div className="h-section-label mb-2">FINDINGS ({DEMO_STALE.length})</div>
-            <ul className="flex flex-col gap-3">
-              {DEMO_STALE.map((s, i) => (
-                <li key={i} className="flex gap-3">
-                  <StatusDot tone={s.severity === 'warn' ? 'warning' : 'neutral'} />
-                  <div className="flex-1">
-                    <div className="text-[13px] text-harness-text">{s.summary}</div>
-                    <div className="mt-1 text-[11px] text-harness-muted">{s.hint}</div>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            {staleFindings !== null && staleFindings.scan_status === 'no_scanner_yet' ? (
+              <div className="text-[12px] text-harness-muted py-3">
+                Scanner not yet shipped. Endpoint returns an empty list — the harness card will populate automatically once the scanner lands. Tracked in <Link href="https://github.com/ToscanAI/orchemist/issues/817" className="h-link">#817</Link>.
+              </div>
+            ) : (
+              <>
+                <div className="h-section-label mb-2">FINDINGS ({staleFindings ? staleFindings.items.length : DEMO_STALE.length})</div>
+                <ul className="flex flex-col gap-3">
+                  {(staleFindings && staleFindings.items.length > 0 ? staleFindings.items : DEMO_STALE).map((s, i) => (
+                    <li key={i} className="flex gap-3">
+                      <StatusDot tone={s.severity === 'warn' ? 'warning' : 'neutral'} />
+                      <div className="flex-1">
+                        <div className="text-[13px] text-harness-text">{s.summary}</div>
+                        <div className="mt-1 text-[11px] text-harness-muted">{s.hint}</div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
             <div className="mt-4 text-[10px] text-harness-dim">
               Adversary review on every fix · cross-model via <Link href="/adversary" className="h-link">⌘3 Adversary Loop</Link>
             </div>

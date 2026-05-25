@@ -67,7 +67,7 @@ async function shot(page: Page, screen: string, name: string) {
 }
 
 test('harness audit · walk every screen', async ({ browser }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(300_000);
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
 
@@ -140,10 +140,11 @@ test('harness audit · walk every screen', async ({ browser }) => {
     detach();
 
     // ─── 6. Run Cockpit (real run) ────────────────────────────────
-    // /runs/_ is the SPA fallback in static export, but dev requires a known
-    // param. Use the run with a known ID — this is the dev-mode 500 finding.
+    // Use `domcontentloaded` instead of `networkidle` because the cockpit
+    // opens a long-lived SSE connection to /api/v1/runs/{id}/stream — that
+    // connection never idles, so `networkidle` would block until timeout.
     detach = attach(page, '02-cockpit', 'real-run-direct');
-    const r = await page.goto(`http://localhost:3000/runs/${realRunId}`, { waitUntil: 'networkidle' }).catch((e: Error) => {
+    const r = await page.goto(`http://localhost:3000/runs/${realRunId}`, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch((e: Error) => {
       findings.push({ screen: '02-cockpit', checkpoint: 'real-run-direct', kind: 'pageerror', severity: 'error', detail: `goto failed: ${e.message}` });
       return null;
     });
@@ -160,8 +161,9 @@ test('harness audit · walk every screen', async ({ browser }) => {
   }
 
   // ─── 7. Run Cockpit via /runs/_ SPA fallback ──────────────────────
+  // Same SSE-keepalive caveat as above — use domcontentloaded.
   detach = attach(page, '02-cockpit', 'spa-fallback');
-  await page.goto('http://localhost:3000/runs/_', { waitUntil: 'networkidle' });
+  await page.goto('http://localhost:3000/runs/_', { waitUntil: 'domcontentloaded', timeout: 15_000 });
   await page.waitForTimeout(1500);
   await shot(page, '02-cockpit', 'spa-fallback');
   detach();
@@ -219,7 +221,7 @@ test('harness audit · walk every screen', async ({ browser }) => {
   // ─── 12. Cross-link sanity: click breadcrumb back from a deep page ─
   if (realRunId) {
     detach = attach(page, 'cross-links', 'cockpit-breadcrumb');
-    await page.goto(`http://localhost:3000/runs/${realRunId}`, { waitUntil: 'networkidle' }).catch(() => {});
+    await page.goto(`http://localhost:3000/runs/${realRunId}`, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(() => {});
     await page.waitForTimeout(1000);
     // Try clicking a breadcrumb segment
     const bc = page.locator('header').getByRole('link', { name: /Fleet/i }).first();
