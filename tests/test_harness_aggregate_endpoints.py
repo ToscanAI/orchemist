@@ -20,7 +20,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from orchestration_engine.db import Database
-from orchestration_engine.web.api import create_api_app
+from orchestration_engine.web.api import (
+    create_api_app,
+    _ADMIN_DEFAULTS,
+    _coerce_admin_doc,
+    _merge_feature_flags_with_passthrough,
+    _strict_coerce_bool,
+)
 
 
 @pytest.fixture
@@ -470,21 +476,106 @@ class TestAdminState:
         assert on_disk["feature_flags"]["dialogue_phase"] is True     # the patch
         assert on_disk["feature_flags"]["cross_repo"] is False        # untouched → default False
 
-    def test_coerce_admin_doc_does_not_share_default_mutables(self, client_and_db):
-        """Round-3 audit MAJOR: previous fast-path used `dict(_ADMIN_DEFAULTS)`
-        which shallow-copied — the returned dict shared the inner
-        feature_flags / modes dicts with module-level defaults. Mutation
-        would corrupt subsequent requests. Verify two consecutive defaults
-        responses are independent."""
-        client, _, _ = client_and_db
-        body1 = client.get("/api/v1/admin/state").json()
-        body2 = client.get("/api/v1/admin/state").json()
-        # Mutating one response must not affect the other.
-        body1["feature_flags"]["phase0_hard_gate"] = True
-        body3 = client.get("/api/v1/admin/state").json()
-        assert body3["feature_flags"]["phase0_hard_gate"] is False, (
-            "_coerce_admin_doc fast-path leaked module-level _ADMIN_DEFAULTS"
+    def test_coerce_admin_doc_does_not_share_default_mutables(self):
+        """Round-4 audit MAJOR: the round-3 lock-in test was
+        trivial-satisfaction. TestClient JSON-serialises responses, so
+        client-side mutation cannot reach the server-side dict the bug
+        actually corrupted. The real bug is in the in-process helper; the
+        test must touch it directly.
+
+        Now imports `_coerce_admin_doc` from module scope and calls it
+        twice in-process. Mutating the first result must not affect the
+        second — which only holds if every call constructs the inner dicts
+        fresh (as the round-3 fix did).
+        """
+        # Fast-path: not-a-dict input.
+        r1 = _coerce_admin_doc(None)
+        r1["feature_flags"]["phase0_hard_gate"] = True
+        r2 = _coerce_admin_doc(None)
+        assert r2["feature_flags"]["phase0_hard_gate"] is False, (
+            "_coerce_admin_doc not-a-dict path aliases module-level _ADMIN_DEFAULTS"
         )
+        # Module-level default must still be intact.
+        assert _ADMIN_DEFAULTS["feature_flags"]["phase0_hard_gate"] is False
+        # Slow-path: well-formed input.
+        r3 = _coerce_admin_doc({"feature_flags": {"phase0_hard_gate": True}})
+        r3["modes"]["openrouter"] = False
+        r4 = _coerce_admin_doc({"feature_flags": {"phase0_hard_gate": True}})
+        assert r4["modes"]["openrouter"] is True, (
+            "_coerce_admin_doc slow-path aliases module-level _ADMIN_DEFAULTS modes"
+        )
+        assert _ADMIN_DEFAULTS["modes"]["openrouter"] is True
+
+    def test_unknown_nested_feature_flag_preserved_through_put(self, client_and_db):
+        """Round-4 audit MAJOR: round-3's pre-write canonicalisation
+        silently dropped any flag inside ``feature_flags`` that wasn't in
+        ``_ADMIN_KNOWN_FLAGS``. A forward-compat operator (or beta build)
+        that put `"experimental_speculation": True` on disk would lose it
+        on every PUT.
+
+        Now ``_merge_feature_flags_with_passthrough`` preserves unknown
+        nested keys verbatim, mirroring the `extra` top-level behaviour.
+        """
+        client, _, fake_home = client_and_db
+        admin_dir = fake_home / ".orchestration-engine"
+        admin_dir.mkdir(parents=True)
+        (admin_dir / "admin.json").write_text(json.dumps({
+            "feature_flags": {
+                "phase0_hard_gate": True,
+                "experimental_speculation": True,
+            },
+        }))
+        res = client.put("/api/v1/admin/feature-flags", json={"cross_repo": True})
+        assert res.status_code == 200
+        # Response only exposes known flags (the AdminState TS contract).
+        assert "experimental_speculation" not in res.json()["feature_flags"]
+        assert res.json()["feature_flags"]["cross_repo"] is True
+        # On-disk file MUST preserve the unknown flag for forward-compat.
+        on_disk = json.loads((admin_dir / "admin.json").read_text())
+        assert on_disk["feature_flags"]["experimental_speculation"] is True, (
+            "unknown nested flag was silently dropped by canonicalisation"
+        )
+
+    def test_merge_with_passthrough_helper_direct(self):
+        """Lock-in for ``_merge_feature_flags_with_passthrough`` semantics:
+        unknown keys verbatim, known keys canonicalised to bool, conflicts
+        resolved in favour of canonical (operator-edited junk doesn't
+        shadow engine-managed flags)."""
+        out = _merge_feature_flags_with_passthrough({
+            "phase0_hard_gate": "maybe",        # known, garbage → default
+            "extend_verdict": "yes",            # known, canonical truthy
+            "experimental_speculation": True,   # unknown, preserved
+            "weird_passthrough_value": [1, 2],  # unknown, preserved verbatim
+        })
+        assert out["phase0_hard_gate"] is False   # default (round-2 strictness)
+        assert out["extend_verdict"] is True      # "yes" → True
+        assert out["experimental_speculation"] is True
+        assert out["weird_passthrough_value"] == [1, 2]
+        # Non-dict input still returns canonical-only (no crash).
+        out2 = _merge_feature_flags_with_passthrough("not a dict")  # type: ignore[arg-type]
+        assert set(out2.keys()) == {"phase0_hard_gate", "extend_verdict", "dialogue_phase", "cross_repo"}
+
+    def test_strict_coerce_bool_direct(self):
+        """Direct unit tests for the module-scope helper, replacing what
+        used to need an HTTP round-trip."""
+        assert _strict_coerce_bool(True) is True
+        assert _strict_coerce_bool(False) is False
+        assert _strict_coerce_bool(0) is False
+        assert _strict_coerce_bool(1) is True
+        assert _strict_coerce_bool(0.0) is False
+        assert _strict_coerce_bool(1.0) is True
+        assert _strict_coerce_bool("True") is True
+        assert _strict_coerce_bool("FALSE") is False
+        assert _strict_coerce_bool("yes") is True
+        assert _strict_coerce_bool("no") is False
+        assert _strict_coerce_bool("") is False
+        # Anything else → None.
+        assert _strict_coerce_bool("maybe") is None
+        assert _strict_coerce_bool(2) is None
+        assert _strict_coerce_bool(0.5) is None
+        assert _strict_coerce_bool(None) is None
+        assert _strict_coerce_bool([1, 2]) is None
+        assert _strict_coerce_bool({"a": "b"}) is None
 
     def test_get_strict_coerces_garbage_in_disk_file(self, client_and_db):
         """Round-2 audit MAJOR: `_coerce_bool` previously fell through to
