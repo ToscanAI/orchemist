@@ -1328,6 +1328,14 @@ def run_template(
 
     # --- 2c. Validate required config fields (#411) ---
     missing = _validate_required_config(template, initial_input)
+    # Apply schema defaults for optional fields (#835) — runs AFTER required-
+    # field validation so missing-required errors are reported on the original
+    # input, but BEFORE the sequencer reads `initial_input` for prompt
+    # rendering. Without this, pre-v2.1 consumers running `orch run` against
+    # the v2.1.0 standard pipeline would see <MISSING:ui_primitive_paths>
+    # (and similar) literals rendered into Phase 0 prompts.
+    from .daemon import apply_config_schema_defaults
+    apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
     if missing:
         if mode == 'dry-run':
             # In dry-run mode, missing required fields are non-fatal: phases run with
@@ -2042,6 +2050,10 @@ def pipeline_launch(
 
     # --- Validate required config fields (#411) with new single-line format (#591) ---
     missing = _validate_required_config(template, initial_input)
+    # Apply schema defaults for optional fields (#835) — see commentary in
+    # the run_template path above for rationale.
+    from .daemon import apply_config_schema_defaults
+    apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
     if missing:
         sorted_missing = sorted(missing)
         click.echo(
@@ -5277,6 +5289,11 @@ def scenario_run(
                 template.default_transitions
             )
             _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer
+            # Apply schema defaults for optional fields (#835) — same rationale
+            # as run_template / pipeline_launch above. Belt-and-suspenders so
+            # scenario-driven runs benefit from the same backward-compat shim.
+            from .daemon import apply_config_schema_defaults
+            apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
             sequencer = _SequencerClass(template, pipe_runner, config=initial_input)
             try:
                 exec_result = sequencer.execute(initial_input)
