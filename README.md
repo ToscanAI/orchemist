@@ -29,7 +29,9 @@ AI agents hallucinate, drift off-topic across long chains, and produce work that
 1. **Orchestration Engine** (this repo) — a Python engine that sequences multi-phase AI pipelines from YAML templates. Handles phase transitions, retries, tool execution, cost tracking, and adversarial review loops.
 2. **Pipeline Templates** (`templates/`) — YAML definitions for coding, content, research, and compliance pipelines. The coding pipeline (`coding-pipeline-standard`) runs 11 phases: spec, behavioral contracts, adversary review, acceptance tests, implementation, test execution, code review, fixes, and final verification.
 3. **Skills Pack** ([ToscanAI/orchemist-skills](https://github.com/ToscanAI/orchemist-skills)) — the coding pipeline repackaged as Claude Code `.claude/skills/` and `.claude/agents/`. Pure markdown, no Python runtime. Drop it into Claude Code and `/orchemist:run` walks the same 11-phase loop. Best on-ramp if you already use Claude Code.
-4. **Orchemist IDE** ([ToscanAI/orchemist-ide](https://github.com/ToscanAI/orchemist-ide)) — a VS Code fork with a purpose-built Pipeline Explorer, live log streaming, and template editor for managing pipelines visually.
+4. **Harness** (`frontend/` in this repo) — the operator web surface. Six cross-linked screens covering fleet status, run cockpit, the cross-model adversary dialogue visualizer, trust & gates, admin / activation, and skills-pack mode. Ships with the engine; launches via `orch serve`. See **[The Harness](#the-harness)** below for screenshots.
+
+> The legacy [ToscanAI/orchemist-ide](https://github.com/ToscanAI/orchemist-ide) VS Code fork is being sunset in favour of the harness. See issue [#814](https://github.com/ToscanAI/orchemist/issues/814) for the deprecation plan.
 
 You declare your pipeline in a single YAML file. The engine handles phase sequencing, dependency resolution, output forwarding, automatic retries, tool-calling, and scenario grading.
 
@@ -95,6 +97,50 @@ orch run templates/my-pipeline.yaml --mode openrouter --input '{"brief": "AI saf
 ```
 
 `orch serve` captures environment variables at startup — export the key *before* launching the server, and restart it if you rotate the key. See [docs/openrouter-setup.md](docs/openrouter-setup.md) for the full configuration reference, CLI-flag precedence, and troubleshooting.
+
+---
+
+## The Harness
+
+`orch serve` opens the **Orchemist Harness** — a six-screen operator surface designed against the canonical mockups in [`docs/harness-redesign-2026-05-24/screens/`](docs/harness-redesign-2026-05-24/screens). Every screen falls back to demo data when the engine is unreachable so the UI never blanks out; live screenshots against a real `orch serve` are checked in under [`docs/harness-redesign-2026-05-24/screenshots/live/`](docs/harness-redesign-2026-05-24/screenshots/live).
+
+### 1. Fleet Dashboard
+
+Multi-repo status, in-flight pipeline runs, autonomy-level ramp, regression queue, and stale-detection findings — all at a glance.
+
+![Fleet Dashboard](docs/harness-redesign-2026-05-24/screenshots/01-fleet-dashboard.png)
+
+### 2. Run Cockpit
+
+Live phase-by-phase progress for a single pipeline run, with the Phase 0 existing-symbols inventory, sub-check 7d verdict chips (CONSUME / EXTEND / DIVERGENT / NEW-OK), the live tool-call stream, sealed artifact list, and a Jaccard drift indicator.
+
+![Run Cockpit](docs/harness-redesign-2026-05-24/screenshots/02-run-cockpit.png)
+
+### 3. Adversary Loop visualizer
+
+The marquee screen — the cross-model drafter ↔ reviewer dialogue. Each round shows the proposed spec, the reviewer's verdict, and the Jaccard convergence metric. This is the *trust-engine wedge* in operation: a Claude drafter critiqued by a Gemini reviewer (or any other model family) at the spec→implementation boundary, with full per-turn cost ledger.
+
+![Adversary Loop](docs/harness-redesign-2026-05-24/screenshots/03-adversary-loop.png)
+
+### 4. Trust & Gates
+
+Operator queue for pipeline runs awaiting a human decision, with per-row Approve / Reject calls into `/api/v1/gates/{run_id}/(approve|reject)`. Side panel shows per-(repo, template, task) trust profile and a 14-day calibration curve.
+
+![Trust & Gates](docs/harness-redesign-2026-05-24/screenshots/04-trust-gates.png)
+
+### 5. Admin / Activation
+
+The control surface: autonomy ramp (Level 3 → 5), execution-mode toggles (openrouter / standalone / openclaw / dry-run — the harness is model-agnostic by design), branch-protection audit, kill switches, webhook trigger CRUD, and feature flags for the v4.2 pipeline (`phase0_hard_gate`, `EXTEND` verdict, dialogue phase, cross-repo orchestration).
+
+![Admin / Activation](docs/harness-redesign-2026-05-24/screenshots/05-admin-activation.png)
+
+### 6. Skills Pack Mode
+
+Mirror of the local Claude Code Skills Pack installation. Shows phase skills, pipeline YAMLs, local run history, and the `/orchemist:run` invocation preview. Lets operators "promote to remote" — replay a local run via the engine for trust calibration.
+
+![Skills Pack Mode](docs/harness-redesign-2026-05-24/screenshots/06-skills-pack-mode.png)
+
+> **Try it.** `pip install orchemist[web] && orch serve` opens the harness at <http://127.0.0.1:8374>. With the engine running, every screen consumes real `/api/v1/*` data; without it, the same screens still render with demo data and a clear "engine offline" banner so the UI is reviewable end-to-end. A Playwright e2e suite (`frontend/tests-e2e/`) keeps both the offline-mock screenshots and the live-engine screenshots in sync with the SVG canon on every PR.
 
 ---
 
@@ -359,6 +405,7 @@ Please read CONTRIBUTING.md for code style and PR guidelines.
 - [Architecture](docs/ARCHITECTURE.md) — system design
 - [API Reference](docs/api-reference.md) — CLI commands + Python classes
 - [Web UI](docs/web-ui.md) — browser interface (`orch serve`)
+- [Harness redesign pack](docs/harness-redesign-2026-05-24/) — vision, duplicate audit, frontend audit, autonomy posture, SVG canon, live screenshots
 - [Tech Stack](docs/tech-stack.md) — dependencies and choices
 - [Security Policy](SECURITY.md) — vulnerability reporting & supported versions
 
