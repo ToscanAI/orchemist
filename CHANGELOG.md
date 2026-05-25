@@ -4,9 +4,24 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-25
+
 ### Added
-- Directory-level hash guard with `protected_paths` (#706) — `compute_directory_hash()` in `file_guard.py` for recursive, deterministic SHA-256 over directories; pre-execution snapshot + post-execution verification detects unauthorized writes to repo paths like `tests/` or `src/`; excludes `__pycache__/`, `*.pyc`, `.pytest_cache/`, `.git/` by default; symlinks hashed by target path string (not followed); path resolution: `config["repo_path"]` primary, `working_dir` fallback
-- Approve-gated file protection with `protect_on_approve` (#718) — adversary/reviewer phases can declare files to seal upon APPROVE verdict; hash snapshot taken at the approve transition (after verdict extraction), stored in `_protected_hashes` for downstream verification; activates on both `approve` and `exhausted` (implicit approval); `coding-pipeline-skip-spec.yaml` updated to guard `acceptance_tests.py` via `acceptance_test_adversary`
+- **Dialogue phase** — engine-side cross-model drafter ↔ reviewer loop (#677, PR #808). `DialoguePhaseConfig`, `DialogueParticipant`, `DialogueRound`, `DialogueResult`, `DialogueRunner`, `run_dialogue()` in `dialogue_phase.py` (794 LOC, 18 tests). `GeminiCliExecutor` (`gemini -p` subprocess wrapper, 600 s default timeout) exposes a non-Anthropic reviewer family for the marquee trust-engine wedge. Example template at `templates/spec-review-dialogue.yaml`. Jaccard similarity > 0.95 between consecutive draft pairs surfaces `convergence_stall`. Per-round cost via `TaskResult.cost_usd` (no 3× fallback inflation). Verdict extraction reuses `verdict_parser.extract_verdict()` — anticipating the #687 consolidation. Sequencer dispatch is additive (+196 lines) — no refactor of existing dispatch.
+- Directory-level hash guard with `protected_paths` (#706) — `compute_directory_hash()` in `file_guard.py` for recursive, deterministic SHA-256 over directories; pre-execution snapshot + post-execution verification detects unauthorized writes to repo paths like `tests/` or `src/`; excludes `__pycache__/`, `*.pyc`, `.pytest_cache/`, `.git/` by default; symlinks hashed by target path string (not followed); path resolution: `config["repo_path"]` primary, `working_dir` fallback.
+- Approve-gated file protection with `protect_on_approve` (#718) — adversary/reviewer phases can declare files to seal upon APPROVE verdict; hash snapshot taken at the approve transition (after verdict extraction), stored in `_protected_hashes` for downstream verification; activates on both `approve` and `exhausted` (implicit approval); `coding-pipeline-skip-spec.yaml` updated to guard `acceptance_tests.py` via `acceptance_test_adversary`.
+
+### Changed
+- **Consolidated verdict-extraction implementations** (#687, PR #820) — `verdict_parser.extract_verdict()` is the single canonical implementation. Deleted `review_parser.extract_verdict()` plus its private 4-layer cascade helpers (`_smart_full_text_scan`, `_tail_weighted_scan`, `_haiku_extraction`). Canonical output is lowercase (`"approve"`, `"request_changes"`, `"abort"`); `.upper()` boundary in `parse_review_output()` preserves the `ReviewResult.verdict` UPPERCASE contract for ~100 incidental callers in `audit.py`, `scoring.py`, `review_catch_value.py`, DB layer. `ABORT` filtered out at the boundary (`allowed_verdicts={"approve", "request_changes"}`) because the review phase prompt only emits APPROVE/REQUEST_CHANGES. Net -491 lines across `review_parser.py`, `tests/test_review_parser.py`, `daemon.py`.
+- **Unified SHA-256 file-hash implementations** (#813, PR #818) — `file_guard.compute_hash()` is the single canonical implementation. Removed private `_compute_hash()` duplicates from `validator_runner.py` and `test_store.py`; both now import from `file_guard`. Behaviour byte-identical; sealed-manifest hashes unchanged. Net -30 lines.
+
+### Fixed
+- Removed `'crashed'` phantom status from frontend `RunStatus` literal union (#811, PR #821, frontend) — there is no `'crashed'` value on the engine side; previous mapping caused `RunStatusBadge` to silently fall through to neutral. Added the missing canonical statuses `'budget_exceeded'` (emitted by `daemon.py:696`) and `'pending_review'` (emitted by `daemon.py:876`, `daemon.py:1502`). `RunStatusBadge.statusToVariant` rewritten as exhaustive `Record<RunStatus, BadgeVariant>` lookup; unknown strings now render `error` (not neutral) and log a dev-only console warning.
+
+### Internal — Harness web surface (frontend/, not packaged in PyPI distribution)
+- New Orchemist Harness shell — Next.js operator surface with six cross-linked screens (Fleet Dashboard, Run Cockpit, Adversary Loop visualizer, Trust & Gates, Admin / Activation, Skills Pack Mode). Shared design system primitives under `frontend/components/harness/`. Live-engine wiring via `/api/v1/gates`, `/api/v1/runs` (#816, #819).
+- Investigation pack `docs/harness-redesign-2026-05-24/` with vision synthesis, duplicate audit, frontend audit, autonomy posture, and SVG canon (#809).
+- Playwright e2e suite at `frontend/tests-e2e/`: 6 mocked-offline tests + 6 live-engine tests; full-page screenshots checked in under `docs/harness-redesign-2026-05-24/screenshots/`.
 
 ## [0.8.0] - 2026-03-28
 
