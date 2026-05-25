@@ -2,5 +2,6 @@
 
 from .anthropic_executor import AnthropicExecutor
 from .claudecode_executor import ClaudeCodeExecutor
+from .gemini_cli_executor import GeminiCliExecutor
 
-__all__ = ["AnthropicExecutor", "ClaudeCodeExecutor"]
+__all__ = ["AnthropicExecutor", "ClaudeCodeExecutor", "GeminiCliExecutor"]

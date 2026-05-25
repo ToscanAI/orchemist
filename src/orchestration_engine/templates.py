@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import yaml
 
 from .adversary_parser import AdversaryConfig
+from .dialogue_phase import DialoguePhaseConfig, DialogueParticipant
 from .git_integration import GitConfig
 from .routing import RoutingConfig, RoutingEngine, _parse_routing_config
 
@@ -424,6 +425,62 @@ def _parse_adversary_config(raw: Any) -> Optional["AdversaryConfig"]:
     )
 
 
+def _parse_dialogue_config(phase_data: Dict[str, Any]) -> Optional[DialoguePhaseConfig]:
+    """Parse the dialogue-related fields of a phase YAML into a :class:`DialoguePhaseConfig`.
+
+    The dialogue phase type (Track B / Issue #677) is signalled by
+    ``type: dialogue`` on the phase YAML.  When present, this function pulls
+    the ``drafter``, ``reviewer``, ``max_rounds``, and ``convergence_signal``
+    fields out of *phase_data* (mutating in place by popping them) and returns
+    a parsed :class:`DialoguePhaseConfig`.  Returns ``None`` when ``type`` is
+    absent or set to anything other than ``"dialogue"`` (case-insensitive).
+
+    The popped fields are removed from *phase_data* so the downstream
+    ``known_fields`` filter does not emit a spurious "unknown fields" warning.
+
+    Args:
+        phase_data: Mutable dict from the YAML loader; modified in place.
+
+    Returns:
+        :class:`DialoguePhaseConfig` instance when ``type: dialogue`` is set,
+        else ``None``.
+
+    Raises:
+        ValueError: When ``drafter`` or ``reviewer`` is missing/malformed.
+    """
+    phase_type = phase_data.get("type")
+    if not isinstance(phase_type, str) or phase_type.strip().lower() != "dialogue":
+        return None
+
+    # Pop the discriminator so it doesn't trip the unknown-fields check
+    phase_data.pop("type", None)
+
+    drafter_raw = phase_data.pop("drafter", None)
+    reviewer_raw = phase_data.pop("reviewer", None)
+    max_rounds = phase_data.pop("max_rounds", None)
+    convergence_signal = phase_data.pop("convergence_signal", None)
+    drift_threshold = phase_data.pop("drift_similarity_threshold", None)
+
+    if not isinstance(drafter_raw, dict) or not isinstance(reviewer_raw, dict):
+        raise ValueError(
+            f"Phase '{phase_data.get('id', '?')}': dialogue phase requires "
+            "both 'drafter' and 'reviewer' dict fields"
+        )
+
+    drafter = DialogueParticipant(**drafter_raw)
+    reviewer = DialogueParticipant(**reviewer_raw)
+
+    kwargs: Dict[str, Any] = {"drafter": drafter, "reviewer": reviewer}
+    if max_rounds is not None:
+        kwargs["max_rounds"] = int(max_rounds)
+    if convergence_signal is not None:
+        kwargs["convergence_signal"] = str(convergence_signal)
+    if drift_threshold is not None:
+        kwargs["drift_similarity_threshold"] = float(drift_threshold)
+
+    return DialoguePhaseConfig(**kwargs)
+
+
 @dataclass
 class PhaseDefinition:
     """A single phase in a pipeline template."""
@@ -480,6 +537,16 @@ class PhaseDefinition:
     # Generic adversary parser config (Issue #701)
     adversary_config: Optional[AdversaryConfig] = None
     """Parsed ``adversary_config:`` section from the phase YAML, or ``None`` if absent."""
+
+    # Dialogue phase config (Track B / Issue #677)
+    dialogue_config: Optional["DialoguePhaseConfig"] = None
+    """Parsed dialogue config when ``type: dialogue`` is set on the phase, else ``None``.
+
+    A phase with ``dialogue_config is not None`` is dispatched by the sequencer to
+    :mod:`orchestration_engine.dialogue_phase` instead of the normal task-runner
+    path.  The dialogue config encapsulates the drafter / reviewer participant
+    configs, ``max_rounds`` and ``convergence_signal``.
+    """
 
     # Protected paths for directory-level hash guard (Issue #706)
     protected_paths: List[str] = field(default_factory=list)
@@ -1029,7 +1096,15 @@ class TemplateEngine:
                 "protected_paths",
                 # Protect-on-approve paths for adversary approval locking (#718)
                 "protect_on_approve",
+                # Dialogue phase config (Track B / #677)
+                "dialogue_config",
             }
+
+            # Parse dialogue_config FIRST (Track B / #677) — pops dialogue-only
+            # YAML fields (``type``, ``drafter``, ``reviewer``, ``max_rounds``,
+            # ``convergence_signal``, ``drift_similarity_threshold``) out of
+            # phase_data so they don't trigger spurious unknown-field warnings.
+            dialogue_cfg: Optional[DialoguePhaseConfig] = _parse_dialogue_config(phase_data)
 
             # Warn on unknown fields (prevents silent data loss)
             unknown = set(phase_data.keys()) - known_fields
@@ -1047,6 +1122,8 @@ class TemplateEngine:
             cleaned = {k: v for k, v in phase_data.items() if k in known_fields}
             # Replace raw dict with parsed AdversaryConfig (or None)
             cleaned["adversary_config"] = adversary_cfg
+            # Attach parsed DialoguePhaseConfig (or None)
+            cleaned["dialogue_config"] = dialogue_cfg
             phases.append(PhaseDefinition(**cleaned))
 
         # Parse optional git: section

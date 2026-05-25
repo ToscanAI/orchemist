@@ -284,6 +284,30 @@ class PhaseSequencer:
             # Notify caller that phase is about to start
             self._invoke_on_phase_start(phase_id, phase, wave_index)
 
+            # ── Dialogue phase dispatch (Track B / Issue #677) ───────────
+            # Phases with ``type: dialogue`` in their YAML carry a parsed
+            # DialoguePhaseConfig.  These bypass the normal task-runner path
+            # entirely and run a drafter ↔ reviewer loop via ``dialogue_phase``.
+            if getattr(phase, "dialogue_config", None) is not None:
+                phase_input = self._build_phase_input(phase, initial_input)
+                result = self._execute_dialogue_phase(phase, phase_input)
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+                self._invoke_on_phase_complete(phase_id, result)
+                phase_state = result.get("state", "unknown")
+                logger.info(
+                    f"Pipeline {self.template.id}: dialogue phase '{phase_id}' "
+                    f"completed (state={phase_state})"
+                )
+                if phase_state != "success":
+                    return {
+                        "phase_outputs": self.phase_outputs,
+                        "final_output": result,
+                        "failed_phase": phase_id,
+                        "aborted": True,
+                    }
+                continue
+
             # Build the prompt for this phase
             phase_input = self._build_phase_input(phase, initial_input)
 
@@ -2317,6 +2341,178 @@ class PhaseSequencer:
             "output_dir": output_dir,
             "tmp_dir": tempfile.gettempdir(),
         }
+
+    # ------------------------------------------------------------------
+    # Dialogue phase dispatch (Track B / Issue #677)
+    # ------------------------------------------------------------------
+
+    def _execute_dialogue_phase(
+        self,
+        phase: "PhaseDefinition",
+        phase_input: str,
+    ) -> Dict[str, Any]:
+        """Run a ``type: dialogue`` phase via :mod:`dialogue_phase`.
+
+        Resolves the drafter / reviewer executors from the runner's executor
+        registry (matching by class-name substring — see
+        :meth:`_resolve_dialogue_executor`), runs the dialogue loop, and
+        returns a sequencer-compatible result dict that downstream phase
+        handlers can store in ``phase_outputs``.
+
+        The returned dict mirrors the shape of :class:`TaskResult.model_dump`
+        so existing consumers (UI, ``_extract_phase_text``) keep working.
+
+        Args:
+            phase: The dialogue phase definition (``phase.dialogue_config`` non-None).
+            phase_input: The prompt-templated input string for round 1.
+
+        Returns:
+            Dict with ``state``, ``result``, ``rounds``, ``converged``,
+            ``cost_usd``, ``tokens_consumed``, ``execution_time_seconds``,
+            and metadata.
+        """
+        from .dialogue_phase import DialogueRunner
+
+        start_time = time.time()
+        config = phase.dialogue_config
+
+        drafter_exec = self._resolve_dialogue_executor(config.drafter.executor)
+        reviewer_exec = self._resolve_dialogue_executor(config.reviewer.executor)
+
+        if drafter_exec is None or reviewer_exec is None:
+            missing = (
+                f"drafter='{config.drafter.executor}'"
+                if drafter_exec is None
+                else f"reviewer='{config.reviewer.executor}'"
+            )
+            err = (
+                f"dialogue phase '{phase.id}': could not resolve executor ({missing}). "
+                f"Available: {[type(e).__name__ for e in (self.runner.executors or [])]}"
+            )
+            logger.error(err)
+            return {
+                "state": "failed",
+                "task_id": f"dialogue-{phase.id}",
+                "task_type": "review",
+                "confidence": 0.0,
+                "result": {"output": "", "text": ""},
+                "errors": [{"code": "dialogue_executor_unresolved", "message": err, "severity": "error"}],
+                "execution_time_seconds": time.time() - start_time,
+                "metadata": {"phase_id": phase.id},
+            }
+
+        runner = DialogueRunner(
+            config=config,
+            drafter_executor=drafter_exec,
+            reviewer_executor=reviewer_exec,
+            output_dir=self.output_dir,
+            run_id=self.run_id,
+            phase_id=phase.id,
+        )
+        dialogue_result = runner.run(phase_input)
+
+        duration = time.time() - start_time
+        rounds_dump = [
+            {
+                "round_number": r.round_number,
+                "draft_text": r.draft_text,
+                "review_text": r.review_text,
+                "approved": r.approved,
+                "drafter_cost": str(r.drafter_cost),
+                "reviewer_cost": str(r.reviewer_cost),
+                "cost": str(r.cost),
+                "drafter_tokens": r.drafter_tokens,
+                "reviewer_tokens": r.reviewer_tokens,
+                "drafter_model": r.drafter_model,
+                "reviewer_model": r.reviewer_model,
+                "drift_similarity": r.drift_similarity,
+            }
+            for r in dialogue_result.rounds
+        ]
+
+        # The sequencer maps a phase's success on "state == 'success'".
+        # A dialogue is a success if at least one round completed without a
+        # fatal executor error.  An un-converged dialogue (max_rounds hit) is
+        # NOT a failure per #677 — phase still produces a final draft.
+        is_success = dialogue_result.succeeded and len(dialogue_result.rounds) > 0
+
+        errors: List[Dict[str, Any]] = []
+        if dialogue_result.error:
+            errors.append({
+                "code": "dialogue_executor_error",
+                "message": dialogue_result.error,
+                "severity": "error",
+            })
+
+        return {
+            "state": "success" if is_success else "failed",
+            "task_id": f"dialogue-{phase.id}",
+            "task_type": "review",
+            "confidence": 0.85 if dialogue_result.converged else (0.6 if is_success else 0.0),
+            "result": {
+                "output": dialogue_result.final_draft,
+                "text": dialogue_result.final_draft,
+                "converged": dialogue_result.converged,
+                "rounds_completed": len(dialogue_result.rounds),
+                "max_rounds": config.max_rounds,
+                "convergence_stall": dialogue_result.convergence_stall,
+            },
+            "errors": errors,
+            "execution_time_seconds": duration,
+            "tokens_consumed": dialogue_result.total_tokens,
+            "cost_usd": str(dialogue_result.total_cost),
+            "metadata": {
+                "phase_id": phase.id,
+                "dialogue_rounds": rounds_dump,
+                "dialogue_history": dialogue_result.history,
+                "converged": dialogue_result.converged,
+                "convergence_stall": dialogue_result.convergence_stall,
+                "drafter_executor": config.drafter.executor,
+                "reviewer_executor": config.reviewer.executor,
+            },
+        }
+
+    def _resolve_dialogue_executor(self, name: str) -> Optional[Any]:
+        """Find an executor in ``self.runner.executors`` whose class name matches ``name``.
+
+        Matching rules (case-insensitive):
+        * ``openrouter`` → class name contains ``openrouter``
+        * ``anthropic`` → class name contains ``anthropic``
+        * ``gemini_cli`` / ``gemini`` → class name contains ``gemini``
+        * ``openclaw`` → class name contains ``openclaw``
+        * ``claudecode`` → class name contains ``claudecode``
+
+        Returns ``None`` when no matching executor is registered, EXCEPT in
+        dry-run mode (only a :class:`~.runner.DryRunExecutor` is registered),
+        where the dry-run executor is returned as a fallback so dialogue
+        phases can be validated by the template-validation suite without
+        real provider credentials.
+        """
+        executors = getattr(self.runner, "executors", None) or []
+        if not executors:
+            return None
+
+        needle = (name or "").lower().replace("-", "_").replace(" ", "")
+        if not needle:
+            return None
+        # Normalise common aliases
+        aliases = {
+            "gemini_cli": "gemini",
+        }
+        needle_norm = aliases.get(needle, needle)
+
+        for ex in executors:
+            cls_name = type(ex).__name__.lower()
+            if needle_norm in cls_name:
+                return ex
+
+        # Dry-run fallback — when the only available executor is the dry-run
+        # mock, return it so dialogue phases can still execute (returning
+        # synthetic APPROVE output for both drafter and reviewer turns).
+        dry_runners = [ex for ex in executors if "dryrun" in type(ex).__name__.lower()]
+        if len(dry_runners) == len(executors) and dry_runners:
+            return dry_runners[0]
+        return None
 
     @staticmethod
     def _resolve_task_type(task_type_str: str) -> TaskType:
