@@ -21,7 +21,7 @@ import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -1928,6 +1928,309 @@ def create_api_app(
 
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
         return JSONResponse({"run_id": run_id, "log": log_text})
+
+    # ── Run artifact endpoints (filed as harness gaps from PR #816) ──
+    # The pipeline writes one file per phase under `output_dir`. The harness
+    # needs to read these to render the Run Cockpit artifacts list, the
+    # Phase 0 inventory card, and the Adversary Loop dialogue rounds.
+    #
+    # All three endpoints follow the same pattern:
+    #   1. Resolve `output_dir` from the run record (404 if missing)
+    #   2. Constrain the requested path within `output_dir` (defence against
+    #      path traversal: `Path.resolve()` + `is_relative_to`)
+    #   3. Cap any returned text at 1 MiB so a malformed artifact can't OOM
+    #      the response (operators chasing a truly huge artifact can still
+    #      ssh to the daemon host).
+
+    # Maximum bytes returned for any single artifact body. The Phase 0
+    # inventory + dialogue artifacts are typically 2-10 KB; spec / behavioral
+    # / review markdown are 3-50 KB; even an aggressive run rarely exceeds
+    # 200 KB total. 1 MiB is a comfortable ceiling.
+    _ARTIFACT_MAX_BYTES = 1024 * 1024
+
+    def _resolve_output_dir(run: Dict[str, Any]) -> Path:
+        """Return the run's output_dir as a resolved absolute Path.
+
+        Raises ``HTTPException(404)`` when ``output_dir`` is missing from
+        the run record or does not exist on disk.
+        """
+        out = run.get("output_dir")
+        if not out:
+            raise HTTPException(status_code=404, detail="Run has no output_dir")
+        out_path = Path(out).resolve()
+        if not out_path.exists() or not out_path.is_dir():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Run output_dir does not exist on disk: {out_path}",
+            )
+        return out_path
+
+    def _read_artifact(out_dir: Path, filename: str) -> str:
+        """Read *filename* from *out_dir* with path-traversal + size guards.
+
+        Returns the file's text content (UTF-8, replacement on invalid bytes),
+        truncated at ``_ARTIFACT_MAX_BYTES`` with an explicit truncation
+        marker appended when over the limit.
+        """
+        # Constrain to a single path segment — no traversal, no nesting.
+        # Even though we re-resolve below, this is a fast-fail that gives a
+        # better error message than "file not found" for crafted inputs.
+        if "/" in filename or "\\" in filename or filename.startswith("."):
+            raise HTTPException(status_code=400, detail="Invalid artifact filename")
+
+        target = (out_dir / filename).resolve()
+        try:
+            target.relative_to(out_dir)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Artifact path escapes output_dir")
+
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail=f"Artifact '{filename}' not found")
+
+        raw = target.read_bytes()
+        truncated = len(raw) > _ARTIFACT_MAX_BYTES
+        if truncated:
+            raw = raw[:_ARTIFACT_MAX_BYTES]
+        text = raw.decode("utf-8", errors="replace")
+        if truncated:
+            text += "\n\n[…truncated by API: artifact exceeded 1 MiB…]"
+        return text
+
+    @app.get("/api/v1/runs/{run_id}/artifacts")
+    async def list_run_artifacts(run_id: str) -> JSONResponse:
+        """List files in a run's output_dir.
+
+        Returns ``{"run_id": ..., "output_dir": ..., "files": [...]}`` where
+        each file entry has ``{name, size_bytes, mtime}``. Hidden files
+        (those starting with ``.``) are excluded — the daemon's
+        ``.orch-daemon.log`` is exposed via ``/logs`` instead.
+
+        Files are sorted alphabetically by name (the conventional
+        phase-ordered prefixes — ``0_existing_symbols.md``, ``1_spec.md``,
+        etc. — sort naturally in pipeline order).
+        """
+        db = Database(Path(effective_db_path))
+        run = db.get_pipeline_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        out_dir = _resolve_output_dir(run)
+
+        files = []
+        for entry in sorted(out_dir.iterdir(), key=lambda p: p.name):
+            if entry.name.startswith(".") or not entry.is_file():
+                continue
+            stat = entry.stat()
+            files.append({
+                "name": entry.name,
+                "size_bytes": stat.st_size,
+                "mtime": stat.st_mtime,
+            })
+        return JSONResponse({
+            "run_id": run_id,
+            "output_dir": str(out_dir),
+            "files": files,
+        })
+
+    @app.get("/api/v1/runs/{run_id}/artifacts/{filename}")
+    async def get_run_artifact(run_id: str, filename: str) -> JSONResponse:
+        """Return the body of a single artifact file from a run's output_dir.
+
+        Path-traversal guarded; body truncated at 1 MiB. The response shape
+        is ``{"run_id": ..., "filename": ..., "size_bytes": ..., "content": ...}``
+        — text only; binary files will be returned with replacement chars.
+        """
+        db = Database(Path(effective_db_path))
+        run = db.get_pipeline_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        out_dir = _resolve_output_dir(run)
+        content = _read_artifact(out_dir, filename)
+        target = (out_dir / filename).resolve()
+        return JSONResponse({
+            "run_id": run_id,
+            "filename": filename,
+            "size_bytes": target.stat().st_size,
+            "content": content,
+        })
+
+    @app.get("/api/v1/runs/{run_id}/phase0")
+    async def get_run_phase0(run_id: str) -> JSONResponse:
+        """Parse the Phase 0 existing-symbols inventory for a run.
+
+        Looks for ``existing_symbols.md`` (or a phase-numbered variant) in
+        the run's ``output_dir`` and extracts the four canonical sections
+        defined in `coding-pipeline-standard.yaml` v4.2:
+
+            1. UI primitives
+            2. Project shared libraries
+            3. Adjacent action / hook / route patterns
+            4. Workspace barrels
+
+        Plus the §5/§6 verdict-label entries when present.
+
+        Returns ``{"run_id": ..., "sections": {"ui_primitives": {"count": N,
+        "entries": [...]}, "shared_libs": {...}, "adjacent_patterns": {...},
+        "workspace_barrels": {...}}, "verdicts": {"CONSUME": N, "EXTEND": N,
+        "DIVERGENT": N, "NEW_OK": N}, "raw": "..."}``.
+
+        Raises 404 if no Phase 0 artifact exists (the pipeline may have used
+        ``coding-pipeline-skip-spec.yaml`` which has no Phase 0).
+        """
+        db = Database(Path(effective_db_path))
+        run = db.get_pipeline_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        out_dir = _resolve_output_dir(run)
+
+        # Try common filename variants (Phase 0 may be numbered, prefixed, etc.)
+        candidates = [
+            "existing_symbols.md",
+            "0_existing_symbols.md",
+            "phase0_existing_symbols.md",
+            "existing_symbols_inventory.md",
+        ]
+        artifact: Optional[Path] = None
+        for name in candidates:
+            p = out_dir / name
+            if p.exists() and p.is_file():
+                artifact = p
+                break
+        if artifact is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No Phase 0 inventory artifact in {out_dir} (tried: {candidates})",
+            )
+
+        raw = artifact.read_text(encoding="utf-8", errors="replace")
+
+        # Parse the four standard sections. Headings come from the v4.2 YAML
+        # ("## 1. UI primitives", "## 2. Project shared libraries", etc.).
+        # We split on the next "## " heading after each section's start.
+        import re as _re
+
+        section_specs: List[Tuple[str, str]] = [
+            ("ui_primitives", r"^##\s+1\.\s+UI primitives"),
+            ("shared_libs", r"^##\s+2\.\s+Project shared libraries"),
+            ("adjacent_patterns", r"^##\s+3\.\s+Adjacent"),
+            ("workspace_barrels", r"^##\s+4\.\s+Workspace barrels"),
+        ]
+        sections: Dict[str, Dict[str, Any]] = {}
+        for key, pattern in section_specs:
+            m = _re.search(pattern, raw, _re.MULTILINE)
+            if m is None:
+                sections[key] = {"count": 0, "entries": []}
+                continue
+            start = m.end()
+            next_h2 = _re.search(r"^##\s+\d", raw[start:], _re.MULTILINE)
+            body = raw[start : (start + next_h2.start()) if next_h2 else len(raw)]
+            # An "entry" is any bullet line (- something) or backtick-wrapped
+            # symbol line. Empty stubs ("(empty — consumer did not provide…)")
+            # produce zero entries.
+            entries = []
+            for line in body.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("- ") and "(empty —" not in stripped:
+                    entries.append(stripped[2:])
+            sections[key] = {"count": len(entries), "entries": entries[:50]}  # cap per-section payload
+
+        # Verdict label counts from §5/§6 (CONSUME / EXTEND / DIVERGENT / NEW-OK / BLOCKED)
+        verdicts = {
+            "CONSUME": len(_re.findall(r"\bCONSUME\b", raw)),
+            "EXTEND": len(_re.findall(r"\bEXTEND\b", raw)),
+            "DIVERGENT": len(_re.findall(r"\bDIVERGENT\b", raw)),
+            "NEW_OK": len(_re.findall(r"\bNEW[-_]OK\b", raw)),
+            "BLOCKED": len(_re.findall(r"\bBLOCKED\b", raw)),
+        }
+
+        return JSONResponse({
+            "run_id": run_id,
+            "filename": artifact.name,
+            "sections": sections,
+            "verdicts": verdicts,
+            "raw": raw if len(raw) <= _ARTIFACT_MAX_BYTES else raw[:_ARTIFACT_MAX_BYTES] + "\n[…truncated…]",
+        })
+
+    @app.get("/api/v1/runs/{run_id}/dialogue")
+    async def get_run_dialogue(run_id: str) -> JSONResponse:
+        """Return the cross-model dialogue artifact for a run, if present.
+
+        Looks for ``dialogue.md`` / ``dialogue_phase.md`` / ``spec-review-dialogue.md``
+        in the run's ``output_dir``. The dialogue artifact is written by
+        the Track B dialogue phase (PR #808) — only runs that used the
+        ``coding-pipeline-with-dialogue`` template (or equivalent) will have one.
+
+        Returns ``{"run_id": ..., "filename": ..., "rounds": [...], "raw": "..."}``.
+        Each round entry is ``{"index": N, "side": "drafter" | "reviewer",
+        "model": "...", "verdict": "...", "content": "...", "jaccard": float | null}``.
+
+        Raises 404 when no dialogue artifact exists (most runs).
+        """
+        db = Database(Path(effective_db_path))
+        run = db.get_pipeline_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+        out_dir = _resolve_output_dir(run)
+
+        candidates = [
+            "dialogue.md",
+            "dialogue_phase.md",
+            "spec-review-dialogue.md",
+            "spec_review_dialogue.md",
+        ]
+        artifact: Optional[Path] = None
+        for name in candidates:
+            p = out_dir / name
+            if p.exists() and p.is_file():
+                artifact = p
+                break
+        if artifact is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"No dialogue artifact in {out_dir} — this run did not use a "
+                    f"dialogue phase (Track B, PR #808). Tried: {candidates}"
+                ),
+            )
+
+        raw = _read_artifact(out_dir, artifact.name)
+
+        # Parse rounds. The dialogue phase writes one section per turn
+        # with a heading like "## Round N · DRAFTER (model)" or
+        # "## Round N · REVIEWER (model) · VERDICT".
+        import re as _re
+
+        rounds: List[Dict[str, Any]] = []
+        round_re = _re.compile(
+            r"^##\s+Round\s+(?P<idx>\d+)\s*[·\-:]\s*"
+            r"(?P<side>DRAFTER|REVIEWER)"
+            r"(?:\s*\((?P<model>[^)]+)\))?"
+            r"(?:\s*[·\-:]\s*(?P<verdict>APPROVE|REQUEST_CHANGES|REVISE|ABORT))?",
+            _re.IGNORECASE | _re.MULTILINE,
+        )
+        matches = list(round_re.finditer(raw))
+        for i, m in enumerate(matches):
+            start = m.end()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
+            content = raw[start:end].strip()
+            # Extract jaccard from content body if present
+            # Capture decimal Jaccard value, stopping before any trailing
+            # sentence punctuation (e.g. ``Jaccard 0.93.`` → ``0.93``).
+            jac_m = _re.search(r"[Jj]accard[^0-9]*(\d+(?:\.\d+)?)", content)
+            rounds.append({
+                "index": int(m.group("idx")),
+                "side": (m.group("side") or "").lower(),
+                "model": m.group("model"),
+                "verdict": (m.group("verdict") or "").lower() or None,
+                "content": content[:4096],  # cap per-round body
+                "jaccard": float(jac_m.group(1)) if jac_m else None,
+            })
+
+        return JSONResponse({
+            "run_id": run_id,
+            "filename": artifact.name,
+            "rounds": rounds,
+            "raw": raw,
+        })
 
     @app.get("/api/v1/runs/{run_id}/stream")
     async def stream_run(run_id: str, request: Request) -> EventSourceResponse:
