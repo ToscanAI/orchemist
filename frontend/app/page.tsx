@@ -40,6 +40,7 @@ export default function FleetDashboardPage() {
   const [totalRuns, setTotalRuns] = useState<number | null>(null);
   const [gateCount, setGateCount] = useState<number | null>(null);
   const [regressions, setRegressions] = useState<readonly RegressionRecord[] | null>(null);
+  const [regressionsTotal, setRegressionsTotal] = useState<number | null>(null);
   const [staleFindings, setStaleFindings] = useState<StaleFindingsResponse | null>(null);
 
   useEffect(() => {
@@ -48,7 +49,9 @@ export default function FleetDashboardPage() {
       listRuns({ status: 'running', limit: 20 }),
       listRuns({ limit: 1 }),
       listGates({ limit: 1 }),
-      listRegressions({ limit: 20 }),
+      // Only-pending regressions for the KPI — we don't want resolved
+      // ones inflating the count. Limit=10 for the card; KPI reads `total`.
+      listRegressions({ status: 'detected', limit: 10 }),
       listStaleFindings(),
     ]).then(([runningRes, totalsRes, gatesRes, regRes, staleRes]) => {
       if (cancelled) return;
@@ -58,7 +61,10 @@ export default function FleetDashboardPage() {
       if (runningRes.status === 'fulfilled') setLiveRuns(runningRes.value.items);
       if (totalsRes.status === 'fulfilled') setTotalRuns(totalsRes.value.total);
       if (gatesRes.status === 'fulfilled') setGateCount(gatesRes.value.total);
-      if (regRes.status === 'fulfilled') setRegressions(regRes.value.items);
+      if (regRes.status === 'fulfilled') {
+        setRegressions(regRes.value.items);
+        setRegressionsTotal(regRes.value.total);
+      }
       if (staleRes.status === 'fulfilled') setStaleFindings(staleRes.value);
     });
     return () => { cancelled = true; };
@@ -108,13 +114,13 @@ export default function FleetDashboardPage() {
         />
         <KPICard
           label="Regressions detected"
-          value={regressions !== null ? regressions.length : DEMO_REGRESSIONS.length}
-          tone={(regressions !== null ? regressions.length : DEMO_REGRESSIONS.length) > 0 ? 'danger' : 'success'}
+          value={regressionsTotal !== null ? regressionsTotal : DEMO_REGRESSIONS.length}
+          tone={(regressionsTotal ?? 0) > 0 ? 'danger' : 'success'}
           sublabel={
-            regressions !== null
-              ? regressions.length === 0
-                ? <span>none in last 24h</span>
-                : <span>{regressions.filter((r) => r.status === 'fixing').length} auto-fix in flight</span>
+            regressionsTotal !== null
+              ? regressionsTotal === 0
+                ? <span>queue empty · no detected regressions</span>
+                : <span>{(regressions ?? []).filter((r) => r.status === 'fixing').length} auto-fix in flight · {regressionsTotal} total</span>
               : <span>auto-fix pipelines spawned · 1 PR open</span>
           }
           testId="kpi-regressions"

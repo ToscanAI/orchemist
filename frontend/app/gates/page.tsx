@@ -438,18 +438,25 @@ export default function TrustAndGatesPage() {
                   v === 'approve' ? 'approve' :
                   v === 'request_changes' || v === 'reject' ? 'reject' :
                   'auto';
+                // Parse the engine timestamp. The API normalises naive UTC
+                // strings to "Z"-suffixed ISO; Date() handles both formats
+                // correctly. Anything that doesn't parse falls back to "—".
                 const ago = (() => {
                   const t = new Date(d.created_at).getTime();
                   if (!Number.isFinite(t)) return '—';
-                  const min = Math.floor((Date.now() - t) / 60000);
+                  const diffMs = Date.now() - t;
+                  if (diffMs < 0) return 'just now';
+                  const min = Math.floor(diffMs / 60000);
+                  if (min < 1) return 'just now';
                   if (min < 60) return `${min} min ago`;
                   const h = Math.floor(min / 60);
                   if (h < 24) return `${h}h ago`;
                   const days = Math.floor(h / 24);
                   return `${days}d ago`;
                 })();
+                const issueCount = Array.isArray(d.issues_found) ? d.issues_found.length : 0;
                 return (
-                  <li key={d.id} className="flex items-center gap-3">
+                  <li key={d.review_id} className="flex items-center gap-3">
                     <span className={[
                       'w-16',
                       kind === 'approve' ? 'text-harness-teal' :
@@ -458,8 +465,9 @@ export default function TrustAndGatesPage() {
                     ].join(' ')}>
                       {kind === 'approve' ? '✓ approve' : kind === 'reject' ? '✗ reject' : '⏏ auto'}
                     </span>
-                    <span className="flex-1 text-harness-text truncate" title={d.run_id}>
-                      run {d.run_id.slice(0, 8)} · {d.reviewer_model ?? 'reviewer'} {d.confidence !== null ? `· ${d.confidence.toFixed(2)}` : ''}
+                    <span className="flex-1 text-harness-text truncate" title={`${d.run_id} · phase ${d.phase_id}`}>
+                      run {d.run_id.slice(0, 8)} · {d.reviewer_model ?? 'reviewer'}
+                      {issueCount > 0 ? ` · ${issueCount} issue${issueCount === 1 ? '' : 's'}` : ''}
                     </span>
                     <span className="text-harness-dim text-[10px]">{ago}</span>
                   </li>

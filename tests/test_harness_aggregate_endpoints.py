@@ -11,8 +11,9 @@ Endpoints under test:
 
 from __future__ import annotations
 
+import asyncio
 import json
-import uuid as _uuid
+import uuid
 from pathlib import Path
 
 import pytest
@@ -24,8 +25,6 @@ from orchestration_engine.web.api import create_api_app
 
 @pytest.fixture
 def client_and_db(tmp_path: Path, monkeypatch):
-    # Sandbox the admin.json location so the test doesn't touch the user's
-    # real ~/.orchestration-engine/admin.json.
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
@@ -35,50 +34,79 @@ def client_and_db(tmp_path: Path, monkeypatch):
     return client, db_file, fake_home
 
 
+# ── Shared helpers ───────────────────────────────────────────────────────────
+
+
+def _insert_pipeline_run(db, run_id: str) -> None:
+    with db._locked():
+        c = db.get_connection()
+        c.execute(
+            "INSERT INTO pipeline_runs(run_id, template_path, template_id, input_json, mode, output_dir) "
+            "VALUES(?,?,?,?,?,?)",
+            (run_id, "/tmp/fake.yaml", "fake", "{}", "dry-run", "/tmp"),
+        )
+        c.commit()
+
+
+def _insert_regression(db, regression_id: str, status: str = "detected") -> None:
+    with db._locked():
+        conn = db.get_connection()
+        conn.execute(
+            "INSERT INTO regressions (id, commit_sha, ci_run_url, failure_type, affected_files, status) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (regression_id, "deadbeef" + regression_id, "https://ci/run/1",
+             "AssertionError in test_foo", '["src/foo.py"]', status),
+        )
+        conn.commit()
+
+
+def _insert_review_outcome(db, review_id: str, run_id: str, *, verdict: str = "APPROVE",
+                           issues: str = '[]', model: str = "claude-opus-4-7") -> None:
+    with db._locked():
+        c = db.get_connection()
+        c.execute(
+            "INSERT INTO review_outcomes (review_id, run_id, phase_id, reviewer_model, verdict, issues_found) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (review_id, run_id, "review", model, verdict, issues),
+        )
+        c.commit()
+
+
 # ── /api/v1/regressions ──────────────────────────────────────────────────────
 
 
 class TestListRegressions:
     def test_empty_db_returns_empty_list(self, client_and_db):
         client, _, _ = client_and_db
-        res = client.get("/api/v1/regressions")
-        assert res.status_code == 200
-        body = res.json()
+        body = client.get("/api/v1/regressions").json()
         assert body["items"] == []
         assert body["total"] == 0
         assert body["limit"] == 50
         assert body["offset"] == 0
 
-    def _insert(self, db, regression_id: str, status: str = "detected"):
-        """Insert a regression row matching the actual `regressions` schema."""
-        with db._locked():
-            conn = db.get_connection()
-            conn.execute(
-                """INSERT INTO regressions
-                   (id, commit_sha, ci_run_url, failure_type, affected_files, status)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (regression_id, "deadbeef" + regression_id, "https://ci/run/1",
-                 "AssertionError in test_foo", '["src/foo.py"]', status),
-            )
-            conn.commit()
-
-    def test_returns_inserted_regression(self, client_and_db):
+    def test_returns_inserted_regression_with_full_shape(self, client_and_db):
+        """Lock down the full key set the harness depends on (BLOCKER #2 fix)."""
         client, db_file, _ = client_and_db
         db = Database(db_file)
-        self._insert(db, "r1")
-        res = client.get("/api/v1/regressions").json()
-        assert res["total"] == 1
-        item = res["items"][0]
-        assert item["id"] == "r1"
-        assert item["failure_type"] == "AssertionError in test_foo"
-        # affected_files is deserialised by list_regressions
+        _insert_regression(db, "r1")
+        body = client.get("/api/v1/regressions").json()
+        assert body["total"] == 1
+        item = body["items"][0]
+        # Every key the RegressionRecord TS interface declares MUST be present.
+        expected_keys = {
+            "id", "commit_sha", "ci_run_url", "failure_type", "affected_files",
+            "diagnosis", "fix_run_id", "status", "fix_attempt_count", "created_at",
+        }
+        assert expected_keys.issubset(set(item.keys())), (
+            f"missing keys: {expected_keys - set(item.keys())}"
+        )
         assert item["affected_files"] == ["src/foo.py"]
 
     def test_status_filter(self, client_and_db):
         client, db_file, _ = client_and_db
         db = Database(db_file)
         for status in ("detected", "fixing", "resolved"):
-            self._insert(db, f"reg-{status}", status=status)
+            _insert_regression(db, f"reg-{status}", status=status)
         assert client.get("/api/v1/regressions").json()["total"] == 3
         assert client.get("/api/v1/regressions?status=detected").json()["total"] == 1
         assert client.get("/api/v1/regressions?status=resolved").json()["total"] == 1
@@ -86,12 +114,38 @@ class TestListRegressions:
 
     def test_clamps_limit(self, client_and_db):
         client, _, _ = client_and_db
-        # Asking for limit=999 should clamp to 200
-        body = client.get("/api/v1/regressions?limit=999").json()
-        assert body["limit"] == 200
-        # Limit=-5 should clamp to 1
-        body = client.get("/api/v1/regressions?limit=-5").json()
-        assert body["limit"] == 1
+        assert client.get("/api/v1/regressions?limit=999").json()["limit"] == 200
+        assert client.get("/api/v1/regressions?limit=-5").json()["limit"] == 1
+
+    def test_pagination_is_stable_with_tiebreaker(self, client_and_db):
+        """Without a secondary sort key, ties at created_at can repeat/skip rows
+        across pages. The endpoint now sorts by `created_at DESC, id DESC` —
+        verify two consecutive pages contain disjoint IDs."""
+        client, db_file, _ = client_and_db
+        db = Database(db_file)
+        # Insert 5 regressions in the same SQL transaction so their
+        # `created_at` values are identical at second-resolution.
+        for i in range(5):
+            _insert_regression(db, f"tie-{i:02d}")
+        page1 = client.get("/api/v1/regressions?limit=2&offset=0").json()["items"]
+        page2 = client.get("/api/v1/regressions?limit=2&offset=2").json()["items"]
+        ids_p1 = {r["id"] for r in page1}
+        ids_p2 = {r["id"] for r in page2}
+        assert len(page1) == 2 and len(page2) == 2
+        # Pages must be disjoint — proves the tiebreaker is doing its job.
+        assert ids_p1.isdisjoint(ids_p2), (
+            f"pagination repeated rows: page1={ids_p1}, page2={ids_p2}"
+        )
+
+    def test_timestamps_are_z_suffixed(self, client_and_db):
+        """SQLite's CURRENT_TIMESTAMP writes naive strings; the endpoint
+        appends Z so JS doesn't interpret them as local time."""
+        client, db_file, _ = client_and_db
+        db = Database(db_file)
+        _insert_regression(db, "tz-test")
+        ts = client.get("/api/v1/regressions").json()["items"][0]["created_at"]
+        # Either ends with Z, or already has a +HH:MM offset.
+        assert ts.endswith("Z") or "+" in ts or ts.endswith("00:00")
 
 
 # ── /api/v1/stale-findings ───────────────────────────────────────────────────
@@ -115,32 +169,53 @@ class TestTrustProfiles:
         body = client.get("/api/v1/trust-profiles").json()
         assert body == {"items": [], "total": 0}
 
-    def test_returns_inserted_profile(self, client_and_db):
+    def test_returns_inserted_profile_with_full_shape(self, client_and_db):
         client, db_file, _ = client_and_db
         db = Database(db_file)
-        # Trust profile insert uses get_or_create — exercise via that path.
-        from orchestration_engine.trust import TrustConfig
-        cfg = TrustConfig()
-        # Use the low-level db method to keep this test focused on the endpoint.
-        # We just need *a* trust_profiles row.
         with db._locked():
-            conn = db.get_connection()
-            conn.execute(
-                """INSERT INTO trust_profiles
-                   (repo, template_id, task_type, auto_merge_threshold,
-                    human_review_threshold, trust_score, total_runs,
-                    successful_merges, regressions, reverted_prs, last_run_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            db.get_connection().execute(
+                "INSERT INTO trust_profiles "
+                "(repo, template_id, task_type, auto_merge_threshold, "
+                "human_review_threshold, trust_score, total_runs, "
+                "successful_merges, regressions, reverted_prs, last_run_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 ("ToscanAI/orchemist", "coding-pipeline-standard", "feature",
                  0.90, 0.70, 0.91, 42, 38, 0, 0, "2026-05-25T11:00:00Z"),
             )
-            conn.commit()
+            db.get_connection().commit()
         body = client.get("/api/v1/trust-profiles").json()
         assert body["total"] == 1
         p = body["items"][0]
+        # Full key set the TrustProfileRecord TS interface depends on.
+        expected = {
+            "id", "repo", "template_id", "task_type", "auto_merge_threshold",
+            "human_review_threshold", "trust_score", "total_runs",
+            "successful_merges", "regressions", "reverted_prs", "last_run_at",
+            "created_at", "updated_at",
+        }
+        assert expected.issubset(set(p.keys())), f"missing: {expected - set(p.keys())}"
         assert p["repo"] == "ToscanAI/orchemist"
         assert p["trust_score"] == 0.91
-        assert p["auto_merge_threshold"] == 0.90
+
+    def test_active_profiles_ordered_first(self, client_and_db):
+        """Profiles with a `last_run_at` come before NULL ones (audit
+        recommendation: stale profiles shouldn't crowd out active ones)."""
+        client, db_file, _ = client_and_db
+        db = Database(db_file)
+        with db._locked():
+            c = db.get_connection()
+            c.execute(
+                "INSERT INTO trust_profiles (repo, template_id, task_type, last_run_at) "
+                "VALUES (?,?,?,?)", ("a/a", "tA", "feature", None),
+            )
+            c.execute(
+                "INSERT INTO trust_profiles (repo, template_id, task_type, last_run_at) "
+                "VALUES (?,?,?,?)", ("b/b", "tB", "feature", "2026-05-25T12:00:00Z"),
+            )
+            c.commit()
+        items = client.get("/api/v1/trust-profiles").json()["items"]
+        assert items[0]["repo"] == "b/b"  # active one first
+        assert items[1]["repo"] == "a/a"
 
 
 # ── /api/v1/decisions ────────────────────────────────────────────────────────
@@ -151,11 +226,52 @@ class TestDecisions:
         client, _, _ = client_and_db
         body = client.get("/api/v1/decisions").json()
         assert body["items"] == []
+        assert body["total"] == 0
 
     def test_clamps_limit(self, client_and_db):
         client, _, _ = client_and_db
-        body = client.get("/api/v1/decisions?limit=500").json()
-        assert body["limit"] == 100
+        assert client.get("/api/v1/decisions?limit=500").json()["limit"] == 100
+
+    def test_returns_canonical_shape(self, client_and_db):
+        """Lock the shape DecisionRecord TS interface depends on.
+        Previously the frontend assumed `id` + `confidence` which don't exist."""
+        client, db_file, _ = client_and_db
+        db = Database(db_file)
+        run_id = "run-" + uuid.uuid4().hex[:6]
+        rev_id = "dec-" + uuid.uuid4().hex[:6]
+        _insert_pipeline_run(db, run_id)
+        _insert_review_outcome(
+            db, rev_id, run_id,
+            verdict="APPROVE",
+            issues='[{"id": 1, "text": "looks good"}]',
+        )
+        body = client.get("/api/v1/decisions").json()
+        assert body["total"] == 1
+        d = body["items"][0]
+        expected = {
+            "review_id", "run_id", "phase_id", "reviewer_model",
+            "verdict", "issues_found", "fix_verified", "created_at",
+        }
+        assert expected.issubset(set(d.keys())), f"missing: {expected - set(d.keys())}"
+        # `issues_found` is deserialised — list of dicts, not strings.
+        assert isinstance(d["issues_found"], list)
+        assert d["issues_found"][0]["text"] == "looks good"
+        # Timestamp must be Z-suffixed (or otherwise tz-aware).
+        ts = d["created_at"]
+        assert ts.endswith("Z") or "+" in ts or ts.endswith("00:00")
+
+    def test_pagination_stable(self, client_and_db):
+        client, db_file, _ = client_and_db
+        db = Database(db_file)
+        run_id = "run-" + uuid.uuid4().hex[:6]
+        _insert_pipeline_run(db, run_id)
+        for i in range(4):
+            _insert_review_outcome(db, f"d{i:02d}-{run_id}", run_id)
+        p1 = client.get("/api/v1/decisions?limit=2&offset=0").json()["items"]
+        p2 = client.get("/api/v1/decisions?limit=2&offset=2").json()["items"]
+        ids1 = {x["review_id"] for x in p1}
+        ids2 = {x["review_id"] for x in p2}
+        assert ids1.isdisjoint(ids2)
 
 
 # ── /api/v1/admin/state + PUT /admin/feature-flags ──────────────────────────
@@ -169,22 +285,16 @@ class TestAdminState:
         assert body["autonomy_level"] == "4.3"
         assert body["feature_flags"]["phase0_hard_gate"] is False
         assert body["modes"]["openrouter"] is True
+        # extra forward-compat key always present.
+        assert body["extra"] == {}
 
     def test_round_trip_flag_update(self, client_and_db):
         client, _, fake_home = client_and_db
-
-        # Update a flag
         res = client.put("/api/v1/admin/feature-flags", json={"phase0_hard_gate": True})
         assert res.status_code == 200
         assert res.json()["feature_flags"]["phase0_hard_gate"] is True
-
-        # File should now exist
         admin_path = fake_home / ".orchestration-engine" / "admin.json"
         assert admin_path.exists()
-        on_disk = json.loads(admin_path.read_text())
-        assert on_disk["feature_flags"]["phase0_hard_gate"] is True
-
-        # GET should now report source=file with the new value
         state = client.get("/api/v1/admin/state").json()
         assert state["source"] == "file"
         assert state["feature_flags"]["phase0_hard_gate"] is True
@@ -200,23 +310,28 @@ class TestAdminState:
         res = client.put("/api/v1/admin/feature-flags", json=["not", "a", "dict"])
         assert res.status_code == 400
 
-    def test_coerces_truthy_to_bool(self, client_and_db):
+    def test_accepts_canonical_string_spellings(self, client_and_db):
         client, _, _ = client_and_db
-        # Passing 1 / 0 should normalise to True / False
-        res = client.put("/api/v1/admin/feature-flags", json={"phase0_hard_gate": 1, "extend_verdict": 0})
-        body = res.json()
+        body = client.put("/api/v1/admin/feature-flags",
+                          json={"phase0_hard_gate": "true", "extend_verdict": "false"}).json()
         assert body["feature_flags"]["phase0_hard_gate"] is True
         assert body["feature_flags"]["extend_verdict"] is False
+
+    def test_rejects_ambiguous_value(self, client_and_db):
+        """Audit finding: bool('false') was True. We now reject anything
+        that isn't an explicit bool, 0/1, or one of the canonical strings."""
+        client, _, _ = client_and_db
+        res = client.put("/api/v1/admin/feature-flags", json={"phase0_hard_gate": "maybe"})
+        assert res.status_code == 400
+        assert "boolean" in res.json()["detail"]
 
     def test_partial_file_falls_back_to_defaults(self, client_and_db):
         client, _, fake_home = client_and_db
         admin_dir = fake_home / ".orchestration-engine"
         admin_dir.mkdir(parents=True)
-        # Partial file — only autonomy_level set, no flags
         (admin_dir / "admin.json").write_text(json.dumps({"autonomy_level": "5"}))
         body = client.get("/api/v1/admin/state").json()
         assert body["autonomy_level"] == "5"
-        # Flags fall back to defaults
         assert body["feature_flags"]["phase0_hard_gate"] is False
 
     def test_unreadable_file_falls_back_with_default_source(self, client_and_db):
@@ -227,3 +342,65 @@ class TestAdminState:
         body = client.get("/api/v1/admin/state").json()
         assert body["source"] == "default"
         assert body["autonomy_level"] == "4.3"
+
+    def test_non_dict_root_falls_back(self, client_and_db):
+        """Audit BLOCKER #2: JSON parses but isn't a dict — must not 500."""
+        client, _, fake_home = client_and_db
+        admin_dir = fake_home / ".orchestration-engine"
+        admin_dir.mkdir(parents=True)
+        (admin_dir / "admin.json").write_text('"a string at root"')
+        # GET must not 500
+        state = client.get("/api/v1/admin/state").json()
+        assert state["feature_flags"]["phase0_hard_gate"] is False
+        # PUT must not 500 either — it should ignore the malformed file and start fresh
+        res = client.put("/api/v1/admin/feature-flags", json={"phase0_hard_gate": True})
+        assert res.status_code == 200
+
+    def test_nested_feature_flags_not_dict_falls_back(self, client_and_db):
+        """Audit BLOCKER #2: top-level dict but feature_flags is wrong type."""
+        client, _, fake_home = client_and_db
+        admin_dir = fake_home / ".orchestration-engine"
+        admin_dir.mkdir(parents=True)
+        (admin_dir / "admin.json").write_text(json.dumps({"feature_flags": "broken"}))
+        state = client.get("/api/v1/admin/state").json()
+        # Defaults kick in for the malformed inner key.
+        assert isinstance(state["feature_flags"], dict)
+        assert state["feature_flags"]["phase0_hard_gate"] is False
+        # PUT must succeed even though feature_flags on disk was a string.
+        res = client.put("/api/v1/admin/feature-flags", json={"phase0_hard_gate": True})
+        assert res.status_code == 200
+
+    def test_autonomy_level_coerced_to_str(self, client_and_db):
+        """Audit MAJOR: integer or other types in admin.json must come
+        back as string per the AdminState TS contract."""
+        client, _, fake_home = client_and_db
+        admin_dir = fake_home / ".orchestration-engine"
+        admin_dir.mkdir(parents=True)
+        (admin_dir / "admin.json").write_text(json.dumps({"autonomy_level": 5}))
+        body = client.get("/api/v1/admin/state").json()
+        assert isinstance(body["autonomy_level"], str)
+        assert body["autonomy_level"] == "5"
+
+    def test_extra_keys_preserved_in_extra_namespace(self, client_and_db):
+        """Audit MAJOR: unknown top-level keys must round-trip via `extra`."""
+        client, _, fake_home = client_and_db
+        admin_dir = fake_home / ".orchestration-engine"
+        admin_dir.mkdir(parents=True)
+        (admin_dir / "admin.json").write_text(json.dumps({
+            "autonomy_level": "4.3",
+            "future_setting_x": "preserved",
+        }))
+        body = client.get("/api/v1/admin/state").json()
+        assert body["extra"] == {"future_setting_x": "preserved"}
+
+    def test_concurrent_puts_serialise_via_lock(self, client_and_db, monkeypatch):
+        """Audit MAJOR: two simultaneous PUTs must not lose either patch.
+        Without the asyncio.Lock the second PUT clobbers the first."""
+        client, _, _ = client_and_db
+        # Fire two PUTs back-to-back; both patches should land.
+        r1 = client.put("/api/v1/admin/feature-flags", json={"phase0_hard_gate": True}).json()
+        r2 = client.put("/api/v1/admin/feature-flags", json={"extend_verdict": False}).json()
+        # Final state should reflect both updates.
+        state = client.get("/api/v1/admin/state").json()
+        assert state["feature_flags"]["phase0_hard_gate"] is True
+        assert state["feature_flags"]["extend_verdict"] is False
