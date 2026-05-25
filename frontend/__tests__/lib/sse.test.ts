@@ -377,13 +377,13 @@ describe('derived status', () => {
     expect(result.current.status).toBe<RunEventStatus>('error');
   });
 
-  it('transitions to "error" on status_changed with crashed', () => {
+  it('transitions to "error" on status_changed with budget_exceeded', () => {
     const { result } = renderHook(() => useRunEvents('abc12345'));
 
     act(() => {
       mockInstance.emit('status_changed', {
         ...STATUS_CHANGED_FAILED_PAYLOAD,
-        status: 'crashed',
+        status: 'budget_exceeded',
       });
     });
 

@@ -33,7 +33,7 @@ import type { SseEvent, SseStatusChangedEvent, RunStatus } from '@/lib/types';
  * - `connecting`  — `EventSource` opened but `onopen` not yet fired.
  * - `running`     — at least one `phase_started` or `phase_completed` received.
  * - `completed`   — `status_changed` with `status === 'success'`.
- * - `error`       — `status_changed` with `status` in `{'failed','crashed','scoring_failed'}`.
+ * - `error`       — `status_changed` with `status` in `{'failed','budget_exceeded','scoring_failed'}`.
  * - `aborted`     — `status_changed` with `status === 'cancelled'`.
  */
 export type RunEventStatus =
@@ -70,7 +70,7 @@ const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>([
   'success',
   'failed',
   'cancelled',
-  'crashed',
+  'budget_exceeded',
   'scoring_failed',
 ]);
 
@@ -95,14 +95,17 @@ function deriveStatus(runStatus: SseStatusChangedEvent['status']): RunEventStatu
     case 'success':
       return 'completed';
     case 'failed':
-    case 'crashed':
+    case 'budget_exceeded':
     case 'scoring_failed':
       return 'error';
     case 'cancelled':
       return 'aborted';
-    default:
-      // Non-terminal statuses (pending/running) are handled externally;
-      // this branch is only reached for unexpected values.
+    case 'pending_review':
+      // Awaiting human gate decision — treat as still running from the
+      // hook's perspective so the EventSource doesn't close.
+      return 'running';
+    case 'pending':
+    case 'running':
       return 'running';
   }
 }
