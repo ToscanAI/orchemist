@@ -3360,7 +3360,7 @@ class StateMachineSequencer(PhaseSequencer):
                 stripped_lines: List[str] = []
                 past_verdict = False
                 for line in text.split('\n'):
-                    if not past_verdict and line.strip().upper() in _VERDICT_KEYWORDS:
+                    if not past_verdict and line.strip().lower() in _VERDICT_KEYWORDS:
                         continue  # skip verdict-only line at start
                     past_verdict = True
                     stripped_lines.append(line)

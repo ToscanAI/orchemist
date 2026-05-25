@@ -89,9 +89,11 @@ def determine_outcome(result: Dict[str, Any]) -> PhaseOutcome:
 
 
 # ---------------------------------------------------------------------------
-# Content-based verdict extraction (Issue #301, refactored in #678)
+# Content-based verdict extraction (Issue #301, refactored in #678, #836)
 # ---------------------------------------------------------------------------
 
-_VERDICT_KEYWORDS = ("APPROVE", "REQUEST_CHANGES", "ABORT")
-
-from .verdict_parser import extract_verdict  # noqa: E402
+# Single canonical source — exported here for backward-compat callers that
+# import `_VERDICT_KEYWORDS` from `transitions`. The set is defined in
+# `verdict_parser` (lowercase per `extract_verdict()`'s output contract);
+# callers comparing line text MUST lowercase before membership-test.
+from .verdict_parser import _VERDICT_KEYWORDS, extract_verdict  # noqa: E402, F401

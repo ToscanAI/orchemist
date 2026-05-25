@@ -53,9 +53,8 @@ from pathlib import Path
 
 When the agent needs to modify existing code, tell it exactly where:
 ```
-### src/orchestration_engine/transitions.py
-Contains `extract_verdict()` function (line ~97). This is the ONLY file that needs to change.
-`_VERDICT_KEYWORDS = ("APPROVE", "REQUEST_CHANGES", "ABORT")` — defined at line ~94.
+### src/orchestration_engine/verdict_parser.py
+Contains `extract_verdict()` function and the canonical `_VERDICT_KEYWORDS = {"approve", "request_changes", "abort"}` set (lowercase per the documented output contract; `src/orchestration_engine/transitions.py` re-exports both for legacy callers). When adding a new verdict keyword, edit `verdict_parser.py` ONLY — the re-export in `transitions.py` and the callsite in `sequencer.py` (lowercase comparison) pick it up automatically.
 ```
 
 ### 5. What to Include
