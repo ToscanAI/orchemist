@@ -279,6 +279,105 @@ def _merge_feature_flags_with_passthrough(
     return {**unknown, **canonical}
 
 
+class _SseConnectionLimiter:
+    """Per-process SSE connection counter + per-IP cap (Issue #841).
+
+    Module-level singleton (``_SSE_LIMITER``) so that:
+      - all FastAPI workers in the same process share counts
+      - tests can import and drive admit/release directly without
+        opening real streams (which TestClient blocks on indefinitely
+        due to the 1-second poll loop)
+      - the metrics endpoint and the stream endpoint read the same
+        counters atomically
+
+    Limits are env-var driven (``ORCH_SSE_MAX_TOTAL`` default 100,
+    ``ORCH_SSE_MAX_PER_IP`` default 10; ``0`` disables the
+    corresponding limit). Env vars are re-read on every ``admit`` call
+    so operators can re-tune live without restarting.
+    """
+
+    def __init__(self) -> None:
+        import threading
+        self._lock = threading.Lock()
+        self._active_total: int = 0
+        self._active_per_ip: Dict[str, int] = {}
+
+    @staticmethod
+    def limits() -> Tuple[int, int]:
+        """Return ``(max_total, max_per_ip)`` from env vars. Malformed
+        values fall back to the documented defaults — never raises."""
+        try:
+            max_total = int(os.environ.get("ORCH_SSE_MAX_TOTAL", "100"))
+        except ValueError:
+            max_total = 100
+        try:
+            max_per_ip = int(os.environ.get("ORCH_SSE_MAX_PER_IP", "10"))
+        except ValueError:
+            max_per_ip = 10
+        return max_total, max_per_ip
+
+    def admit(self, client_ip: str) -> Optional[str]:
+        """Try to admit a new SSE connection. Returns ``None`` on
+        success (counters incremented) or a human-readable detail
+        string when a limit is exceeded (counters unchanged).
+
+        Caller MUST call :meth:`release` with the SAME ``client_ip``
+        from a finally block when the connection ends.
+        """
+        max_total, max_per_ip = self.limits()
+        with self._lock:
+            if max_total > 0 and self._active_total >= max_total:
+                return (
+                    f"SSE total connection limit reached "
+                    f"({self._active_total}/{max_total}). Try again later."
+                )
+            if max_per_ip > 0:
+                cur = self._active_per_ip.get(client_ip, 0)
+                if cur >= max_per_ip:
+                    return (
+                        f"SSE per-IP connection limit reached "
+                        f"({cur}/{max_per_ip} from {client_ip}). "
+                        f"Close one before opening another."
+                    )
+            self._active_total += 1
+            self._active_per_ip[client_ip] = self._active_per_ip.get(client_ip, 0) + 1
+        return None
+
+    def release(self, client_ip: str) -> None:
+        """Decrement counters for a closing connection. Saturating at
+        zero — never goes negative even if release() is called more
+        times than admit() (defensive)."""
+        with self._lock:
+            self._active_total = max(0, self._active_total - 1)
+            cur = self._active_per_ip.get(client_ip, 0)
+            if cur <= 1:
+                self._active_per_ip.pop(client_ip, None)
+            else:
+                self._active_per_ip[client_ip] = cur - 1
+
+    def metrics(self) -> Dict[str, Any]:
+        """Return a snapshot dict suitable for JSON serialisation."""
+        max_total, max_per_ip = self.limits()
+        with self._lock:
+            return {
+                "active_total": self._active_total,
+                "active_per_ip": dict(self._active_per_ip),
+                "max_total": max_total,
+                "max_per_ip": max_per_ip,
+            }
+
+    def _reset_for_tests(self) -> None:
+        """Used by the test suite to start each test from zero counts."""
+        with self._lock:
+            self._active_total = 0
+            self._active_per_ip.clear()
+
+
+# Process-wide singleton. The web app injects this into request handlers
+# via a closure reference; tests import it directly to verify counters.
+_SSE_LIMITER = _SseConnectionLimiter()
+
+
 def create_api_app(
     db_path: Optional[str] = None,
     user_templates_dir: Optional["Path"] = None,  # type: ignore[name-defined]
@@ -2903,6 +3002,24 @@ def create_api_app(
             "offset": offset,
         })
 
+    # ── SSE connection limits (#841) ─────────────────────────────────────
+    # The limiter lives at module scope (see SseConnectionLimiter below)
+    # so it's directly importable from tests and shared across requests
+    # served by the same process. Limits are read from env vars on every
+    # admit, so operators can re-tune live without restarting.
+    _sse_limiter = _SSE_LIMITER  # alias for the closure-using stream handler
+
+    @app.get("/api/v1/sse/metrics")
+    async def get_sse_metrics() -> JSONResponse:
+        """Return current SSE connection counts and limits (#841).
+
+        Surfaced by the harness Admin Console + by ops dashboards. The
+        ``active_total`` and ``active_per_ip`` snapshots are read under
+        the lock; the limits are re-read from env vars on every call
+        (operator may have re-tuned live).
+        """
+        return JSONResponse(_sse_limiter.metrics())
+
     @app.get("/api/v1/runs/{run_id}/stream")
     async def stream_run(run_id: str, request: Request) -> EventSourceResponse:
         """Stream live phase-transition events for a pipeline run via SSE.
@@ -2942,11 +3059,28 @@ def create_api_app(
         _TERMINAL_STATES = TERMINAL_STATUSES
         _POLL_INTERVAL = 1.0  # seconds between DB polls
 
+        # ── SSE connection limits (#841) ─────────────────────────────
+        # Check limits BEFORE opening the stream. On hit, return 429
+        # with Retry-After so clients back off instead of reconnecting
+        # tight-loop. Successful admit MUST be paired with a release in
+        # the generator's finally block.
+        client_ip = (request.client.host if request.client else "unknown")
+        admit_err = _sse_limiter.admit(client_ip)
+        if admit_err is not None:
+            raise HTTPException(
+                status_code=429,
+                detail=admit_err,
+                headers={"Retry-After": "30"},
+            )
+
         db = Database(Path(effective_db_path))
 
         # Validate run exists before opening the stream.
         run = db.get_pipeline_run(run_id)
         if run is None:
+            # Release the slot we just admitted — the not-found stream
+            # is a fast-fail and shouldn't count against the cap.
+            _sse_limiter.release(client_ip)
             async def _not_found():
                 yield {
                     "event": "error",
@@ -2958,74 +3092,80 @@ def create_api_app(
             last_event_id = 0
             emitted_terminal = False
 
-            while True:
-                # Respect client disconnect
-                if await request.is_disconnected():
-                    break
-
-                # Fetch new events since the last one delivered
-                events = db.list_pipeline_run_events(
-                    run_id, after_id=last_event_id
-                )
-                for evt in events:
-                    last_event_id = evt["id"]
-                    # Parse metadata JSON for enriched fields (#747)
-                    meta = {}
-                    raw_meta = evt.get("metadata_json")
-                    if raw_meta:
-                        try:
-                            meta = json.loads(raw_meta) if isinstance(raw_meta, str) else (raw_meta or {})
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-
-                    payload = {
-                        "run_id": run_id,
-                        "phase_id": evt.get("phase_id"),
-                        "tokens_consumed": evt.get("tokens_consumed"),
-                        "cost_usd": evt.get("cost_usd"),
-                        "state": evt.get("state"),
-                        "created_at": (
-                            evt["created_at"].isoformat()
-                            if hasattr(evt.get("created_at"), "isoformat")
-                            else evt.get("created_at")
-                        ),
-                        # Enriched fields (#747)
-                        "model_tier": meta.get("model_tier"),
-                        "model_used": meta.get("model_used"),
-                        "phase_name": meta.get("phase_name"),
-                        "thinking_level": meta.get("thinking_level"),
-                        "elapsed_seconds": meta.get("elapsed_seconds"),
-                        "tokens_in": meta.get("tokens_in"),
-                        "tokens_out": meta.get("tokens_out"),
-                        "word_count": meta.get("word_count"),
-                    }
-                    yield {
-                        "event": evt["event_type"],
-                        "data": json.dumps(payload),
-                        "id": str(evt["id"]),
-                    }
-
-                # Check current run status for terminal state
-                current_run = db.get_pipeline_run(run_id)
-                if current_run and current_run.get("status") in _TERMINAL_STATES:
-                    if not emitted_terminal:
-                        emitted_terminal = True
-                        terminal_payload = {
-                            "run_id": run_id,
-                            "phase_id": None,
-                            "status": current_run["status"],
-                            "completed_at": current_run.get("completed_at"),
-                            "error_message": current_run.get("error_message"),
-                        }
-                        yield {
-                            "event": "status_changed",
-                            "data": json.dumps(terminal_payload),
-                        }
-                    # Drain any remaining events before closing
-                    if not events:
+            try:
+                while True:
+                    # Respect client disconnect
+                    if await request.is_disconnected():
                         break
 
-                await asyncio.sleep(_POLL_INTERVAL)
+                    # Fetch new events since the last one delivered
+                    events = db.list_pipeline_run_events(
+                        run_id, after_id=last_event_id
+                    )
+                    for evt in events:
+                        last_event_id = evt["id"]
+                        # Parse metadata JSON for enriched fields (#747)
+                        meta = {}
+                        raw_meta = evt.get("metadata_json")
+                        if raw_meta:
+                            try:
+                                meta = json.loads(raw_meta) if isinstance(raw_meta, str) else (raw_meta or {})
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+
+                        payload = {
+                            "run_id": run_id,
+                            "phase_id": evt.get("phase_id"),
+                            "tokens_consumed": evt.get("tokens_consumed"),
+                            "cost_usd": evt.get("cost_usd"),
+                            "state": evt.get("state"),
+                            "created_at": (
+                                evt["created_at"].isoformat()
+                                if hasattr(evt.get("created_at"), "isoformat")
+                                else evt.get("created_at")
+                            ),
+                            # Enriched fields (#747)
+                            "model_tier": meta.get("model_tier"),
+                            "model_used": meta.get("model_used"),
+                            "phase_name": meta.get("phase_name"),
+                            "thinking_level": meta.get("thinking_level"),
+                            "elapsed_seconds": meta.get("elapsed_seconds"),
+                            "tokens_in": meta.get("tokens_in"),
+                            "tokens_out": meta.get("tokens_out"),
+                            "word_count": meta.get("word_count"),
+                        }
+                        yield {
+                            "event": evt["event_type"],
+                            "data": json.dumps(payload),
+                            "id": str(evt["id"]),
+                        }
+
+                    # Check current run status for terminal state
+                    current_run = db.get_pipeline_run(run_id)
+                    if current_run and current_run.get("status") in _TERMINAL_STATES:
+                        if not emitted_terminal:
+                            emitted_terminal = True
+                            terminal_payload = {
+                                "run_id": run_id,
+                                "phase_id": None,
+                                "status": current_run["status"],
+                                "completed_at": current_run.get("completed_at"),
+                                "error_message": current_run.get("error_message"),
+                            }
+                            yield {
+                                "event": "status_changed",
+                                "data": json.dumps(terminal_payload),
+                            }
+                        # Drain any remaining events before closing
+                        if not events:
+                            break
+
+                    await asyncio.sleep(_POLL_INTERVAL)
+            finally:
+                # Always release the SSE slot — whether the loop exited
+                # via client disconnect, terminal-state break, or any
+                # other path (#841).
+                _sse_limiter.release(client_ip)
 
         return EventSourceResponse(_event_generator())
 
