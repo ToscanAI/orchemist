@@ -4,6 +4,8 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-25
+
 ### Added
 - **`docs/RELEASE-SOP.md`** (#837) — formal release procedure addressing risk #1 from the 2026-05-25 strategic audit (PyPI Trusted Publisher trust chain). Documents: maintainer list, pre-release checklist, version-bump PR with 2-reviewer requirement, signed-tag procedure, post-release verification, what's CI-enforced vs honour-system, follow-up hardening backlog, incident-response runbook. Linked from README under Contributing.
 - **SQLite WAL backpressure** (#839) — `Database.count_active_pipeline_runs()` counts pipeline_runs in non-terminal states (`pending`, `running`, `pending_review`); `_launch_pipeline_from_trigger` in `web/api.py` checks the count and rejects with `HTTP 429` (`Retry-After: 30`) when it reaches `ORCH_MAX_DAEMONS` (env var, default `8`, set to `0` to disable). Prevents unbounded concurrent daemons from tripping SQLite `SQLITE_BUSY` contention that manifests as zombie runs (#754). Malformed env var falls back to default. 13 regression tests at `tests/test_wal_backpressure.py` covering count-by-status, the 429 path, custom-cap honour, disabled-cap legacy mode, malformed-env-var fallback, and source-wiring guards.
