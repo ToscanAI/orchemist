@@ -19,7 +19,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { listRuns } from '@/lib/api';
+import { listRuns, listGates } from '@/lib/api';
 import type { RunRecord } from '@/lib/types';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { KPICard } from '@/components/harness/KPICard';
@@ -37,22 +37,23 @@ export default function FleetDashboardPage() {
   const [liveRuns, setLiveRuns] = useState<readonly RunRecord[]>([]);
   const [engineUp, setEngineUp] = useState<boolean | null>(null);
   const [totalRuns, setTotalRuns] = useState<number | null>(null);
+  const [gateCount, setGateCount] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    listRuns({ status: 'running', limit: 20 })
-      .then((r) => {
-        if (cancelled) return;
-        setLiveRuns(r.items);
-        setEngineUp(true);
-        // separate query for totals
-        listRuns({ limit: 1 }).then((all) => { if (!cancelled) setTotalRuns(all.total); }).catch(() => {});
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setEngineUp(false);
-        }
-      });
+    Promise.allSettled([
+      listRuns({ status: 'running', limit: 20 }),
+      listRuns({ limit: 1 }),
+      listGates({ limit: 1 }),
+    ]).then(([runningRes, totalsRes, gatesRes]) => {
+      if (cancelled) return;
+      // engine is "up" if at least one call succeeded
+      const anyOk = [runningRes, totalsRes, gatesRes].some((r) => r.status === 'fulfilled');
+      setEngineUp(anyOk);
+      if (runningRes.status === 'fulfilled') setLiveRuns(runningRes.value.items);
+      if (totalsRes.status === 'fulfilled') setTotalRuns(totalsRes.value.total);
+      if (gatesRes.status === 'fulfilled') setGateCount(gatesRes.value.total);
+    });
     return () => { cancelled = true; };
   }, []);
 
@@ -85,11 +86,15 @@ export default function FleetDashboardPage() {
         />
         <KPICard
           label="Gates needing review"
-          value={7}
-          tone="warning"
+          value={gateCount ?? (showDemo ? 7 : 0)}
+          tone={(gateCount ?? 0) > 0 ? 'warning' : 'success'}
           sublabel={
             <span>
-              oldest 2h 14m → <Link href="/gates" className="h-link">Trust &amp; Gates ⌘4</Link>
+              {gateCount === null
+                ? <>loading… → <Link href="/gates" className="h-link">Trust &amp; Gates ⌘4</Link></>
+                : gateCount === 0
+                ? <>all clear → <Link href="/gates" className="h-link">Trust &amp; Gates ⌘4</Link></>
+                : <>{`${gateCount} pending`} → <Link href="/gates" className="h-link">Trust &amp; Gates ⌘4</Link></>}
             </span>
           }
           testId="kpi-gates"

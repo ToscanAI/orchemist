@@ -5,16 +5,17 @@
  *
  * Canonical mockup: docs/harness-redesign-2026-05-24/screens/04-trust-gates.svg
  *
- * Wires the existing `/api/v1/gates` endpoints (issue #743 — endpoints shipped,
- * UI was missing per FRONTEND.md). When the engine is reachable, real gate
- * records render; otherwise demo data preserves the page's IA + the audit
- * narrative from the 2026-05-24 investigation pack.
+ * Wires the existing `/api/v1/gates` endpoints (#743). When the engine is
+ * reachable AND the queue is non-empty, real GateRecord objects render with
+ * working Approve / Reject calls. Otherwise demo data falls back so the page
+ * never blanks during development or in CI.
  *
- * Operator affordances per row: Approve / Reject (via `/api/v1/gates/{run_id}`).
- * Bulk-approve is a marquee action in the top bar.
+ * Operator affordances: per-row Approve / Reject (POST /api/v1/gates/.../approve
+ * and .../reject) and a top-bar Bulk Approve that batches all visible rows
+ * through `approveGate`.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
 import { listGates, approveGate, rejectGate, ApiError } from '@/lib/api';
@@ -27,10 +28,52 @@ import {
 
 type Filter = 'all' | 'pending' | 'auto-merged' | 'held';
 
-function confidenceColor(c: number, threshold: number): string {
+/** Shape consumed by the rendering layer (normalized across real + demo). */
+interface GateRow {
+  readonly key: string;
+  readonly headline: string;
+  readonly subline: string;
+  readonly template: string;
+  readonly confidence: number | null;
+  readonly threshold: number;
+  readonly waitingLabel: string;
+  readonly waitingTone: 'warning' | 'danger' | 'neutral';
+  readonly approveId?: string;   // present iff this is a real record
+}
+
+function confidenceColor(c: number | null, threshold: number): string {
+  if (c === null) return 'text-harness-muted';
   if (c >= threshold) return 'text-harness-teal';
   if (c >= threshold - 0.1) return 'text-harness-warning';
   return 'text-harness-danger';
+}
+
+function elapsedHoursMin(iso: string): { label: string; tone: 'warning' | 'danger' | 'neutral' } {
+  const now = Date.now();
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return { label: '—', tone: 'neutral' };
+  const diffMin = Math.floor((now - t) / 60_000);
+  if (diffMin < 0) return { label: 'queued', tone: 'neutral' };
+  if (diffMin < 60) return { label: `${diffMin}m`, tone: diffMin > 30 ? 'warning' : 'neutral' };
+  const h = Math.floor(diffMin / 60);
+  const m = diffMin % 60;
+  return { label: `${h}h ${m}m`, tone: h >= 2 ? 'danger' : 'warning' };
+}
+
+/** Convert a real GateRecord into the normalized row shape. */
+function fromGateRecord(g: GateRecord): GateRow {
+  const wait = elapsedHoursMin(g.created_at);
+  return {
+    key: g.run_id,
+    headline: g.pipeline_id || g.run_id.slice(0, 12),
+    subline: g.message ?? `${g.branch} → ${g.base_branch}`,
+    template: g.pipeline_id,
+    confidence: g.scoring_score,
+    threshold: 0.90,
+    waitingLabel: wait.label,
+    waitingTone: wait.tone,
+    approveId: g.run_id,
+  };
 }
 
 export default function TrustAndGatesPage() {
@@ -38,47 +81,89 @@ export default function TrustAndGatesPage() {
   const [liveGates, setLiveGates] = useState<readonly GateRecord[] | null>(null);
   const [engineUp, setEngineUp] = useState<boolean | null>(null);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    listGates({ limit: 50 })
-      .then((r) => { if (!cancelled) { setLiveGates(r.items); setEngineUp(true); } })
-      .catch(() => { if (!cancelled) setEngineUp(false); });
-    return () => { cancelled = true; };
-  }, []);
-
-  const showDemo = engineUp === false || (liveGates !== null && liveGates.length === 0);
-
-  async function handleApprove(runId: string) {
-    setBusyRunId(runId);
+  async function refresh() {
     try {
-      await approveGate(runId, {});
-      // Refresh
       const r = await listGates({ limit: 50 });
       setLiveGates(r.items);
+      setEngineUp(true);
     } catch (e) {
-      console.error('gate approve failed', e);
+      setEngineUp(false);
+    }
+  }
+
+  useEffect(() => { void refresh(); }, []);
+
+  const usingLive = engineUp === true && liveGates !== null && liveGates.length > 0;
+
+  const rows: readonly GateRow[] = usingLive
+    ? liveGates!.map(fromGateRecord)
+    : DEMO_GATES.map((g, i) => ({
+        key: `${g.repo}-${g.issueNumber}-${i}`,
+        headline: `${g.repo} · ${g.issueNumber}`,
+        subline: g.issueTitle,
+        template: g.template,
+        confidence: g.confidence,
+        threshold: g.threshold,
+        waitingLabel: g.waitingLabel,
+        waitingTone: g.waitingTone,
+      }));
+
+  async function handleApprove(row: GateRow) {
+    if (!row.approveId) { setActionError('Cannot approve demo row — engine offline'); return; }
+    setBusyRunId(row.approveId);
+    setActionError(null);
+    try {
+      await approveGate(row.approveId, { message: 'approved via harness' });
+      await refresh();
+    } catch (e) {
+      const msg = e instanceof ApiError ? `${e.status}: ${e.message}` : e instanceof Error ? e.message : 'approve failed';
+      setActionError(msg);
     } finally {
       setBusyRunId(null);
     }
   }
 
-  async function handleReject(runId: string) {
-    setBusyRunId(runId);
+  async function handleReject(row: GateRow) {
+    if (!row.approveId) { setActionError('Cannot reject demo row — engine offline'); return; }
+    setBusyRunId(row.approveId);
+    setActionError(null);
     try {
-      await rejectGate(runId, { reason: 'rejected via harness' });
-      const r = await listGates({ limit: 50 });
-      setLiveGates(r.items);
+      await rejectGate(row.approveId, { reason: 'rejected via harness' });
+      await refresh();
     } catch (e) {
-      console.error('gate reject failed', e);
+      const msg = e instanceof ApiError ? `${e.status}: ${e.message}` : e instanceof Error ? e.message : 'reject failed';
+      setActionError(msg);
     } finally {
       setBusyRunId(null);
     }
+  }
+
+  async function handleBulkApprove() {
+    if (!usingLive) { setActionError('Bulk approve disabled in demo mode'); return; }
+    setActionError(null);
+    for (const row of rows) {
+      if (row.approveId) {
+        setBusyRunId(row.approveId);
+        try {
+          await approveGate(row.approveId, { message: 'bulk approved via harness' });
+        } catch (e) {
+          /* continue best-effort */
+        }
+      }
+    }
+    setBusyRunId(null);
+    await refresh();
   }
 
   return (
     <HarnessShell
-      title="7 gates need decision · trust calibration per (repo, template, task)"
+      title={
+        usingLive
+          ? `${rows.length} gate${rows.length === 1 ? '' : 's'} need decision · live`
+          : '7 gates need decision · trust calibration per (repo, template, task)'
+      }
       screenIndex={4}
       breadcrumb={[
         { label: 'Fleet', href: '/' },
@@ -87,11 +172,19 @@ export default function TrustAndGatesPage() {
       actions={
         <>
           <button type="button" className="h-button">Export audit</button>
-          <button type="button" className="h-button h-button-success">Bulk approve</button>
+          <button
+            type="button"
+            className="h-button h-button-success"
+            onClick={handleBulkApprove}
+            disabled={!usingLive || busyRunId !== null}
+            title={usingLive ? '' : 'Bulk approve disabled — no live gates'}
+          >
+            Bulk approve
+          </button>
         </>
       }
     >
-      {/* Filters */}
+      {/* Filters + status banner */}
       <div className="mb-4 flex items-center gap-2 text-[11px]">
         {(['all', 'pending', 'auto-merged', 'held'] as const).map((f) => (
           <button
@@ -106,10 +199,23 @@ export default function TrustAndGatesPage() {
             {f}
           </button>
         ))}
-        {showDemo && (
-          <span className="h-pill h-pill-warning text-[9px] ml-auto">demo data · engine offline or gates queue empty</span>
+        {!usingLive && (
+          <span className="h-pill h-pill-warning text-[9px] ml-auto" data-testid="gates-demo-banner">
+            {engineUp === false ? 'demo data · engine offline' : 'demo data · no pending gates in engine'}
+          </span>
+        )}
+        {usingLive && (
+          <span className="h-pill h-pill-success text-[9px] ml-auto" data-testid="gates-live-banner">
+            live · {rows.length} from /api/v1/gates
+          </span>
         )}
       </div>
+
+      {actionError && (
+        <div className="mb-3 rounded-md border border-harness-danger bg-[#2A1F1F] p-3 text-[12px] text-harness-danger">
+          {actionError}
+        </div>
+      )}
 
       <section className="grid grid-cols-12 gap-4">
         {/* Approval queue */}
@@ -120,7 +226,7 @@ export default function TrustAndGatesPage() {
             testId="section-gates"
           >
             <div className="grid grid-cols-12 gap-3 px-3 pb-2 text-[10px] tracking-widest text-harness-dim border-b border-harness-border">
-              <div className="col-span-3">REPO · ISSUE</div>
+              <div className="col-span-3">REPO · ISSUE / RUN</div>
               <div className="col-span-3">TEMPLATE</div>
               <div className="col-span-1">CONF</div>
               <div className="col-span-1">THR</div>
@@ -128,49 +234,62 @@ export default function TrustAndGatesPage() {
               <div className="col-span-3 text-right">ACTION</div>
             </div>
             <ul>
-              {DEMO_GATES.map((g, i) => (
+              {rows.length === 0 ? (
+                <li className="py-8 text-center text-[12px] text-harness-muted">
+                  No gates in the queue. The engine has no pipelines waiting on a human decision right now.
+                </li>
+              ) : rows.map((row, i) => (
                 <li
-                  key={`${g.repo}-${g.issueNumber}-${i}`}
+                  key={row.key}
                   className="grid grid-cols-12 gap-3 items-center px-3 py-3 border-b border-harness-border text-[12px]"
                   data-testid={`gate-row-${i}`}
                 >
                   <div className="col-span-3">
-                    <div className="font-semibold text-harness-text">{g.repo} · {g.issueNumber}</div>
-                    <div className="text-[10px] text-harness-dim">{g.issueTitle}</div>
+                    <div className="font-semibold text-harness-text">{row.headline}</div>
+                    <div className="text-[10px] text-harness-dim truncate" title={row.subline}>{row.subline}</div>
                   </div>
-                  <div className="col-span-3 text-harness-muted">{g.template}</div>
-                  <div className={['col-span-1 font-medium', confidenceColor(g.confidence, g.threshold)].join(' ')}>
-                    {g.confidence.toFixed(2)}
+                  <div className="col-span-3 text-harness-muted truncate" title={row.template}>{row.template}</div>
+                  <div className={['col-span-1 font-medium', confidenceColor(row.confidence, row.threshold)].join(' ')}>
+                    {row.confidence === null ? '—' : row.confidence.toFixed(2)}
                   </div>
-                  <div className="col-span-1 text-harness-muted">{g.threshold.toFixed(2)}</div>
+                  <div className="col-span-1 text-harness-muted">{row.threshold.toFixed(2)}</div>
                   <div className={[
                     'col-span-1',
-                    g.waitingTone === 'danger' ? 'text-harness-danger' :
-                    g.waitingTone === 'warning' ? 'text-harness-warning' :
+                    row.waitingTone === 'danger' ? 'text-harness-danger' :
+                    row.waitingTone === 'warning' ? 'text-harness-warning' :
                     'text-harness-muted',
-                  ].join(' ')}>{g.waitingLabel}</div>
+                  ].join(' ')}>{row.waitingLabel}</div>
                   <div className="col-span-3 flex justify-end gap-2">
                     <button
                       type="button"
                       className="h-button h-button-success"
-                      onClick={() => handleApprove(g.issueNumber + '-' + i)}
-                      disabled={busyRunId !== null}
+                      onClick={() => handleApprove(row)}
+                      disabled={busyRunId !== null || !row.approveId}
+                      title={row.approveId ? '' : 'Demo row — engine offline'}
                     >
-                      Approve
+                      {busyRunId === row.approveId ? '...' : 'Approve'}
                     </button>
                     <button
                       type="button"
                       className="h-button h-button-danger"
-                      onClick={() => handleReject(g.issueNumber + '-' + i)}
-                      disabled={busyRunId !== null}
+                      onClick={() => handleReject(row)}
+                      disabled={busyRunId !== null || !row.approveId}
+                      title={row.approveId ? '' : 'Demo row — engine offline'}
                     >
-                      Reject
+                      {busyRunId === row.approveId ? '...' : 'Reject'}
                     </button>
                   </div>
                 </li>
               ))}
             </ul>
-            <div className="mt-3 text-[10px] text-harness-dim">+ 2 more · cursor end of queue</div>
+            {usingLive && rows.length > 0 && (
+              <div className="mt-3 text-[10px] text-harness-dim">
+                {rows.length} live gate{rows.length === 1 ? '' : 's'} · approve / reject calls hit /api/v1/gates/{`{run_id}`}/(approve|reject)
+              </div>
+            )}
+            {!usingLive && rows.length > 0 && (
+              <div className="mt-3 text-[10px] text-harness-dim">+ 2 more · cursor end of queue · demo data</div>
+            )}
           </SectionCard>
         </div>
 
@@ -178,7 +297,7 @@ export default function TrustAndGatesPage() {
         <div className="col-span-4">
           <SectionCard
             title="Trust profiles"
-            subtitle={<span>per (repo, template, task_type)</span>}
+            subtitle={<span>per (repo, template, task_type) · static while trust.py endpoint lands</span>}
             testId="section-trust"
           >
             <ul className="space-y-4 text-[11px]">
