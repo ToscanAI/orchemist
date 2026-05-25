@@ -192,6 +192,7 @@ class Database:
             self._create_table_issue_pipeline_map(conn)    # Issue #5.1.1
             self._create_table_cost_tracking(conn)         # Issue #5.2.1
             self._create_table_sprint_chain_state(conn)    # Issue #514
+            self._create_table_admin_audit_log(conn)       # Issue #838
             self._create_indexes(conn)
             
             # Run any pending migrations
@@ -2433,6 +2434,118 @@ class Database:
         Safe to run on both fresh and existing databases.
         """
         self._create_table_sprint_chain_state(conn)
+
+    def _create_table_admin_audit_log(self, conn: sqlite3.Connection) -> None:
+        """Append-only audit log for admin-state mutations (Issue #838).
+
+        Records every mutation made via the admin API (PUT
+        /api/v1/admin/feature-flags and any other admin write endpoints).
+        Each row captures the before/after JSON, the timestamp, the action
+        kind, and the OS-level process id of the FastAPI worker that
+        served the request (best-effort attribution — the engine has no
+        per-user auth today, so source_pid is the most we can record).
+
+        Schema is intentionally narrow + append-only — no UPDATE / DELETE
+        from application code. Operators querying for "who changed
+        admin.json on day X" use this table.
+        """
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS admin_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                target TEXT NOT NULL,
+                before_json TEXT,
+                after_json TEXT,
+                source_pid INTEGER,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_admin_audit_log_created_at
+            ON admin_audit_log(created_at DESC)
+        """)
+
+    def append_admin_audit(
+        self,
+        action: str,
+        target: str,
+        before: Optional[Dict[str, Any]] = None,
+        after: Optional[Dict[str, Any]] = None,
+        source_pid: Optional[int] = None,
+    ) -> int:
+        """Append a row to ``admin_audit_log``. Returns the new row id.
+
+        Args:
+            action: Short verb describing what changed (e.g.
+                ``"update_feature_flags"``, ``"reset_admin_state"``).
+            target: Which surface was mutated (e.g.
+                ``"feature_flags"``, ``"autonomy_level"``, ``"modes"``).
+                Multiple targets per action are concatenated comma-separated.
+            before: Pre-mutation value (dict or None when first write).
+            after: Post-mutation value.
+            source_pid: OS pid of the FastAPI worker process. Default
+                ``os.getpid()`` if not supplied.
+        """
+        import json as _json
+        import os as _os
+        pid = source_pid if source_pid is not None else _os.getpid()
+        with self.transaction() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO admin_audit_log
+                    (action, target, before_json, after_json, source_pid)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    action,
+                    target,
+                    _json.dumps(before) if before is not None else None,
+                    _json.dumps(after) if after is not None else None,
+                    pid,
+                ),
+            )
+            return int(cur.lastrowid or 0)
+
+    def list_admin_audit(
+        self, limit: int = 100, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Return up to ``limit`` recent admin audit rows, newest first.
+
+        Each row is a dict with the columns of ``admin_audit_log``;
+        ``before_json``/``after_json`` are parsed back into dicts (or None).
+        """
+        import json as _json
+        with self.transaction() as conn:
+            cur = conn.execute(
+                """
+                SELECT id, action, target, before_json, after_json,
+                       source_pid, created_at
+                  FROM admin_audit_log
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ? OFFSET ?
+                """,
+                (int(limit), int(offset)),
+            )
+            rows: List[Dict[str, Any]] = []
+            for r in cur.fetchall():
+                before = _json.loads(r["before_json"]) if r["before_json"] else None
+                after = _json.loads(r["after_json"]) if r["after_json"] else None
+                # Stringify created_at — SQLite returns a datetime object
+                # when PARSE_DECLTYPES is set (see get_connection), but the
+                # API surface is JSON so we need a string. ISO-8601 keeps
+                # the value unambiguous for downstream callers.
+                created = r["created_at"]
+                created_str = created.isoformat() if hasattr(created, "isoformat") else str(created)
+                rows.append({
+                    "id": r["id"],
+                    "action": r["action"],
+                    "target": r["target"],
+                    "before": before,
+                    "after": after,
+                    "source_pid": r["source_pid"],
+                    "created_at": created_str,
+                })
+            return rows
 
     def upsert_sprint_chain_state(
         self,
