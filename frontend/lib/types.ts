@@ -75,15 +75,35 @@ export interface StartRunRequest {
   readonly model_map?: Record<string, string>;
 }
 
-/** Possible run statuses. */
+/**
+ * Possible run statuses.
+ *
+ * These mirror the values the engine actually writes to
+ * `pipeline_runs.status` (audited 2026-05-25 in daemon.py:243-1502). Order
+ * below reflects the typical pipeline lifecycle:
+ *
+ *   pending → running → (success | failed | cancelled |
+ *                        budget_exceeded | scoring_failed | pending_review)
+ *
+ * Note: there is no `'crashed'` value on the backend — previously declared
+ * on the frontend, which made the `RunStatusBadge` silently fall through to
+ * its neutral default for any unmapped status. Issue #811 traced this drift;
+ * cleanup #821 (this file) aligns the union to the canonical engine set and
+ * makes the badge mapping exhaustive.
+ *
+ * If you add a new status here, update `RunStatusBadge.statusToVariant` —
+ * the switch is exhaustive on this union (TypeScript will surface unmapped
+ * cases at compile time).
+ */
 export type RunStatus =
   | 'pending'
   | 'running'
   | 'success'
   | 'failed'
   | 'cancelled'
-  | 'crashed'
-  | 'scoring_failed';
+  | 'budget_exceeded'
+  | 'scoring_failed'
+  | 'pending_review';
 
 /** Full pipeline run record returned by run endpoints. */
 export interface RunRecord {

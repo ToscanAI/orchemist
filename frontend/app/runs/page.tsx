@@ -26,8 +26,9 @@ const STATUS_OPTIONS = [
   'success',
   'failed',
   'cancelled',
-  'crashed',
+  'budget_exceeded',
   'scoring_failed',
+  'pending_review',
 ] as const;
 
 /**

@@ -52,7 +52,7 @@ const DEMO_ACTIVE = 'implement';
 function phaseStatus(phaseId: string, completed: readonly string[], current: string | null, runStatus: string): 'done' | 'active' | 'queued' | 'failed' {
   if (completed.includes(phaseId)) return 'done';
   if (current === phaseId) {
-    if (runStatus === 'failed' || runStatus === 'crashed') return 'failed';
+    if (runStatus === 'failed' || runStatus === 'budget_exceeded') return 'failed';
     return 'active';
   }
   return 'queued';
