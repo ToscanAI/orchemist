@@ -394,16 +394,18 @@ class TestAdminState:
         assert body["extra"] == {"future_setting_x": "preserved"}
 
     @pytest.mark.asyncio
-    async def test_concurrent_puts_serialise_via_lock(self, tmp_path, monkeypatch):
-        """Round-2 audit MAJOR: the round-1 test was trivial-satisfaction —
-        TestClient is synchronous so two sequential `client.put()` calls
-        couldn't expose a race even if the asyncio.Lock were removed.
+    async def test_two_simultaneous_puts_no_loss(self, tmp_path, monkeypatch):
+        """Round-3 audit BLOCKER: the round-2 'concurrent PUT' test was
+        trivial-satisfaction because the handler has zero `await` points
+        inside its critical section — asyncio can't preempt mid-handler
+        without an await, so two `asyncio.gather`'d PUTs ran sequentially
+        whether the lock was present or not. The lock was deleted.
 
-        Real concurrency: drive the ASGI app directly via `httpx.AsyncClient`
-        + `asyncio.gather()`. Add a deliberate await-stall mid-handler via a
-        monkeypatched read so the second PUT enters its critical section
-        BEFORE the first one's write finishes. Without the lock, the second
-        PUT loses the first's patch; with the lock, both land.
+        What we actually need to guarantee: when two PUTs target distinct
+        flags, both patches land and the on-disk file is well-formed
+        regardless of interleaving. `os.replace` atomicity + the single
+        event loop's serialisation of await-free handlers already gives us
+        this property; verify with real asyncio.gather concurrency.
         """
         import asyncio as _asyncio
         from httpx import AsyncClient, ASGITransport
@@ -411,30 +413,23 @@ class TestAdminState:
         monkeypatch.setenv("HOME", str(fake_home))
         db_file = tmp_path / "engine.db"
         app = create_api_app(db_path=db_file)
-
-        # Wrap Path.read_text on the admin.json path to inject a deliberate
-        # await-yield between read and write. This forces the OS scheduler
-        # to interleave the two PUTs at exactly the worst-case point.
-        admin_path = fake_home / ".orchestration-engine" / "admin.json"
-        from pathlib import Path as _RealPath
-        original_read = _RealPath.read_text
-        sleep_counter = {"n": 0}
-        def slow_read(self, *a, **kw):
-            if str(self) == str(admin_path):
-                sleep_counter["n"] += 1
-            return original_read(self, *a, **kw)
-        monkeypatch.setattr(_RealPath, "read_text", slow_read)
-
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            r1, r2 = await _asyncio.gather(
+            results = await _asyncio.gather(
                 ac.put("/api/v1/admin/feature-flags", json={"phase0_hard_gate": True}),
                 ac.put("/api/v1/admin/feature-flags", json={"extend_verdict": False}),
+                ac.put("/api/v1/admin/feature-flags", json={"cross_repo": True}),
             )
-            assert r1.status_code == 200 and r2.status_code == 200
+            for r in results:
+                assert r.status_code == 200
             state = (await ac.get("/api/v1/admin/state")).json()
-        # Both patches must be present — proof the lock serialised correctly.
+        # All three patches must land — proves the natural serialisation works.
         assert state["feature_flags"]["phase0_hard_gate"] is True
         assert state["feature_flags"]["extend_verdict"] is False
+        assert state["feature_flags"]["cross_repo"] is True
+        # And the on-disk file must be valid JSON (os.replace atomicity).
+        admin_path = fake_home / ".orchestration-engine" / "admin.json"
+        assert admin_path.exists()
+        json.loads(admin_path.read_text())  # raises if mid-write corruption
 
     def test_put_response_returns_canonical_shape(self, client_and_db):
         """Round-2 audit MAJOR: PUT response previously returned only the
@@ -449,6 +444,47 @@ class TestAdminState:
         # Every value is a real Python bool, not a string.
         for k, v in body["feature_flags"].items():
             assert isinstance(v, bool), f"{k}={v!r} is {type(v).__name__}, expected bool"
+
+    def test_put_canonicalises_disk_when_prior_garbage(self, client_and_db):
+        """Round-3 audit MAJOR: PUT used to canonicalise the response but
+        leave the disk file dirty. A subsequent reader of admin.json (CLI,
+        daemon, another tool) saw `"maybe"` while the API claimed
+        `False`. Now the on-disk feature_flags are also normalised on every
+        PUT so disk and response agree."""
+        client, _, fake_home = client_and_db
+        admin_dir = fake_home / ".orchestration-engine"
+        admin_dir.mkdir(parents=True)
+        (admin_dir / "admin.json").write_text(json.dumps({
+            "feature_flags": {"phase0_hard_gate": "maybe", "extend_verdict": "no_idea"},
+        }))
+        res = client.put("/api/v1/admin/feature-flags", json={"dialogue_phase": True})
+        assert res.status_code == 200
+        on_disk = json.loads((admin_dir / "admin.json").read_text())
+        # Disk and API both report canonical bools for ALL flags.
+        for k, v in on_disk["feature_flags"].items():
+            assert isinstance(v, bool), f"disk still has non-bool {k}={v!r}"
+        # Canonicalised back to per-flag defaults (False/True/False/False per
+        # _ADMIN_DEFAULTS). The patch (dialogue_phase=True) lands.
+        assert on_disk["feature_flags"]["phase0_hard_gate"] is False  # was "maybe" → default False
+        assert on_disk["feature_flags"]["extend_verdict"] is True     # was "no_idea" → default True
+        assert on_disk["feature_flags"]["dialogue_phase"] is True     # the patch
+        assert on_disk["feature_flags"]["cross_repo"] is False        # untouched → default False
+
+    def test_coerce_admin_doc_does_not_share_default_mutables(self, client_and_db):
+        """Round-3 audit MAJOR: previous fast-path used `dict(_ADMIN_DEFAULTS)`
+        which shallow-copied — the returned dict shared the inner
+        feature_flags / modes dicts with module-level defaults. Mutation
+        would corrupt subsequent requests. Verify two consecutive defaults
+        responses are independent."""
+        client, _, _ = client_and_db
+        body1 = client.get("/api/v1/admin/state").json()
+        body2 = client.get("/api/v1/admin/state").json()
+        # Mutating one response must not affect the other.
+        body1["feature_flags"]["phase0_hard_gate"] = True
+        body3 = client.get("/api/v1/admin/state").json()
+        assert body3["feature_flags"]["phase0_hard_gate"] is False, (
+            "_coerce_admin_doc fast-path leaked module-level _ADMIN_DEFAULTS"
+        )
 
     def test_get_strict_coerces_garbage_in_disk_file(self, client_and_db):
         """Round-2 audit MAJOR: `_coerce_bool` previously fell through to
