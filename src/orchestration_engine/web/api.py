@@ -440,6 +440,34 @@ def create_api_app(
     )
 
     # ------------------------------------------------------------------
+    # Startup sweep (#754) — reap zombie pipeline runs left over from a
+    # previous engine crash so the ORCH_MAX_DAEMONS=8 cap (#839) is
+    # accurate from the first request. Sweep errors are logged but
+    # NEVER block server start — the API must come up even if the DB
+    # is briefly unhealthy.
+    # ------------------------------------------------------------------
+    @app.on_event("startup")
+    def _startup_sweep_zombie_runs() -> None:
+        try:
+            _db = Database(Path(effective_db_path))
+            _swept = _db.sweep_zombie_runs()
+            if _swept >= 1:
+                logger.info(
+                    "Startup sweep: marked %d zombie pipeline run(s) as crashed "
+                    "(daemons died without updating status; #754)",
+                    _swept,
+                )
+            else:
+                logger.debug(
+                    "Startup sweep: marked 0 zombie pipeline runs (clean state; #754)"
+                )
+        except Exception as _exc:  # pragma: no cover — last-resort guard
+            logger.error(
+                "Startup sweep failed (server will still start): %s: %s",
+                type(_exc).__name__, _exc,
+            )
+
+    # ------------------------------------------------------------------
     # Pydantic request/response models
     # ------------------------------------------------------------------
 
