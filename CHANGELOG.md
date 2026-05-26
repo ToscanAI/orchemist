@@ -4,6 +4,16 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 
 ## [Unreleased]
 
+### Added
+- **Producer-side 7d sub-checks ported from skills v4.3** (#857) — `templates/coding-pipeline-standard.yaml` bumped to v2.2.0. Additive in the sense that no existing successful run changes — pipelines that produced zero diff-lint candidates continue unchanged. NEW behaviour: IMPLEMENT task step 8 (between commit and push) introduces a new BLOCKED escape category (`7e-seal-diff-lint`) that can halt the pipeline when contiguous-3-line byte-identical added blocks are detected; operators with existing pipelines should be aware this gate can fire on previously-unflagged producer-side duplication patterns. Five new sub-checks across four phases close the caller-enumeration blind spot that let intra-PR byte-identical fragments slip through under the existing 7d (consumer-side) enforcement:
+  - **Phase 0 §3a** (existing_symbols_inventory prompt) — pre-existing dual-path helpers inventory (regex heuristic, may have false positives); §5 EXTEND verdict references §3a so EXTEND-ing existing dual-path helpers is the preferred verdict over authoring new ones. Internal version-tag inside the EXTEND verdict updated from skills `v4.3` to engine `v2.2.0` for skills↔engine drift trace fidelity.
+  - **SPEC_ADVERSARY 7e** — intra-symbol duplication audit (producer-side variant of 7d). For every newly-created exported symbol, the adversary checks SPEC §B.4 Implementation Steps for byte-identical sub-blocks within the symbol's own body; flags `[divergence] F.X — intra-symbol duplication` without (a) shared-helper extraction or (b) §B.5.x divergence justification.
+  - **IMPLEMENT 7e-implement** (HARD RULE) — self-check at authoring time. Before writing a new exported function, inspect return/throw arms for byte-identical-modulo-whitespace duplicates; refactor inline OR return `BLOCKED: 7e-intra-symbol-duplication`.
+  - **IMPLEMENT 7e-seal** (HARD RULE + task step 8 between commit and push) — pure static grep diff lint over the feature-branch diff. Single-line candidates accepted with rationale; contiguous-3-line failure gate fires `BLOCKED: 7e-seal-diff-lint`.
+  - **REVIEW 7d-producer** — intra-symbol return-arm comparison. REVIEWER quotes each return/throw arm verbatim in `review.md` and flags `[MAJOR][correctness] intra-symbol dual-path duplication` when two arms are identical modulo whitespace/identifiers; §B.5.x divergence-justification short-circuit available with concreteness bar.
+
+  Defense-in-depth across the producer-side variant: 7d catches "new symbol duplicates EXISTING symbol" (consumer); 7e catches "intra-symbol arms duplicate each other" at SPEC, IMPLEMENT (self-check + diff lint), and REVIEW. Ported from `orchemist-skills` PR #8 (commit `66727a0`), which closed skills#6 with empirical anchor in ToscanAI/value-investing#449 lift commit `11db4eb`.
+
 ## [0.11.0] - 2026-05-25
 
 ### Added
