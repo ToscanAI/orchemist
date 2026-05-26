@@ -175,7 +175,13 @@ class TestCostTracking:
             assert float(result.cost_usd) == pytest.approx(0.0042)
 
     def test_cost_estimated_when_total_cost_absent(self):
-        """Given no usage.total_cost, estimates at $0.01/1K tokens."""
+        """Given no usage.total_cost, estimates at the per-tier fallback rate.
+
+        Per issue #801: the old single $0.01/1K rate over-estimated 3x vs
+        OpenRouter actuals. The fix uses per-tier rates: sonnet → $0.006/1K,
+        opus → $0.033/1K, haiku → $0.002/1K. This test exercises the sonnet
+        path (the default tier).
+        """
         executor = OpenRouterExecutor(api_key="sk-or-test")
         task = _make_task()
         with patch("urllib.request.urlopen") as mock_url:
@@ -183,8 +189,8 @@ class TestCostTracking:
                 _mock_response(prompt_tokens=500, completion_tokens=500, total_cost=None)
             )
             result = executor.execute(task, model_tier="sonnet")
-            # 1000 tokens * $0.01/1K = $0.01
-            assert float(result.cost_usd) == pytest.approx(0.01)
+            # 1000 tokens * $0.006/1K (sonnet-tier fallback) = $0.006
+            assert float(result.cost_usd) == pytest.approx(0.006)
 
 
 class TestThinkingSupport:
