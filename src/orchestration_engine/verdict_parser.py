@@ -6,6 +6,13 @@ Two-pass extraction:
             scan_order="first": forward scan, first match wins.
   - Pass 2: Fallback regex scan stripping markdown (priority: REQUEST_CHANGES > ABORT > APPROVE).
 
+Both passes are tolerant of leading markdown headers (``# ...``, ``## ...``,
+``### ...``) and intervening blank lines: ``_pass2`` scans every line and
+strips markdown leaders, while ``_pass1`` scans every line for the structured
+form regardless of position.  See ``tests/test_issue_799_verdict_header.py``
+for the regression contract that locks this behaviour for spec_adversary
+output that starts with a markdown header (issue #799).
+
 Public API:
   - :func:`extract_verdict` — extract verdict from text or file.
 """
