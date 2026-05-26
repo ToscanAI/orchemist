@@ -31,7 +31,17 @@ def fresh_db(tmp_path):
 
 
 def _insert_run(db, status: str, run_id: str = "abc12345"):
-    """Insert a minimal pipeline_runs row with the given status."""
+    """Insert a minimal pipeline_runs row with the given status.
+
+    Sets ``pid`` to the current test-process PID so the row survives
+    the #754 zombie sweep that runs inside ``count_active_pipeline_runs``.
+    These tests probe the COUNT semantics, not the SWEEP semantics —
+    issue #754's sweep behavior is verified in
+    ``test_issue_754_zombie_sweep.py``. Without a live PID, every
+    non-terminal row inserted here would be swept to ``'crashed'``
+    before the count is returned and the COUNT assertions would all
+    drop to 0.
+    """
     db.insert_pipeline_run({
         "run_id": run_id,
         "template_path": "/tmp/x.yaml",
@@ -42,6 +52,8 @@ def _insert_run(db, status: str, run_id: str = "abc12345"):
         "gateway_url": None,
         "status": status,
     })
+    # Set a live PID so the #754 zombie sweep preserves this row.
+    db.update_pipeline_run(run_id, pid=os.getpid())
 
 
 class TestCountActiveRuns:

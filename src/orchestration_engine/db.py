@@ -5,6 +5,7 @@ connection management, and schema migrations.
 """
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -12,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
 
 # Explicit datetime adapters — required for Python 3.12+ which deprecated
 # the built-in sqlite3 datetime adapter/converter.
@@ -1399,6 +1402,188 @@ class Database:
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def sweep_zombie_runs(self, now: Optional[str] = None) -> int:
+        """Sweep zombie pipeline runs whose daemons have died (Issue #754).
+
+        Scans rows whose ``status`` is in the non-terminal set
+        (``{'pending', 'running', 'pending_review'}``) and verifies
+        each daemon's PID via :func:`~orchestration_engine.daemon.is_process_alive`.
+        Rows whose recorded PID is no longer alive (or whose PID file is
+        missing/empty/non-numeric AND whose ``pid`` column is ``NULL``)
+        are transitioned to ``status='crashed'`` with a diagnostic
+        ``error_message`` and a ``completed_at`` timestamp.
+
+        Without this sweep, daemons killed by SIGKILL / OOM / host
+        reboot leave their rows stuck in ``'running'`` forever — they
+        consume slots in the :data:`ORCH_MAX_DAEMONS` backpressure cap
+        (#839) and surface as 70-134+ hour "ghost" runs in
+        ``orch status`` output.
+
+        PID detection order per row:
+          1. Use the ``pid`` column if non-NULL and > 0.
+          2. Else read ``<output_dir>/.orch-daemon.pid`` (the path
+             written by :func:`~orchestration_engine.daemon._write_pid_file`).
+          3. Else mark the row as crashed with ``error_message`` containing
+             ``'no PID recorded'``.
+
+        The UPDATE uses ``WHERE status IN (...)`` guard so the sweep is
+        idempotent AND safe against concurrent daemon state changes
+        (mirrors the canonical pattern from :meth:`cancel_pipeline_run`).
+
+        Terminal-status rows are NEVER scanned or modified, even if
+        their recorded PID happens to be dead.
+
+        **PID reuse caveat:** if the OS has recycled a dead daemon's
+        PID for an unrelated live process, the liveness probe returns
+        True and the row is left untouched. This is an accepted
+        false-negative on detection (NOT a false-positive on action —
+        the sweep never signals or kills any process; it uses
+        ``os.kill(pid, 0)`` which is POSIX-defined as a permissions /
+        existence check only). The blast radius is bounded by
+        ``ORCH_MAX_DAEMONS`` and the residue is cleaned on the next
+        engine restart. A fully race-free fix would require capturing
+        the daemon's process_create_time at launch and comparing on
+        sweep — out of scope for #754.
+
+        Per-row exceptions are caught, logged at WARNING, and counted
+        as "not swept" — the sweep ALWAYS returns a non-negative integer
+        regardless of per-row failures.
+
+        Args:
+            now: Optional ISO-8601 timestamp string to use as
+                ``completed_at`` for swept rows. Defaults to
+                ``datetime.now().isoformat()`` when omitted (injectable
+                for deterministic tests).
+
+        Returns:
+            Integer count of rows transitioned to ``'crashed'`` by
+            this invocation. ``0`` on any top-level error or when no
+            zombies are present.
+        """
+        # Lazy import: db.py is imported by daemon.py (transitively via
+        # run_daemon), so a top-level `from .daemon import` would deadlock
+        # at module load time.
+        try:
+            from .daemon import is_process_alive
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.error("sweep_zombie_runs: cannot import is_process_alive: %s", exc)
+            return 0
+
+        if now is None:
+            now = datetime.now().isoformat()
+
+        # Step 1 — snapshot the candidate rows under a read lock.
+        try:
+            with self._locked():
+                conn = self.get_connection()
+                cur = conn.execute(
+                    "SELECT run_id, pid, output_dir, status FROM pipeline_runs "
+                    "WHERE status IN ('pending', 'running', 'pending_review')"
+                )
+                rows = cur.fetchall()
+        except sqlite3.OperationalError as exc:
+            logger.warning("sweep_zombie_runs: SELECT failed: %s", exc)
+            return 0
+
+        swept = 0
+        for row in rows:
+            try:
+                run_id = row["run_id"]
+                pid_raw = row["pid"]
+                output_dir = row["output_dir"]
+
+                # Resolve effective PID + sweep reason.
+                effective_pid: Optional[int] = None
+                no_pid_reason: Optional[str] = None
+
+                if pid_raw is not None and int(pid_raw) > 0:
+                    effective_pid = int(pid_raw)
+                else:
+                    # Try the on-disk PID file written by daemon._write_pid_file.
+                    pid_file = Path(output_dir) / ".orch-daemon.pid"
+                    try:
+                        text = pid_file.read_text().strip()
+                    except (FileNotFoundError, OSError):
+                        text = ""
+
+                    if not text:
+                        no_pid_reason = "no PID recorded (pid column NULL and PID file missing/empty)"
+                    else:
+                        try:
+                            parsed = int(text)
+                            if parsed > 0:
+                                effective_pid = parsed
+                            else:
+                                no_pid_reason = "no PID recorded (PID file contains non-positive value)"
+                        except ValueError:
+                            no_pid_reason = "no PID recorded (PID file contains non-numeric value)"
+
+                # Decide whether to sweep this row.
+                if no_pid_reason is not None:
+                    # No usable PID anywhere — sweep with explicit reason.
+                    error_message = (
+                        "daemon process exited without updating status: "
+                        + no_pid_reason
+                    )
+                    self._mark_crashed(run_id, error_message, now)
+                    swept += 1
+                    continue
+
+                # We have an effective PID — check liveness.
+                if is_process_alive(effective_pid):
+                    continue  # live daemon, leave row alone
+
+                # Dead PID — sweep.
+                error_message = (
+                    f"daemon process exited without updating status "
+                    f"(pid {effective_pid})"
+                )
+                if self._mark_crashed(run_id, error_message, now):
+                    swept += 1
+            except Exception as exc:
+                # Per-row containment — log and move on.
+                run_id_str = (
+                    row["run_id"] if hasattr(row, "__getitem__") else "<unknown>"
+                )
+                logger.warning(
+                    "sweep_zombie_runs: per-row error on run_id=%s: %s",
+                    run_id_str, exc,
+                )
+                continue
+
+        return swept
+
+    def _mark_crashed(self, run_id: str, error_message: str, now: str) -> bool:
+        """Atomically transition a non-terminal row to status='crashed'.
+
+        Uses the canonical ``WHERE status IN (...)`` idempotency guard
+        from :meth:`cancel_pipeline_run` so a concurrent daemon that
+        races to ``'success'`` between our SELECT and our UPDATE wins
+        the race (our UPDATE matches zero rows and we return False).
+
+        Returns ``True`` iff exactly one row was updated.
+        """
+        try:
+            with self.transaction() as conn:
+                cur = conn.execute(
+                    """
+                    UPDATE pipeline_runs
+                    SET status = 'crashed',
+                        error_message = ?,
+                        completed_at = ?
+                    WHERE run_id = ?
+                      AND status IN ('pending', 'running', 'pending_review')
+                    """,
+                    (error_message, now, run_id),
+                )
+                return cur.rowcount > 0
+        except sqlite3.OperationalError as exc:
+            logger.warning(
+                "_mark_crashed: UPDATE failed for run_id=%s: %s",
+                run_id, exc,
+            )
+            return False
+
     def count_active_pipeline_runs(self) -> int:
         """Count pipeline_runs in non-terminal states (Issue #839).
 
@@ -1409,11 +1594,28 @@ class Database:
         unbounded concurrent daemons trip SQLite WAL contention
         (``SQLITE_BUSY``) and manifest as zombie runs (#754).
 
+        **Side effect (#754):** invokes :meth:`sweep_zombie_runs` before
+        counting so dead-daemon rows are transitioned to ``'crashed'``
+        and excluded from the returned count. This keeps the
+        backpressure cap accurate even when daemons have died without
+        updating their status (the original zombie-run bug).
+
         Returns:
             Integer count of active runs. Returns 0 on any
             ``OperationalError`` (defensive — a backpressure check
             should never raise from a launch-path code path).
         """
+        # Sweep first (#754) so zombies don't count against the cap.
+        # Sweep failures are non-fatal: per-row exceptions are contained
+        # inside sweep_zombie_runs, and top-level errors return 0 (no rows
+        # swept) without raising — the count below proceeds either way.
+        try:
+            self.sweep_zombie_runs()
+        except Exception as exc:  # pragma: no cover — sweep is defensive
+            logger.warning(
+                "count_active_pipeline_runs: sweep raised unexpectedly: %s", exc,
+            )
+
         try:
             with self._locked():
                 conn = self.get_connection()
