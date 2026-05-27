@@ -264,16 +264,15 @@ class TestDiagnosisEngineTrackerIntegration:
         from orchestration_engine.diagnosis import DiagnosisEngine
         import uuid
 
+        from tests._helpers import pipeline_run_dict
         run_id = f"run-{uuid.uuid4().hex[:8]}"
         # Insert a placeholder pipeline run so FK constraint is happy
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": "/tmp/fake.yaml",
-            "template_id": "coding-pipeline-v1",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": "/tmp/out",
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path="/tmp/fake.yaml",
+            template_id="coding-pipeline-v1",
+            output_dir="/tmp/out",
+        ))
 
         engine = DiagnosisEngine(executor=mock_executor, db=db)
         engine.diagnose(
@@ -304,15 +303,14 @@ class TestDiagnosisEngineTrackerIntegration:
         from orchestration_engine.diagnosis import DiagnosisEngine
         import uuid
 
+        from tests._helpers import pipeline_run_dict
         run_id = f"run-{uuid.uuid4().hex[:8]}"
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": "/tmp/fake.yaml",
-            "template_id": "coding-pipeline-v1",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": "/tmp/out",
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path="/tmp/fake.yaml",
+            template_id="coding-pipeline-v1",
+            output_dir="/tmp/out",
+        ))
 
         engine = DiagnosisEngine(executor=mock_executor, db=db)
         engine.diagnose(run_id=run_id, error_message="timeout", output_dir=None)

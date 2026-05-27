@@ -611,15 +611,14 @@ class TestUpdatePipelineRunScoringFields:
 
     @pytest.fixture
     def run_id(self, db):
+        from tests._helpers import pipeline_run_dict
         rid = "scoring-fields-run"
-        db.insert_pipeline_run({
-            "run_id": rid,
-            "template_path": "/fake/t.yaml",
-            "template_id": "test",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": "/tmp/out",
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            rid,
+            template_path="/fake/t.yaml",
+            template_id="test",
+            output_dir="/tmp/out",
+        ))
         return rid
 
     def test_scoring_status_accepted_by_update(self, db, run_id):

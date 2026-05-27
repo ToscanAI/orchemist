@@ -64,16 +64,18 @@ class TestEmitStallEvent:
 
         db = Database(db_path=Path(":memory:"))
 
-        # Create a running pipeline run
-        db.insert_pipeline_run({
-            "run_id": "test-run-1", "template_path": "templates/coding-pipeline-v1.yaml", "input_json": "{}",
-            "template_id": "coding-pipeline-v1",
-            "mode": "openclaw",
-            "status": "running",
-            "pid": 12345,
-            "output_dir": "/tmp/test",
-            "input_config": "{}",
-        })
+        # Create a running pipeline run (#875: via pipeline_run_dict)
+        from tests._helpers import pipeline_run_dict
+        db.insert_pipeline_run(pipeline_run_dict(
+            "test-run-1",
+            template_path="templates/coding-pipeline-v1.yaml",
+            template_id="coding-pipeline-v1",
+            mode="openclaw",
+            status="running",
+            pid=12345,
+            output_dir="/tmp/test",
+            input_config="{}",
+        ))
 
         # Insert a stall event
         event_id = db.insert_pipeline_run_event(
@@ -116,15 +118,17 @@ class TestEmitStallEvent:
 
         db = Database(db_path=Path(":memory:"))
 
-        db.insert_pipeline_run({
-            "run_id": "test-run-2", "template_path": "templates/coding-pipeline-v1.yaml", "input_json": "{}",
-            "template_id": "coding-pipeline-v1",
-            "mode": "openclaw",
-            "status": "running",
-            "pid": 12345,
-            "output_dir": "/tmp/test",
-            "input_config": "{}",
-        })
+        from tests._helpers import pipeline_run_dict
+        db.insert_pipeline_run(pipeline_run_dict(
+            "test-run-2",
+            template_path="templates/coding-pipeline-v1.yaml",
+            template_id="coding-pipeline-v1",
+            mode="openclaw",
+            status="running",
+            pid=12345,
+            output_dir="/tmp/test",
+            input_config="{}",
+        ))
 
         # Insert multiple stall events
         db.insert_pipeline_run_event(
@@ -203,15 +207,17 @@ class TestCLIStallWarning:
 
         db = Database(db_path=Path(":memory:"))
 
-        db.insert_pipeline_run({
-            "run_id": "stall-run", "template_path": "templates/coding-pipeline-v1.yaml", "input_json": "{}",
-            "template_id": "coding-pipeline-v1",
-            "mode": "openclaw",
-            "status": "running",
-            "pid": 99999,
-            "output_dir": "/tmp/test",
-            "input_config": "{}",
-        })
+        from tests._helpers import pipeline_run_dict
+        db.insert_pipeline_run(pipeline_run_dict(
+            "stall-run",
+            template_path="templates/coding-pipeline-v1.yaml",
+            template_id="coding-pipeline-v1",
+            mode="openclaw",
+            status="running",
+            pid=99999,
+            output_dir="/tmp/test",
+            input_config="{}",
+        ))
 
         db.insert_pipeline_run_event(
             run_id="stall-run",
