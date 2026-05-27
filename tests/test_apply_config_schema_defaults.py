@@ -411,10 +411,14 @@ class TestCliRunnerIntegration:
             real_apply(config, schema)
             calls[-1]["keys_after"] = list(config.keys())
 
+        # cli.py imports the helper at module top (`from .daemon import
+        # apply_config_schema_defaults`) per #876 A-8, so the call resolves
+        # through the cli module's namespace.  Patch BOTH the daemon module
+        # attribute (for any internal daemon path) AND cli's module-level
+        # name binding (so the cli call sites see the spy).
+        from orchestration_engine import cli as cli_mod
         monkeypatch.setattr(daemon_mod, "apply_config_schema_defaults", _spy)
-        # cli.py imports the helper inline at each callsite (`from .daemon
-        # import apply_config_schema_defaults`), so patching the daemon
-        # module's attribute is sufficient.
+        monkeypatch.setattr(cli_mod, "apply_config_schema_defaults", _spy)
 
         runner = CliRunner()
         # Empty input dict; required=[] in the schema so no required-field
