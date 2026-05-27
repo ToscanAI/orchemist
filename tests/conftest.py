@@ -3,6 +3,27 @@
 Provides session-scoped and autouse fixtures that handle global state cleanup
 between test cases (e.g. the module-level circuit-breaker registry introduced
 in issue #346).
+
+Canonical fixture naming convention (issues #862 / #863 / #874):
+
+  - ``db(tmp_path)`` — file-backed :class:`~orchestration_engine.db.Database`
+    (exercises on-disk WAL semantics; preferred default).
+  - ``in_memory_db()`` — ``:memory:`` Database for fast tests that do NOT
+    need WAL semantics.
+  - ``insert_pipeline_run(db)`` — callable that inserts a minimum-viable
+    ``pipeline_runs`` row into the canonical ``db`` fixture. For tests using
+    non-canonical DB fixtures, import the standalone version from
+    ``tests._helpers``.
+  - ``api_client(tmp_path, monkeypatch)`` — yields ``(TestClient, db_path)``
+    bound to a fresh DB; ``ORCH_DB_PATH`` is set to the same path.
+  - ``admin_json_isolated(tmp_path, monkeypatch)`` — yields a tmp admin.json
+    Path; ``ORCH_ADMIN_PATH`` is set and ``feature_flags.reset_cache()`` is
+    called both before and after the test.
+
+Note: pytest fixture resolution falls back to conftest when a local fixture
+is NOT defined with the same name. Any test that already declares its own
+``db`` / ``in_memory_db`` / ``api_client`` fixture continues to use the
+local override (no behaviour change). Migration is incremental.
 """
 
 import os
@@ -53,6 +74,89 @@ def reset_circuit_breakers():
     # Post-test cleanup (belt-and-suspenders).
     with _CIRCUIT_BREAKERS_LOCK:
         _CIRCUIT_BREAKERS.clear()
+
+
+# ---------------------------------------------------------------------------
+# Issues #862 / #863 / #874 / #875 — canonical test fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def db(tmp_path):
+    """File-backed :class:`Database` for a single test (#863).
+
+    The DB lives at ``tmp_path / "engine.db"``. This is the preferred default
+    because it exercises the on-disk WAL path that production daemons use.
+    """
+    from orchestration_engine.db import Database
+    return Database(tmp_path / "engine.db")
+
+
+@pytest.fixture
+def in_memory_db():
+    """Shared-cache ``:memory:`` :class:`Database` (#863).
+
+    Use this only for fast tests that do NOT need WAL semantics (e.g. pure
+    schema / model / FK tests). Prefer the file-backed :func:`db` fixture
+    for anything that touches concurrent connections or sweep logic.
+    """
+    from orchestration_engine.db import Database
+    return Database(":memory:")
+
+
+@pytest.fixture
+def insert_pipeline_run(db):
+    """Callable that inserts a minimum-viable ``pipeline_runs`` row (#862).
+
+    Bound to the canonical ``db`` fixture. Closes over ``db``, so each test
+    that requests this fixture gets its own fresh file-backed DB.
+
+    For tests that need to insert into a non-canonical DB (e.g. a
+    class-scoped DB or one of multiple DBs), import the standalone
+    :func:`tests._helpers.insert_pipeline_run` function instead.
+
+    Returns:
+        Callable ``_insert(*, run_id, status="pending", pid=None, **overrides) -> str``
+        that returns the inserted ``run_id``.
+    """
+    from tests._helpers import insert_pipeline_run as _impl
+
+    def _insert(*, run_id, status="pending", pid=None, **overrides):
+        return _impl(db, run_id=run_id, status=status, pid=pid, **overrides)
+    return _insert
+
+
+@pytest.fixture
+def api_client(tmp_path, monkeypatch):
+    """Yield ``(TestClient, db_path)`` bound to a fresh DB (#874).
+
+    Sets ``ORCH_DB_PATH`` so any module-level helper that reads the env var
+    resolves to the same DB the TestClient sees. The TestClient is created
+    via :func:`orchestration_engine.web.api.create_api_app`.
+    """
+    from fastapi.testclient import TestClient
+    from orchestration_engine.web.api import create_api_app
+
+    db_path = tmp_path / "engine.db"
+    monkeypatch.setenv("ORCH_DB_PATH", str(db_path))
+    client = TestClient(create_api_app(db_path=str(db_path)))
+    return client, db_path
+
+
+@pytest.fixture
+def admin_json_isolated(tmp_path, monkeypatch):
+    """Point ``feature_flags`` + admin API at a tmp ``admin.json`` (#874).
+
+    Sets ``ORCH_ADMIN_PATH`` and resets the feature_flags TTL cache both
+    before and after the test (yield). Returns the admin.json :class:`Path`.
+    """
+    from orchestration_engine import feature_flags as ff
+
+    admin_path = tmp_path / "admin.json"
+    monkeypatch.setenv("ORCH_ADMIN_PATH", str(admin_path))
+    ff.reset_cache()
+    yield admin_path
+    ff.reset_cache()
 
 
 # ---------------------------------------------------------------------------
