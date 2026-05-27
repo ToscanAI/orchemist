@@ -422,6 +422,34 @@ def create_api_app(
             return TemplateEngine(user_dir=_user_templates_dir)
         return TemplateEngine()
 
+    def _load_yaml_via_tempfile(engine: Any, content: str) -> Any:
+        """Write *content* to a temp .yaml, load via ``engine.load_template``, clean up.
+
+        Returns the loaded ``Template``.  Raises ``HTTPException(422)`` with
+        the structured ``{"message": "Template load error", "errors": [...]}``
+        detail on load failure.
+
+        Callers that need a richer detail shape (e.g. the validate endpoint
+        adds ``"warnings": []``) should catch the HTTPException and re-raise
+        with the augmented detail — see the validate handler below.
+
+        Extracted from three near-identical inlined blocks (validate /
+        create / update endpoints) per #876.
+        """
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+        try:
+            try:
+                return engine.load_template(tmp_path)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"message": "Template load error", "errors": [str(exc)]},
+                )
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
     app = FastAPI(
         title="Orchestration Engine REST API",
         version=__version__,
@@ -1346,42 +1374,32 @@ def create_api_app(
                 },
             )
 
-        # 2. Load via engine (uses a temporary file approach via load_template)
-        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
-            tmp.write(req.content)
-            tmp_path = Path(tmp.name)
-
+        # 2. Load via engine.  ``_load_yaml_via_tempfile`` raises
+        # HTTPException(422) with the minimal {"message", "errors"} detail
+        # on load failure; the validate endpoint augments it with the
+        # ``"warnings": []`` field to keep its response shape consistent.
         try:
+            template = _load_yaml_via_tempfile(engine, req.content)
+        except HTTPException as exc:
+            if isinstance(exc.detail, dict) and "warnings" not in exc.detail:
+                exc.detail = {**exc.detail, "warnings": []}
+            raise
+
+        # 3. Basic validation
+        errors = engine.validate_template(template)
+
+        # 4. Extended validation — returns (errors, warnings) tuple.
+        # raw (parsed above) is passed as raw_data per the method signature.
+        ext_errors: List[str] = []
+        warnings: List[str] = []
+        if req.extended:
             try:
-                template = engine.load_template(tmp_path)
+                ext_errors, warnings = engine.validate_template_extended(template, raw)
             except Exception as exc:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "message": "Template load error",
-                        "errors": [str(exc)],
-                        "warnings": [],
-                    },
-                )
+                warnings = [f"Extended validation error: {exc}"]
 
-            # 3. Basic validation
-            errors = engine.validate_template(template)
-
-            # 4. Extended validation — returns (errors, warnings) tuple.
-            # raw (parsed above) is passed as raw_data per the method signature.
-            ext_errors: List[str] = []
-            warnings: List[str] = []
-            if req.extended:
-                try:
-                    ext_errors, warnings = engine.validate_template_extended(template, raw)
-                except Exception as exc:
-                    warnings = [f"Extended validation error: {exc}"]
-
-            # Merge structural + extended errors for the final verdict.
-            all_errors = errors + ext_errors
-
-        finally:
-            tmp_path.unlink(missing_ok=True)
+        # Merge structural + extended errors for the final verdict.
+        all_errors = errors + ext_errors
 
         return JSONResponse(
             {
@@ -1427,46 +1445,32 @@ def create_api_app(
             )
 
         # 2. Load and validate
-        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
-            tmp.write(req.content)
-            tmp_path = Path(tmp.name)
+        template = _load_yaml_via_tempfile(engine, req.content)
 
+        errors = engine.validate_template(template)
+        if errors:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Template validation failed", "errors": errors},
+            )
+
+        # 2b. Extended validation — returns (errors, warnings) tuple.
+        # ``raw`` is the parsed YAML dict captured at the top of this handler.
+        ext_errors: List[str] = []
+        warnings: List[str] = []
         try:
-            try:
-                template = engine.load_template(tmp_path)
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=422,
-                    detail={"message": "Template load error", "errors": [str(exc)]},
-                )
+            ext_errors, warnings = engine.validate_template_extended(template, raw)
+        except Exception as exc:
+            ext_errors = [f"Extended validation error: {exc}"]
 
-            errors = engine.validate_template(template)
-            if errors:
-                raise HTTPException(
-                    status_code=422,
-                    detail={"message": "Template validation failed", "errors": errors},
-                )
-
-            # 2b. Extended validation — returns (errors, warnings) tuple.
-            # ``raw`` is the parsed YAML dict captured at the top of this handler.
-            ext_errors: List[str] = []
-            warnings: List[str] = []
-            try:
-                ext_errors, warnings = engine.validate_template_extended(template, raw)
-            except Exception as exc:
-                ext_errors = [f"Extended validation error: {exc}"]
-
-            if ext_errors:
-                raise HTTPException(
-                    status_code=422,
-                    detail={
-                        "message": "Template extended validation failed",
-                        "errors": ext_errors,
-                    },
-                )
-
-        finally:
-            tmp_path.unlink(missing_ok=True)
+        if ext_errors:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Template extended validation failed",
+                    "errors": ext_errors,
+                },
+            )
 
         # 3. Determine destination path
         dest = _writable_template_path(engine, template.id, req.source)
@@ -1559,43 +1563,29 @@ def create_api_app(
             raise HTTPException(400, f"YAML id '{yaml_id}' does not match URL name '{name}'")
 
         # 4. Load and validate new content
-        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as tmp:
-            tmp.write(req.content)
-            tmp_path = Path(tmp.name)
+        template = _load_yaml_via_tempfile(engine, req.content)
 
+        errors = engine.validate_template(template)
+        if errors:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Template validation failed", "errors": errors},
+            )
+
+        # 4b. Extended validation — returns (errors, warnings) tuple.
+        # ``raw`` is the parsed YAML dict captured above (not discarded as before).
+        # For PUT (update), extended validation errors are treated as warnings
+        # (non-blocking) — a user template update with advisory issues is still
+        # accepted. Only structural errors from validate_template() block the update.
+        ext_errors: List[str] = []
+        warnings: List[str] = []
         try:
-            try:
-                template = engine.load_template(tmp_path)
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=422,
-                    detail={"message": "Template load error", "errors": [str(exc)]},
-                )
+            ext_errors, warnings = engine.validate_template_extended(template, raw)
+        except Exception as exc:
+            warnings = [f"Extended validation warning: {exc}"]
 
-            errors = engine.validate_template(template)
-            if errors:
-                raise HTTPException(
-                    status_code=422,
-                    detail={"message": "Template validation failed", "errors": errors},
-                )
-
-            # 4b. Extended validation — returns (errors, warnings) tuple.
-            # ``raw`` is the parsed YAML dict captured above (not discarded as before).
-            # For PUT (update), extended validation errors are treated as warnings
-            # (non-blocking) — a user template update with advisory issues is still
-            # accepted. Only structural errors from validate_template() block the update.
-            ext_errors: List[str] = []
-            warnings: List[str] = []
-            try:
-                ext_errors, warnings = engine.validate_template_extended(template, raw)
-            except Exception as exc:
-                warnings = [f"Extended validation warning: {exc}"]
-
-            # Treat extended errors as additional warnings for PUT (non-blocking).
-            warnings = ext_errors + warnings
-
-        finally:
-            tmp_path.unlink(missing_ok=True)
+        # Treat extended errors as additional warnings for PUT (non-blocking).
+        warnings = ext_errors + warnings
 
         # 5. Overwrite existing file
         existing_path.write_text(req.content, encoding="utf-8")
