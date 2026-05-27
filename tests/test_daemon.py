@@ -30,16 +30,16 @@ from click.testing import CliRunner
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def in_memory_db():
-    """Return an in-memory Database instance with the new pipeline_runs table."""
-    from orchestration_engine.db import Database
-    return Database(":memory:")
+# #863: in_memory_db now sourced from tests/conftest.py canonical fixture.
 
 
 @pytest.fixture
 def tmp_db(tmp_path):
-    """Return a file-backed Database instance (db_path accessible for CLI tests)."""
+    """Return a file-backed Database instance (db_path accessible for CLI tests).
+
+    Aliased to a tmp_path/"test.db" path so existing CLI tests that capture
+    ``tmp_db.db_path`` continue to find the same file name they reference.
+    """
     from orchestration_engine.db import Database
     return Database(tmp_path / "test.db")
 
@@ -455,17 +455,18 @@ class TestStartCommand:
 
 class TestWaitCommand:
     def _insert_run(self, db, run_id: str, status: str, tmp_path) -> None:
+        # #862: route through the canonical helper.
+        from tests._helpers import insert_pipeline_run as _impl
         out_dir = tmp_path / run_id
         out_dir.mkdir(parents=True, exist_ok=True)
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": "/tmp/t.yaml",
-            "template_id": "test-pipe",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-            "status": status,
-        })
+        _impl(
+            db,
+            run_id=run_id,
+            status=status,
+            template_path="/tmp/t.yaml",
+            template_id="test-pipe",
+            output_dir=str(out_dir),
+        )
 
     def test_wait_success_exits_zero(self, cli_runner, tmp_db, tmp_path):
         """'orch wait' exits 0 when status=success."""

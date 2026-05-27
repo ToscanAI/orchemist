@@ -48,19 +48,17 @@ def _make_run_id() -> str:
     return f"run-{uuid.uuid4().hex[:8]}"
 
 
+# #862: route through the canonical helper so a future schema column is
+# automatically picked up via insert_pipeline_run's column-default behaviour.
 def _insert_pipeline_run(db: Database, run_id: str) -> None:
     """Insert a minimal pipeline_run row so FK constraints pass."""
-    db.insert_pipeline_run({
-        "run_id": run_id,
-        "template_path": "/tmp/test.yaml",
-        "template_id": "test-tpl",
-        "input_json": json.dumps({}),
-        "mode": "dry-run",
-        "output_dir": "/tmp/output",
-        "status": "pending",
-        "gateway_url": None,
-        "skip_scoring": 0,
-    })
+    from tests._helpers import insert_pipeline_run as _impl
+    _impl(
+        db,
+        run_id=run_id,
+        template_path="/tmp/test.yaml",
+        output_dir="/tmp/output",
+    )
 
 
 def _outcome_data(run_id: str, phase_id: str = "review", **kwargs) -> Dict[str, Any]:

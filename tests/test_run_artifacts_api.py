@@ -32,20 +32,19 @@ def client_and_db(tmp_path: Path):
     return client, db_file
 
 
+# #862: route through the canonical helper.
 def _insert_run_with_output(db_file: Path, output_dir: Path) -> str:
     """Insert a minimal pipeline_run record pointing at *output_dir*."""
+    from tests._helpers import insert_pipeline_run as _impl
     run_id = str(_uuid.uuid4())[:8]
     db = Database(db_file)
-    db.insert_pipeline_run(
-        {
-            "run_id": run_id,
-            "template_path": "/tmp/fake.yaml",
-            "template_id": "fake-template",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": str(output_dir),
-            "status": "running",
-        }
+    _impl(
+        db,
+        run_id=run_id,
+        status="running",
+        template_path="/tmp/fake.yaml",
+        template_id="fake-template",
+        output_dir=str(output_dir),
     )
     return run_id
 

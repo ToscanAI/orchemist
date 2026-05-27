@@ -86,22 +86,19 @@ def _make_run(
     created_at: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return a minimal pipeline_run dict suitable for db.insert_pipeline_run()."""
+    from tests._helpers import pipeline_run_dict as _pipeline_run_dict
     rid = run_id or str(uuid.uuid4())
-    d: Dict[str, Any] = {
-        "run_id": rid,
+    overrides: Dict[str, Any] = {
         "template_path": f"/tmp/{template_id}.yaml",
         "template_id": template_id,
-        "input_json": json.dumps({}),
-        "mode": "dry-run",
         "output_dir": f"/tmp/output/{rid}",
         "status": status,
-        "gateway_url": None,
         "skip_scoring": 0,
         "chain_depth": chain_depth,
     }
     if parent_run_id is not None:
-        d["parent_run_id"] = parent_run_id
-    return d
+        overrides["parent_run_id"] = parent_run_id
+    return _pipeline_run_dict(rid, **overrides)
 
 
 def _make_api_client(tmp_path: Path) -> TestClient:

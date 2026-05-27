@@ -41,11 +41,14 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+# #863: ``fresh_db`` retained as a thin alias of the canonical ``db`` fixture.
+from tests._helpers import insert_pipeline_run as _insert_pipeline_run_helper
+
+
 @pytest.fixture
-def fresh_db(tmp_path):
+def fresh_db(db):
     """A fresh, on-disk SQLite Database for the test."""
-    from orchestration_engine.db import Database
-    return Database(tmp_path / "engine.db")
+    return db
 
 
 def _dead_pid() -> int:
@@ -83,18 +86,17 @@ def _insert_run(
     omitted, the column is left NULL — exercising the PID-file fallback
     path.
     """
-    db.insert_pipeline_run({
-        "run_id": run_id,
-        "template_path": "/tmp/x.yaml",
-        "template_id": "tpl",
-        "input_json": "{}",
-        "mode": "dry-run",
-        "output_dir": output_dir,
-        "gateway_url": None,
-        "status": status,
-    })
-    if pid is not None:
-        db.update_pipeline_run(run_id, pid=pid)
+    # #862: route through the canonical helper but keep this file's
+    # historical defaults (template_id="tpl", output_dir="/tmp/orch-test")
+    # so the contract under test does not shift.
+    _insert_pipeline_run_helper(
+        db,
+        run_id=run_id,
+        status=status,
+        pid=pid,
+        template_id="tpl",
+        output_dir=output_dir,
+    )
 
 
 # ---------------------------------------------------------------------------
