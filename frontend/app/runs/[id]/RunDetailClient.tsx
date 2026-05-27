@@ -11,8 +11,12 @@
  *   - Right (col-span-8): active-phase detail panel + live SSE tool-call stream +
  *                          artifacts list + cost/confidence + Jaccard drift
  *
- * Engine reachable → real `useRunEvents` SSE feed. Engine offline → demo phase
- * progression matching the SVG canon (active phase = implement).
+ * Post-#888 (harness graduation): the page assumes a reachable engine.
+ * `EngineOfflineGuard` at the layout level renders the offline error UI when
+ * `/api/v1/health` rejects, so this component never has to handle the
+ * engine-offline case. Phase rail metadata still hydrates from
+ * `GET /api/v1/phases`; before that resolves the rail renders an empty
+ * skeleton.
  */
 
 import { useState, useEffect, useMemo, Suspense } from 'react';
@@ -36,29 +40,11 @@ import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
 import { StatusDot } from '@/components/harness/StatusDot';
 
-// ── Phase rail metadata (#842) ──
-// Hydrated from `GET /api/v1/phases` at component mount via `listPhases()`.
-// FALLBACK_PHASES MUST match the canonical 12-phase pipeline AND the actual
-// tier values (only `review` is opus today; spec_adversary is sonnet
-// pending VISION pillar 8 bump). Drift here makes hydration visibly
-// rerender — the phantom-phase problem this issue exists to fix.
-const FALLBACK_PHASES: readonly PhaseDef[] = [
-  { id: 'existing_symbols_inventory', label: '0 · existing_symbols_inventory', subtitle: 'sticky inventory · v4.2', tier: 'sonnet' },
-  { id: 'spec',               label: '1a · spec',                tier: 'sonnet' },
-  { id: 'behavioral',         label: '1b · behavioral',          tier: 'sonnet' },
-  { id: 'spec_adversary',     label: '1c · spec_adversary',      subtitle: 'OPUS · cross-model gate', tier: 'sonnet' },
-  { id: 'postmortem_spec',    label: '1d · postmortem_spec',     subtitle: 'exhaustion analysis', tier: 'sonnet' },
-  { id: 'acceptance_test',    label: '2 · acceptance_test',      tier: 'sonnet' },
-  { id: 'implement',          label: '3 · implement',            tier: 'sonnet' },
-  { id: 'acceptance_run',     label: '3b · acceptance_run',      subtitle: 'engine · no LLM', tier: 'engine' },
-  { id: 'review',             label: '4 · review',               subtitle: 'OPUS', tier: 'opus' },
-  { id: 'fix',                label: '4b · fix',                 tier: 'sonnet' },
-  { id: 'postmortem_review',  label: '4c · postmortem_review',   subtitle: 'exhaustion analysis', tier: 'sonnet' },
-  { id: 'test',               label: '5 · test',                 subtitle: 'engine · no LLM', tier: 'engine' },
-];
-
-const DEMO_COMPLETED = ['existing_symbols_inventory', 'spec', 'behavioral', 'spec_adversary', 'acceptance_test', 'acceptance_test_adversary'];
-const DEMO_ACTIVE = 'implement';
+// Phase rail metadata hydrates from `GET /api/v1/phases` at component mount
+// via `listPhases()`. Per #888 there is no demo `FALLBACK_PHASES` fallback —
+// the EngineOfflineGuard at the layout level takes over when the engine is
+// unreachable, and on a reachable-engine 404 the rail renders empty until
+// the phases endpoint succeeds.
 
 function phaseStatus(phaseId: string, completed: readonly string[], current: string | null, runStatus: string): 'done' | 'active' | 'queued' | 'failed' {
   if (completed.includes(phaseId)) return 'done';
@@ -111,21 +97,22 @@ function RunCockpitInner() {
   }, [id, search]);
 
   const [run, setRun] = useState<RunRecord | null>(null);
-  const [engineUp, setEngineUp] = useState<boolean | null>(null);
+  const [runFetched, setRunFetched] = useState<boolean>(false);
   const [artifacts, setArtifacts] = useState<readonly RunArtifactListEntry[] | null>(null);
   const [phase0, setPhase0] = useState<RunPhase0 | null>(null);
   // Phase rail metadata — hydrated from `GET /api/v1/phases` at mount.
-  // Falls back to FALLBACK_PHASES until the live response arrives (or
-  // when engine is offline). Replaces the hardcoded PHASES array (#842).
-  const [phases, setPhases] = useState<readonly PhaseDef[]>(FALLBACK_PHASES);
+  // Renders empty until the live response arrives. Per #888 no demo
+  // FALLBACK_PHASES — the EngineOfflineGuard at the layout level takes
+  // over when the engine is unreachable.
+  const [phases, setPhases] = useState<readonly PhaseDef[]>([]);
 
   useEffect(() => {
     if (!runId) return;
     let cancelled = false;
     // Fetch all four concurrently — getRun is the only required call;
     // artifacts and phase0 may legitimately 404 (run not started, or
-    // skip-spec pipeline with no Phase 0); listPhases failures fall back
-    // to FALLBACK_PHASES.
+    // skip-spec pipeline with no Phase 0); listPhases failures leave the
+    // phase rail empty.
     Promise.allSettled([
       getRun(runId),
       listRunArtifacts(runId),
@@ -135,11 +122,8 @@ function RunCockpitInner() {
       if (cancelled) return;
       if (runRes.status === 'fulfilled') {
         setRun(runRes.value);
-        setEngineUp(true);
-      } else {
-        // engineUp stays false → demo path renders
-        setEngineUp(false);
       }
+      setRunFetched(true);
       if (artRes.status === 'fulfilled') setArtifacts(artRes.value.files);
       if (phase0Res.status === 'fulfilled') setPhase0(phase0Res.value);
       if (phasesRes.status === 'fulfilled') {
@@ -149,21 +133,18 @@ function RunCockpitInner() {
     return () => { cancelled = true; };
   }, [runId]);
 
-  const { events } = useRunEvents(runId, engineUp === true);
+  // SSE is enabled only when we have a real run record from the engine.
+  const { events } = useRunEvents(runId, run !== null);
 
-  // Derive completed phases + current from events when available; demo fallback otherwise
-  const completed: readonly string[] = engineUp === true && run
-    ? run.completed_phases
-    : DEMO_COMPLETED;
-  const currentPhase: string | null = engineUp === true && run
-    ? run.current_phase
-    : DEMO_ACTIVE;
-  const status: string = engineUp === true && run
-    ? run.status
-    : 'running';
+  // Derive completed phases + current from the real run record (no demo fallback).
+  const completed: readonly string[] = run ? run.completed_phases : [];
+  const currentPhase: string | null = run ? run.current_phase : null;
+  const status: string = run ? run.status : 'pending';
 
   const completedCount = completed.length;
-  const progressPct = Math.round((completedCount / phases.length) * 100);
+  const progressPct = phases.length > 0
+    ? Math.round((completedCount / phases.length) * 100)
+    : 0;
 
   const totalCostUsd = events.reduce((acc, ev) => {
     if (ev.type === 'phase_completed' && ev.cost_usd !== null) return acc + (ev.cost_usd ?? 0);
@@ -273,10 +254,10 @@ function RunCockpitInner() {
               subagent · orchemist-implementer · fresh context
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              <span className="h-pill h-pill-success">CONSUME · {phase0 ? phase0.verdicts.CONSUME : 3}</span>
-              <span className="h-pill h-pill-purple">EXTEND · {phase0 ? phase0.verdicts.EXTEND : 1}</span>
-              <span className="h-pill h-pill-warning" style={{ background: '#3B2E1F' }}>DIVERGENT · {phase0 ? phase0.verdicts.DIVERGENT : 0}</span>
-              <span className="h-pill" style={{ borderColor: '#5A6371', color: '#8A93A2' }}>NEW-OK · {phase0 ? phase0.verdicts.NEW_OK : 2}</span>
+              <span className="h-pill h-pill-success">CONSUME · {phase0 ? phase0.verdicts.CONSUME : '—'}</span>
+              <span className="h-pill h-pill-purple">EXTEND · {phase0 ? phase0.verdicts.EXTEND : '—'}</span>
+              <span className="h-pill h-pill-warning" style={{ background: '#3B2E1F' }}>DIVERGENT · {phase0 ? phase0.verdicts.DIVERGENT : '—'}</span>
+              <span className="h-pill" style={{ borderColor: '#5A6371', color: '#8A93A2' }}>NEW-OK · {phase0 ? phase0.verdicts.NEW_OK : '—'}</span>
             </div>
             <div className="mt-4 flex flex-wrap gap-4 text-[11px]">
               <Link href={`/runs/${runId}/artifacts/spec.md`} className="h-link">view spec.md</Link>
@@ -291,7 +272,7 @@ function RunCockpitInner() {
             testId="section-tool-stream"
           >
             <div className="font-mono text-[11px] text-harness-muted leading-relaxed h-scroll overflow-y-auto max-h-72">
-              {engineUp === true && phaseCompletedEvents.length > 0 ? (
+              {phaseCompletedEvents.length > 0 ? (
                 phaseCompletedEvents.map((ev, i) => (
                   <div key={i}>
                     <span className="text-harness-dim">[{ev.elapsed_seconds?.toFixed(0) ?? '—'}s]</span>{' '}
@@ -300,22 +281,12 @@ function RunCockpitInner() {
                   </div>
                 ))
               ) : (
-                <>
-                  <div><span className="text-harness-dim">[14m 12s]</span> read_file src/orchestration_engine/verdict_parser.py</div>
-                  <div><span className="text-harness-dim">[14m 14s]</span> <span className="text-harness-teal">→ 224 lines · CONSUME verdict</span></div>
-                  <div><span className="text-harness-dim">[14m 18s]</span> grep -n &quot;extract_verdict&quot; src/</div>
-                  <div><span className="text-harness-dim">[14m 19s]</span> <span className="text-harness-warning">→ 2 hits · review_parser.py:88 (dup risk #687)</span></div>
-                  <div><span className="text-harness-dim">[14m 24s]</span> edit_file src/.../review_parser.py · delete extract_verdict</div>
-                  <div><span className="text-harness-dim">[14m 25s]</span> <span className="text-harness-teal">→ 36 lines removed</span></div>
-                  <div><span className="text-harness-dim">[14m 28s]</span> edit_file src/.../review_parser.py · add re-export</div>
-                  <div><span className="text-harness-dim">[14m 30s]</span> <span className="text-harness-teal">→ 3 lines added</span></div>
-                  <div><span className="text-harness-dim">[14m 34s]</span> bash python3 -m pytest tests/test_verdict_parser.py -q</div>
-                  <div><span className="text-harness-dim">[14m 38s]</span> <span className="text-harness-purple">→ 23 passed · running…</span></div>
-                  <div className="mt-2 flex items-center gap-2">
-                    <StatusDot tone="info" pulse size={6} />
-                    <span className="text-harness-purple">awaiting next tool call</span>
-                  </div>
-                </>
+                <div className="flex items-center gap-2 py-2">
+                  <StatusDot tone="info" pulse size={6} />
+                  <span className="text-harness-muted">
+                    {run ? 'awaiting next tool call' : runFetched ? 'no run data — check the run id' : 'loading run events…'}
+                  </span>
+                </div>
               )}
             </div>
           </SectionCard>
@@ -328,41 +299,41 @@ function RunCockpitInner() {
                     phase0.sections.ui_primitives.count + phase0.sections.shared_libs.count +
                     phase0.sections.adjacent_patterns.count + phase0.sections.workspace_barrels.count
                   } symbols across 4 sections · drives sub-check 7d at every phase</span>
-                : <span>41 symbols across 4 sections · drives sub-check 7d at every phase <span className="ml-2 text-harness-warning">(demo — no Phase 0 artifact)</span></span>
+                : <span>no Phase 0 artifact for this run</span>
             }
             testId="section-phase0"
           >
             <div className="grid grid-cols-2 gap-3 text-[11px]">
               <div>
-                <div className="h-section-label">UI PRIMITIVES ({phase0 ? phase0.sections.ui_primitives.count : 18})</div>
+                <div className="h-section-label">UI PRIMITIVES ({phase0 ? phase0.sections.ui_primitives.count : '—'})</div>
                 <div className="mt-1 text-harness-text truncate" title={phase0?.sections.ui_primitives.entries.join(' · ')}>
                   {phase0 && phase0.sections.ui_primitives.entries.length > 0
                     ? phase0.sections.ui_primitives.entries.slice(0, 4).map((e) => e.split(' ← ')[0]).join(' · ') + (phase0.sections.ui_primitives.entries.length > 4 ? ' · …' : '')
-                    : 'Badge · Button · Spinner · …'}
+                    : '—'}
                 </div>
               </div>
               <div>
-                <div className="h-section-label">SHARED LIBS ({phase0 ? phase0.sections.shared_libs.count : 4})</div>
+                <div className="h-section-label">SHARED LIBS ({phase0 ? phase0.sections.shared_libs.count : '—'})</div>
                 <div className="mt-1 text-harness-text font-mono text-[10px] truncate" title={phase0?.sections.shared_libs.entries.join(' · ')}>
                   {phase0 && phase0.sections.shared_libs.entries.length > 0
                     ? phase0.sections.shared_libs.entries.slice(0, 4).map((e) => e.split(' ← ')[0]).join(' · ') + (phase0.sections.shared_libs.entries.length > 4 ? ' · …' : '')
-                    : 'verdict_parser · cost_tracker · file_guard · git_integration'}
+                    : '—'}
                 </div>
               </div>
               <div>
-                <div className="h-section-label">ADJACENT PATTERNS ({phase0 ? phase0.sections.adjacent_patterns.count : 7})</div>
+                <div className="h-section-label">ADJACENT PATTERNS ({phase0 ? phase0.sections.adjacent_patterns.count : '—'})</div>
                 <div className="mt-1 text-harness-text truncate" title={phase0?.sections.adjacent_patterns.entries.join(' · ')}>
                   {phase0 && phase0.sections.adjacent_patterns.entries.length > 0
                     ? phase0.sections.adjacent_patterns.entries.slice(0, 4).map((e) => e.split(' ← ')[0]).join(' · ') + (phase0.sections.adjacent_patterns.entries.length > 4 ? ' · …' : '')
-                    : 'phase_dispatch · subagent_invocation · sse_emit · …'}
+                    : '—'}
                 </div>
               </div>
               <div>
-                <div className="h-section-label">WORKSPACE BARRELS ({phase0 ? phase0.sections.workspace_barrels.count : 12})</div>
+                <div className="h-section-label">WORKSPACE BARRELS ({phase0 ? phase0.sections.workspace_barrels.count : '—'})</div>
                 <div className="mt-1 text-harness-text font-mono text-[10px] truncate" title={phase0?.sections.workspace_barrels.entries.join(' · ')}>
                   {phase0 && phase0.sections.workspace_barrels.entries.length > 0
                     ? phase0.sections.workspace_barrels.entries.slice(0, 4).map((e) => e.split(' ← ')[0]).join(' · ') + (phase0.sections.workspace_barrels.entries.length > 4 ? ' · …' : '')
-                    : 'src/orchestration_engine/__init__.py exports …'}
+                    : '—'}
                 </div>
               </div>
             </div>
@@ -375,41 +346,34 @@ function RunCockpitInner() {
         {/* Right: artifacts + cost/conf + drift */}
         <div className="col-span-3 flex flex-col gap-4">
           <SectionCard title="Run artifacts" subtitle={<>.orchemist/runs/{runId.slice(0, 8) || '_'}/</>}>
-            <ul className="space-y-1.5 text-[11px]">
-              {(artifacts && artifacts.length > 0
-                ? artifacts.map((f) => ({ name: f.name, kB: f.size_bytes / 1024, isReal: true }))
-                : ['existing_symbols.md', 'spec.md', 'behavioral.md', 'spec_adversary.md', 'acceptance_tests.py', 'implement.md', 'review.md'].map((name, i) => ({
-                    name,
-                    kB: 2 + i * 0.4,
-                    isReal: false,
-                  }))
-              ).map((f, i) => {
-                const isDone = f.isReal || i < completedCount;
-                const isActive = !f.isReal && i === completedCount;
-                return (
-                  <li key={f.name} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className={isDone ? 'text-harness-teal' : isActive ? 'text-harness-purple' : 'text-harness-dim'}>
-                        {isDone ? '✓' : isActive ? '●' : '○'}
+            {artifacts === null ? (
+              <div className="text-[11px] text-harness-muted">loading artifacts…</div>
+            ) : artifacts.length === 0 ? (
+              <div className="text-[11px] text-harness-muted">no artifacts yet</div>
+            ) : (
+              <ul className="space-y-1.5 text-[11px]">
+                {artifacts.map((f) => {
+                  const kB = f.size_bytes / 1024;
+                  return (
+                    <li key={f.name} className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-harness-teal">✓</span>
+                        <Link
+                          href={`/runs/${runId}/artifacts/${encodeURIComponent(f.name)}`}
+                          className="truncate text-harness-text underline decoration-harness-dim"
+                          title={f.name}
+                        >
+                          {f.name}
+                        </Link>
+                      </div>
+                      <span className="text-harness-dim text-[10px] ml-2 shrink-0">
+                        {kB.toFixed(1)} kB
                       </span>
-                      <Link
-                        href={`/runs/${runId}/artifacts/${encodeURIComponent(f.name)}`}
-                        className={[
-                          'truncate',
-                          isDone ? 'text-harness-text underline decoration-harness-dim' : isActive ? 'text-harness-text' : 'text-harness-muted',
-                        ].join(' ')}
-                        title={f.name}
-                      >
-                        {f.name}
-                      </Link>
-                    </div>
-                    <span className="text-harness-dim text-[10px] ml-2 shrink-0">
-                      {f.isReal ? `${f.kB.toFixed(1)} kB` : isDone ? `${f.kB.toFixed(1)} kB` : isActive ? 'writing…' : 'queued'}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </SectionCard>
 
           <SectionCard title="Cost & confidence">
@@ -449,9 +413,6 @@ function RunCockpitInner() {
         </div>
       </div>
 
-      {engineUp === false && (
-        <div className="fixed bottom-12 right-6 z-40 h-pill h-pill-warning text-[10px]">demo data · engine offline</div>
-      )}
     </HarnessShell>
   );
 }
