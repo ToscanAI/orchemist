@@ -1,8 +1,12 @@
 /**
  * Unit tests for `frontend/lib/api.ts`.
  *
- * All HTTP calls are intercepted by mocking `global.fetch`.  SSE streaming
- * tests mock the `EventSource` global.  No real network requests are made.
+ * All HTTP calls are intercepted by mocking `global.fetch`. No real network
+ * requests are made.
+ *
+ * SSE behaviour is covered by `__tests__/lib/sse.test.ts` against the
+ * `useRunEvents` hook in `lib/sse.ts`; the legacy `streamRun` function was
+ * removed in #861 as dead code (zero production callsites).
  */
 
 import {
@@ -18,14 +22,12 @@ import {
   getRun,
   getRunLogs,
   cancelRun,
-  streamRun,
   getHealth,
 } from '@/lib/api';
 import type {
   TemplateSummary,
   TemplateDetail,
   RunRecord,
-  SseEvent,
 } from '@/lib/types';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -179,7 +181,7 @@ describe('listTemplates', () => {
     fetchMock.mockResolvedValue(makeResponse({ detail: 'Server error' }, 500));
 
     await expect(listTemplates()).rejects.toBeInstanceOf(ApiError);
-    const err = await listTemplates().catch((e: ApiError) => e);
+    const err = (await listTemplates().catch((e: ApiError) => e)) as ApiError;
     expect(err.status).toBe(500);
   });
 });
@@ -212,7 +214,7 @@ describe('getTemplate', () => {
     );
 
     await expect(getTemplate('x')).rejects.toBeInstanceOf(ApiError);
-    const err = await getTemplate('x').catch((e: ApiError) => e);
+    const err = (await getTemplate('x').catch((e: ApiError) => e)) as ApiError;
     expect(err.status).toBe(404);
   });
 });
@@ -481,7 +483,7 @@ describe('cancelRun', () => {
       makeResponse({ detail: 'Already in terminal state' }, 409),
     );
     await expect(cancelRun('done-run')).rejects.toBeInstanceOf(ApiError);
-    const err = await cancelRun('done-run').catch((e: ApiError) => e);
+    const err = (await cancelRun('done-run').catch((e: ApiError) => e)) as ApiError;
     expect(err.status).toBe(409);
   });
 });
@@ -502,177 +504,3 @@ describe('URL encoding', () => {
   });
 });
 
-// ── streamRun (SSE) ───────────────────────────────────────────────────────────
-
-/** Minimal EventSource mock. */
-class MockEventSource {
-  readonly url: string;
-  onerror: ((e: Event) => void) | null = null;
-  private listeners: Map<string, ((e: MessageEvent) => void)[]> = new Map();
-
-  constructor(url: string) {
-    this.url = url;
-  }
-
-  addEventListener(type: string, handler: (e: MessageEvent) => void): void {
-    const existing = this.listeners.get(type) ?? [];
-    this.listeners.set(type, [...existing, handler]);
-  }
-
-  close(): void {
-    this.listeners.clear();
-  }
-
-  /** Test helper: simulate an SSE event arriving. */
-  emit(eventType: string, data: unknown): void {
-    const handlers = this.listeners.get(eventType) ?? [];
-    const event = { data: JSON.stringify(data), type: eventType } as unknown as MessageEvent;
-    for (const h of handlers) h(event);
-  }
-}
-
-describe('streamRun', () => {
-  let EventSourceMock: typeof MockEventSource;
-  let mockInstance: MockEventSource;
-  const originalEventSource = global.EventSource;
-
-  beforeEach(() => {
-    EventSourceMock = class extends MockEventSource {};
-    // Keep reference to the instance created inside streamRun
-    const Spy = new Proxy(EventSourceMock, {
-      construct(Target, args: [string]) {
-        mockInstance = new Target(...args);
-        return mockInstance;
-      },
-    });
-    // @ts-expect-error — assigning mock to global
-    global.EventSource = Spy;
-  });
-
-  afterEach(() => {
-    global.EventSource = originalEventSource;
-  });
-
-  it('constructs an EventSource with the correct URL', () => {
-    const stop = streamRun('abc12345', jest.fn());
-    expect(mockInstance.url).toBe('/api/v1/runs/abc12345/stream');
-    stop();
-  });
-
-  it('URL-encodes the run_id in the stream URL', () => {
-    const stop = streamRun('run/with/slash', jest.fn());
-    expect(mockInstance.url).toContain('run%2Fwith%2Fslash');
-    stop();
-  });
-
-  it('delivers phase_started events to onEvent callback', () => {
-    const received: SseEvent[] = [];
-    const stop = streamRun('abc12345', (e) => received.push(e));
-
-    mockInstance.emit('phase_started', {
-      run_id: 'abc12345',
-      phase_id: 'research',
-      tokens_consumed: null,
-      cost_usd: null,
-      state: 'running',
-      created_at: '2026-03-01T00:00:00',
-    });
-
-    expect(received).toHaveLength(1);
-    expect(received[0]?.type).toBe('phase_started');
-    if (received[0]?.type === 'phase_started') {
-      expect(received[0].phase_id).toBe('research');
-    }
-    stop();
-  });
-
-  it('delivers phase_completed events to onEvent callback', () => {
-    const received: SseEvent[] = [];
-    const stop = streamRun('abc12345', (e) => received.push(e));
-
-    mockInstance.emit('phase_completed', {
-      run_id: 'abc12345',
-      phase_id: 'research',
-      tokens_consumed: 1500,
-      cost_usd: 0.003,
-      state: 'success',
-      created_at: '2026-03-01T00:01:00',
-    });
-
-    expect(received).toHaveLength(1);
-    expect(received[0]?.type).toBe('phase_completed');
-    if (received[0]?.type === 'phase_completed') {
-      expect(received[0].tokens_consumed).toBe(1500);
-    }
-    stop();
-  });
-
-  it('delivers status_changed events to onEvent callback', () => {
-    const received: SseEvent[] = [];
-    const stop = streamRun('abc12345', (e) => received.push(e));
-
-    mockInstance.emit('status_changed', {
-      run_id: 'abc12345',
-      phase_id: null,
-      status: 'success',
-      completed_at: '2026-03-01T00:05:00',
-      error_message: null,
-    });
-
-    expect(received).toHaveLength(1);
-    expect(received[0]?.type).toBe('status_changed');
-    if (received[0]?.type === 'status_changed') {
-      expect(received[0].status).toBe('success');
-    }
-    stop();
-  });
-
-  it('delivers error events to onEvent callback', () => {
-    const received: SseEvent[] = [];
-    const stop = streamRun('abc12345', (e) => received.push(e));
-
-    mockInstance.emit('error', { error: "Run 'abc12345' not found" });
-
-    expect(received).toHaveLength(1);
-    expect(received[0]?.type).toBe('error');
-    if (received[0]?.type === 'error') {
-      expect(received[0].error).toContain('not found');
-    }
-    stop();
-  });
-
-  it('calls onError when onerror is triggered', () => {
-    const onError = jest.fn();
-    const stop = streamRun('abc12345', jest.fn(), onError);
-
-    const fakeEvent = {} as Event;
-    if (mockInstance.onerror) mockInstance.onerror(fakeEvent);
-
-    expect(onError).toHaveBeenCalledWith(fakeEvent);
-    stop();
-  });
-
-  it('does not throw if onError is not provided', () => {
-    const stop = streamRun('abc12345', jest.fn());
-    // Should not throw even if onerror fires (no callback registered)
-    expect(() => stop()).not.toThrow();
-  });
-
-  it('closes the EventSource when the cleanup function is called', () => {
-    const closeSpy = jest.spyOn(MockEventSource.prototype, 'close');
-    const stop = streamRun('abc12345', jest.fn());
-    stop();
-    expect(closeSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('ignores unknown event types without throwing', () => {
-    const received: SseEvent[] = [];
-    const stop = streamRun('abc12345', (e) => received.push(e));
-
-    // Emit a type that doesn't match any known event
-    mockInstance.emit('unknown_event', { data: 'test' });
-
-    expect(received).toHaveLength(0);
-    stop();
-  });
-});

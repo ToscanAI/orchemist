@@ -6,7 +6,7 @@
  * Displays full template metadata, the ordered phase execution plan, and a
  * launch form that starts a pipeline run in the chosen mode.
  *
- * Client component: uses `useState`, `useEffect`, and `useRouter` for
+ * Client component: uses `useApi` (#870), `useState`, and `useRouter` for
  * runtime data fetching and form handling. The app uses `output: 'export'`
  * (static export) in next.config.js, so all data fetching must be
  * client-side — `generateStaticParams` returns `[]` to satisfy the static
@@ -15,10 +15,11 @@
  * @module
  */
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useParams } from 'next/navigation';
-import { getTemplate, startRun, deleteTemplate, duplicateTemplate, ApiError } from '@/lib/api';
+import { getTemplate, startRun, deleteTemplate, duplicateTemplate, extractApiErrorMessage } from '@/lib/api';
+import { useApi } from '@/lib/useApi';
 import type { TemplateDetail, RunMode } from '@/lib/types';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -81,10 +82,14 @@ export default function TemplateDetailClient() {
   })();
   const id = decodeURIComponent(rawId);
 
-  // ── Data fetch state ──────────────────────────────────────────────────────
-  const [template, setTemplate] = useState<TemplateDetail | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  // ── Data fetch state (#870 — migrated to useApi) ──────────────────────────
+  const { data: template, error: templateError, loading } = useApi<TemplateDetail>(
+    () => getTemplate(id),
+    [id],
+  );
+  // useApi wraps non-Error rejections into Error, so templateError is either
+  // null or an Error subclass — `.message` is always defined.
+  const fetchError: string | null = templateError ? templateError.message : null;
 
   // ── Launch form state ─────────────────────────────────────────────────────
   const [selectedMode, setSelectedMode] = useState<RunMode>('dry-run');
@@ -98,36 +103,6 @@ export default function TemplateDetailClient() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
-
-  // ── Fetch template on mount ───────────────────────────────────────────────
-  useEffect(() => {
-    // Guard against state updates after unmount to avoid React warnings.
-    let cancelled = false;
-
-    getTemplate(id)
-      .then((data) => {
-        if (!cancelled) {
-          setTemplate(data);
-          setLoading(false);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          if (err instanceof ApiError) {
-            setFetchError(err.message);
-          } else if (err instanceof Error) {
-            setFetchError(err.message);
-          } else {
-            setFetchError('An unexpected error occurred.');
-          }
-          setLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
 
   // ── Form handlers ─────────────────────────────────────────────────────────
 
@@ -164,13 +139,7 @@ export default function TemplateDetailClient() {
       setApiKey('');
       router.push(`/runs/${run.run_id}`);
     } catch (err: unknown) {
-      if (err instanceof ApiError) {
-        setApiError(err.message);
-      } else if (err instanceof Error) {
-        setApiError(err.message);
-      } else {
-        setApiError('Failed to launch run.');
-      }
+      setApiError(extractApiErrorMessage(err));
       setSubmitting(false);
     }
   }

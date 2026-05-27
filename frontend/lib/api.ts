@@ -24,15 +24,13 @@ import type {
   TemplateValidateRequest,
   TemplateValidateResponse,
   TemplateDeleteResponse,
-  CreateTemplateRequest,
-  UpdateTemplateRequest,
   StartRunRequest,
   RunRecord,
   RunsListResponse,
   ListRunsParams,
   CancelRunResponse,
   HealthResponse,
-  SseEvent,
+  Paged,
 } from './types';
 
 // ── Base URL ──────────────────────────────────────────────────────────────────
@@ -311,8 +309,8 @@ export function duplicateTemplate(name: string): Promise<TemplateDetail> {
  * `POST /api/v1/runs`
  *
  * Equivalent to `orch launch` — returns immediately with the new run record.
- * Poll `getRun(run_id)` to track progress, or use `streamRun(run_id)` for
- * live SSE events.
+ * Poll `getRun(run_id)` to track progress, or use the `useRunEvents` hook
+ * from `@/lib/sse` for live SSE events.
  *
  * @param req  `{ template, mode, input, ... }`
  * @returns    Newly created `RunRecord`.
@@ -514,12 +512,8 @@ export interface RegressionRecord {
   readonly created_at: string;
 }
 
-export interface RegressionsResponse {
-  readonly items: readonly RegressionRecord[];
-  readonly total: number;
-  readonly limit: number;
-  readonly offset: number;
-}
+/** Paginated response from `GET /api/v1/regressions`. */
+export type RegressionsResponse = Paged<RegressionRecord>;
 
 /** `GET /api/v1/regressions[?status&limit&offset]` — backs Fleet regression queue. */
 export function listRegressions(params?: { status?: string; limit?: number; offset?: number }): Promise<RegressionsResponse> {
@@ -594,12 +588,8 @@ export interface DecisionRecord {
   readonly created_at: string;    // UTC ISO with Z suffix after normalisation
 }
 
-export interface DecisionsResponse {
-  readonly items: readonly DecisionRecord[];
-  readonly total: number;
-  readonly limit: number;
-  readonly offset: number;
-}
+/** Paginated response from `GET /api/v1/decisions`. */
+export type DecisionsResponse = Paged<DecisionRecord>;
 
 /** `GET /api/v1/decisions[?limit&offset]` — backs Trust & Gates audit trail. */
 export function listDecisions(params?: { limit?: number; offset?: number }): Promise<DecisionsResponse> {
@@ -719,12 +709,7 @@ export interface GateRecord {
 }
 
 /** Paginated gate list response. */
-export interface GatesListResponse {
-  readonly items: readonly GateRecord[];
-  readonly total: number;
-  readonly limit: number;
-  readonly offset: number;
-}
+export type GatesListResponse = Paged<GateRecord>;
 
 export interface ListGatesParams {
   status?: string;
@@ -793,106 +778,53 @@ export function rejectGate(
   );
 }
 
-// ── SSE streaming ─────────────────────────────────────────────────────────────
+// ── Error message extraction ──────────────────────────────────────────────────
 
 /**
- * Callback invoked for each SSE event received from the stream.
+ * Extract a user-facing error message from an unknown thrown value.
  *
- * @param event  Typed and discriminated `SseEvent` object.
+ * Unwraps the structured `ApiError.detail` envelope produced by the engine
+ * (`{ detail: { errors: [...] | message: '...' } }`) and falls back through
+ * a priority chain so callers never see `null`/`undefined`/`""`.
+ *
+ * Priority:
+ *   1. ApiError with nested `detail.detail.errors` array → joined with newlines.
+ *   2. ApiError with nested `detail.detail.errors` (non-array) → `String(errors)`.
+ *   3. ApiError with nested `detail.detail.message` → that string.
+ *   4. ApiError with `detail.detail` as plain string → that string.
+ *   5. Any ApiError → `err.message`.
+ *   6. Any other Error → `err.message`.
+ *   7. Anything else → `'Unknown error.'`.
+ *
+ * Pure function — no side effects, no thrown exceptions.
+ *
+ * @param err  The caught value (typed `unknown` because catch-clause values
+ *             are unknown by default).
+ * @returns    A non-empty user-facing string suitable for display.
  */
-export type SseEventCallback = (event: SseEvent) => void;
-
-/**
- * Callback invoked when the SSE connection encounters an error or closes.
- *
- * @param error  The underlying `Event` from the `EventSource`.
- */
-export type SseErrorCallback = (error: Event) => void;
-
-/**
- * Stream live phase-transition events for a pipeline run via SSE.
- *
- * `GET /api/v1/runs/{run_id}/stream`
- *
- * Opens a browser `EventSource` and invokes `onEvent` for each SSE message.
- * The stream closes automatically when the run reaches a terminal state.
- *
- * @param runId    Pipeline run ID.
- * @param onEvent  Called for each typed SSE event.
- * @param onError  Optional callback for connection errors.
- * @returns        A cleanup function — call it to close the `EventSource`
- *                 before the run completes (e.g. on component unmount).
- *
- * @example
- * ```ts
- * const stop = streamRun('abc12345', (event) => {
- *   if (event.type === 'status_changed') console.log('Done:', event.status);
- * });
- * // Later:
- * stop();
- * ```
- */
-export function streamRun(
-  runId: string,
-  onEvent: SseEventCallback,
-  onError?: SseErrorCallback,
-): () => void {
-  const url = `${BASE_URL}/api/v1/runs/${encodeURIComponent(runId)}/stream`;
-  const es = new EventSource(url);
-
-  /**
-   * Parse the raw SSE `event` name and `data` JSON into a typed `SseEvent`.
-   * Returns `null` when the event name is unrecognised.
-   */
-  function parseEvent(eventType: string, data: string): SseEvent | null {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(data) as Record<string, unknown>;
-    } catch {
-      return null;
+export function extractApiErrorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    const detail = err.detail;
+    if (typeof detail === 'object' && detail !== null && 'detail' in detail) {
+      const inner = (detail as Record<string, unknown>).detail;
+      if (typeof inner === 'object' && inner !== null) {
+        const innerObj = inner as Record<string, unknown>;
+        if ('errors' in innerObj) {
+          const errors = innerObj.errors;
+          if (Array.isArray(errors)) return errors.join('\n');
+          return String(errors);
+        }
+        if ('message' in innerObj) {
+          return String(innerObj.message);
+        }
+      } else if (typeof inner === 'string') {
+        return inner;
+      }
     }
-    switch (eventType) {
-      case 'phase_started':
-        return { ...parsed, type: 'phase_started' } as SsePhaseStartedEvent;
-      case 'phase_completed':
-        return { ...parsed, type: 'phase_completed' } as SsePhaseCompletedEvent;
-      case 'status_changed':
-        return { ...parsed, type: 'status_changed' } as SseStatusChangedEvent;
-      case 'error':
-        return { ...parsed, type: 'error' } as SseStreamErrorEvent;
-      default:
-        return null;
-    }
+    return err.message;
   }
-
-  /** Listeners for each named SSE event type. */
-  const eventTypes = [
-    'phase_started',
-    'phase_completed',
-    'status_changed',
-    'error',
-  ] as const;
-
-  for (const eventType of eventTypes) {
-    es.addEventListener(eventType, (e: MessageEvent) => {
-      const typed = parseEvent(eventType, e.data as string);
-      if (typed !== null) onEvent(typed);
-    });
+  if (err instanceof Error) {
+    return err.message;
   }
-
-  if (onError !== undefined) {
-    es.onerror = onError;
-  }
-
-  /** Close the EventSource and remove all listeners. */
-  return () => {
-    es.close();
-  };
+  return 'Unknown error.';
 }
-
-// Local type aliases used inside streamRun for narrowing without re-importing
-// (avoids the need for a direct import cycle check by TypeScript).
-type SsePhaseStartedEvent = Extract<SseEvent, { type: 'phase_started' }>;
-type SsePhaseCompletedEvent = Extract<SseEvent, { type: 'phase_completed' }>;
-type SseStatusChangedEvent = Extract<SseEvent, { type: 'status_changed' }>;
-type SseStreamErrorEvent = Extract<SseEvent, { type: 'error' }>;

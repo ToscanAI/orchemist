@@ -45,19 +45,6 @@ export interface TemplateDetail extends TemplateSummary {
   readonly yaml_content?: string;
 }
 
-/** Body for `POST /api/v1/templates` — create a new template. */
-export interface CreateTemplateRequest {
-  readonly content: string;
-  readonly source?: 'user' | 'project';
-  readonly overwrite?: boolean;
-}
-
-/** Body for `PUT /api/v1/templates/{name}` — update an existing template. */
-export interface UpdateTemplateRequest {
-  readonly content: string;
-  readonly source?: 'user' | 'project';
-}
-
 // ── Run types ─────────────────────────────────────────────────────────────────
 
 /** Allowed execution modes for a pipeline run. */
@@ -126,13 +113,24 @@ export interface RunRecord {
   readonly created_at: string | null;
 }
 
-/** Paginated response from `GET /api/v1/runs`. */
-export interface RunsListResponse {
-  readonly items: readonly RunRecord[];
+/**
+ * Generic shape for paginated API list responses.
+ *
+ * Mirrors the canonical `{items, total, limit, offset}` envelope returned by
+ * `GET /api/v1/runs`, `/regressions`, `/decisions`, and `/gates`.
+ *
+ * `TrustProfilesResponse` is intentionally NOT a `Paged<…>` — it returns
+ * `{items, total}` only (no pagination), so the dedicated interface stays.
+ */
+export interface Paged<T> {
+  readonly items: readonly T[];
   readonly total: number;
   readonly limit: number;
   readonly offset: number;
 }
+
+/** Paginated response from `GET /api/v1/runs`. */
+export type RunsListResponse = Paged<RunRecord>;
 
 /** Query parameters for `GET /api/v1/runs`. */
 export interface ListRunsParams {

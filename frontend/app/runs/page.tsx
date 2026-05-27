@@ -14,6 +14,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { listRuns, ApiError } from '@/lib/api';
 import type { RunRecord, RunStatus, RunsListResponse, ListRunsParams } from '@/lib/types';
+import { formatElapsed } from '@/lib/timeFmt';
 import { RunStatusBadge } from '@/components/pipeline/RunStatusBadge';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 
@@ -30,24 +31,6 @@ const STATUS_OPTIONS = [
   'scoring_failed',
   'pending_review',
 ] as const;
-
-/**
- * Format elapsed time from start to end (or now if still running).
- */
-function formatElapsed(startedAt: string | null, completedAt: string | null, status: string): string {
-  if (!startedAt) return '—';
-  const start = new Date(startedAt).getTime();
-  const end = completedAt
-    ? new Date(completedAt).getTime()
-    : (status === 'running' ? Date.now() : new Date(startedAt).getTime());
-  const seconds = Math.floor((end - start) / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  if (minutes < 60) return `${minutes}m ${secs}s`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours}h ${minutes % 60}m`;
-}
 
 /**
  * Format a date string for display.
@@ -213,7 +196,7 @@ export default function RunsPage() {
                   </td>
                   <td className="px-4 py-3 text-zinc-400">{formatDate(run.created_at)}</td>
                   <td className="px-4 py-3 text-zinc-400">
-                    {formatElapsed(run.started_at, run.completed_at, run.status)}
+                    {formatElapsed(run.started_at, run.completed_at)}
                   </td>
                 </tr>
               ))}

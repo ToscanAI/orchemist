@@ -9,7 +9,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter, useParams } from 'next/navigation';
-import { getTemplate, updateTemplate, ApiError } from '@/lib/api';
+import { getTemplate, updateTemplate, extractApiErrorMessage } from '@/lib/api';
 import type { TemplateDetail } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
@@ -76,28 +76,7 @@ export default function EditTemplateClient() {
       });
       router.push(`/templates/${encodeURIComponent(id)}`);
     } catch (err: unknown) {
-      if (err instanceof ApiError) {
-        const detail = err.detail;
-        if (typeof detail === 'object' && detail !== null && 'detail' in detail) {
-          const inner = (detail as Record<string, unknown>).detail;
-          if (typeof inner === 'object' && inner !== null && 'errors' in inner) {
-            const errors = (inner as Record<string, unknown>).errors;
-            setError(
-              Array.isArray(errors) ? errors.join('\n') : String(errors),
-            );
-          } else if (typeof inner === 'object' && inner !== null && 'message' in inner) {
-            setError(String((inner as Record<string, unknown>).message));
-          } else {
-            setError(typeof inner === 'string' ? inner : err.message);
-          }
-        } else {
-          setError(err.message);
-        }
-      } else if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError('Failed to update template.');
-      }
+      setError(extractApiErrorMessage(err));
       setSubmitting(false);
     }
   }

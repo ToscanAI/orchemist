@@ -61,10 +61,34 @@ jest.mock('@/lib/api', () => {
       this.detail = detail;
     }
   }
+  // Mirror the real `extractApiErrorMessage` priority chain (see lib/api.ts).
+  function mockExtract(err: unknown): string {
+    if (err instanceof MockApiError) {
+      const detail = err.detail;
+      if (typeof detail === 'object' && detail !== null && 'detail' in detail) {
+        const inner = (detail as Record<string, unknown>).detail;
+        if (typeof inner === 'object' && inner !== null) {
+          const obj = inner as Record<string, unknown>;
+          if ('errors' in obj) {
+            const errors = obj.errors;
+            if (Array.isArray(errors)) return errors.join('\n');
+            return String(errors);
+          }
+          if ('message' in obj) return String(obj.message);
+        } else if (typeof inner === 'string') {
+          return inner;
+        }
+      }
+      return err.message;
+    }
+    if (err instanceof Error) return err.message;
+    return 'Unknown error.';
+  }
   return {
     getTemplate: (...args: unknown[]) => mockGetTemplate(...args),
     startRun: (...args: unknown[]) => mockStartRun(...args),
     ApiError: MockApiError,
+    extractApiErrorMessage: mockExtract,
   };
 });
 
