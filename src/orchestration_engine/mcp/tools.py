@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from orchestration_engine.db import Database
+from orchestration_engine.db import Database, default_db_path, parse_json_list
 from orchestration_engine.templates import TemplateEngine, TemplateNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -27,22 +27,16 @@ _VALID_MODES = {"dry-run", "standalone", "openclaw"}
 
 
 def _get_persistent_db_path() -> str:
-    """Return the path to the persistent on-disk DB, mirroring cli.py."""
-    default_dir = Path.home() / ".orchestration-engine"
-    default_dir.mkdir(parents=True, exist_ok=True)
-    return str(default_dir / "engine.db")
+    """Return the path to the persistent on-disk DB, mirroring cli.py.
+
+    Thin string-returning wrapper around :func:`orchestration_engine.db.default_db_path`
+    preserved for callsite signature compatibility (Issue #864 consolidation).
+    """
+    return str(default_db_path())
 
 
-def _parse_json_list(val: Any) -> list:
-    """Safely parse completed_phases from DB (may be JSON string, list, or None)."""
-    if val is None:
-        return []
-    if isinstance(val, list):
-        return val
-    try:
-        return json.loads(val)
-    except (json.JSONDecodeError, TypeError):
-        return []
+# Backward-compat alias: tests/modules may still reference the underscore name.
+_parse_json_list = parse_json_list
 
 
 def register_tools(mcp) -> None:

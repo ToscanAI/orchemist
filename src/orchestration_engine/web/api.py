@@ -25,14 +25,19 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
+from orchestration_engine.db import default_db_path, parse_json_list
+from orchestration_engine.env_utils import env_int
+
 logger = logging.getLogger(__name__)
 
 
 def _get_persistent_db_path() -> str:
-    """Return the path to the persistent on-disk DB used by async runs."""
-    default_dir = Path.home() / ".orchestration-engine"
-    default_dir.mkdir(exist_ok=True)
-    return str(default_dir / "engine.db")
+    """Return the path to the persistent on-disk DB used by async runs.
+
+    Thin string-returning wrapper around :func:`orchestration_engine.db.default_db_path`
+    preserved for callsite signature compatibility (Issue #864 consolidation).
+    """
+    return str(default_db_path())
 
 
 def _verify_github_signature(secret: str, payload_bytes: bytes, sig_header: Optional[str]) -> bool:
@@ -306,14 +311,8 @@ class _SseConnectionLimiter:
     def limits() -> Tuple[int, int]:
         """Return ``(max_total, max_per_ip)`` from env vars. Malformed
         values fall back to the documented defaults — never raises."""
-        try:
-            max_total = int(os.environ.get("ORCH_SSE_MAX_TOTAL", "100"))
-        except ValueError:
-            max_total = 100
-        try:
-            max_per_ip = int(os.environ.get("ORCH_SSE_MAX_PER_IP", "10"))
-        except ValueError:
-            max_per_ip = 10
+        max_total = env_int(os.environ.get("ORCH_SSE_MAX_TOTAL"), 100)
+        max_per_ip = env_int(os.environ.get("ORCH_SSE_MAX_PER_IP"), 10)
         return max_total, max_per_ip
 
     def admit(self, client_ip: str) -> Optional[str]:
@@ -686,15 +685,9 @@ def create_api_app(
 
     def _run_to_dict(run: Dict[str, Any]) -> Dict[str, Any]:
         """Convert a DB pipeline_runs row dict to a RunResponse-compatible dict."""
-        # completed_phases is stored as a JSON string in the DB
-        completed_phases_raw = run.get("completed_phases", "[]")
-        if isinstance(completed_phases_raw, str):
-            try:
-                completed_phases = json.loads(completed_phases_raw)
-            except (json.JSONDecodeError, TypeError):
-                completed_phases = []
-        else:
-            completed_phases = completed_phases_raw or []
+        # completed_phases is stored as a JSON string in the DB — defer to
+        # the canonical parser in db.py (Issue #866).
+        completed_phases = parse_json_list(run.get("completed_phases"))
 
         return {
             "run_id": run["run_id"],
@@ -922,10 +915,7 @@ def create_api_app(
         # the env var. A value of 0 disables the cap entirely (legacy
         # behaviour). We read the env var on every launch so an operator
         # can tune live without restarting the server.
-        try:
-            _max_daemons = int(os.environ.get("ORCH_MAX_DAEMONS", "8"))
-        except ValueError:
-            _max_daemons = 8
+        _max_daemons = env_int(os.environ.get("ORCH_MAX_DAEMONS"), 8)
         if _max_daemons > 0:
             _active = db.count_active_pipeline_runs()
             if _active >= _max_daemons:

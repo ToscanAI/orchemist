@@ -25,6 +25,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .confidence import ConfidenceCalculator
+from .db import default_db_path
+from .output_utils import (
+    extract_output_text as _extract_output_text,
+    safe_write_phase_output as _safe_write_phase_output,
+)
 from .routing import RoutingEngine, DEFAULT_ROUTING_CONFIG
 
 # ---------------------------------------------------------------------------
@@ -1886,7 +1891,7 @@ def _dispatch_auto_merge(
         issue_number=_sprint_issue_number,
         score=decision.score if hasattr(decision, "score") else None,
         queue_config_path=_sprint_queue_config_path,
-        db_path=str(Path.home() / ".orchestration-engine" / "engine.db"),
+        db_path=str(default_db_path()),
     )
 
 
@@ -2054,39 +2059,6 @@ def _setup_logging(log_path: Path) -> None:
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(handler)
-
-
-def _extract_output_text(phase_out: Dict[str, Any]) -> str:
-    """Extract human-readable text from a phase output dict."""
-    inner = phase_out.get('result', {})
-    if not isinstance(inner, dict):
-        return str(inner)
-    for key in ('output', 'text', 'content', 'message'):
-        if key in inner:
-            val = inner[key]
-            if isinstance(val, list):
-                texts = []
-                for block in val:
-                    if isinstance(block, dict) and block.get('type') == 'text':
-                        texts.append(block.get('text', ''))
-                    elif isinstance(block, str):
-                        texts.append(block)
-                return '\n\n'.join(t for t in texts if t)
-            return str(val)
-    if inner:
-        return json.dumps(inner, indent=2, default=str)
-    return ""
-
-
-def _safe_write_phase_output(out_path: Path, new_content: str, phase_id: str) -> None:
-    """Write new_content to out_path unless an existing file is larger."""
-    if out_path.exists() and out_path.stat().st_size > len(new_content.encode('utf-8')):
-        logger.info(
-            "Phase '%s': keeping agent-written file (%d bytes) over captured output (%d bytes)",
-            phase_id, out_path.stat().st_size, len(new_content.encode('utf-8')),
-        )
-    else:
-        out_path.write_text(new_content)
 
 
 def _write_summary(
