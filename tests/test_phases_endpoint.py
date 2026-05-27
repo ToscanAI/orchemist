@@ -106,19 +106,19 @@ class TestStandardPipelinePhaseList:
         )
 
     def test_only_review_is_opus_today(self, client):
-        """Frozen-state drift sentinel. Today's engine YAML has only
-        `review` at opus tier; VISION pillar 8 + the user's recorded
-        feedback (`feedback_max_effort_adversary_reviewer.md`) call for
-        spec_adversary to also be opus. When the YAML is updated to
-        match VISION pillar 8, this test will fail — re-set the expected
-        set to match the new state and add a CHANGELOG entry."""
+        """Frozen-state drift sentinel. Today's engine YAML has
+        spec_adversary AND review at opus tier per VISION pillar 8
+        (max-effort adversary + review phases). When the YAML is updated
+        to bump or regress any phase to/from opus, this test will fail —
+        re-set the expected set to match the new state and add a CHANGELOG
+        entry. See VISION.md §8."""
         phases = client.get("/api/v1/phases").json()["phases"]
         opus_phase_ids = {p["id"] for p in phases if p["model_tier"] == "opus"}
-        assert opus_phase_ids == {"review"}, (
-            f"Opus phase set has changed to {opus_phase_ids}. If this is "
-            f"intentional (e.g. spec_adversary bumped to opus per VISION "
-            f"pillar 8), update this test's expected set to match and "
-            f"document the change in CHANGELOG. See VISION.md §8."
+        assert opus_phase_ids == {"spec_adversary", "review"}, (
+            f"Opus phase set has changed to {opus_phase_ids}. Expected "
+            f"{{'spec_adversary', 'review'}} per VISION pillar 8. If this "
+            f"change is intentional, update this test's expected set to "
+            f"match and document the change in CHANGELOG. See VISION.md §8."
         )
 
     def test_task_type_marks_engine_phases(self, client):

@@ -39,14 +39,21 @@ import { StatusDot } from '@/components/harness/StatusDot';
 // ── Phase rail metadata (#842) ──
 // Hydrated from `GET /api/v1/phases` at component mount via `listPhases()`.
 // FALLBACK_PHASES MUST match the canonical 12-phase pipeline AND the actual
-// tier values (only `review` is opus today; spec_adversary is sonnet
-// pending VISION pillar 8 bump). Drift here makes hydration visibly
+// tier values — both `review` AND the adversary gate are at opus per
+// VISION pillar 8 (issue #887). Drift here makes hydration visibly
 // rerender — the phantom-phase problem this issue exists to fix.
 const FALLBACK_PHASES: readonly PhaseDef[] = [
   { id: 'existing_symbols_inventory', label: '0 · existing_symbols_inventory', subtitle: 'sticky inventory · v4.2', tier: 'sonnet' },
   { id: 'spec',               label: '1a · spec',                tier: 'sonnet' },
   { id: 'behavioral',         label: '1b · behavioral',          tier: 'sonnet' },
-  { id: 'spec_adversary',     label: '1c · spec_adversary',      subtitle: 'OPUS · cross-model gate', tier: 'sonnet' },
+  // ── Opus-tier phases per VISION pillar 8 (issue #887) ────────────────────────
+  // The adversary gate (1c) and review gate (4) both run at the higher tier.
+  // Tier values here mirror coding-pipeline-standard.yaml post-#887 bump.
+  // See VISION.md §8. Do not revert without updating the frozen-state sentinel.
+  { id: 'spec_adversary',     label: '1c · spec_adversary',      subtitle: 'OPUS · cross-model gate', tier: 'opus' },
+  // ── Standard-model phases resume from 1d ─────────────────────────────────────
+  // Only the two gates above use the higher tier; all other phases use the default.
+  // (Phases 1d, 2, 3, 3b, 4b, 4c, 5 are at the engine's standard model tier.)
   { id: 'postmortem_spec',    label: '1d · postmortem_spec',     subtitle: 'exhaustion analysis', tier: 'sonnet' },
   { id: 'acceptance_test',    label: '2 · acceptance_test',      tier: 'sonnet' },
   { id: 'implement',          label: '3 · implement',            tier: 'sonnet' },

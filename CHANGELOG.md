@@ -14,6 +14,9 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 
   Defense-in-depth across the producer-side variant: 7d catches "new symbol duplicates EXISTING symbol" (consumer); 7e catches "intra-symbol arms duplicate each other" at SPEC, IMPLEMENT (self-check + diff lint), and REVIEW. Ported from `orchemist-skills` PR #8 (commit `66727a0`), which closed skills#6 with empirical anchor in ToscanAI/value-investing#449 lift commit `11db4eb`.
 
+### Changed
+- **`spec_adversary` phase bumped to `model_tier: opus`** (#887) — `templates/coding-pipeline-standard.yaml` line 425 changed from `sonnet` to `opus`, completing VISION pillar 8 (max-effort adversary + review phases use opus). Closes the half-honored "cross-model adversary at the spec boundary" promise — the marquee trust-engine wedge now uses opus for BOTH the adversary gate AND the review gate. Cost impact: each spec round now invokes opus at the adversary step in addition to opus at the review step, roughly **2× the per-run opus token cost vs prior baseline** (spec → behavioral → spec_adversary loop can iterate up to 3 times before exhausted). The frozen-state sentinel `tests/test_phases_endpoint.py::test_only_review_is_opus_today` has been updated to expect `{spec_adversary, review}` (method name preserved — the rename was deliberately skipped to keep the diff minimal and the sentinel identifier stable). `templates/coding-pipeline-skip-spec.yaml` is unchanged — the skip-spec pipeline does not include a `spec_adversary` phase (it bypasses the entire spec loop), so the sync invariant from #878 (template drift lint) is satisfied vacuously.
+
 ## [0.11.0] - 2026-05-25
 
 ### Added

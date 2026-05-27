@@ -66,9 +66,9 @@ function asCard(p: PhaseDef, index: number): PhaseCard {
 }
 
 // Must match what derivePhaseDef + asCard would produce for the canonical
-// 12-phase set — only `review` is at opus today (spec_adversary sonnet
-// pending VISION pillar 8 bump). Drift here makes hydration visibly
-// rerender badges/labels.
+// 12-phase set — both `review` AND `spec_adversary` are at opus per
+// VISION pillar 8 (max-effort adversary + review phases, issue #887).
+// Drift here makes hydration visibly rerender badges/labels.
 const FALLBACK_CARDS: readonly PhaseCard[] = [
   { tag: 'PHASE 0 · v4.2', title: 'existing_symbols', subtitle: 'sticky inventory · v4.2', highlight: 'phase0' },
   { tag: 'PHASE 1a', title: 'spec', subtitle: 'general-purpose' },
