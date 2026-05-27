@@ -65,33 +65,17 @@ function asCard(p: PhaseDef, index: number): PhaseCard {
   return { tag, title, subtitle, highlight };
 }
 
-// Must match what derivePhaseDef + asCard would produce for the canonical
-// 12-phase set — only `review` is at opus today (spec_adversary sonnet
-// pending VISION pillar 8 bump). Drift here makes hydration visibly
-// rerender badges/labels.
-const FALLBACK_CARDS: readonly PhaseCard[] = [
-  { tag: 'PHASE 0 · v4.2', title: 'existing_symbols', subtitle: 'sticky inventory · v4.2', highlight: 'phase0' },
-  { tag: 'PHASE 1a', title: 'spec', subtitle: 'general-purpose' },
-  { tag: 'PHASE 1b', title: 'behavioral', subtitle: 'general-purpose' },
-  { tag: 'PHASE 1c', title: 'spec_adversary', subtitle: 'OPUS · cross-model gate' },
-  { tag: 'PHASE 1d', title: 'postmortem_spec', subtitle: 'exhaustion analysis' },
-  { tag: 'PHASE 2', title: 'acceptance_test', subtitle: 'orchemist-tester' },
-  { tag: 'PHASE 3', title: 'implement', subtitle: 'orchemist-implementer' },
-  { tag: 'PHASE 3b', title: 'acceptance_run', subtitle: 'engine · no LLM', highlight: 'engine' },
-  { tag: 'PHASE 4 · OPUS', title: 'review', subtitle: 'OPUS', highlight: 'opus' },
-  { tag: 'PHASE 4b', title: 'fix', subtitle: 'general-purpose' },
-  { tag: 'PHASE 4c', title: 'postmortem_review', subtitle: 'exhaustion analysis' },
-  { tag: 'PHASE 5', title: 'test', subtitle: 'engine · no LLM', highlight: 'engine' },
-];
-
 export default function SkillsPackModePage() {
-  // #870 — migrated to useApi. On engine-offline, `data` stays `null` and
-  // the FALLBACK_CARDS render (preserving the pre-migration "swallow error,
-  // render fallback" semantics).
+  // #888 — when engine is reachable, hydrate from `/api/v1/phases`; when
+  // unreachable, the page never renders (EngineOfflineGuard short-circuits
+  // at the layout level). If the engine is up but the phases endpoint
+  // 404s, the cards list is empty — the SectionCard's empty-state copy
+  // surfaces that as "phases endpoint unavailable" so the operator can
+  // distinguish "engine wedged" from "feature not yet implemented".
   const { data } = useApi<PhasesResponse>(() => listPhases(), []);
   const cards: readonly PhaseCard[] = data
     ? derivePhaseDefs(data.phases).map((p, i) => asCard(p, i))
-    : FALLBACK_CARDS;
+    : [];
   return (
     <HarnessShell
       title="Track A · run the pipeline locally inside Claude Code"
@@ -144,33 +128,39 @@ export default function SkillsPackModePage() {
             title="Phase skills (10) · invoked via /orchemist:&lt;phase&gt;"
             subtitle={<span>each skill delegates to a fresh subagent per <em>feedback_fresh_subagent_per_phase</em></span>}
           >
-            <div className="grid grid-cols-5 gap-3">
-              {cards.map((p) => (
-                <div
-                  key={p.title}
-                  className={[
-                    'rounded-md border p-3',
-                    p.highlight === 'phase0' ? 'border-harness-teal' :
-                    p.highlight === 'opus' ? 'border-harness-purple' :
-                    'border-harness-border',
-                    p.highlight === 'phase0' ? 'bg-[#1B2A1F]' :
-                    p.highlight === 'opus' ? 'bg-[#1F1F2E]' :
-                    p.highlight === 'engine' ? 'bg-[#161A21]' :
-                    'bg-harness-surface2',
-                  ].join(' ')}
-                  data-testid={`phase-${p.title}`}
-                >
-                  <div className={[
-                    'text-[10px] tracking-widest font-semibold',
-                    p.highlight === 'phase0' ? 'text-harness-teal' :
-                    p.highlight === 'opus' ? 'text-harness-purple' :
-                    'text-harness-muted',
-                  ].join(' ')}>{p.tag}</div>
-                  <div className="mt-1 text-[12px] font-bold text-harness-text">{p.title}</div>
-                  <div className="mt-0.5 text-[10px] text-harness-muted">{p.subtitle}</div>
-                </div>
-              ))}
-            </div>
+            {cards.length === 0 ? (
+              <div className="text-[12px] text-harness-muted py-4">
+                phases endpoint unavailable · /api/v1/phases returned no data
+              </div>
+            ) : (
+              <div className="grid grid-cols-5 gap-3">
+                {cards.map((p) => (
+                  <div
+                    key={p.title}
+                    className={[
+                      'rounded-md border p-3',
+                      p.highlight === 'phase0' ? 'border-harness-teal' :
+                      p.highlight === 'opus' ? 'border-harness-purple' :
+                      'border-harness-border',
+                      p.highlight === 'phase0' ? 'bg-[#1B2A1F]' :
+                      p.highlight === 'opus' ? 'bg-[#1F1F2E]' :
+                      p.highlight === 'engine' ? 'bg-[#161A21]' :
+                      'bg-harness-surface2',
+                    ].join(' ')}
+                    data-testid={`phase-${p.title}`}
+                  >
+                    <div className={[
+                      'text-[10px] tracking-widest font-semibold',
+                      p.highlight === 'phase0' ? 'text-harness-teal' :
+                      p.highlight === 'opus' ? 'text-harness-purple' :
+                      'text-harness-muted',
+                    ].join(' ')}>{p.tag}</div>
+                    <div className="mt-1 text-[12px] font-bold text-harness-text">{p.title}</div>
+                    <div className="mt-0.5 text-[10px] text-harness-muted">{p.subtitle}</div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="mt-4 rounded-md border border-dashed border-harness-purple p-3">
               <div className="h-section-label text-harness-purple">/orchemist:run</div>

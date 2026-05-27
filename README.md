@@ -102,7 +102,9 @@ orch run templates/my-pipeline.yaml --mode openrouter --input '{"brief": "AI saf
 
 ## The Harness
 
-`orch serve` opens the **Orchemist Harness** — a six-screen operator surface designed against the canonical mockups in [`docs/harness-redesign-2026-05-24/screens/`](docs/harness-redesign-2026-05-24/screens). Every screen falls back to demo data when the engine is unreachable so the UI never blanks out; live screenshots against a real `orch serve` are checked in under [`docs/harness-redesign-2026-05-24/screenshots/live/`](docs/harness-redesign-2026-05-24/screenshots/live).
+`orch serve` opens the **Orchemist Harness** — a six-screen operator surface designed against the canonical mockups in [`docs/harness-redesign-2026-05-24/screens/`](docs/harness-redesign-2026-05-24/screens). Live screenshots against a real `orch serve` are checked in under [`docs/harness-redesign-2026-05-24/screenshots/live/`](docs/harness-redesign-2026-05-24/screenshots/live).
+
+> **Engine required (v1, #888).** The harness REQUIRES a reachable engine — `orch serve` must be running before pages will render content. The static build still ships, but without an engine the harness short-circuits to an "Engine unreachable at &lt;url&gt;" error UI (with a retry button and a docs link) on every screen. There is **no demo-data fallback** — that v0 ergonomic was misleading because a misconfigured port looked healthy. See issue [#888](https://github.com/ToscanAI/orchemist/issues/888) for the rationale and breaking-change context.
 
 ### 1. Fleet Dashboard
 
