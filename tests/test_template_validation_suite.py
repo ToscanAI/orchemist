@@ -988,3 +988,199 @@ class TestGlobPatternEdgeCases:
             f"Expected templates not found in ALL_TEMPLATES: {missing}\n"
             f"Discovered: {discovered_stems}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #859 — Skip-spec ↔ Standard pipeline parity for 7d/7e enforcement
+#
+# coding-pipeline-skip-spec.yaml had drifted from coding-pipeline-standard.yaml
+# on the duplication-prevention controls (sub-checks 7d and 7e producer-side).
+# This test class is a permanent drift guard: any future PR that removes one of
+# the required tokens from either template will fail CI.
+#
+# REQUIRED_TOKENS binds the spec (see spec.md §B.4 step 7 / REQUIRED_TOKENS table)
+# to the test. Each row corresponds to a prompt fragment ported from standard
+# to skip-spec.
+# ---------------------------------------------------------------------------
+
+STANDARD_YAML_PATH = REPO_ROOT.joinpath("templates").joinpath("coding-pipeline-standard.yaml")
+SKIP_SPEC_YAML_PATH = REPO_ROOT.joinpath("templates").joinpath("coding-pipeline-skip-spec.yaml")
+
+# (token, min_occurrences_in_standard, min_occurrences_in_skip_spec)
+REQUIRED_TOKENS: List[tuple] = [
+    # IMPLEMENT-phase HARD RULE block headers (3)
+    ("### HARD RULE — Re-implementation of existing symbol (sub-check 7d)", 1, 1),
+    ("### HARD RULE — Intra-symbol self-check before file output (sub-check 7e-implement)", 1, 1),
+    ("### HARD RULE — §7.2 byte-identical added-block diff lint (sub-check 7e-seal)", 1, 1),
+    # REVIEW-phase sub-blocks (2)
+    ("### 7d — Re-implementation of existing symbol (sticky enforcement via Phase 0 inventory)", 1, 1),
+    ("Sub-check 7d-producer — Intra-symbol return-arm comparison", 1, 1),
+    # FIX-phase inventory read (1)
+    ("Read the existing-symbols inventory at:", 1, 1),
+    # BLOCKED labels (3)
+    ("7e-seal-diff-lint", 2, 1),
+    ("7e-intra-symbol-duplication", 1, 1),
+    ("BLOCKED: 7d-duplication", 2, 1),
+    # Inventory artifact reference — standard mentions it everywhere (Phase 0
+    # + downstream); skip-spec only references it from downstream phases (no
+    # Phase 0). Lower bound is therefore asymmetric.
+    ("existing_symbols.md", 5, 3),
+]
+
+
+class TestSkipSpecParityWithStandard:
+    """Issue #859 — Sub-check 7d/7e enforcement must be present in BOTH
+    coding-pipeline-standard.yaml AND coding-pipeline-skip-spec.yaml.
+
+    Acceptance criterion: every token in REQUIRED_TOKENS exists at least N times
+    in standard (drift guard for standard) AND at least M times in skip-spec
+    (parity assertion).
+    """
+
+    def test_standard_yaml_exists(self):
+        """Pre-condition: standard template file is on disk."""
+        assert STANDARD_YAML_PATH.exists(), (
+            f"coding-pipeline-standard.yaml missing at {STANDARD_YAML_PATH}"
+        )
+
+    def test_skip_spec_yaml_exists(self):
+        """Pre-condition: skip-spec template file is on disk."""
+        assert SKIP_SPEC_YAML_PATH.exists(), (
+            f"coding-pipeline-skip-spec.yaml missing at {SKIP_SPEC_YAML_PATH}"
+        )
+
+    def test_both_yamls_parse_safe(self):
+        """Indentation rule: both templates must be valid YAML.
+
+        The ported HARD RULE blocks live INSIDE `prompt_template: |` literal
+        scalars. If indentation drifts, PyYAML raises. This test is the
+        structural gate for spec.md Step 1's indentation rule.
+        """
+        standard_doc = yaml.safe_load(STANDARD_YAML_PATH.read_text())
+        skip_spec_doc = yaml.safe_load(SKIP_SPEC_YAML_PATH.read_text())
+        assert standard_doc is not None
+        assert skip_spec_doc is not None
+        assert standard_doc.get("id") == "coding-pipeline-standard"
+        assert skip_spec_doc.get("id") == "coding-pipeline-skip-spec"
+
+    @pytest.mark.parametrize(
+        "token,min_std,_min_skip",
+        REQUIRED_TOKENS,
+        ids=lambda v: v if isinstance(v, str) else str(v),
+    )
+    def test_standard_contains_required_token(self, token, min_std, _min_skip):
+        """Drift guard for standard: every REQUIRED_TOKENS entry must exist
+        at least `min_std` times in coding-pipeline-standard.yaml.
+
+        If a future PR removes one of these tokens from standard, this test
+        fails — alerting reviewers that the parity gap is being reopened.
+        """
+        text = STANDARD_YAML_PATH.read_text()
+        count = text.count(token)
+        assert count >= min_std, (
+            f"coding-pipeline-standard.yaml: token {token!r} appears {count} "
+            f"times; expected >= {min_std}. Removing this token reopens the "
+            f"parity gap with skip-spec (issue #859)."
+        )
+
+    @pytest.mark.parametrize(
+        "token,_min_std,min_skip",
+        REQUIRED_TOKENS,
+        ids=lambda v: v if isinstance(v, str) else str(v),
+    )
+    def test_skip_spec_contains_required_token(self, token, _min_std, min_skip):
+        """Parity assertion: every REQUIRED_TOKENS entry must exist at least
+        `min_skip` times in coding-pipeline-skip-spec.yaml.
+
+        This is the core issue #859 acceptance criterion.
+        """
+        text = SKIP_SPEC_YAML_PATH.read_text()
+        count = text.count(token)
+        assert count >= min_skip, (
+            f"coding-pipeline-skip-spec.yaml: token {token!r} appears {count} "
+            f"times; expected >= {min_skip} for parity with "
+            f"coding-pipeline-standard.yaml (issue #859)."
+        )
+
+    def test_skip_spec_version_bumped_to_2_1_0(self):
+        """Version bump signal: skip-spec must declare version 2.1.0 to
+        signal parity with standard 2.2.0 on the 7d/7e enforcement axis.
+        """
+        text = SKIP_SPEC_YAML_PATH.read_text()
+        assert 'version: "2.1.0"' in text, (
+            'coding-pipeline-skip-spec.yaml must declare version: "2.1.0" '
+            "(issue #859 — additive minor bump from 1.1.0)."
+        )
+
+    def test_skip_spec_preserves_anti_tampering_blocks(self):
+        """Regression guard: skip-spec's pre-existing ANTI-TAMPERING blocks
+        (in IMPLEMENT and FIX) must NOT be deleted by the 7d/7e port.
+
+        These blocks are skip-spec-specific (standard does not have them);
+        deleting them would be a regression. The PR body flags back-porting
+        them to standard as a follow-up — but they MUST remain in skip-spec.
+        """
+        text = SKIP_SPEC_YAML_PATH.read_text()
+        anti_tampering_occurrences = text.count("## ANTI-TAMPERING — ENGINE-ENFORCED")
+        assert anti_tampering_occurrences >= 2, (
+            f"coding-pipeline-skip-spec.yaml: expected >= 2 ANTI-TAMPERING "
+            f"blocks (IMPLEMENT + FIX), found {anti_tampering_occurrences}. "
+            f"Do not delete these — they are skip-spec-specific."
+        )
+
+    def test_skip_spec_implement_has_three_hard_rules(self):
+        """Structural assertion: the IMPLEMENT phase prompt of skip-spec
+        must contain EXACTLY 3 `### HARD RULE` headers (the three ported
+        from standard: 7d, 7e-implement, 7e-seal).
+
+        Ceiling bound from spec.md §B.6 outcome #1 — guards against
+        duplicate insertion.
+        """
+        text = SKIP_SPEC_YAML_PATH.read_text()
+        hard_rule_count = text.count("### HARD RULE")
+        assert hard_rule_count == 3, (
+            f"coding-pipeline-skip-spec.yaml: expected exactly 3 '### HARD RULE' "
+            f"headers, found {hard_rule_count}. Each HARD RULE must appear "
+            f"once (no duplicates)."
+        )
+
+    def test_skip_spec_implement_task_list_has_step_10_push(self):
+        """Renumbering assertion: after inserting the §7.2 lint as new step 8,
+        the IMPLEMENT task list MUST contain a step '10. Push your branch'
+        (renumbered from pre-edit step 9).
+
+        Ties spec.md §B.4 Step 2's mapping table to a verifiable assertion.
+        """
+        text = SKIP_SPEC_YAML_PATH.read_text()
+        # Match the renumbered push step — content byte-equivalent to pre-edit
+        # step 9 modulo the leading number.
+        assert "10. Push your branch to remote" in text, (
+            "coding-pipeline-skip-spec.yaml: expected '10. Push your branch "
+            "to remote' (renumbered from step 9 when the §7.2 lint became "
+            "the new step 8)."
+        )
+
+    def test_skip_spec_implement_task_list_has_step_9_test_suite(self):
+        """Renumbering assertion: step 9 must be the test-suite run
+        (renumbered from pre-edit step 8)."""
+        text = SKIP_SPEC_YAML_PATH.read_text()
+        assert "9. Run the full test suite" in text, (
+            "coding-pipeline-skip-spec.yaml: expected '9. Run the full test "
+            "suite' (renumbered from step 8 when the §7.2 lint became step 8)."
+        )
+
+    def test_skip_spec_implement_task_list_has_step_8_lint(self):
+        """Renumbering assertion: the new step 8 must be the §7.2 diff lint.
+
+        We use a permissive substring (§7.2 + lint reference) so the exact
+        wording can mirror standard's verbatim text without locking us in
+        to an exact match.
+        """
+        text = SKIP_SPEC_YAML_PATH.read_text()
+        # The step 8 line in standard.yaml begins:
+        # `      8. **§7.2 diff lint** — Run the byte-identical added-block ...`
+        assert "8. **§7.2 diff lint**" in text, (
+            "coding-pipeline-skip-spec.yaml: expected step 8 '**§7.2 diff lint** "
+            "— Run the byte-identical added-block ...' (new step inserted "
+            "between commit and test-suite per spec.md §B.4 Step 2)."
+        )
