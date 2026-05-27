@@ -27,6 +27,7 @@ local override (no behaviour change). Migration is incremental.
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,18 @@ import pytest
 # Promoted to a public name (#876 D-4) so wiring-guard tests can import
 # it from a single source.
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Ensure THIS repo's `src/` directory wins over any installed editable
+# `.pth` files that point at other worktrees. Without this, when multiple
+# worktrees of orchemist coexist, `import orchestration_engine` may resolve
+# to a sibling worktree's source instead of the one being tested. Inserting
+# our src at index 0 forces deterministic local-source resolution.
+_LOCAL_SRC = str(REPO_ROOT / "src")
+if _LOCAL_SRC not in sys.path:
+    sys.path.insert(0, _LOCAL_SRC)
+elif sys.path[0] != _LOCAL_SRC:
+    sys.path.remove(_LOCAL_SRC)
+    sys.path.insert(0, _LOCAL_SRC)
 
 
 def read_src(rel_path: str) -> str:

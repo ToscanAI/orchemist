@@ -174,7 +174,7 @@ class TestExecutorFallbackChain:
 
     def _make_failing_run_session(self, fail_model: str, success_model: str):
         """Return a _run_session mock that fails on *fail_model* and succeeds on *success_model*."""
-        def _run(prompt, model, thinking, timeout=None):
+        def _run(prompt, model, thinking, timeout=None, **kwargs):
             if model == fail_model:
                 raise RuntimeError(f"Model {model} unavailable")
             if model == success_model:
@@ -189,7 +189,7 @@ class TestExecutorFallbackChain:
 
         call_counts = {"sonnet": 0, "opus": 0}
 
-        def _mock_run(prompt, model, thinking, timeout=None):
+        def _mock_run(prompt, model, thinking, timeout=None, **kwargs):
             if model == sonnet_model:
                 call_counts["sonnet"] += 1
                 raise RuntimeError("Sonnet unavailable")
@@ -211,7 +211,7 @@ class TestExecutorFallbackChain:
 
     def test_returns_failed_when_all_tiers_exhausted(self, executor):
         """When all tiers in the chain fail all retries, state is FAILED."""
-        def _always_fail(prompt, model, thinking, timeout=None):
+        def _always_fail(prompt, model, thinking, timeout=None, **kwargs):
             raise RuntimeError("All models down")
 
         with patch.object(executor, "_run_session", side_effect=_always_fail):
@@ -224,7 +224,7 @@ class TestExecutorFallbackChain:
         """A single-tier chain fails after retries without escalating."""
         call_models = []
 
-        def _fail_always(prompt, model, thinking, timeout=None):
+        def _fail_always(prompt, model, thinking, timeout=None, **kwargs):
             call_models.append(model)
             raise RuntimeError("down")
 
@@ -245,7 +245,7 @@ class TestExecutorFallbackChain:
 
         call_models = []
 
-        def _mock_run(prompt, model, thinking, timeout=None):
+        def _mock_run(prompt, model, thinking, timeout=None, **kwargs):
             call_models.append(model)
             if model == sonnet_model:
                 raise RuntimeError("Sonnet down")
@@ -264,7 +264,7 @@ class TestExecutorFallbackChain:
         """When first tier succeeds, second tier is never called."""
         call_models = []
 
-        def _mock_run(prompt, model, thinking, timeout=None):
+        def _mock_run(prompt, model, thinking, timeout=None, **kwargs):
             call_models.append(model)
             return "success", 10
 
@@ -282,7 +282,7 @@ class TestExecutorFallbackChain:
         sonnet_model = MODEL_MAP["sonnet"]
         opus_model = MODEL_MAP["opus"]
 
-        def _mock_run(prompt, model, thinking, timeout=None):
+        def _mock_run(prompt, model, thinking, timeout=None, **kwargs):
             if model == sonnet_model:
                 raise RuntimeError("Sonnet down")
             return "opus output", 20
@@ -298,7 +298,7 @@ class TestExecutorFallbackChain:
         """With three tiers, executor tries all before returning FAILED."""
         call_models = []
 
-        def _mock_run(prompt, model, thinking, timeout=None):
+        def _mock_run(prompt, model, thinking, timeout=None, **kwargs):
             call_models.append(model)
             raise RuntimeError("down")
 
@@ -332,7 +332,7 @@ class TestExecutorFallbackChain:
 
         call_models = []
 
-        def _mock_run(prompt, model, thinking, timeout=None):
+        def _mock_run(prompt, model, thinking, timeout=None, **kwargs):
             call_models.append(model)
             if model == sonnet_model:
                 raise RuntimeError("Sonnet down")

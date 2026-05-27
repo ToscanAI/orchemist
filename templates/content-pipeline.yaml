@@ -54,6 +54,10 @@ phases:
     name: "Research & Synthesis"
     description: "Synthesize source material into a structured research brief"
     model_tier: sonnet
+    # Per-phase timeout (#735 RC-1): web-search-heavy phase routinely runs
+    # 25-40 min. Override the executor default (1200s) with 2400s; capped at
+    # 3600s per adversary F8 upper bound.
+    timeout_seconds: 2400
     prompt_template: |
       You are a research analyst preparing a structured brief for an article writer.
 
@@ -89,6 +93,9 @@ phases:
     name: "Draft"
     description: "Write full article with personality and humor"
     model_tier: opus
+    # Per-phase timeout (#735 RC-1): opus + word-count work routinely runs
+    # 30-45 min. Override the executor default with 2400s.
+    timeout_seconds: 2400
     depends_on: [research]
     prompt_template: |
       Write a {config[word_count]}-word article for {config[publication]}.
@@ -136,6 +143,8 @@ phases:
     name: "Fact Check"
     description: "Verify all claims against sources"
     model_tier: sonnet
+    # Per-phase timeout (#735 RC-1): web-search verification runs 25-35 min.
+    timeout_seconds: 2400
     depends_on: [draft, research]
     prompt_template: |
       You are a professional fact-checker. Verify every claim in this article.
@@ -177,6 +186,8 @@ phases:
     name: "Red Team"
     description: "Adversarial review with humor calibration"
     model_tier: opus
+    # Per-phase timeout (#735 RC-1): opus adversarial review on long articles.
+    timeout_seconds: 2400
     depends_on: [draft]
     prompt_template: |
       You are an adversarial reviewer. Critically analyze this article.
@@ -219,6 +230,8 @@ phases:
     name: "Apply All Fixes"
     description: "Single-pass fix preserving humor and adding sources"
     model_tier: sonnet
+    # Per-phase timeout (#735 RC-1): sonnet, no web search; 1800s suffices.
+    timeout_seconds: 1800
     depends_on: [draft, fact_check, red_team]
     prompt_template: |
       Apply all fixes from fact-check and red team reviews in a SINGLE PASS.
@@ -256,6 +269,8 @@ phases:
     name: "Voice & Personality Check"
     description: "Ensure humor and personality survived editing"
     model_tier: sonnet
+    # Per-phase timeout (#735 RC-1): sonnet, no web search; 1800s suffices.
+    timeout_seconds: 1800
     depends_on: [draft, apply_fixes]
     prompt_template: |
       Compare the original draft with the fixed version. Your ONLY job: did the author's voice survive?
@@ -291,6 +306,8 @@ phases:
     name: "Final Polish"
     description: "Restore personality, tighten prose, ensure sources"
     model_tier: opus
+    # Per-phase timeout (#735 RC-1): opus final pass.
+    timeout_seconds: 2400
     depends_on: [apply_fixes, voice_check]
     prompt_template: |
       Final pass. Make this article the best version of itself.

@@ -26,7 +26,8 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from .errors import (
@@ -171,7 +172,7 @@ class OpenClawExecutor(TaskExecutor):
         self,
         gateway_url: Optional[str] = None,
         gateway_token: Optional[str] = None,
-        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        timeout_seconds: Optional[int] = None,
         dry_run: bool = False,
     ) -> None:
         self.gateway_url = (
@@ -187,7 +188,17 @@ class OpenClawExecutor(TaskExecutor):
             or self._read_token_from_config()
             or ""
         )
-        self.timeout_seconds = timeout_seconds if timeout_seconds else DEFAULT_TIMEOUT_SECONDS
+        # Timeout resolution chain (#753): explicit positive arg → openclaw.json
+        # subagents.runTimeoutSeconds → DEFAULT_TIMEOUT_SECONDS (1200s).
+        # An explicit zero/None falls through to the config value so callers that
+        # pass `timeout_seconds=None` (e.g. older test fixtures) get the configured
+        # subagent timeout rather than silently falling through to the hard-coded
+        # default.
+        if timeout_seconds:
+            self.timeout_seconds = timeout_seconds
+        else:
+            config_timeout = self._read_subagent_timeout_from_config()
+            self.timeout_seconds = config_timeout if config_timeout else DEFAULT_TIMEOUT_SECONDS
         self.dry_run = dry_run
 
         # ── Graceful shutdown support (Issue #488) ───────────────────────────
@@ -216,6 +227,120 @@ class OpenClawExecutor(TaskExecutor):
         except (json.JSONDecodeError, OSError, KeyError) as exc:
             logger.debug("Could not read token from openclaw.json: %s", exc)
         return None
+
+    @staticmethod
+    def _read_subagent_timeout_from_config() -> Optional[int]:
+        """Try to read subagent run timeout from ~/.openclaw/openclaw.json (#753).
+
+        Returns the value of ``subagents.runTimeoutSeconds`` as a positive int,
+        or ``None`` when the key is absent, malformed, non-numeric, or
+        non-positive. Mirrors the byte-shape of :meth:`_read_token_from_config`:
+        same path, same try/except, same DEBUG-level read-failure log.
+        """
+        try:
+            config_path = os.path.expanduser("~/.openclaw/openclaw.json")
+            if os.path.exists(config_path):
+                with open(config_path) as f:
+                    config = json.load(f)
+                raw = config.get("subagents", {}).get("runTimeoutSeconds")
+                if raw is None:
+                    return None
+                try:
+                    value = int(raw)
+                except (TypeError, ValueError):
+                    logger.debug(
+                        "subagents.runTimeoutSeconds in openclaw.json is not an int: %r",
+                        raw,
+                    )
+                    return None
+                if value <= 0:
+                    logger.debug(
+                        "subagents.runTimeoutSeconds in openclaw.json is non-positive (%d)",
+                        value,
+                    )
+                    return None
+                logger.debug(
+                    "Auto-discovered subagent run timeout from %s: %ds",
+                    config_path, value,
+                )
+                return value
+        except (json.JSONDecodeError, OSError, KeyError) as exc:
+            logger.debug("Could not read subagents.runTimeoutSeconds from openclaw.json: %s", exc)
+        return None
+
+    def _check_git_committed_output(
+        self,
+        session_key: str,
+        output_dir: Optional[str],
+        output_artifact: Optional[str],
+    ) -> Optional[Tuple[str, int]]:
+        """Git-output success-detection fallback for gateway-GC events (#735 RC-2).
+
+        When the gateway garbage-collects a session whose agent has already
+        committed its expected output file to git, the executor can recover by
+        reading the committed file directly rather than raising RuntimeError.
+
+        Consulted ONLY when BOTH ``output_dir`` and ``output_artifact`` are
+        non-empty (per behavioural contract A3.2 + adversary F1 — the
+        explicit-artefact contract avoids false-positive recovery on unrelated
+        commits).
+
+        Returns ``(output_text, tokens_consumed=0)`` on success or ``None`` to
+        signal the caller it must raise the original RuntimeError. Bounded by
+        the ``GC_OUTPUT_GRACE_SECONDS`` env var (default 60s).
+        """
+        if not output_dir or not output_artifact:
+            return None
+
+        try:
+            output_dir_path = Path(output_dir)
+            if not (output_dir_path / ".git").exists():
+                return None
+            artifact_path = output_dir_path / output_artifact
+            if not artifact_path.exists():
+                return None
+
+            grace_seconds = int(os.environ.get("GC_OUTPUT_GRACE_SECONDS", "60"))
+            result = subprocess.run(
+                [
+                    "git", "log",
+                    f"--since={grace_seconds} seconds ago",
+                    "--name-only",
+                    "--pretty=format:",
+                    "-n", "1",
+                ],
+                cwd=str(output_dir_path),
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                logger.debug(
+                    "git log probe failed for session %s in %s: rc=%d, stderr=%s",
+                    session_key, output_dir, result.returncode, result.stderr,
+                )
+                return None
+            if not result.stdout.strip():
+                logger.debug(
+                    "No recent commit (within %ds) in %s for session %s; "
+                    "GC fallback declines.",
+                    grace_seconds, output_dir, session_key,
+                )
+                return None
+
+            output_text = artifact_path.read_text(encoding="utf-8", errors="replace")
+            logger.warning(
+                "Session %s garbage-collected by gateway but %s/%s was committed "
+                "within the last %ds — recovering via git-output fallback (#735 RC-2)",
+                session_key, output_dir, output_artifact, grace_seconds,
+            )
+            return (output_text, 0)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            logger.debug(
+                "git-output fallback failed for session %s: %s",
+                session_key, exc,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Graceful shutdown API (Issue #488)
@@ -362,52 +487,18 @@ class OpenClawExecutor(TaskExecutor):
         )
 
         retry_cfg = ExecutorRetryConfig()
-
-        # ── 4a. Circuit-breaker pre-check ────────────────────────────────────
-        # Ensure an entry exists in the shared registry for this model key.
-        with _CIRCUIT_BREAKERS_LOCK:
-            if model not in _CIRCUIT_BREAKERS:
-                _CIRCUIT_BREAKERS[model] = CircuitBreakerState(name=model)
-            cb_state = _CIRCUIT_BREAKERS[model]
-
         # circuit_breaker_reset_seconds → minutes (CircuitBreakerState uses minutes)
         cb_reset_minutes = retry_cfg.circuit_breaker_reset_seconds // 60
 
-        if cb_state.is_open(retry_cfg.circuit_breaker_threshold, cb_reset_minutes):
-            elapsed = (datetime.now() - start_time).total_seconds()
-            logger.warning(
-                "Circuit breaker open for model %s — skipping task %s without attempt",
-                model, task_id,
-            )
-            return TaskResult(
-                task_id=task_id,
-                task_type=task.type,
-                state=TaskState.FAILED,
-                confidence=0.0,
-                result={},
-                errors=[
-                    TaskError(
-                        code="circuit_open",
-                        message=(
-                            f"Circuit breaker is open for model {model}: "
-                            f"too many consecutive failures. "
-                            f"Will retry automatically after {retry_cfg.circuit_breaker_reset_seconds}s."
-                        ),
-                        severity="error",
-                    )
-                ],
-                started_at=start_time,
-                completed_at=datetime.now(),
-                model_used=model,
-                execution_time_seconds=elapsed,
-            )
-
-        # ── 4a'. Instantiate fallback chain (issue #347) ─────────────────────
-        # Build an ordered list of model tiers to try.  When the template
-        # specifies ``model_chain`` the explicit list is used; otherwise the
-        # ``ModelFallbackChain`` constructor falls back to DEFAULT_MODEL_CHAIN
-        # (["sonnet", "opus"]).  The chain's first entry drives the model used
-        # in the first iteration of the outer loop below.
+        # ── 4a. Instantiate fallback chain BEFORE the CB gate (issue #480) ───
+        # Per issue #480: the legacy early-return that fired when the requested
+        # tier's CB was open (and returned `circuit_open` without consulting
+        # alternative tiers) has been REMOVED. The outer-loop's CB pre-check
+        # below now handles BOTH first-task entry and per-iteration escalation,
+        # advancing the chain when the current tier's CB is open. Only when
+        # EVERY tier in the chain has an open CB does the executor return a
+        # FAILED result, with the new error code `all_tiers_unavailable` (per
+        # adversary F4 + behavioural A1).
         _chain_tiers = task.payload.get("model_chain") or []
         if not _chain_tiers:
             # No explicit chain — seed from the current tier_key so that a
@@ -420,6 +511,9 @@ class OpenClawExecutor(TaskExecutor):
         chain = ModelFallbackChain(_chain_tiers)
         # Sync the model variable with the chain's starting tier.
         model = MODEL_MAP.get(chain.current(), MODEL_MAP["sonnet"])
+        # Snapshot of tiers skipped due to open CBs — used in the
+        # all_tiers_unavailable error message when every tier is unavailable.
+        _cb_skipped_tiers: List[str] = []
 
         # ── 4b. Outer fallback loop — iterates over model chain ──────────────
         # Outer loop: each iteration exhausts all retry attempts on the current
@@ -444,12 +538,15 @@ class OpenClawExecutor(TaskExecutor):
                     _CIRCUIT_BREAKERS[model] = CircuitBreakerState(name=model)
 
             # ── CB pre-check per outer-loop iteration ─────────────────────────
-            # When we advance to a new tier (e.g. after a `continue` from the
-            # CB-blocked escalation below), we need to verify the new tier's CB
-            # is not also open before running its inner retry loop.
+            # Per issue #480: this gate now ALSO handles first-task entry —
+            # the legacy early-return at the top of execute_task has been
+            # removed, so a CB-open tier here is advanced via chain.advance()
+            # rather than triggering an immediate failure.
             with _CIRCUIT_BREAKERS_LOCK:
                 cb_cur = _CIRCUIT_BREAKERS[model]
             if cb_cur.is_open(retry_cfg.circuit_breaker_threshold, cb_reset_minutes):
+                # Snapshot the skipped tier for the all_tiers_unavailable error.
+                _cb_skipped_tiers.append(f"{chain.current()}({model})")
                 if chain.has_next():
                     prev = chain.current()
                     nxt = chain.advance()
@@ -461,7 +558,16 @@ class OpenClawExecutor(TaskExecutor):
                     )
                     continue
                 else:
-                    # All tiers circuit-broken — exit with failure.
+                    # All tiers circuit-broken — exit with failure.  Set
+                    # last_error_* so the post-loop FAILED result carries the
+                    # all_tiers_unavailable code (issue #480 / adversary F4).
+                    last_error_code = "all_tiers_unavailable"
+                    last_error_msg = (
+                        f"All model tiers have open circuit breakers; "
+                        f"none was eligible for task {task_id}. "
+                        f"Probed tiers: {', '.join(_cb_skipped_tiers)}. "
+                        f"Cooldown: {retry_cfg.circuit_breaker_reset_seconds}s."
+                    )
                     break
 
             # ── 4b-inner. Per-model retry loop (unchanged from #346) ─────────
@@ -485,8 +591,15 @@ class OpenClawExecutor(TaskExecutor):
                     time.sleep(wait_seconds)
 
                 try:
+                    # Thread #735 RC-2 kwargs through from the task payload.
+                    # When both are provided AND a gateway-GC event happens
+                    # after the agent committed its output, _run_session
+                    # recovers via _check_git_committed_output rather than
+                    # raising RuntimeError.
                     output_text, tokens_consumed = self._run_session(
-                        prompt, model, thinking, timeout=effective_timeout
+                        prompt, model, thinking, timeout=effective_timeout,
+                        output_dir=task.payload.get("output_dir"),
+                        output_artifact=task.payload.get("output_artifact"),
                     )
                     # ── Success path ─────────────────────────────────────────
                     with _CIRCUIT_BREAKERS_LOCK:
@@ -1139,20 +1252,31 @@ class OpenClawExecutor(TaskExecutor):
         model: str,
         thinking: Optional[str],
         timeout: Optional[int] = None,
-    ) -> str:
+        output_dir: Optional[str] = None,
+        output_artifact: Optional[str] = None,
+    ) -> Tuple[str, int]:
         """Spawn a sub-agent session and poll until completion.
 
         Uses the gateway's ``POST /tools/invoke`` endpoint to call
         ``sessions_spawn`` and ``sessions_history``.
 
         Args:
-            prompt:   The prompt text to execute.
-            model:    Full model string (e.g. "anthropic/claude-sonnet-4-6").
-            thinking: Thinking level string or None.
-            timeout:  Timeout in seconds (overrides self.timeout_seconds).
+            prompt:          The prompt text to execute.
+            model:           Full model string (e.g. "anthropic/claude-sonnet-4-6").
+            thinking:        Thinking level string or None.
+            timeout:         Timeout in seconds (overrides self.timeout_seconds).
+            output_dir:      (#735 RC-2) Optional filesystem path to the agent's
+                             working directory. When provided alongside
+                             ``output_artifact``, enables git-output recovery
+                             on gateway-GC events.
+            output_artifact: (#735 RC-2) Optional expected output file name
+                             (relative to ``output_dir``). When both kwargs
+                             are present and a recent commit of this file
+                             exists in the output_dir's git history, a GC
+                             event is treated as success rather than failure.
 
         Returns:
-            The output text from the completed session.
+            ``(output_text, tokens_consumed)`` from the completed session.
 
         Raises:
             TimeoutError: If the session does not complete within timeout.
@@ -1338,6 +1462,17 @@ class OpenClawExecutor(TaskExecutor):
             # list has been garbage-collected by the gateway.
             if not messages:
                 if had_messages:
+                    # #735 RC-2: when output_dir + output_artifact are explicit
+                    # AND the agent committed its output before the GC fired,
+                    # we can recover by reading the committed file directly.
+                    # The success is recorded against the SPAWN-MODEL by the
+                    # caller (see execute()'s post-_run_session record_success
+                    # path) — git-commit metadata is opaque to the executor.
+                    recovered = self._check_git_committed_output(
+                        session_key, output_dir, output_artifact
+                    )
+                    if recovered is not None:
+                        return recovered
                     raise RuntimeError(
                         f"Session {session_key} was garbage-collected: "
                         f"history previously contained messages but is now empty. "
