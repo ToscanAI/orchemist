@@ -115,11 +115,12 @@ Once the release PR merges to `main`:
 | Check | Enforced by | Notes |
 |---|---|---|
 | Trusted Publisher identity (repo + workflow) | PyPI | Cannot be bypassed — PyPI rejects publishes from any other source |
-| `twine check dist/*` passes before publish | `publish.yaml:38` | Fails the workflow on malformed metadata |
+| `twine check dist/*` passes before publish | `publish.yaml` | Fails the workflow on malformed metadata |
 | Test suite green on `main` | `ci.yml` push trigger | Required to consider `main` ready to tag |
-| 2-reviewer rule on release PRs | This SOP | Convention; not currently CI-enforced — see issue #837 follow-up |
-| Tag signing | This SOP | Convention; not currently CI-enforced — see issue #837 follow-up |
-| Tag created from `main` | This SOP | Convention; the workflow is branch-agnostic by design (allows hotfix-branch releases when needed) |
+| 2-reviewer rule on release PRs (incl. `pyproject.toml` bumps) | CI | `.github/CODEOWNERS` requires maintainer approval; combined with branch protection's "1 review required" this yields 2 reviewers (closes #890) |
+| Tag signing | CI (WARN; FAIL gate 2026-06-03) | `publish.yaml` runs `git tag -v $GITHUB_REF_NAME`; currently warns only. A follow-up PR (#890 follow-up) imports the maintainer pubkey and flips the step to FAIL closed on 2026-06-03 |
+| Tag created from `main` | Convention | Workflow is branch-agnostic by design (allows hotfix-branch releases when needed) |
+| Signed commits on `main` | Convention | Branch-protection ruleset 16835594 admin update pending — out of scope for the #890 code PR |
 
 The "Convention" rows are gaps a future CI hardening PR should close —
 see the open follow-ups below.
@@ -128,22 +129,33 @@ see the open follow-ups below.
 
 ## 7. Follow-up hardening (open work)
 
-Tracked but not yet implemented:
+Closed in #890:
 
-- **GH Actions check that flags PRs touching `pyproject.toml` `version`
-  without a `release:` label or 2 reviews.** Today the 2-reviewer
-  requirement is honour-system.
-- **Tag-signature enforcement in `publish.yaml`.** Today the workflow
-  publishes any pushed `v*.*.*` tag regardless of signature. A future
-  step should run `git tag -v $GITHUB_REF_NAME` and fail closed.
+- ~~**GH Actions check that flags PRs touching `pyproject.toml`
+  `version` without a `release:` label or 2 reviews.**~~ Replaced
+  with `.github/CODEOWNERS` requiring maintainer approval on
+  `pyproject.toml` (the simpler standard mechanism). Combined with
+  branch protection this is the 2-reviewer requirement.
+- ~~**Tag-signature enforcement in `publish.yaml`.**~~ Added as a
+  `git tag -v` step in WARN mode. A separate follow-up PR will
+  import the maintainer pubkey and flip to FAIL mode on 2026-06-03.
+
+Still open:
+
+- **WARN → FAIL transition for the `git tag -v` step.** Scheduled
+  for 2026-06-03; requires the maintainer GPG public key to be
+  available to the runner via a secret (e.g.
+  `MAINTAINER_GPG_PUBKEY`).
 - **Branch-protection ruleset on `main` requiring signed commits.**
-  Currently the ruleset (id 16835594) blocks force-push but does not
-  require signatures.
-- **Automated release-notes generation** from CHANGELOG (or `gh release
-  create --generate-notes`) instead of manual copy-paste in step 5.2.
+  Currently the ruleset (id 16835594) blocks force-push but does
+  not require signatures. This is an admin/web action on the
+  GitHub ruleset, not a code change.
+- **Automated release-notes generation** from CHANGELOG (or
+  `gh release create --generate-notes`) instead of manual
+  copy-paste in step 5.2.
 
-When closing each follow-up, update the table in §6 from "Convention"
-to "CI" and remove the corresponding line here.
+When closing each remaining follow-up, update the table in §6 from
+"Convention" to "CI" and remove the corresponding line here.
 
 ---
 
@@ -162,4 +174,4 @@ If a bad release ships:
 
 ---
 
-*Last reviewed: 2026-05-25 (closes #837).*
+*Last reviewed: 2026-05-27 (closes #890; previously closes #837).*

@@ -20,11 +20,36 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Fetch the tag object (not just the commit) so `git tag -v`
+          # can read the signature payload.
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      # ----------------------------------------------------------------
+      # Signed-tag verification — issue #890.
+      #
+      # WARN MODE (current): the step emits a workflow warning if the
+      # tag is unsigned or its signature cannot be verified, but does
+      # NOT fail the workflow. The runner has no maintainer pubkeys
+      # imported yet so every tag will WARN for now; this is the
+      # intended transitional state.
+      #
+      # TODO (2026-06-03): flip this step to FAIL mode in a follow-up
+      # PR. The follow-up must (a) import the maintainer GPG public
+      # key from a secret (e.g. ${{ secrets.MAINTAINER_GPG_PUBKEY }})
+      # into the runner keyring before `git tag -v`, and (b) drop the
+      # `|| echo` fallthrough so a verification failure exits non-zero
+      # and short-circuits the publish step.
+      # ----------------------------------------------------------------
+      - name: Verify signed tag (WARN mode, FAIL gate 2026-06-03)
+        # WARN MODE: never fail the workflow. The `git tag -v ... || echo`
+        # idiom keeps the step exit code 0 even when the tag is unsigned.
+        run: git tag -v "$GITHUB_REF_NAME" || echo "::warning::Tag $GITHUB_REF_NAME is not signed or its signature could not be verified. This is currently a WARN; on 2026-06-03 this step will FAIL closed per issue #890."
 
       - name: Install build tools
         run: pip install build twine
