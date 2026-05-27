@@ -26,22 +26,18 @@ phase contract.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-
-YAML_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "templates"
-    / "coding-pipeline-standard.yaml"
-)
+from orchestration_engine.templates import TemplateEngine
 
 
 @pytest.fixture(scope="module")
 def yaml_text() -> str:
-    """Read the pipeline template once per test module."""
-    return YAML_PATH.read_text(encoding="utf-8")
+    """Resolve the production pipeline template via the canonical loader API
+    (not a hardcoded filesystem path — see ``tests/test_lint_no_templates_hardcode.py``
+    issue #632) and return its raw YAML text."""
+    path = TemplateEngine().resolve_template("coding-pipeline-standard")
+    return path.read_text(encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
