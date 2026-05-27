@@ -35,10 +35,7 @@ from orchestration_engine.templates import (
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def in_memory_db():
-    """Return an in-memory Database instance with all migrations applied."""
-    return Database(":memory:")
+# #863: in_memory_db now sourced from tests/conftest.py canonical fixture.
 
 
 @pytest.fixture

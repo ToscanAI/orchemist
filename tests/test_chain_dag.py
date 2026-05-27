@@ -35,10 +35,7 @@ TestClient = pytest.importorskip("starlette.testclient").TestClient
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def in_memory_db() -> Database:
-    """Return an in-memory Database with all migrations applied."""
-    return Database(":memory:")
+# #863: in_memory_db now sourced from tests/conftest.py canonical fixture.
 
 
 @pytest.fixture
