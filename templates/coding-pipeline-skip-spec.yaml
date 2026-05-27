@@ -116,6 +116,7 @@ phases:
       This file contains ONLY the behavioral contracts — what the system should do.
       You have no access to implementation details. This is by design.
 
+      <!-- ADVERSARY_FEEDBACK_INTEGRATION_BEGIN -->
       ## Adversary Feedback Integration
       If adversary findings exist in the Previous Work above:
       - Read the EXISTING test file at `{output_dir}/acceptance_tests.py` first
@@ -125,6 +126,7 @@ phases:
       - Preserve all test function names, class structure, and passing assertions
       - Add new tests ONLY if the adversary flagged a COVERAGE gap
       If this is round 1 (no adversary findings above), write the test file from scratch.
+      <!-- ADVERSARY_FEEDBACK_INTEGRATION_END -->
 
       ## Task
       1. Read the behavioral contracts carefully

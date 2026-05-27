@@ -608,6 +608,7 @@ phases:
       This file contains ONLY the behavioral contracts — what the system should do.
       You have no access to implementation details. This is by design.
 
+      <!-- PHASE_0_INVENTORY_HOOK_BEGIN -->
       ## Existing-symbols inventory (Phase 0 sticky reference — sub-check 7d gate)
 
       Also read `{output_dir}/existing_symbols.md`. For every CANONICAL existing symbol named in behavioral contracts (citing inventory §1-4), the acceptance test MUST include a consume-assertion verifying the IMPLEMENT phase will CONSUME the existing symbol rather than re-author it. Examples:
@@ -617,6 +618,7 @@ phases:
       - If both an existing AND a new equivalent are expected (one consumed, one authored), pin BOTH assertions.
 
       Skip this section if `existing_symbols.md` is absent or its sections are all empty stubs — the IMPLEMENT phase still has its 7d HARD RULE as a fallback. Do NOT invent inventory entries when none exist.
+      <!-- PHASE_0_INVENTORY_HOOK_END -->
 
       ## Task
       1. Read the behavioral contracts carefully
