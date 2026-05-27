@@ -17,9 +17,10 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-fastapi = pytest.importorskip("fastapi")
-TestClient = pytest.importorskip("starlette.testclient").TestClient
-sse_starlette = pytest.importorskip("sse_starlette")
+# fastapi + starlette.testclient + sse_starlette are guaranteed by the
+# engine's [web] extra, which CI installs. Direct import — no
+# importorskip needed (#876).
+from fastapi.testclient import TestClient  # noqa: E402
 
 from orchestration_engine.db import Database  # noqa: E402
 from orchestration_engine.web.api import create_api_app  # noqa: E402

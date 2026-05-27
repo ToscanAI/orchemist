@@ -500,8 +500,11 @@ class TestDaemonNotificationDispatch:
 
 @pytest.fixture
 def api_client(tmp_path):
-    """Create a FastAPI test client backed by an in-memory DB."""
-    pytest.importorskip("fastapi")
+    """Create a FastAPI test client backed by an in-memory DB.
+
+    fastapi + starlette.testclient are guaranteed by the engine's [web]
+    extra, which CI installs.  Direct import — no importorskip (#876).
+    """
     from fastapi.testclient import TestClient
     from orchestration_engine.web.api import create_api_app
 

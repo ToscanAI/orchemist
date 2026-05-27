@@ -25,9 +25,9 @@ from orchestration_engine.templates import (
     TemplateEngine,
 )
 
-# Skip REST API tests when optional [web] dependencies are absent.
-fastapi = pytest.importorskip("fastapi")
-TestClient = pytest.importorskip("starlette.testclient").TestClient
+# fastapi + starlette.testclient are guaranteed by the engine's [web]
+# extra, which CI installs. Direct import — no importorskip needed (#876).
+from fastapi.testclient import TestClient
 
 
 # ---------------------------------------------------------------------------

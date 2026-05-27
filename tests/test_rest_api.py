@@ -16,9 +16,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Skip entire module when FastAPI / starlette is not installed.
-fastapi = pytest.importorskip("fastapi")
-TestClient = pytest.importorskip("starlette.testclient").TestClient
+# fastapi + starlette.testclient are guaranteed by the engine's [web]
+# extra, which CI installs. Direct import — no importorskip needed (#876).
+from fastapi.testclient import TestClient
 
 from orchestration_engine import __version__  # noqa: E402
 

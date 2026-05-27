@@ -19,9 +19,9 @@ from typing import Generator, Tuple
 
 import pytest
 
-# Skip entire module when FastAPI / starlette is not installed.
-fastapi = pytest.importorskip("fastapi")
-TestClient = pytest.importorskip("starlette.testclient").TestClient
+# fastapi + starlette.testclient are guaranteed by the engine's [web]
+# extra, which CI installs. Direct import — no importorskip needed (#876).
+from fastapi.testclient import TestClient
 
 
 # ---------------------------------------------------------------------------
