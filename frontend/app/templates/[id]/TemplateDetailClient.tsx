@@ -28,6 +28,8 @@ import { PhaseList } from '@/components/pipeline/PhaseList';
 import { SchemaForm } from '@/components/pipeline/SchemaForm';
 import { ProviderSelector } from '@/components/pipeline/ProviderSelector';
 import { PhaseModelMap } from '@/components/pipeline/PhaseModelMap';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
+import { useStaticExportParam } from '@/hooks/useStaticExportParam';
 
 // ---------------------------------------------------------------------------
 // Static params — required for output: 'export' with dynamic segments
@@ -74,14 +76,9 @@ export default function TemplateDetailClient() {
   const router = useRouter();
 
   // In static export mode, useParams may return the placeholder ("_") from
-  // generateStaticParams instead of the real URL segment. Fall back to
-  // reading the last path segment from the browser URL.
-  const rawId = params.id && params.id !== '_' ? params.id : (() => {
-    if (typeof window === 'undefined') return '_';
-    const segments = window.location.pathname.split('/').filter(Boolean);
-    return segments[segments.length - 1] ?? '_';
-  })();
-  const id = decodeURIComponent(rawId);
+  // generateStaticParams instead of the real URL segment. The shared hook
+  // (#774) centralises the placeholder→real-id resolution.
+  const id = useStaticExportParam(params.id);
 
   // ── Data fetch state (#870 — migrated to useApi) ──────────────────────────
   const { data: template, error: templateError, loading } = useApi<TemplateDetail>(
@@ -188,7 +185,7 @@ export default function TemplateDetailClient() {
         <div className="flex flex-wrap items-center gap-3">
           <h1
             id="template-heading"
-            className="text-2xl font-semibold tracking-tight text-zinc-100"
+            className="text-2xl font-semibold tracking-tight text-content-primary"
           >
             {template.name}
           </h1>
@@ -198,9 +195,9 @@ export default function TemplateDetailClient() {
           )}
         </div>
 
-        <p className="mt-2 text-sm text-zinc-400">{template.description}</p>
+        <p className="mt-2 text-sm text-content-secondary">{template.description}</p>
 
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-content-tertiary">
           <span>By {template.author}</span>
           {template.tags.map((tag) => (
             <Badge key={tag} variant="info">
@@ -269,12 +266,12 @@ export default function TemplateDetailClient() {
       {showDeleteModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="card max-w-md w-full mx-4 flex flex-col gap-4">
-            <h2 className="text-lg font-semibold text-zinc-100">
+            <h2 className="text-lg font-semibold text-content-primary">
               Delete Template
             </h2>
-            <p className="text-sm text-zinc-400">
+            <p className="text-sm text-content-secondary">
               Are you sure you want to delete{' '}
-              <span className="text-zinc-200 font-medium">{template.name}</span>?
+              <span className="text-content-primary font-medium">{template.name}</span>?
               This action cannot be undone.
             </p>
             {apiError && (
@@ -323,7 +320,7 @@ export default function TemplateDetailClient() {
       <section aria-labelledby="phases-heading">
         <h2
           id="phases-heading"
-          className="mb-3 text-base font-semibold text-zinc-200"
+          className="mb-3 text-base font-semibold text-content-primary"
         >
           Phase Execution Plan
         </h2>
@@ -334,7 +331,7 @@ export default function TemplateDetailClient() {
       <section aria-labelledby="launch-heading">
         <h2
           id="launch-heading"
-          className="mb-3 text-base font-semibold text-zinc-200"
+          className="mb-3 text-base font-semibold text-content-primary"
         >
           Launch Run
         </h2>
@@ -346,7 +343,7 @@ export default function TemplateDetailClient() {
         >
           {/* Mode selector */}
           <div className="flex flex-col gap-2">
-            <label className="text-xs font-medium text-zinc-400">Mode</label>
+            <label className="text-xs font-medium text-content-secondary">Mode</label>
             <div
               className="flex flex-wrap gap-2"
               role="group"

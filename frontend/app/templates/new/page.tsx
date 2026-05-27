@@ -64,10 +64,10 @@ export default function CreateTemplatePage() {
       </Link>
 
       <section>
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
+        <h1 className="text-2xl font-semibold tracking-tight text-content-primary">
           Create Template
         </h1>
-        <p className="mt-1 text-sm text-zinc-400">
+        <p className="mt-1 text-sm text-content-secondary">
           Define a new pipeline template using YAML.
         </p>
       </section>
@@ -77,7 +77,7 @@ export default function CreateTemplatePage() {
         <div className="flex flex-col gap-2">
           <label
             htmlFor="yaml-editor"
-            className="text-xs font-medium text-zinc-400"
+            className="text-xs font-medium text-content-secondary"
           >
             Template YAML
           </label>
@@ -90,7 +90,7 @@ export default function CreateTemplatePage() {
             }}
             rows={24}
             spellCheck={false}
-            className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 resize-y"
+            className="w-full rounded-md border border-default bg-surface-0 px-3 py-2 font-mono text-sm text-content-primary placeholder:text-content-tertiary focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 resize-y"
             placeholder="Paste or write your template YAML here..."
           />
         </div>

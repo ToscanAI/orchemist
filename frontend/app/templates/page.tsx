@@ -14,6 +14,7 @@ import type { TemplateSummary } from '@/lib/types';
 import { TemplateCard } from '@/components/pipeline/TemplateCard';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
+import { ErrorBanner } from '@/components/ui/ErrorBanner';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 
 export default function TemplatesPage() {
@@ -43,12 +44,12 @@ export default function TemplatesPage() {
     >
     <div className="flex flex-col gap-6">
       <section>
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
+        <h1 className="text-2xl font-semibold tracking-tight text-content-primary">
           Templates{!loading && !errorMessage && templates.length > 0 && (
-            <span className="ml-2 text-base font-normal text-zinc-500">({templates.length})</span>
+            <span className="ml-2 text-base font-normal text-content-tertiary">({templates.length})</span>
           )}
         </h1>
-        <p className="mt-1 text-sm text-zinc-400">
+        <p className="mt-1 text-sm text-content-secondary">
           Browse and launch pipeline templates.
         </p>
       </section>
@@ -63,7 +64,7 @@ export default function TemplatesPage() {
               aria-label="Search templates"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full max-w-sm rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+              className="w-full max-w-sm rounded-md border border-default bg-surface-0 px-3 py-2 text-sm text-content-primary placeholder:text-content-tertiary focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
             />
           )}
           <Link href="/templates/new" className="ml-auto shrink-0">
@@ -78,15 +79,12 @@ export default function TemplatesPage() {
       {loading && <Spinner message="Loading templates..." />}
 
       {!loading && errorMessage && (
-        <div className="card border-red-500/50 bg-red-900/10" role="status">
-          <p className="text-sm font-medium text-red-400">{errorMessage}</p>
-          <p className="mt-1 text-xs text-zinc-500">Is orch serve running?</p>
-        </div>
+        <ErrorBanner message={`${errorMessage} — is orch serve running?`} />
       )}
 
       {!loading && !errorMessage && filtered.length === 0 && (
         <div className="card flex flex-col items-center justify-center gap-2 py-12 text-center" role="status">
-          <p className="text-sm text-zinc-400">
+          <p className="text-sm text-content-secondary">
             {search ? 'No templates match your search.' : 'No templates found.'}
           </p>
         </div>

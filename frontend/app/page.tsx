@@ -20,11 +20,12 @@
  * Cross-links to /admin (autonomy ramp), /gates (gate-needs-review KPI), /runs (in-flight rows).
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { listRuns, listGates, listRegressions, listStaleFindings } from '@/lib/api';
 import type { RegressionRecord, StaleFindingsResponse } from '@/lib/api';
 import type { RunRecord } from '@/lib/types';
+import { HEALTH_CHECK_INTERVAL_MS } from '@/lib/constants';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { KPICard } from '@/components/harness/KPICard';
 import { SectionCard } from '@/components/harness/SectionCard';
@@ -54,9 +55,8 @@ export default function FleetDashboardPage() {
   const [fixingTotal, setFixingTotal] = useState<number | null>(null);
   const [staleFindings, setStaleFindings] = useState<StaleFindingsResponse | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.allSettled([
+  const fetchFleetSnapshot = useCallback(async (signal: { cancelled: boolean }) => {
+    const results = await Promise.allSettled([
       listRuns({ status: 'running', limit: 20 }),
       listRuns({ limit: 1 }),
       listGates({ limit: 1 }),
@@ -66,20 +66,34 @@ export default function FleetDashboardPage() {
       // in flight" instead of always-zero.
       listRegressions({ status: 'fixing', limit: 1 }),
       listStaleFindings(),
-    ]).then(([runningRes, totalsRes, gatesRes, regRes, fixRes, staleRes]) => {
-      if (cancelled) return;
-      if (runningRes.status === 'fulfilled') setLiveRuns(runningRes.value.items);
-      if (totalsRes.status === 'fulfilled') setTotalRuns(totalsRes.value.total);
-      if (gatesRes.status === 'fulfilled') setGateCount(gatesRes.value.total);
-      if (regRes.status === 'fulfilled') {
-        setRegressions(regRes.value.items);
-        setRegressionsTotal(regRes.value.total);
-      }
-      if (fixRes.status === 'fulfilled') setFixingTotal(fixRes.value.total);
-      if (staleRes.status === 'fulfilled') setStaleFindings(staleRes.value);
-    });
-    return () => { cancelled = true; };
+    ]);
+    if (signal.cancelled) return;
+    const [runningRes, totalsRes, gatesRes, regRes, fixRes, staleRes] = results;
+    if (runningRes.status === 'fulfilled') setLiveRuns(runningRes.value.items);
+    if (totalsRes.status === 'fulfilled') setTotalRuns(totalsRes.value.total);
+    if (gatesRes.status === 'fulfilled') setGateCount(gatesRes.value.total);
+    if (regRes.status === 'fulfilled') {
+      setRegressions(regRes.value.items);
+      setRegressionsTotal(regRes.value.total);
+    }
+    if (fixRes.status === 'fulfilled') setFixingTotal(fixRes.value.total);
+    if (staleRes.status === 'fulfilled') setStaleFindings(staleRes.value);
   }, []);
+
+  useEffect(() => {
+    const signal = { cancelled: false };
+    fetchFleetSnapshot(signal);
+    // Periodic health/refresh poll — issue #774 magic-number consolidation.
+    // Sourcing from `HEALTH_CHECK_INTERVAL_MS` keeps the cadence under
+    // version control in one place.
+    const interval = setInterval(() => {
+      fetchFleetSnapshot(signal);
+    }, HEALTH_CHECK_INTERVAL_MS);
+    return () => {
+      signal.cancelled = true;
+      clearInterval(interval);
+    };
+  }, [fetchFleetSnapshot]);
 
   const rows: readonly RunRowEntry[] = liveRuns.map((r) => ({
     run: r,

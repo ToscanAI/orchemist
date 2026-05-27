@@ -46,12 +46,12 @@ export function TemplateCard({ template }: TemplateCardProps) {
   return (
     <Link
       href={`/templates/${encodeURIComponent(template.id)}`}
-      className="card group flex flex-col gap-3 transition-colors hover:border-zinc-600 hover:bg-zinc-800/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+      className="card group flex flex-col gap-3 transition-colors hover:border-strong hover:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
       aria-label={`View template: ${template.name}`}
     >
       {/* Card header: name + badges */}
       <div className="flex flex-col gap-2">
-        <h2 className="text-sm font-semibold text-zinc-100 group-hover:text-white">
+        <h2 className="text-sm font-semibold text-content-primary group-hover:text-white">
           {template.name}
         </h2>
 
@@ -66,12 +66,12 @@ export function TemplateCard({ template }: TemplateCardProps) {
       </div>
 
       {/* Description */}
-      <p className="flex-1 text-xs leading-relaxed text-zinc-400 line-clamp-3">
+      <p className="flex-1 text-xs leading-relaxed text-content-secondary line-clamp-3">
         {template.description}
       </p>
 
       {/* Footer metadata: phases count + author */}
-      <div className="flex items-center justify-between text-xs text-zinc-500">
+      <div className="flex items-center justify-between text-xs text-content-tertiary">
         <span>
           {template.phases_count} phase{template.phases_count !== 1 ? 's' : ''}
         </span>

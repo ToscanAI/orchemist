@@ -13,22 +13,16 @@ import { getTemplate, updateTemplate, extractApiErrorMessage } from '@/lib/api';
 import type { TemplateDetail } from '@/lib/types';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
+import { useStaticExportParam } from '@/hooks/useStaticExportParam';
 
 export default function EditTemplateClient() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
 
-  // In static export mode, resolve the real ID from the URL
-  const rawId =
-    params.id && params.id !== '_'
-      ? params.id
-      : (() => {
-          if (typeof window === 'undefined') return '_';
-          const segments = window.location.pathname.split('/').filter(Boolean);
-          // URL: /templates/{id}/edit → segments = ['templates', '{id}', 'edit']
-          return segments.length >= 2 ? segments[segments.length - 2] : '_';
-        })();
-  const id = decodeURIComponent(rawId);
+  // In static export mode, resolve the real ID from the URL. The shared hook
+  // (#774) takes `segmentIndexFromEnd: 1` because the URL is
+  // `/templates/{id}/edit` — the id is one segment from the end.
+  const id = useStaticExportParam(params.id, { segmentIndexFromEnd: 1 });
 
   const [template, setTemplate] = useState<TemplateDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -116,11 +110,11 @@ export default function EditTemplateClient() {
       </Link>
 
       <section>
-        <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
+        <h1 className="text-2xl font-semibold tracking-tight text-content-primary">
           Edit Template
         </h1>
-        <p className="mt-1 text-sm text-zinc-400">
-          Editing <span className="text-zinc-200 font-medium">{template.name}</span>
+        <p className="mt-1 text-sm text-content-secondary">
+          Editing <span className="text-content-primary font-medium">{template.name}</span>
         </p>
       </section>
 
@@ -141,7 +135,7 @@ export default function EditTemplateClient() {
         <div className="flex flex-col gap-2">
           <label
             htmlFor="yaml-editor"
-            className="text-xs font-medium text-zinc-400"
+            className="text-xs font-medium text-content-secondary"
           >
             Template YAML
           </label>
@@ -155,7 +149,7 @@ export default function EditTemplateClient() {
             rows={24}
             spellCheck={false}
             readOnly={isReadOnly}
-            className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 font-mono text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 resize-y disabled:opacity-50"
+            className="w-full rounded-md border border-default bg-surface-0 px-3 py-2 font-mono text-sm text-content-primary placeholder:text-content-tertiary focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500 resize-y disabled:opacity-50"
             placeholder="Template YAML content..."
           />
         </div>

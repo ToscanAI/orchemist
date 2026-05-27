@@ -40,12 +40,12 @@ export default function ErrorBoundary({ error, reset }: ErrorBoundaryProps) {
       </div>
 
       <div className="flex flex-col gap-2">
-        <h2 className="text-xl font-semibold text-zinc-100">Something went wrong</h2>
-        <p className="max-w-md text-sm text-zinc-400">
+        <h2 className="text-xl font-semibold text-content-primary">Something went wrong</h2>
+        <p className="max-w-md text-sm text-content-secondary">
           An unexpected error occurred while rendering this page.
         </p>
         {error.message && (
-          <pre className="mt-2 max-w-lg overflow-auto rounded-md border border-zinc-700 bg-zinc-900 px-4 py-2 text-left text-xs text-red-400">
+          <pre className="mt-2 max-w-lg overflow-auto rounded-md border border-default bg-surface-0 px-4 py-2 text-left text-xs text-red-400">
             {error.message}
           </pre>
         )}
@@ -53,7 +53,7 @@ export default function ErrorBoundary({ error, reset }: ErrorBoundaryProps) {
 
       <button
         onClick={reset}
-        className="rounded-lg bg-sky-600 px-6 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-2 focus:ring-offset-zinc-950"
+        className="rounded-lg bg-sky-600 px-6 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-2 focus:ring-offset-surface-0"
       >
         Try Again
       </button>
