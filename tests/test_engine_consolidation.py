@@ -415,7 +415,7 @@ class TestConsumerWiring:
         assert result == str(tmp_path / ".orchestration-engine" / "engine.db")
 
     def test_api_get_persistent_db_path_uses_default_db_path(self, tmp_path, monkeypatch):
-        pytest.importorskip("fastapi")
+        # fastapi guaranteed by the engine's [web] extra (#876 D-7).
         from orchestration_engine.web import api
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         result = api._get_persistent_db_path()

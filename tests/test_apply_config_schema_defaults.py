@@ -321,12 +321,9 @@ class TestEndToEndAgainstRealisticPhase0Prompt:
         Belt-and-suspenders against future refactors that might remove the
         call without removing the test.
         """
-        from pathlib import Path
+        from tests.conftest import read_src
 
-        cli_src = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "cli.py"
-        ).read_text()
+        cli_src = read_src("cli.py")
 
         # The helper must be invoked at least twice — once for run_template,
         # once for pipeline_launch. (Scenario_run adds a third call which is
@@ -411,10 +408,14 @@ class TestCliRunnerIntegration:
             real_apply(config, schema)
             calls[-1]["keys_after"] = list(config.keys())
 
+        # cli.py imports the helper at module top (`from .daemon import
+        # apply_config_schema_defaults`) per #876 A-8, so the call resolves
+        # through the cli module's namespace.  Patch BOTH the daemon module
+        # attribute (for any internal daemon path) AND cli's module-level
+        # name binding (so the cli call sites see the spy).
+        from orchestration_engine import cli as cli_mod
         monkeypatch.setattr(daemon_mod, "apply_config_schema_defaults", _spy)
-        # cli.py imports the helper inline at each callsite (`from .daemon
-        # import apply_config_schema_defaults`), so patching the daemon
-        # module's attribute is sufficient.
+        monkeypatch.setattr(cli_mod, "apply_config_schema_defaults", _spy)
 
         runner = CliRunner()
         # Empty input dict; required=[] in the schema so no required-field

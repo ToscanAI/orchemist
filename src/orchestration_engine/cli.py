@@ -22,6 +22,7 @@ import yaml
 import click
 from decimal import Decimal
 
+from .daemon import apply_config_schema_defaults
 from .db import Database, default_db_path
 from .output_utils import (
     extract_output_text as _extract_output_text,
@@ -1270,7 +1271,6 @@ def run_template(
     # rendering. Without this, pre-v2.1 consumers running `orch run` against
     # the v2.1.0 standard pipeline would see <MISSING:ui_primitive_paths>
     # (and similar) literals rendered into Phase 0 prompts.
-    from .daemon import apply_config_schema_defaults
     apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
     if missing:
         if mode == 'dry-run':
@@ -1989,7 +1989,6 @@ def pipeline_launch(
     missing = _validate_required_config(template, initial_input)
     # Apply schema defaults for optional fields (#835) — see commentary in
     # the run_template path above for rationale.
-    from .daemon import apply_config_schema_defaults
     apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
     if missing:
         sorted_missing = sorted(missing)
@@ -5229,7 +5228,6 @@ def scenario_run(
             # Apply schema defaults for optional fields (#835) — same rationale
             # as run_template / pipeline_launch above. Belt-and-suspenders so
             # scenario-driven runs benefit from the same backward-compat shim.
-            from .daemon import apply_config_schema_defaults
             apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
             sequencer = _SequencerClass(template, pipe_runner, config=initial_input)
             try:

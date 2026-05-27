@@ -22,7 +22,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-TestClient = pytest.importorskip("starlette.testclient").TestClient
+# fastapi + starlette.testclient are guaranteed by the engine's [web]
+# extra, which CI installs. Direct import — no importorskip needed (#876).
+from fastapi.testclient import TestClient
 
 
 # ---------------------------------------------------------------------------

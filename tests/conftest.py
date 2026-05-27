@@ -32,7 +32,29 @@ from pathlib import Path
 import pytest
 
 # Repository root resolved from this conftest location.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+# Promoted to a public name (#876 D-4) so wiring-guard tests can import
+# it from a single source.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def read_src(rel_path: str) -> str:
+    """Return the text of a file under ``src/orchestration_engine/``.
+
+    Helper for wiring-guard tests that grep source files to verify a given
+    symbol / pattern is still present after a refactor.
+
+    Example::
+
+        from tests.conftest import read_src
+        api_src = read_src("web/api.py")
+        assert "_load_yaml_via_tempfile" in api_src
+
+    Promoted in #876 (D-4) from 12 duplicated multi-line scaffolds of
+    ``Path(__file__).resolve().parent.parent / "src" / ... .read_text()``.
+    """
+    return (REPO_ROOT / "src" / "orchestration_engine" / rel_path).read_text(
+        encoding="utf-8",
+    )
 
 
 @pytest.fixture
@@ -46,7 +68,7 @@ def examples_on_path(monkeypatch):
     filesystem path. Stable fixtures live in examples/.
     """
     existing = os.environ.get("ORCH_TEMPLATES_PATH", "")
-    examples = str(_REPO_ROOT / "examples")
+    examples = str(REPO_ROOT / "examples")
     new_val = f"{examples}:{existing}" if existing else examples
     monkeypatch.setenv("ORCH_TEMPLATES_PATH", new_val)
 

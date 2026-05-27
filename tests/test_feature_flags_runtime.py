@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import read_src
+
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
@@ -191,10 +193,7 @@ class TestPhase0HardGateRuntime:
     AND only for the canonical Phase 0 phase id."""
 
     def test_sequencer_source_calls_phase0_hard_gate_check(self):
-        seq = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "sequencer.py"
-        ).read_text()
+        seq = read_src("sequencer.py")
         assert 'is_enabled("phase0_hard_gate")' in seq, (
             "sequencer.py is missing the is_enabled('phase0_hard_gate') "
             "call — phase0_hard_gate runtime wiring is gone. See #840."
@@ -259,10 +258,7 @@ class TestDialoguePhaseRuntime:
     when the flag is False."""
 
     def test_sequencer_source_calls_dialogue_phase_check(self):
-        seq = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "sequencer.py"
-        ).read_text()
+        seq = read_src("sequencer.py")
         assert 'is_enabled("dialogue_phase")' in seq, (
             "sequencer.py is missing the is_enabled('dialogue_phase') "
             "call — dialogue_phase runtime wiring is gone. See #840."
@@ -293,10 +289,7 @@ class TestDialoguePhaseRuntime:
         (parallel waves), and StateMachineSequencer._execute_transitions
         (state-machine routing). Any one missing means a consumer can
         accidentally bypass the gate by choosing a different sequencer."""
-        seq = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "sequencer.py"
-        ).read_text()
+        seq = read_src("sequencer.py")
         # Three is the canonical count today; if a fourth dispatch path is
         # ever added (e.g. an async path), it must also gate.
         invocation_count = seq.count('is_enabled("dialogue_phase")')
@@ -314,10 +307,7 @@ class TestOrchAdminPathHonouredByWebApi:
     UI write to ~/.orchestration-engine/admin.json — silent split-brain."""
 
     def test_admin_handlers_use_feature_flags_path_resolver(self):
-        api_src = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "web" / "api.py"
-        ).read_text()
+        api_src = read_src("web/api.py")
         # The admin GET + PUT handlers must call _ff._admin_json_path()
         # (or equivalent shared resolver), NOT hardcode Path.home().
         # Two callsites are expected (get_admin_state + update_feature_flags).

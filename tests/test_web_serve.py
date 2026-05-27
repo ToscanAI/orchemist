@@ -8,9 +8,9 @@ import json
 import time
 import pytest
 
-# Skip the entire module when FastAPI is not installed.
-fastapi = pytest.importorskip("fastapi")
-TestClient = pytest.importorskip("starlette.testclient").TestClient
+# fastapi + starlette.testclient are guaranteed by the engine's [web]
+# extra, which CI installs. Direct import — no importorskip needed (#876).
+from fastapi.testclient import TestClient  # noqa: E402
 
 from orchestration_engine.web.app import create_app  # noqa: E402  (after importorskip)
 from orchestration_engine import __version__          # noqa: E402
