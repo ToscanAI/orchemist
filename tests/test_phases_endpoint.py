@@ -105,20 +105,19 @@ class TestStandardPipelinePhaseList:
             f"If intentional, update both this test AND the frontend phase rail."
         )
 
-    def test_only_review_is_opus_today(self, client):
-        """Frozen-state drift sentinel. Today's engine YAML has only
-        `review` at opus tier; VISION pillar 8 + the user's recorded
-        feedback (`feedback_max_effort_adversary_reviewer.md`) call for
-        spec_adversary to also be opus. When the YAML is updated to
-        match VISION pillar 8, this test will fail — re-set the expected
-        set to match the new state and add a CHANGELOG entry."""
+    def test_spec_adversary_and_review_are_opus(self, client):
+        """VISION pillar 8 sentinel. Both adversary boundary (1c) and review
+        gate (4) run at opus tier per
+        `feedback_max_effort_adversary_reviewer.md` — the marquee cross-model
+        adversary promise of the trust-engine wedge. Updating this set
+        intentionally requires re-evaluating the cost/rigor tradeoff."""
         phases = client.get("/api/v1/phases").json()["phases"]
         opus_phase_ids = {p["id"] for p in phases if p["model_tier"] == "opus"}
-        assert opus_phase_ids == {"review"}, (
+        assert opus_phase_ids == {"spec_adversary", "review"}, (
             f"Opus phase set has changed to {opus_phase_ids}. If this is "
-            f"intentional (e.g. spec_adversary bumped to opus per VISION "
-            f"pillar 8), update this test's expected set to match and "
-            f"document the change in CHANGELOG. See VISION.md §8."
+            f"intentional, update this test's expected set to match and "
+            f"document the change in CHANGELOG. See VISION.md §8 + "
+            f"`feedback_max_effort_adversary_reviewer.md`."
         )
 
     def test_task_type_marks_engine_phases(self, client):

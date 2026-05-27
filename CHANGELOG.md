@@ -4,6 +4,9 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 
 ## [Unreleased]
 
+### Changed
+- **`spec_adversary` phase bumped to `model_tier: opus`** (#887) — VISION pillar 8 alignment: both the adversary boundary (Phase 1c) and the review gate (Phase 4) now run at opus tier. Closes drift from `feedback_max_effort_adversary_reviewer.md`. Cost impact: each spec round invokes opus at both the adversary step (up to 3 iterations) and the review step (up to 3 iterations), roughly 2× the per-run opus token cost vs prior baseline. Frozen-state drift sentinel `tests/test_phases_endpoint.py::test_only_review_is_opus_today` retired; replaced with `test_spec_adversary_and_review_are_opus`. The skip-spec pipeline has no `spec_adversary` phase (sync invariant satisfied vacuously). v1 epic #892 Gate 2.
+
 ### Added
 - **v1 backend reliability cluster — Gate 1 fixes** (#735, #753, #480; Refs #892) — Three v1-gating bugs landed together:
   - **#753** — `OpenClawExecutor` now reads `subagents.runTimeoutSeconds` from `~/.openclaw/openclaw.json` via new `_read_subagent_timeout_from_config()` static helper (mirrors byte-shape of `_read_token_from_config()`). Constructor fallback chain: explicit positive arg → config value → `DEFAULT_TIMEOUT_SECONDS` (1200s). Removes silent timeout misconfiguration that caused 50% phase abort rate.

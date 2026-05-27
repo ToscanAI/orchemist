@@ -422,7 +422,7 @@ phases:
   - id: spec_adversary
     name: "Spec Adversary Review"
     description: "Adversarially review behavioral contracts AND implementation spec. Checks for vague contracts, trivial satisfaction, missing edge cases, implementation leakage, and divergence between spec and contracts."
-    model_tier: sonnet
+    model_tier: opus
     thinking_level: high
     max_iterations: 3
     transitions:
