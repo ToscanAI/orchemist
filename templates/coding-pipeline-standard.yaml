@@ -292,12 +292,7 @@ phases:
 
       Read `{output_dir}/existing_symbols.md` BEFORE proposing any new file/symbol/component. Sections 1-4 enumerate the project's UI primitives, shared libraries, adjacent action/hook patterns, and workspace barrels available for consumption. If the file is absent OR all four sections contain only the empty-stub line ("(empty — consumer did not provide inventory inputs)"), fall back to ad-hoc grep against the project's `lib/` / `utils/` / UI primitive package(s) — Phase 0 may have exhausted (graceful degradation) or the consumer may not have provided grep paths.
 
-      For EVERY new symbol your spec proposes (in §B.3 Files-to-Create or §B.2 Files-to-Modify), assign exactly ONE of the four SPEC-author verdicts defined in existing_symbols.md §5 ("The four SPEC-author verdicts"):
-
-      1. **CONSUME** (preferred) — import the existing symbol byte-identical. Cite the existing entry in spec.md (e.g. "uses `Dialog` from `packages/ui/src/components/dialog.tsx`"). Files-to-Modify lists the import-add at the call site.
-      2. **EXTEND** — parameterize the existing symbol (add an options arg / safe-superset wrapper / accept a path or callback) so the existing call site AND the new call site both consume the same source. Document the parameterization in Implementation Steps. Files-to-Create lists NOTHING new; the existing symbol's contract widens. Use when CONSUME is "almost" but the new use site needs one more arg / one slightly different code path.
-      3. **DIVERGENT** — near-equivalent with a contract-required difference (different sort order, different sealed string, different precision). Add a `## Divergence justification` subsection naming the existing symbol + the contract-required reason. Files-to-Create lists the new symbol explicitly.
-      4. **NEW-OK** — genuinely new; no overlap with sections 1-4. Files-to-Create lists the new symbol. Use only when grep returned zero plausibly-related symbols.
+      For EVERY new symbol your spec proposes (in §B.3 Files-to-Create or §B.2 Files-to-Modify), assign exactly ONE of the four SPEC-author verdicts defined in `{output_dir}/existing_symbols.md` §5 ("The four SPEC-author verdicts" — CONSUME / EXTEND / DIVERGENT / NEW-OK). Apply the §5 definitions verbatim; do NOT paraphrase or substitute your own variant of the verdict criteria.
 
       **Append every proposed new symbol** to inventory §6 ("SPEC's proposed new symbols") with the verdict so Phase 1b BEHAVIORAL + every subsequent phase has a stable reference.
 
@@ -330,7 +325,7 @@ phases:
       1. Read the EXISTING file at {output_dir}/spec.md
       2. Read the adversary's findings from the most recent round above
       3. Fix ONLY the sections related to adversary findings — do not rewrite unflagged sections
-      4. Implementation steps the adversary did NOT flag MUST remain byte-identical
+      4. Implementation steps the adversary did NOT flag MUST remain unchanged
       5. If findings relate to implementation details leaking into behavioral contracts, adjust your spec to clearly separate observable outcomes from internal implementation
       6. If findings relate to missing edge cases, add implementation steps for those cases and describe their observable outcomes
       7. If findings relate to divergence between spec and behavioral contracts, update your spec to match
@@ -479,12 +474,14 @@ phases:
 
       ### 7d — Sticky enforcement against existing-symbols inventory (Phase 0)
 
-      Read `{output_dir}/existing_symbols.md` and cross-check every symbol the spec proposes against inventory sections 1-4 (UI primitives, shared libraries, adjacent actions/hooks, workspace barrels). The spec MUST assign exactly ONE of the four SPEC-author verdicts defined in inventory §5 ("The four SPEC-author verdicts"):
+      Read `{output_dir}/existing_symbols.md` and cross-check every symbol the spec proposes against inventory sections 1-4 (UI primitives, shared libraries, adjacent actions/hooks, workspace barrels). The spec MUST assign exactly ONE of the four SPEC-author verdicts defined in inventory §5 ("The four SPEC-author verdicts" — CONSUME / EXTEND / DIVERGENT / NEW-OK). Apply the §5 definitions as the rubric; the verdict-specific adversary cross-checks below add adversary-phase findings on top of (not in place of) §5's verdict criteria.
 
-      - **CONSUME** — Files-to-Modify cites the existing entry; no new symbol created. Cross-check: the import is concrete (named import; not a re-namespacing).
-      - **EXTEND** — Files-to-Modify describes the parameterization (added arg / options object / safe-superset wrapper) of the existing symbol so it accommodates the new call site. Cross-check: Files-to-Create is empty for this concept; Implementation Steps names the new arg and how the existing call site stays byte-equivalent. EXTEND-with-non-empty-Files-to-Create is a `[divergence]` finding with `[verdict-mismatch]` qualifier.
-      - **DIVERGENT** — spec has a `## Divergence justification` subsection naming the existing symbol + the contract-required difference (cite a sealed string / sort order / precision / type narrowing — not just "different use case").
-      - **NEW-OK** — genuinely new; inventory §6 entry explicitly records "(none found)" with rationale.
+      Adversary-phase cross-checks to apply once a verdict is assigned:
+
+      - On a **CONSUME** verdict: the import in Files-to-Modify is concrete (named import; not a re-namespacing).
+      - On an **EXTEND** verdict: Files-to-Create is empty for this concept; Implementation Steps names the new arg and how the existing call site stays byte-equivalent. An EXTEND verdict that ships with a non-empty Files-to-Create entry for the same concept is a `[divergence]` finding with `[verdict-mismatch]` qualifier.
+      - On a **DIVERGENT** verdict: the `## Divergence justification` subsection cites a sealed string / sort order / precision / type narrowing — not just "different use case".
+      - On a **NEW-OK** verdict: inventory §6 entry for the symbol exists with the `Existing:` line set to the "no overlap" placeholder per §5, plus a one-line rationale citing the inventory sections that were checked.
 
       Any proposed-new symbol that overlaps with sections 1-4 WITHOUT one of the four explicit verdicts is `[divergence]` with the specific inventory-entry pointer.
 
