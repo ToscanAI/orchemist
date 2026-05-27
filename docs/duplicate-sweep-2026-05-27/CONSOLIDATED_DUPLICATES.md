@@ -1,6 +1,35 @@
 # Consolidated Duplication Sweep — 2026-05-27
 
+**Status: CLOSED — all 18 issues filed and merged via 7 autonomous pipelines on 2026-05-27.**
+
 Four parallel Explore-agent sweeps (Python src/, frontend, templates, tests) producing **38 net-new findings** against the 2026-05-25 `DUPLICATES_REFRESHED.md` baseline. Two days of rapid shipping (#835 → #858, v0.11.0 release, +10 PRs, +100 tests) introduced significant new drift.
+
+## Resolution (2026-05-27 autonomous batch)
+
+All 18 filed issues closed via 7 PRs landed in parallel. Net effect on the codebase:
+- **+142 tests** (baseline 7264 → 7406)
+- Engine: 4 helper duplicates consolidated, ~185 lines deleted via `output_utils.py` + `timestamps.py`
+- Frontend: ~170 lines deleted; `useApi` + `Paged<T>` + `timeFmt` + `extractApiErrorMessage` helpers introduced; dead `streamRun` removed
+- Templates: skip-spec brought to standard's 7d/7e quality bar; verdict prose deduped via §5 indirection; CI drift lint added (`scripts/check_template_sync.py`)
+- Tests: canonical fixtures landed in `tests/conftest.py` + `tests/_helpers.py`; raw-SQL drift target at `test_harness_aggregate_endpoints.py:45` fixed
+- Tier-3 batched: ~2,080 lines deleted across 52 files in PR #884
+
+| PR | Issues closed | Theme |
+|---|---|---|
+| #878 | #867 #869 | Template drift lints (CI step `Template drift lint`) |
+| #879 | #859 | skip-spec port to standard quality bar |
+| #880 | #868 | Verdict prose §5 indirection |
+| #881 | #860 #864 #865 #866 | Engine helpers consolidation |
+| #882 | #861 #870 #871 #872 #873 | Frontend cleanup cluster |
+| #883 | #862 #863 #874 #875 | Test infrastructure consolidation |
+| #884 | #876 | Tier-3 batched cleanup |
+
+**Deferred items** (explicitly noted in PR bodies):
+- `useApi` migration for 7 remaining hand-rolled cancellation closures (#870 follow-up)
+- ANTI-TAMPERING back-port from skip-spec → standard (#859 follow-up)
+- ~20 file-scope `_make_db()` / `_make_client()` helpers in tests that need non-mechanical migration
+
+**Structural follow-up:** **#704 template composition (extends/include)** remains the highest-leverage move — every template-tier finding hinges on it.
 
 ## Headline
 
