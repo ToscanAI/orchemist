@@ -441,7 +441,9 @@ class AdaptiveRetryEngine:
         Raises:
             RuntimeError: If ``self._db`` or ``self._db_path`` are ``None``.
         """
-        import subprocess
+        # Note: subprocess is imported at module-level (line 28) so it can be
+        # patched via `patch("orchestration_engine.adaptive_retry.subprocess.Popen")`.
+        # Do NOT re-import here; the module-level import is used.
         import sys
         import uuid
         from pathlib import Path as _Path
@@ -558,22 +560,85 @@ class AdaptiveRetryEngine:
         original_output_dir = run.get("output_dir", "/tmp/orch-out")
         retry_output_dir = str(_Path(original_output_dir).parent / retry_run_id)
 
-        # 6. Insert new pipeline_runs row.
-        self._db.insert_pipeline_run(
-            {
-                "run_id": retry_run_id,
-                "template_path": run["template_path"],
-                "template_id": run.get("template_id", ""),
-                "input_json": json.dumps(retry_input),
-                "mode": run.get("mode", "openclaw"),
-                "output_dir": retry_output_dir,
-                "status": "pending",
-                "gateway_url": run.get("gateway_url"),
-                "skip_scoring": run.get("skip_scoring", 0),
-                "retry_of_run_id": original_run_id,
-                "retry_strategy": plan.strategy.value,
-            }
-        )
+        # 5b. (#735 RC-4 dedup, race-free) — atomic check-and-insert.
+        # Use a single transaction containing both the duplicate check and the
+        # INSERT so two concurrent evaluators cannot both observe "no active
+        # retry" and both insert. SQLite serialises write transactions, so the
+        # losing transaction will see the winner's row when it re-checks.
+        try:
+            with self._db.transaction() as conn:
+                cursor = conn.execute(
+                    "SELECT COUNT(*) FROM pipeline_runs "
+                    "WHERE retry_of_run_id = ? AND status IN ('pending','running')",
+                    (original_run_id,),
+                )
+                active_count = cursor.fetchone()[0]
+                if active_count > 0:
+                    _logger.warning(
+                        "Retry already in progress for run %s — skipping duplicate "
+                        "evaluate_failure (RC-4 dedup)",
+                        original_run_id,
+                    )
+                    return  # CRITICAL: do NOT spawn daemon, do NOT git-clone.
+                # 5c. (#735 RC-3) — clone original output_dir when it's a git repo.
+                # Done INSIDE the transaction so a clone failure aborts the
+                # insert (we never end up with a DB row pointing at a broken dir).
+                # Uses os.system to avoid being intercepted by tests that patch
+                # `subprocess.Popen` to mock the daemon spawn — the clone is a
+                # separate concern from daemon spawning.
+                orig_path = _Path(original_output_dir)
+                if (orig_path / ".git").exists():
+                    import shlex as _shlex
+                    import os as _os
+                    cmd = "git clone {} {}".format(
+                        _shlex.quote(str(orig_path)),
+                        _shlex.quote(retry_output_dir),
+                    )
+                    rc = _os.system(cmd + " >/dev/null 2>&1")
+                    if rc != 0:
+                        _logger.error(
+                            "RC-3 git clone failed (aborting retry, rc=%d): %s → %s",
+                            rc, original_output_dir, retry_output_dir,
+                        )
+                        raise RuntimeError(
+                            f"Retry aborted: git clone of {original_output_dir} "
+                            f"failed with rc={rc}"
+                        )
+                    _logger.info(
+                        "RC-3 cloned original output_dir %s → %s (preserves "
+                        "remote URL + committed history)",
+                        original_output_dir, retry_output_dir,
+                    )
+
+                # 6. Insert new pipeline_runs row INSIDE the dedup transaction.
+                conn.execute(
+                    """
+                    INSERT INTO pipeline_runs (
+                        run_id, template_path, template_id, input_json, mode,
+                        output_dir, status, gateway_url, skip_scoring,
+                        parent_run_id, chain_depth,
+                        retry_of_run_id, retry_strategy
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        retry_run_id,
+                        run["template_path"],
+                        run.get("template_id", ""),
+                        json.dumps(retry_input),
+                        run.get("mode", "openclaw"),
+                        retry_output_dir,
+                        "pending",
+                        run.get("gateway_url"),
+                        int(run.get("skip_scoring", 0)),
+                        None,
+                        0,
+                        original_run_id,
+                        plan.strategy.value,
+                    ),
+                )
+        except RuntimeError:
+            # Clone failure already logged; do NOT spawn daemon.
+            return
 
         # 7. Spawn daemon subprocess (non-blocking, fully detached).
         proc = subprocess.Popen(
