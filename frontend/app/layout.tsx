@@ -6,12 +6,17 @@
  * primitives. Legacy pages (/runs, /templates) opt in by wrapping themselves.
  *
  * This file is intentionally minimal: it only configures fonts, sets the
- * global background, and renders children. Per-page chrome lives in the shell.
+ * global background, and wraps children in `<EngineOfflineGuard>` so every
+ * harness page short-circuits to a clear error UI when the engine is
+ * unreachable (#888 — harness graduation). Per-page chrome lives in the
+ * shell; the guard probes `/api/v1/health` once on mount and renders the
+ * offline error UI on rejection.
  */
 import type { Metadata } from 'next';
 import { GeistSans } from 'geist/font/sans';
 import { GeistMono } from 'geist/font/mono';
 import './globals.css';
+import { EngineOfflineGuard } from '@/components/harness/EngineOfflineGuard';
 
 export const metadata: Metadata = {
   title: {
@@ -33,7 +38,7 @@ export default function RootLayout({ children }: RootLayoutProps) {
       className={`dark ${GeistSans.variable} ${GeistMono.variable}`}
     >
       <body className="min-h-screen bg-harness-bg text-harness-text antialiased">
-        {children}
+        <EngineOfflineGuard>{children}</EngineOfflineGuard>
       </body>
     </html>
   );
