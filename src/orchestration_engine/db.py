@@ -42,19 +42,83 @@ TERMINAL_STATUSES: frozenset = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# Issue #864 — canonical default DB path resolver
+# ---------------------------------------------------------------------------
+# Previously this logic was duplicated 5 ways across cli.py, web/api.py,
+# mcp/tools.py, daemon.py, and inline inside Database.__init__.  The mcp
+# variant was the only one creating parent directories (``parents=True``),
+# so the canonical form preserves that behaviour — operators who haven't
+# created ``~/.orchestration-engine`` see the path created on first access
+# rather than a ``FileNotFoundError``.
+# ---------------------------------------------------------------------------
+
+
+def default_db_path() -> Path:
+    """Return the canonical persistent on-disk DB path used by async runs.
+
+    Resolves to ``$HOME/.orchestration-engine/engine.db`` and ensures the
+    parent directory exists (``mkdir(parents=True, exist_ok=True)``).  This
+    is the canonical location previously duplicated 5 ways across
+    :mod:`cli`, :mod:`web.api`, :mod:`mcp.tools`, :mod:`daemon`, and inline
+    inside :class:`Database`.
+
+    Returns:
+        ``Path`` pointing at the engine database file.  Callers that need
+        a string path can wrap with ``str(default_db_path())``.
+    """
+    default_dir = Path.home() / ".orchestration-engine"
+    default_dir.mkdir(parents=True, exist_ok=True)
+    return default_dir / "engine.db"
+
+
+# ---------------------------------------------------------------------------
+# Issue #866 — canonical JSON-list column parser
+# ---------------------------------------------------------------------------
+# The ``completed_phases`` column is stored as a JSON string in SQLite but
+# may be returned by drivers as a native list (e.g. when wrapped by tests
+# using TypedDict fixtures).  Both mcp/tools.py and the ``_run_to_dict``
+# closure in web/api.py reinvented this parser; consolidating here keeps
+# both call sites consistent if the column type ever changes.
+# ---------------------------------------------------------------------------
+
+
+def parse_json_list(val: Any) -> list:
+    """Safely parse a JSON-list column that may be None, list, or JSON string.
+
+    Used for the ``completed_phases`` column on ``pipeline_runs``.  Returns
+    an empty list when *val* is ``None`` or cannot be decoded — callers
+    should never receive a partial / malformed list from this helper.
+
+    Args:
+        val: Raw column value from a ``pipeline_runs`` row.  Tolerates
+             ``None``, ``list`` (already decoded), or any other type that
+             can be passed to :func:`json.loads`.
+
+    Returns:
+        A native Python list (possibly empty).  Never raises.
+    """
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    try:
+        return json.loads(val)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
 class Database:
     """SQLite database manager with connection pooling and migrations."""
     
     def __init__(self, db_path: Optional[Path] = None):
         """Initialize database connection.
-        
+
         Args:
             db_path: Path to SQLite database file. Defaults to ~/.orchestration-engine/engine.db
         """
         if db_path is None:
-            default_dir = Path.home() / ".orchestration-engine"
-            default_dir.mkdir(exist_ok=True)
-            db_path = default_dir / "engine.db"
+            db_path = default_db_path()
         
         # Thread-local storage for connections
         self._local = threading.local()

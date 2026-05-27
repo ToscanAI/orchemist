@@ -22,7 +22,11 @@ import yaml
 import click
 from decimal import Decimal
 
-from .db import Database
+from .db import Database, default_db_path
+from .output_utils import (
+    extract_output_text as _extract_output_text,
+    safe_write_phase_output as _safe_write_phase_output,
+)
 from .queue import TaskQueue
 from .schemas import (
     TaskSpec, TaskType, Priority, TaskState, TaskFilters,
@@ -89,74 +93,6 @@ def print_table(headers: List[str], rows: List[List[str]]) -> None:
             for i in range(len(headers))
         )
         click.echo(row_line)
-
-
-def _extract_output_text(phase_out: Dict[str, Any]) -> str:
-    """Extract human-readable text from a serialised phase output dict.
-
-    Tries common keys used by different executors:
-      - ``result.output``  — explicit output key (future executors)
-      - ``result.text``    — AnthropicExecutor plain-text response
-      - ``result.content`` — alternative content key
-      - ``result.message`` — DryRunExecutor mock message
-    Falls back to a JSON representation of the ``result`` sub-dict.
-
-    When a value is a list (e.g. Anthropic content-block arrays), text blocks
-    of type ``{"type": "text", "text": "..."}`` are joined with double newlines.
-    Plain string items in the list are also included.
-    """
-    import json as _json
-    import builtins as _builtins  # needed because 'list' is shadowed by the Click command
-
-    inner = phase_out.get('result', {})
-    if not isinstance(inner, dict):
-        return str(inner)
-    for key in ('output', 'text', 'content', 'message'):
-        if key in inner:
-            val = inner[key]
-            if isinstance(val, _builtins.list):
-                # Extract text from Anthropic-style content block arrays.
-                # Blocks with type "tool_use" or "thinking" are intentionally
-                # skipped — they carry tool parameters / internal reasoning,
-                # not human-readable output.
-                texts = []
-                for block in val:
-                    if isinstance(block, _builtins.dict):
-                        if block.get('type') == 'text':
-                            texts.append(block.get('text', ''))
-                    elif isinstance(block, str):
-                        texts.append(block)
-                return '\n\n'.join(t for t in texts if t)
-            return str(val)
-    if inner:
-        return _json.dumps(inner, indent=2, default=str)
-    return ""
-
-
-def _safe_write_phase_output(out_path: Path, new_content: str, phase_id: str) -> None:
-    """Write *new_content* to *out_path* unless an agent-written file is larger.
-
-    The size guard compares file bytes against the UTF-8 encoded length of
-    *new_content* so that multi-byte characters (em-dashes, emoji, accented
-    letters) are counted consistently.  The strictly-greater-than comparison
-    means equal-sized files are always (over)written with the fresh capture.
-
-    Args:
-        out_path:    Destination path.  Parent directory must already exist.
-        new_content: Text to write (UTF-8 encoded on disk).
-        phase_id:    Phase identifier used in log messages only.
-    """
-    if out_path.exists() and out_path.stat().st_size > len(new_content.encode('utf-8')):
-        # Agent already wrote a larger file — keep the agent's version.
-        logger.info(
-            "Phase '%s': keeping agent-written file (%d bytes) over captured "
-            "output (%d bytes)",
-            phase_id,
-            out_path.stat().st_size,
-            len(new_content.encode('utf-8')),
-        )
-    else:
-        out_path.write_text(new_content)
 
 
 @click.group()
@@ -1768,11 +1704,12 @@ def run_template(
 # ---------------------------------------------------------------------------
 
 def _get_persistent_db_path() -> str:
-    """Return the path to the persistent on-disk DB used by async runs."""
-    from pathlib import Path as _Path
-    default_dir = _Path.home() / ".orchestration-engine"
-    default_dir.mkdir(exist_ok=True)
-    return str(default_dir / "engine.db")
+    """Return the path to the persistent on-disk DB used by async runs.
+
+    Thin string-returning wrapper around :func:`orchestration_engine.db.default_db_path`
+    preserved for callsite signature compatibility (Issue #864 consolidation).
+    """
+    return str(default_db_path())
 
 
 @main.command("launch")
@@ -5448,7 +5385,7 @@ def reviews_list(limit: int, offset: int, reviews_db_path: Optional[Path]) -> No
     """List pipeline runs pending human review."""
     from .db import Database as _Database
 
-    _db_path = reviews_db_path or (Path.home() / ".orchestration-engine" / "engine.db")
+    _db_path = reviews_db_path or default_db_path()
     db = _Database(_db_path)
     items = db.list_pending_reviews(limit=limit, offset=offset)
     total = db.count_pending_reviews()
@@ -5482,7 +5419,7 @@ def reviews_approve(run_id: str, reviewed_by: Optional[str], note: Optional[str]
     """Approve a pipeline run that is pending human review."""
     from .db import Database as _Database
 
-    _db_path = reviews_db_path or (Path.home() / ".orchestration-engine" / "engine.db")
+    _db_path = reviews_db_path or default_db_path()
     db = _Database(_db_path)
 
     run = db.get_pipeline_run(run_id)
@@ -5519,7 +5456,7 @@ def reviews_reject(run_id: str, reason: str, reviewed_by: Optional[str],
     """
     from .db import Database as _Database
 
-    _db_path = reviews_db_path or (Path.home() / ".orchestration-engine" / "engine.db")
+    _db_path = reviews_db_path or default_db_path()
     db = _Database(_db_path)
 
     run = db.get_pipeline_run(run_id)

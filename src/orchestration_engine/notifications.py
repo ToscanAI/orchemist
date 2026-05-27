@@ -26,6 +26,8 @@ from typing import Any, List, Optional
 import urllib.request
 import urllib.error
 
+from .env_utils import env_int
+
 logger = logging.getLogger(__name__)
 
 
@@ -665,11 +667,8 @@ class NotificationDispatcher:
                 return default
             return str(val).strip().lower() in ("1", "true", "yes")
 
-        def _int(val: str | None, default: int) -> int:
-            try:
-                return int(val) if val is not None else default
-            except (TypeError, ValueError):
-                return default
+        # _int previously defined here was lifted to env_utils.env_int (Issue #865).
+        _int = env_int  # local alias preserves the original call-site syntax
 
         openclaw_gateway_url = os.environ.get(
             "NOTIFY_OPENCLAW_GATEWAY_URL",
