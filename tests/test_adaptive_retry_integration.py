@@ -369,6 +369,8 @@ class TestAdaptiveRetryEnginePlanAndExecute:
 
         from tests._helpers import pipeline_run_dict
         for i in range(2):
+            # status='failed' (production-faithful for historical retries that
+            # exhausted) so the #735 RC-4 dedup does NOT treat them as active.
             db_with_original_run.insert_pipeline_run(pipeline_run_dict(
                 f"retry-pre-{i:03d}",
                 template_path="/tmp/t.yaml",
@@ -376,6 +378,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
                 mode="dry_run",
                 output_dir=f"/tmp/out/retry-pre-{i:03d}",
                 retry_of_run_id="orig-001",
+                status="failed",
             ))
 
         run = _base_run(run_id="orig-001", input_json={"budget_usd": 10.0},
@@ -433,7 +436,8 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         mock_popen.return_value = mock_proc
 
         from tests._helpers import pipeline_run_dict
-        # Insert a first retry that itself points at orig-001
+        # status='failed' so #735 RC-4 dedup does NOT treat this prior retry as
+        # active (a chained retry against a failed prior is the normal path).
         db_with_original_run.insert_pipeline_run(pipeline_run_dict(
             "retry-001",
             template_path="/tmp/template.yaml",
@@ -442,6 +446,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
             mode="dry_run",
             output_dir="/tmp/out/retry-001",
             retry_of_run_id="orig-001",
+            status="failed",
         ))
 
         # Now plan_and_execute for the first retry run

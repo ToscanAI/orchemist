@@ -266,7 +266,7 @@ class TestRetryOnTransientError:
         """First call raises RuntimeError (TRANSIENT); second call succeeds."""
         call_count = {"n": 0}
 
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise RuntimeError("Transient network error")
@@ -286,7 +286,7 @@ class TestRetryOnTransientError:
         """Two RuntimeErrors then success → all three attempts used."""
         call_count = {"n": 0}
 
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             call_count["n"] += 1
             if call_count["n"] < 3:
                 raise RuntimeError("Transient error")
@@ -301,7 +301,7 @@ class TestRetryOnTransientError:
 
     def test_fails_after_max_attempts_exhausted(self, executor, sample_task):
         """All three attempts fail → FAILED result."""
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             raise RuntimeError("Always failing")
 
         with patch.object(executor, "_run_session", side_effect=mock_run_session), \
@@ -315,7 +315,7 @@ class TestRetryOnTransientError:
         """TimeoutError should trigger a retry (TIMEOUT error type)."""
         call_count = {"n": 0}
 
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise TimeoutError("Session did not complete within 60s timeout")
@@ -332,7 +332,7 @@ class TestRetryOnTransientError:
         """RateLimitError (429) should trigger a retry."""
         call_count = {"n": 0}
 
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise RateLimitError(body="rate limited", retry_after=5)
@@ -347,7 +347,7 @@ class TestRetryOnTransientError:
 
     def test_timeout_error_code_on_final_failure(self, executor, sample_task):
         """When all retries fail with TimeoutError, error code must be 'timeout'."""
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             raise TimeoutError("Session timed out")
 
         with patch.object(executor, "_run_session", side_effect=mock_run_session), \
@@ -359,7 +359,7 @@ class TestRetryOnTransientError:
 
     def test_rate_limit_error_code_on_final_failure(self, executor, sample_task):
         """When all retries fail with RateLimitError, error code must be 'rate_limited'."""
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             raise RateLimitError(body="rate limited")
 
         with patch.object(executor, "_run_session", side_effect=mock_run_session), \
@@ -376,7 +376,7 @@ class TestNoRetryOnPermanentError:
     def test_auth_error_not_retried(self, executor, sample_task):
         call_count = {"n": 0}
 
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             call_count["n"] += 1
             raise AuthenticationError(status_code=401, body="unauthorized")
 
@@ -391,7 +391,7 @@ class TestNoRetryOnPermanentError:
     def test_garbage_collected_not_retried(self, executor, sample_task):
         call_count = {"n": 0}
 
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             call_count["n"] += 1
             raise RuntimeError(
                 "Session sess-abc was garbage-collected: history previously had messages"
@@ -407,7 +407,7 @@ class TestNoRetryOnPermanentError:
     def test_404_http_error_not_retried(self, executor, sample_task):
         call_count = {"n": 0}
 
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             call_count["n"] += 1
             raise GatewayHTTPError(status_code=404, body="not found")
 
@@ -427,7 +427,7 @@ class TestBackoffTiming:
         call_count = {"n": 0}
         sleep_calls = []
 
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             call_count["n"] += 1
             if call_count["n"] < 2:
                 raise RuntimeError("fail")
@@ -449,7 +449,7 @@ class TestBackoffTiming:
         call_count = {"n": 0}
         sleep_calls = []
 
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             call_count["n"] += 1
             if call_count["n"] < 3:
                 raise RuntimeError("fail")
@@ -486,7 +486,7 @@ class TestBackoffTiming:
         """The very first attempt must not incur any sleep."""
         sleep_calls = []
 
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             return "immediate success", 10
 
         def mock_sleep(seconds):
@@ -520,33 +520,38 @@ class TestCircuitBreaker:
                 cb.record_failure(threshold)
 
     def test_circuit_breaker_open_prevents_execution(self, executor, sample_task):
-        """When CB is open, execute() returns FAILED immediately without calling _run_session."""
-        model = "anthropic/claude-sonnet-4-6"
-        self._exhaust_circuit_breaker(executor, sample_task, model, threshold=5)
+        """When ALL tiers' CBs are open, execute() returns FAILED with
+        ``all_tiers_unavailable`` (per #480: single-tier CB-open now escalates).
+        """
+        for m in ("anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-6"):
+            self._exhaust_circuit_breaker(executor, sample_task, m, threshold=5)
 
         with patch.object(executor, "_run_session") as mock_run:
             result = executor.execute(sample_task)
 
         assert result.state == TaskState.FAILED
-        assert result.errors[0].code == "circuit_open"
+        assert result.errors[0].code == "all_tiers_unavailable"
         mock_run.assert_not_called()
 
     def test_circuit_breaker_error_message_mentions_model(self, executor, sample_task):
-        model = "anthropic/claude-sonnet-4-6"
-        self._exhaust_circuit_breaker(executor, sample_task, model, threshold=5)
+        """Error message must enumerate probed tiers (#480 / adversary F4)."""
+        sonnet = "anthropic/claude-sonnet-4-6"
+        opus = "anthropic/claude-opus-4-6"
+        for m in (sonnet, opus):
+            self._exhaust_circuit_breaker(executor, sample_task, m, threshold=5)
 
         with patch.object(executor, "_run_session"):
             result = executor.execute(sample_task)
 
-        assert model in result.errors[0].message
+        assert sonnet in result.errors[0].message or opus in result.errors[0].message
 
     def test_circuit_breaker_opens_after_threshold_failures(
         self, executor, sample_task
     ):
-        """After 5 consecutive failures, subsequent execute() should return circuit_open."""
+        """After enough failures across BOTH tiers, subsequent execute() returns all_tiers_unavailable (per #480 — single-tier CB-open now escalates to opus)."""
         call_count = {"n": 0}
 
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             call_count["n"] += 1
             raise RuntimeError("persistent failure")
 
@@ -566,7 +571,7 @@ class TestCircuitBreaker:
         assert result1.state == TaskState.FAILED
         assert result2.state == TaskState.FAILED
         assert result3.state == TaskState.FAILED
-        assert result3.errors[0].code == "circuit_open"
+        assert result3.errors[0].code == "all_tiers_unavailable"
 
     def test_circuit_breaker_resets_on_success(self, executor, sample_task):
         """A successful execute() should reset the circuit breaker."""
@@ -576,7 +581,7 @@ class TestCircuitBreaker:
             _CIRCUIT_BREAKERS[model] = CircuitBreakerState(name=model)
             _CIRCUIT_BREAKERS[model].failure_count = 2
 
-        def mock_run_session(prompt, model_str, thinking, timeout=None):
+        def mock_run_session(prompt, model_str, thinking, timeout=None, **kwargs):
             return "success", 50
 
         with patch.object(executor, "_run_session", side_effect=mock_run_session), \
@@ -595,7 +600,7 @@ class TestCircuitBreaker:
         model = "anthropic/claude-sonnet-4-6"
 
         # Exhaust CB via executor_a — need 5+ failures to trip threshold
-        def always_fail(prompt, model_str, thinking, timeout=None):
+        def always_fail(prompt, model_str, thinking, timeout=None, **kwargs):
             raise RuntimeError("fail")
 
         with patch.object(executor_a, "_run_session", side_effect=always_fail), \
@@ -615,7 +620,7 @@ class TestCircuitBreaker:
             result_b = executor_b.execute(sample_task)
             mock_run_b.assert_not_called()
 
-        assert result_b.errors[0].code == "circuit_open"
+        assert result_b.errors[0].code == "all_tiers_unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +634,7 @@ class TestPartialOutputPreserved:
     def test_partial_output_in_result_after_all_retries_fail(
         self, executor, sample_task
     ):
-        def mock_run_session(prompt, model, thinking, timeout=None):
+        def mock_run_session(prompt, model, thinking, timeout=None, **kwargs):
             err = RuntimeError("Sub-agent ended with stopReason='error'.")
             err.partial_output = "SUBSTANTIAL PARTIAL OUTPUT HERE"
             err.partial_tokens = 250
