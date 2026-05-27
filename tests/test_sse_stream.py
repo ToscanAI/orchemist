@@ -38,19 +38,16 @@ def _make_client(tmp_path: Path) -> TestClient:
 
 def _seed_run(db: Database, run_id: str, status: str = "running") -> None:
     """Insert a minimal pipeline_runs row for testing."""
-    import tempfile, os
+    import tempfile
+    from tests._helpers import pipeline_run_dict
     out_dir = tempfile.mkdtemp()
-    db.insert_pipeline_run(
-        {
-            "run_id": run_id,
-            "template_path": "/fake/template.yaml",
-            "template_id": "fake-template",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": out_dir,
-            "status": status,
-        }
-    )
+    db.insert_pipeline_run(pipeline_run_dict(
+        run_id,
+        template_path="/fake/template.yaml",
+        template_id="fake-template",
+        output_dir=out_dir,
+        status=status,
+    ))
 
 
 def _parse_sse_events(raw_text: str) -> list[dict]:
