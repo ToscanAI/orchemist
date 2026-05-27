@@ -76,12 +76,9 @@ class TestSequencerCallsiteUsesLowercase:
     was uppercase — a latent contract drift waiting to bite."""
 
     def test_sequencer_source_uses_lowercase_compare(self):
-        from pathlib import Path
+        from tests.conftest import read_src
 
-        seq = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "sequencer.py"
-        ).read_text(encoding="utf-8")
+        seq = read_src("sequencer.py")
         # The canonical line stripping verdicts must do a `.lower()` compare
         # against the (now-lowercase) keyword set. The previous `.upper()` form
         # would silently miss because the canonical set is lowercase.

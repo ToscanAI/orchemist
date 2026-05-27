@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import read_src
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -493,10 +495,7 @@ class TestSourceWiring:
     expected call sites (count_active and the API startup hook)."""
 
     def test_count_active_calls_sweep(self):
-        db_src = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "db.py"
-        ).read_text()
+        db_src = read_src("db.py")
         # Match the wiring: count_active_pipeline_runs must call sweep.
         # We look for "sweep_zombie_runs" within the body region of
         # count_active_pipeline_runs.
@@ -511,10 +510,7 @@ class TestSourceWiring:
         )
 
     def test_api_module_references_sweep(self):
-        api_src = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "web" / "api.py"
-        ).read_text()
+        api_src = read_src("web/api.py")
         assert "sweep_zombie_runs" in api_src, (
             "web/api.py no longer references sweep_zombie_runs — "
             "the startup sweep hook is gone"

@@ -321,12 +321,9 @@ class TestEndToEndAgainstRealisticPhase0Prompt:
         Belt-and-suspenders against future refactors that might remove the
         call without removing the test.
         """
-        from pathlib import Path
+        from tests.conftest import read_src
 
-        cli_src = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "cli.py"
-        ).read_text()
+        cli_src = read_src("cli.py")
 
         # The helper must be invoked at least twice — once for run_template,
         # once for pipeline_launch. (Scenario_run adds a third call which is

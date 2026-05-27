@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import read_src
+
 
 # ---------------------------------------------------------------------------
 # count_active_pipeline_runs() — DB-level unit tests
@@ -192,30 +194,21 @@ class TestSourceWiring:
     """Belt-and-suspenders against future refactors that remove the check."""
 
     def test_launcher_source_calls_count_active(self):
-        api_src = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "web" / "api.py"
-        ).read_text()
+        api_src = read_src("web/api.py")
         assert "count_active_pipeline_runs()" in api_src, (
             "web/api.py no longer calls count_active_pipeline_runs() — "
             "the #839 backpressure check is gone."
         )
 
     def test_launcher_source_references_env_var(self):
-        api_src = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "web" / "api.py"
-        ).read_text()
+        api_src = read_src("web/api.py")
         assert "ORCH_MAX_DAEMONS" in api_src, (
             "ORCH_MAX_DAEMONS env var no longer referenced in web/api.py "
             "— the configurable cap is gone."
         )
 
     def test_launcher_source_emits_retry_after_header(self):
-        api_src = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "web" / "api.py"
-        ).read_text()
+        api_src = read_src("web/api.py")
         assert 'Retry-After' in api_src, (
             "Retry-After header no longer emitted on 429 — clients lose "
             "the back-off hint."

@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import read_src
+
 
 @pytest.fixture
 def limiter():
@@ -177,10 +179,7 @@ class TestMetricsEndpoint:
 class TestSourceWiring:
     @pytest.fixture(autouse=True)
     def _src(self):
-        self.src = (
-            Path(__file__).resolve().parent.parent
-            / "src" / "orchestration_engine" / "web" / "api.py"
-        ).read_text()
+        self.src = read_src("web/api.py")
 
     def test_stream_endpoint_calls_admit(self):
         assert "_sse_limiter.admit(client_ip)" in self.src, (
