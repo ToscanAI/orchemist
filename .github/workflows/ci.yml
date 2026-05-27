@@ -22,10 +22,19 @@ jobs:
       # Docs-only gate (#889): docs-only PRs short-circuit substantive steps
       # but the job still reports SUCCESS (not SKIPPED) so branch-protection
       # required-check rules remain satisfied for docs PRs.
+      # dorny/paths-filter compares HEAD against the PR base on pull_request
+      # events (correct behavior). On push events to main, it compares against
+      # the previous commit on the branch — which can produce surprising
+      # results (e.g. a push that merges a docs-only PR may evaluate to
+      # docs_only=true even though main pushes are meant to run full CI).
+      # We mitigate by explicitly setting `base: main` so push events compare
+      # against the configured base; for pull_request events, the action's
+      # default base-detection still wins.
       - name: Detect docs-only changes
         id: changes
         uses: dorny/paths-filter@v3
         with:
+          base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
           filters: |
             docs_only:
               - '**.md'
@@ -88,10 +97,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # dorny/paths-filter compares HEAD against the PR base on pull_request
+      # events (correct behavior). On push events to main, it compares against
+      # the previous commit on the branch — which can produce surprising
+      # results (e.g. a push that merges a docs-only PR may evaluate to
+      # docs_only=true even though main pushes are meant to run full CI).
+      # We mitigate by explicitly setting `base: main` so push events compare
+      # against the configured base; for pull_request events, the action's
+      # default base-detection still wins.
       - name: Detect docs-only changes
         id: changes
         uses: dorny/paths-filter@v3
         with:
+          base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
           filters: |
             docs_only:
               - '**.md'
@@ -104,6 +122,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: pyproject.toml
 
       - name: Install Python dependencies (engine)
         if: steps.changes.outputs.docs_only != 'true'
@@ -142,7 +162,6 @@ jobs:
           echo "engine pid: $(cat /tmp/api-server.pid)"
 
       - name: Wait for engine ready
-        id: engine_ready
         if: steps.changes.outputs.docs_only != 'true'
         continue-on-error: true
         run: |

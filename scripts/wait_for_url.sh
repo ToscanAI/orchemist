@@ -28,6 +28,15 @@ URL="$1"
 TIMEOUT="$2"
 LABEL="$3"
 
+# Validate TIMEOUT is a non-negative integer. Without this, a non-numeric
+# value (e.g. "foo") would expand into the C-style for-loop arithmetic
+# context as a name reference and behave unpredictably under `set -u`.
+if ! [[ "$TIMEOUT" =~ ^[0-9]+$ ]]; then
+    echo "Usage: wait_for_url.sh <url> <timeout_seconds> <label>" >&2
+    echo "       (timeout_seconds must be a non-negative integer; got '$TIMEOUT')" >&2
+    exit 1
+fi
+
 for ((i=1; i<=TIMEOUT; i++)); do
     if curl -sf "$URL" > /dev/null 2>&1; then
         echo "$LABEL ready in ${i}s"

@@ -34,7 +34,7 @@ Exit codes:
 
 This is the structural acceptance gate. It runs in milliseconds, doesn't
 require GitHub Actions hardware, and can be invoked from a pre-commit hook
-or a Python pytest case (see tests/test_workflow_shape.py).
+or directly from a CI step.
 """
 
 from __future__ import annotations
