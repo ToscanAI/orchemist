@@ -405,6 +405,10 @@ def create_api_app(
     from orchestration_engine import __version__
     from orchestration_engine.db import Database, TERMINAL_STATUSES
     from orchestration_engine.templates import TemplateEngine, TemplateNotFoundError
+    from orchestration_engine.timestamps import (
+        normalize_row as _normalize_row,
+        normalize_ts as _normalize_ts,
+    )
     from orchestration_engine.webhooks import InputMapper, TriggerMatcher
 
     effective_db_path = db_path or _get_persistent_db_path()
@@ -2603,50 +2607,10 @@ def create_api_app(
     # the `review_outcomes` table (each row IS a decision: APPROVE / REQUEST_CHANGES
     # by a specific reviewer at a specific time) so we don't need a new table.
 
-    # SQLite's `CURRENT_TIMESTAMP` writes naive UTC strings ("YYYY-MM-DDTHH:MM:SS").
-    # JavaScript's `new Date("2026-...")` interprets timezone-less strings as
-    # *local* time, so a CEST client (UTC+2) sees every "X min ago" off by +2h.
-    # We normalise on the way out: any string that looks like a naive ISO
-    # timestamp gets a trailing `Z` appended so the client knows it's UTC.
-    # Already-tagged timestamps (`...Z`, `...+00:00`, `...-05:00`) pass through.
-    _NAIVE_ISO_RE = __import__("re").compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$")
-
-    def _normalize_ts(value: Any) -> Any:
-        """Best-effort UTC normalization of a single field value."""
-        if isinstance(value, str) and _NAIVE_ISO_RE.match(value):
-            return value + "Z"
-        return value
-
-    def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
-        """Defensive post-processor for one DB row before serialisation.
-
-        Two normalisations:
-        1. Z-suffix any naive ISO timestamp (JS interprets TZ-less strings as
-           local time, off by client UTC offset).
-        2. JSON-list fields that failed `_row_to_dict` parse keep their raw
-           string. The TS interfaces declare them as arrays; coerce
-           unparseable values back to ``[]`` so the frontend's `.length` /
-           `.slice()` / `.map()` calls don't throw on a corrupt row.
-        """
-        if not isinstance(row, dict):
-            return row
-        out = dict(row)
-        for key in ("created_at", "updated_at", "completed_at", "started_at",
-                    "last_run_at", "last_updated"):
-            if key in out:
-                out[key] = _normalize_ts(out[key])
-        # If a column declared as TEXT-of-JSON-list ends up as a non-list (parse
-        # failure or hand-edit), substitute the empty list so the frontend
-        # contract holds.
-        # `commits` is included for forward-compat: gate dicts (a different
-        # response shape) have that key, and if any future endpoint
-        # passes those rows through `_normalize_row` we want the
-        # array-typed contract preserved. Currently no harness endpoint
-        # actually returns rows with `commits`.
-        for list_key in ("affected_files", "issues_found", "commits"):
-            if list_key in out and not isinstance(out[list_key], list):
-                out[list_key] = []
-        return out
+    # ``_normalize_ts`` / ``_normalize_row`` live in ``orchestration_engine.timestamps``
+    # (imported at the top of this function). The closure that previously held
+    # both helpers was hoisted to a module so ``db.py`` could share the same
+    # UTC-tagging logic (#876).
 
     @app.get("/api/v1/regressions")
     async def list_regressions_endpoint(
@@ -3137,11 +3101,7 @@ def create_api_app(
                             "tokens_consumed": evt.get("tokens_consumed"),
                             "cost_usd": evt.get("cost_usd"),
                             "state": evt.get("state"),
-                            "created_at": (
-                                evt["created_at"].isoformat()
-                                if hasattr(evt.get("created_at"), "isoformat")
-                                else evt.get("created_at")
-                            ),
+                            "created_at": _normalize_ts(evt.get("created_at")),
                             # Enriched fields (#747)
                             "model_tier": meta.get("model_tier"),
                             "model_used": meta.get("model_used"),

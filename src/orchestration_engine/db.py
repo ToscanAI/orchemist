@@ -24,6 +24,7 @@ sqlite3.register_converter(
 )
 
 from .schemas import TaskState, OrchestraState, Priority, TaskType
+from .timestamps import normalize_ts
 
 # ---------------------------------------------------------------------------
 # Shared terminal-state set — single source of truth used by db, api, and
@@ -2823,12 +2824,13 @@ class Database:
             for r in cur.fetchall():
                 before = _json.loads(r["before_json"]) if r["before_json"] else None
                 after = _json.loads(r["after_json"]) if r["after_json"] else None
-                # Stringify created_at — SQLite returns a datetime object
+                # Normalise created_at — SQLite returns a datetime object
                 # when PARSE_DECLTYPES is set (see get_connection), but the
-                # API surface is JSON so we need a string. ISO-8601 keeps
-                # the value unambiguous for downstream callers.
-                created = r["created_at"]
-                created_str = created.isoformat() if hasattr(created, "isoformat") else str(created)
+                # API surface is JSON so we need a string. ``normalize_ts``
+                # (from ``.timestamps``) handles datetime -> isoformat and
+                # Z-suffixes naive UTC strings so JS clients don't
+                # misinterpret them as local time. (#876)
+                created_str = normalize_ts(r["created_at"])
                 rows.append({
                     "id": r["id"],
                     "action": r["action"],
