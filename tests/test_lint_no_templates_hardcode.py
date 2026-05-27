@@ -27,17 +27,33 @@ _FORBIDDEN_PATH = re.compile(
     r'/\s*["\']templates["\']'   # / "templates" or / 'templates'
 )
 
+# Files allowlisted to reference templates/ by hardcoded filesystem path.
+# Each entry must have a documented reason — test files SHOULD use examples/
+# (issue #632) unless they exist specifically to monitor the bundled
+# production templates.
+_ALLOWLIST = {
+    # Drift lint between coding-pipeline-standard.yaml and coding-pipeline-skip-spec.yaml
+    # (issues #867 and #869). The test under this file IS the drift check for
+    # the bundled templates, so by definition it must reference templates/ by path.
+    "test_check_template_sync.py",
+}
+
 
 def test_no_test_file_references_templates_dir_by_hardcoded_path():
     """No file in tests/ may construct a filesystem path into templates/.
 
     After Issue #632, stable test fixtures live in examples/ and no test
     file should construct a Path that traverses into templates/.
+
+    Allowlist: files in _ALLOWLIST exist specifically to monitor the bundled
+    production templates and are exempted by design.
     """
     violations = []
     skip_self = Path(__file__).name
     for py_file in sorted(TESTS_DIR.glob("*.py")):
         if py_file.name == skip_self:
+            continue
+        if py_file.name in _ALLOWLIST:
             continue
         source = py_file.read_text(encoding="utf-8")
         for lineno, line in enumerate(source.splitlines(), 1):
