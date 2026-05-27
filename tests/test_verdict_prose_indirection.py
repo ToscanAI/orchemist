@@ -346,16 +346,26 @@ class TestSingleSourceOfTruthInvariants:
         )
 
     def test_genuinely_new_phrase_appears_in_section_5_only(
-        self, yaml_text: str
+        self, yaml_lines: list[str]
     ) -> None:
         """The §5 NEW-OK 'genuinely new' wording (canonical) must appear
-        only in §5 — the drifted SPEC/SPEC_ADVERSARY restatements are gone."""
-        # §5 has two 'genuinely new' mentions: the bullet and the §6 example.
-        # SPEC and SPEC_ADVERSARY restatements ALSO used 'genuinely new'.
-        # After fix: only §5 retains this phrase (count <= 2 from §5 itself).
-        count = yaml_text.count("genuinely new")
-        assert count <= 2, (
-            f"expected at most 2 'genuinely new' occurrences (both in §5: the "
-            f"NEW-OK bullet and the §6 example). Found {count} — a restatement "
-            f"may still be present."
+        only in §5 — the drifted SPEC/SPEC_ADVERSARY restatements are gone.
+
+        The §5 ``existing_symbols_inventory`` phase contains the phrase three
+        times by design: twice on the NEW-OK bullet line ('genuinely new; ...
+        (none — genuinely new)') and once on the §6 example placeholder. The
+        assertion here is precisely that NO occurrence appears OUTSIDE the
+        ``existing_symbols_inventory`` phase — equivalently: SPEC,
+        SPEC_ADVERSARY, and every other phase must be free of the phrase.
+        """
+        inv_start, inv_end = _find_phase_bounds(
+            yaml_lines, "existing_symbols_inventory"
+        )
+        outside_inventory = "\n".join(
+            yaml_lines[: inv_start - 1] + yaml_lines[inv_end:]
+        )
+        assert "genuinely new" not in outside_inventory, (
+            "'genuinely new' must appear only inside the "
+            "existing_symbols_inventory phase (§5 + §6 example). Any "
+            "occurrence elsewhere indicates a restatement is still present."
         )
