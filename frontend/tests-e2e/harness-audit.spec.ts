@@ -75,9 +75,9 @@ async function shot(page: Page, screen: string, name: string) {
 // rows. Skip in CI per issue #889's flake-remediation guidance; runs locally
 // against a populated dev DB as normal. Tracked for re-enablement once CI
 // seeds a known DB fixture.
-test.skip(!!process.env['CI'], 'harness-audit needs initialised engine + DB fixtures; tracked as #889 follow-up');
 
 test('harness audit · walk every screen', async ({ browser }) => {
+  test.skip(!!process.env['CI'], 'harness-audit needs initialised engine + DB fixtures; tracked as #889 follow-up');
   test.setTimeout(300_000);
   // Inherit the project baseURL from playwright.config.ts (respects PW_BASE_URL)
   // — `browser.newContext()` does NOT auto-apply the project's baseURL the way
