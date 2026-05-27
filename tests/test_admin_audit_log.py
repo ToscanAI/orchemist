@@ -17,22 +17,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+# #874: ``isolated_admin`` composes the canonical ``api_client`` (sets
+# ORCH_DB_PATH + yields TestClient) with canonical ``admin_json_isolated``
+# (sets ORCH_ADMIN_PATH + resets feature_flags cache before/after).
 @pytest.fixture
-def isolated_admin(tmp_path, monkeypatch):
-    """Point both the runtime reader (feature_flags) AND the admin API
-    write handler at a tmp admin.json. Yields (client, admin_path)."""
-    from orchestration_engine import feature_flags as ff
-    from orchestration_engine.web.api import create_api_app
-
-    admin_path = tmp_path / "admin.json"
-    monkeypatch.setenv("ORCH_ADMIN_PATH", str(admin_path))
-    # Also point engine.db at tmp so the audit log doesn't pollute
-    # ~/.orchestration-engine/engine.db
-    db_path = tmp_path / "engine.db"
-    monkeypatch.setenv("ORCH_DB_PATH", str(db_path))
-    ff.reset_cache()
-    yield TestClient(create_api_app(db_path=str(db_path))), admin_path
-    ff.reset_cache()
+def isolated_admin(api_client, admin_json_isolated):
+    """Yields (client, admin_path) — bound to canonical conftest fixtures."""
+    client, _ = api_client
+    yield client, admin_json_isolated
 
 
 class TestAuditLogTableExists:

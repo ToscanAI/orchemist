@@ -28,15 +28,9 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def admin_json_isolated(tmp_path, monkeypatch):
-    """Point feature_flags at a tmp admin.json + reset cache. Yields the path."""
-    from orchestration_engine import feature_flags as ff
-    path = tmp_path / "admin.json"
-    monkeypatch.setenv("ORCH_ADMIN_PATH", str(path))
-    ff.reset_cache()
-    yield path
-    ff.reset_cache()
+# #874: ``admin_json_isolated`` is now sourced from tests/conftest.py — the
+# canonical fixture has identical semantics (sets ORCH_ADMIN_PATH + resets
+# the feature_flags cache before and after the test).
 
 
 def _write_admin(path: Path, **flag_overrides: bool) -> None:
