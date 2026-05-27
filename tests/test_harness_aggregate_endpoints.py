@@ -42,15 +42,18 @@ def client_and_db(tmp_path: Path, monkeypatch):
 # ── Shared helpers ───────────────────────────────────────────────────────────
 
 
+# #862 CRITICAL drift target: this was raw SQL ``INSERT INTO pipeline_runs(...)``
+# which silently omits any column added by a future schema migration. Now
+# routed through the dict-based helper so column defaults are picked up.
 def _insert_pipeline_run(db, run_id: str) -> None:
-    with db._locked():
-        c = db.get_connection()
-        c.execute(
-            "INSERT INTO pipeline_runs(run_id, template_path, template_id, input_json, mode, output_dir) "
-            "VALUES(?,?,?,?,?,?)",
-            (run_id, "/tmp/fake.yaml", "fake", "{}", "dry-run", "/tmp"),
-        )
-        c.commit()
+    from tests._helpers import insert_pipeline_run as _impl
+    _impl(
+        db,
+        run_id=run_id,
+        template_path="/tmp/fake.yaml",
+        template_id="fake",
+        output_dir="/tmp",
+    )
 
 
 def _insert_regression(db, regression_id: str, status: str = "detected") -> None:

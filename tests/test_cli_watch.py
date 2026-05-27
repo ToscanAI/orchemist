@@ -14,16 +14,16 @@ from orchestration_engine.db import Database
 @pytest.fixture
 def db():
     """In-memory database with a pipeline run."""
+    from tests._helpers import pipeline_run_dict
     _db = Database(db_path=Path(":memory:"))
-    _db.insert_pipeline_run({
-        "run_id": "watch-test-1",
-        "template_path": "templates/coding-pipeline-v1.yaml",
-        "template_id": "coding-pipeline-v1",
-        "input_json": "{}",
-        "mode": "openclaw",
-        "output_dir": "/tmp/watch-test",
-        "status": "pending_review",
-    })
+    _db.insert_pipeline_run(pipeline_run_dict(
+        "watch-test-1",
+        template_path="templates/coding-pipeline-v1.yaml",
+        template_id="coding-pipeline-v1",
+        mode="openclaw",
+        output_dir="/tmp/watch-test",
+        status="pending_review",
+    ))
     return _db
 
 
@@ -180,18 +180,18 @@ class TestWatchWithEvents:
 
     def test_events_displayed_before_completion(self):
         """Events are fetched and displayed for completed runs."""
+        from tests._helpers import pipeline_run_dict
         _db = Database(db_path=Path(":memory:"))
-        _db.insert_pipeline_run({
-            "run_id": "evt-run",
-            "template_path": "t.yaml",
-            "template_id": "test",
-            "input_json": "{}",
-            "mode": "openclaw",
-            "output_dir": "/tmp/test",
-            "status": "success",
-            "scoring_status": "passed",
-            "scoring_score": 1.0,
-        })
+        _db.insert_pipeline_run(pipeline_run_dict(
+            "evt-run",
+            template_path="t.yaml",
+            template_id="test",
+            mode="openclaw",
+            output_dir="/tmp/test",
+            status="success",
+            scoring_status="passed",
+            scoring_score=1.0,
+        ))
 
         _db.insert_pipeline_run_event(
             run_id="evt-run",

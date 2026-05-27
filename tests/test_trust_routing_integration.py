@@ -39,15 +39,15 @@ def _make_db() -> Database:
 
 
 def _seed_run(db: Database, run_id: str, output_dir: Path) -> None:
-    db.insert_pipeline_run({
-        "run_id": run_id,
-        "template_path": "/tmp/fake_template.yaml",
-        "template_id": "coding-pipeline-v1",
-        "input_json": '{"repo_url": "https://github.com/owner/repo", "task_type": "bugfix"}',
-        "mode": "dry-run",
-        "output_dir": str(output_dir),
-        "status": "running",
-    })
+    from tests._helpers import pipeline_run_dict
+    db.insert_pipeline_run(pipeline_run_dict(
+        run_id,
+        template_path="/tmp/fake_template.yaml",
+        template_id="coding-pipeline-v1",
+        input_json='{"repo_url": "https://github.com/owner/repo", "task_type": "bugfix"}',
+        output_dir=str(output_dir),
+        status="running",
+    ))
 
 
 def _make_confidence_result(score: float) -> Any:

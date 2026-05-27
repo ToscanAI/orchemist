@@ -30,16 +30,16 @@ from click.testing import CliRunner
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def in_memory_db():
-    """Return an in-memory Database instance with the new pipeline_runs table."""
-    from orchestration_engine.db import Database
-    return Database(":memory:")
+# #863: in_memory_db now sourced from tests/conftest.py canonical fixture.
 
 
 @pytest.fixture
 def tmp_db(tmp_path):
-    """Return a file-backed Database instance (db_path accessible for CLI tests)."""
+    """Return a file-backed Database instance (db_path accessible for CLI tests).
+
+    Aliased to a tmp_path/"test.db" path so existing CLI tests that capture
+    ``tmp_db.db_path`` continue to find the same file name they reference.
+    """
     from orchestration_engine.db import Database
     return Database(tmp_path / "test.db")
 
@@ -293,15 +293,14 @@ class TestStatusCommandFormatting:
         """'orch status' with no args lists recent pipeline runs."""
         from orchestration_engine.cli import main
 
-        # Insert a run into tmp_db
-        tmp_db.insert_pipeline_run({
-            "run_id": "test0001",
-            "template_path": str(tmp_path / "t.yaml"),
-            "template_id": "test-pipe",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": str(tmp_path / "out"),
-        })
+        # Insert a run into tmp_db (#875: via pipeline_run_dict factory)
+        from tests._helpers import pipeline_run_dict
+        tmp_db.insert_pipeline_run(pipeline_run_dict(
+            "test0001",
+            template_path=str(tmp_path / "t.yaml"),
+            template_id="test-pipe",
+            output_dir=str(tmp_path / "out"),
+        ))
 
         # Patch Database at module level to return our tmp_db
         with patch("orchestration_engine.cli.Database", return_value=tmp_db):
@@ -315,14 +314,13 @@ class TestStatusCommandFormatting:
         """'orch status <run-id>' shows phase progress."""
         from orchestration_engine.cli import main
 
-        tmp_db.insert_pipeline_run({
-            "run_id": "detail01",
-            "template_path": str(tmp_path / "t.yaml"),
-            "template_id": "my-pipeline",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": str(tmp_path / "out"),
-        })
+        from tests._helpers import pipeline_run_dict
+        tmp_db.insert_pipeline_run(pipeline_run_dict(
+            "detail01",
+            template_path=str(tmp_path / "t.yaml"),
+            template_id="my-pipeline",
+            output_dir=str(tmp_path / "out"),
+        ))
         tmp_db.update_pipeline_run(
             "detail01",
             status="running",
@@ -455,17 +453,18 @@ class TestStartCommand:
 
 class TestWaitCommand:
     def _insert_run(self, db, run_id: str, status: str, tmp_path) -> None:
+        # #862: route through the canonical helper.
+        from tests._helpers import insert_pipeline_run as _impl
         out_dir = tmp_path / run_id
         out_dir.mkdir(parents=True, exist_ok=True)
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": "/tmp/t.yaml",
-            "template_id": "test-pipe",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-            "status": status,
-        })
+        _impl(
+            db,
+            run_id=run_id,
+            status=status,
+            template_path="/tmp/t.yaml",
+            template_id="test-pipe",
+            output_dir=str(out_dir),
+        )
 
     def test_wait_success_exits_zero(self, cli_runner, tmp_db, tmp_path):
         """'orch wait' exits 0 when status=success."""
@@ -613,14 +612,13 @@ class TestLogsCommand:
         log_file = out_dir / ".orch-daemon.log"
         log_file.write_text("2026-01-01 10:00:00  INFO  Daemon starting\n")
 
-        tmp_db.insert_pipeline_run({
-            "run_id": "logs-run",
-            "template_path": str(tmp_path / "t.yaml"),
-            "template_id": "t",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-        })
+        from tests._helpers import pipeline_run_dict
+        tmp_db.insert_pipeline_run(pipeline_run_dict(
+            "logs-run",
+            template_path=str(tmp_path / "t.yaml"),
+            template_id="t",
+            output_dir=str(out_dir),
+        ))
 
         result = cli_runner.invoke(main, [
             "logs", "logs-run",
@@ -665,15 +663,15 @@ phases:
         db_path = tmp_path / "daemon.db"
         db = Database(db_path)
 
+        from tests._helpers import pipeline_run_dict
         run_id = "daemon01"
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(template_yaml),
-            "template_id": "mini-daemon",
-            "input_json": json.dumps({"topic": "AI"}),
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(template_yaml),
+            template_id="mini-daemon",
+            input_json=json.dumps({"topic": "AI"}),
+            output_dir=str(out_dir),
+        ))
 
         # run_daemon returns normally on success (no sys.exit)
         run_daemon(run_id, str(db_path))
@@ -701,15 +699,14 @@ phases:
         db_path = tmp_path / "bad.db"
         db = Database(db_path)
 
+        from tests._helpers import pipeline_run_dict
         run_id = "bad-run"
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(tmp_path / "does-not-exist.yaml"),
-            "template_id": "bad",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(tmp_path / "does-not-exist.yaml"),
+            template_id="bad",
+            output_dir=str(out_dir),
+        ))
 
         with pytest.raises(SystemExit):
             run_daemon(run_id, str(db_path))
@@ -744,15 +741,14 @@ phases:
         db_path = tmp_path / "pid.db"
         db = Database(db_path)
 
+        from tests._helpers import pipeline_run_dict
         run_id = "pid-run"
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(template_yaml),
-            "template_id": "pid-test",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(template_yaml),
+            template_id="pid-test",
+            output_dir=str(out_dir),
+        ))
 
         pid_file = out_dir / ".orch-daemon.pid"
 
@@ -787,15 +783,14 @@ phases:
         db_path = tmp_path / "log.db"
         db = Database(db_path)
 
+        from tests._helpers import pipeline_run_dict
         run_id = "log-run"
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(template_yaml),
-            "template_id": "log-test",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(template_yaml),
+            template_id="log-test",
+            output_dir=str(out_dir),
+        ))
 
         # run_daemon returns normally on success (no sys.exit)
         run_daemon(run_id, str(db_path))
@@ -822,20 +817,20 @@ class TestDaemonSequencerSelection:
     def _make_db_and_run(self, tmp_path, template_yaml: Path, run_id: str):
         """Helper: create DB, insert run record, return (db, db_path)."""
         from orchestration_engine.db import Database
+        from tests._helpers import pipeline_run_dict
 
         out_dir = tmp_path / run_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
         db_path = tmp_path / f"{run_id}.db"
         db = Database(db_path)
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(template_yaml),
-            "template_id": "test-pipe",
-            "input_json": json.dumps({"topic": "test"}),
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(template_yaml),
+            template_id="test-pipe",
+            input_json=json.dumps({"topic": "test"}),
+            output_dir=str(out_dir),
+        ))
         return db, db_path
 
     def test_no_transitions_selects_phase_sequencer(self, tmp_path):
@@ -1002,17 +997,17 @@ phases:
 
         out_dir = tmp_path / "sm-result-run"
         out_dir.mkdir(parents=True, exist_ok=True)
+        from tests._helpers import pipeline_run_dict
         db_path = tmp_path / "sm-result.db"
         db = Database(db_path)
         run_id = "sm-result-run"
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(template_yaml),
-            "template_id": "sm-result-pipe",
-            "input_json": json.dumps({"topic": "test"}),
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(template_yaml),
+            template_id="sm-result-pipe",
+            input_json=json.dumps({"topic": "test"}),
+            output_dir=str(out_dir),
+        ))
 
         # Should complete without error — SM result dict with extra keys is fine
         run_daemon(run_id, str(db_path))
@@ -1079,16 +1074,16 @@ class TestDaemonScoringStatusTracking:
         out_dir = tmp_path / run_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        from tests._helpers import pipeline_run_dict
         db_path = tmp_path / f"{run_id}.db"
         db = Database(db_path)
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(template_yaml),
-            "template_id": "scored-pipe",
-            "input_json": json.dumps({"topic": "AI"}),
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(template_yaml),
+            template_id="scored-pipe",
+            input_json=json.dumps({"topic": "AI"}),
+            output_dir=str(out_dir),
+        ))
         return db, db_path, out_dir
 
     def test_scoring_passed_sets_scoring_status_passed(self, tmp_path):
@@ -1187,17 +1182,17 @@ class TestDaemonScoringStatusTracking:
 
         out_dir = tmp_path / "no-sc-run"
         out_dir.mkdir(parents=True, exist_ok=True)
+        from tests._helpers import pipeline_run_dict
         db_path = tmp_path / "no-sc.db"
         db = Database(db_path)
         run_id = "no-sc-run"
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(template_yaml),
-            "template_id": "no-scenario-pipe",
-            "input_json": json.dumps({"topic": "AI"}),
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(template_yaml),
+            template_id="no-scenario-pipe",
+            input_json=json.dumps({"topic": "AI"}),
+            output_dir=str(out_dir),
+        ))
 
         run_daemon(run_id, str(db_path))
 
@@ -1221,18 +1216,18 @@ class TestDaemonScoringStatusTracking:
 
         out_dir = tmp_path / "skip-sc-run"
         out_dir.mkdir(parents=True, exist_ok=True)
+        from tests._helpers import pipeline_run_dict
         db_path = tmp_path / "skip-sc.db"
         db = Database(db_path)
         run_id = "skip-sc-run"
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(template_yaml),
-            "template_id": "scored-pipe",
-            "input_json": json.dumps({"topic": "AI"}),
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-            "skip_scoring": 1,
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(template_yaml),
+            template_id="scored-pipe",
+            input_json=json.dumps({"topic": "AI"}),
+            output_dir=str(out_dir),
+            skip_scoring=1,
+        ))
 
         run_daemon(run_id, str(db_path))
 
@@ -1735,18 +1730,18 @@ phases:
       Do something with {input[topic]}
 """)
 
+        from tests._helpers import pipeline_run_dict
         out_dir = tmp_path / f"out-{run_id}"
         out_dir.mkdir()
         db_path = tmp_path / f"{run_id}.db"
         db = Database(db_path)
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(template_yaml),
-            "template_id": "gate-test-pipeline",
-            "input_json": input_json,
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(template_yaml),
+            template_id="gate-test-pipeline",
+            input_json=input_json,
+            output_dir=str(out_dir),
+        ))
         return run_id, str(db_path), out_dir
 
     def _preflight_pass_patch(self):
@@ -1868,18 +1863,18 @@ phases:
       Do something with {{input[topic]}}
 """)
 
+        from tests._helpers import pipeline_run_dict
         out_dir = tmp_path / f"out-{run_id}"
         out_dir.mkdir()
         db_path = tmp_path / f"{run_id}.db"
         db = Database(db_path)
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(template_yaml),
-            "template_id": "cost-test-pipeline",
-            "input_json": input_json,
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(template_yaml),
+            template_id="cost-test-pipeline",
+            input_json=input_json,
+            output_dir=str(out_dir),
+        ))
         return run_id, str(db_path), out_dir
 
     def _preflight_pass_patch(self):
@@ -2512,19 +2507,19 @@ phases:
 """
         template_path.write_text(template_yaml)
 
+        from tests._helpers import pipeline_run_dict
         out_dir = tmp_path / f"out-{run_id}"
         out_dir.mkdir(parents=True, exist_ok=True)
         db_path = tmp_path / f"{run_id}.db"
         db = Database(db_path)
-        db.insert_pipeline_run({
-            "run_id": run_id,
-            "template_path": str(template_path),
-            "template_id": f"integration-scenario-{run_id}",
-            "input_json": input_json,
-            "mode": "dry-run",
-            "output_dir": str(out_dir),
-            "skip_scoring": skip_scoring,
-        })
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path=str(template_path),
+            template_id=f"integration-scenario-{run_id}",
+            input_json=input_json,
+            output_dir=str(out_dir),
+            skip_scoring=skip_scoring,
+        ))
         return run_id, str(db_path), out_dir
 
     def _standard_input(self) -> dict:

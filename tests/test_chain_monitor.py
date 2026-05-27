@@ -34,10 +34,7 @@ from orchestration_engine.chain_monitor import (
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def in_memory_db() -> Database:
-    """Return an in-memory Database with all migrations applied."""
-    return Database(":memory:")
+# #863: in_memory_db now sourced from tests/conftest.py canonical fixture.
 
 
 @pytest.fixture
@@ -67,20 +64,19 @@ def _insert_run(
     Also sets started_at / completed_at / scoring_score via update_pipeline_run
     since insert_pipeline_run does not accept those fields.
     """
-    run_data = {
-        "run_id": run_id,
-        "template_path": f"/tmp/{template_id}.yaml",
-        "template_id": template_id,
-        "input_json": json.dumps({}),
-        "mode": "dry-run",
-        "output_dir": f"/tmp/output/{run_id}",
-        "status": status,
-        "gateway_url": None,
-        "skip_scoring": 0,
-        "parent_run_id": parent_run_id,
-        "chain_depth": chain_depth,
-    }
-    db.insert_pipeline_run(run_data)
+    # #862: route through the canonical helper for the column defaults.
+    from tests._helpers import insert_pipeline_run as _impl
+    _impl(
+        db,
+        run_id=run_id,
+        status=status,
+        template_path=f"/tmp/{template_id}.yaml",
+        template_id=template_id,
+        output_dir=f"/tmp/output/{run_id}",
+        skip_scoring=0,
+        parent_run_id=parent_run_id,
+        chain_depth=chain_depth,
+    )
 
     update_kwargs: Dict[str, Any] = {}
     if started_at is not None:

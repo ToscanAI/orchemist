@@ -79,14 +79,15 @@ def db():
 @pytest.fixture
 def db_with_original_run(db):
     """DB with a single original pipeline_run row."""
-    db.insert_pipeline_run({
-        "run_id": "orig-001",
-        "template_path": "/tmp/template.yaml",
-        "template_id": "t1",
-        "input_json": json.dumps({"budget_usd": 1.0}),
-        "mode": "dry_run",
-        "output_dir": "/tmp/out/orig-001",
-    })
+    from tests._helpers import pipeline_run_dict
+    db.insert_pipeline_run(pipeline_run_dict(
+        "orig-001",
+        template_path="/tmp/template.yaml",
+        template_id="t1",
+        input_json=json.dumps({"budget_usd": 1.0}),
+        mode="dry_run",
+        output_dir="/tmp/out/orig-001",
+    ))
     return db
 
 
@@ -102,49 +103,48 @@ class TestCountRetriesForRun:
         assert db_with_original_run.count_retries_for_run("orig-001") == 0
 
     def test_counts_one_retry(self, db_with_original_run):
-        db_with_original_run.insert_pipeline_run({
-            "run_id": "retry-001",
-            "template_path": "/tmp/t.yaml",
-            "template_id": "t1",
-            "input_json": "{}",
-            "mode": "dry_run",
-            "output_dir": "/tmp/out/retry-001",
-            "retry_of_run_id": "orig-001",
-        })
+        from tests._helpers import pipeline_run_dict
+        db_with_original_run.insert_pipeline_run(pipeline_run_dict(
+            "retry-001",
+            template_path="/tmp/t.yaml",
+            template_id="t1",
+            mode="dry_run",
+            output_dir="/tmp/out/retry-001",
+            retry_of_run_id="orig-001",
+        ))
         assert db_with_original_run.count_retries_for_run("orig-001") == 1
 
     def test_counts_multiple_retries(self, db_with_original_run):
+        from tests._helpers import pipeline_run_dict
         for i in range(3):
-            db_with_original_run.insert_pipeline_run({
-                "run_id": f"retry-00{i}",
-                "template_path": "/tmp/t.yaml",
-                "template_id": "t1",
-                "input_json": "{}",
-                "mode": "dry_run",
-                "output_dir": f"/tmp/out/retry-00{i}",
-                "retry_of_run_id": "orig-001",
-            })
+            db_with_original_run.insert_pipeline_run(pipeline_run_dict(
+                f"retry-00{i}",
+                template_path="/tmp/t.yaml",
+                template_id="t1",
+                mode="dry_run",
+                output_dir=f"/tmp/out/retry-00{i}",
+                retry_of_run_id="orig-001",
+            ))
         assert db_with_original_run.count_retries_for_run("orig-001") == 3
 
     def test_ignores_other_runs(self, db_with_original_run):
         """Retries for a different run ID should not be counted."""
-        db_with_original_run.insert_pipeline_run({
-            "run_id": "other-run",
-            "template_path": "/tmp/t.yaml",
-            "template_id": "t1",
-            "input_json": "{}",
-            "mode": "dry_run",
-            "output_dir": "/tmp/out/other-run",
-        })
-        db_with_original_run.insert_pipeline_run({
-            "run_id": "retry-for-other",
-            "template_path": "/tmp/t.yaml",
-            "template_id": "t1",
-            "input_json": "{}",
-            "mode": "dry_run",
-            "output_dir": "/tmp/out/retry-for-other",
-            "retry_of_run_id": "other-run",
-        })
+        from tests._helpers import pipeline_run_dict
+        db_with_original_run.insert_pipeline_run(pipeline_run_dict(
+            "other-run",
+            template_path="/tmp/t.yaml",
+            template_id="t1",
+            mode="dry_run",
+            output_dir="/tmp/out/other-run",
+        ))
+        db_with_original_run.insert_pipeline_run(pipeline_run_dict(
+            "retry-for-other",
+            template_path="/tmp/t.yaml",
+            template_id="t1",
+            mode="dry_run",
+            output_dir="/tmp/out/retry-for-other",
+            retry_of_run_id="other-run",
+        ))
         # orig-001 should still have 0 retries
         assert db_with_original_run.count_retries_for_run("orig-001") == 0
 
@@ -337,17 +337,17 @@ class TestAdaptiveRetryEnginePlanAndExecute:
     @patch("subprocess.Popen")
     def test_ac5_retry_cap_reached_escalates(self, mock_popen, db_with_original_run):
         """AC-5: 3 existing retries → cap reached → failed (not escalated), no Popen."""
+        from tests._helpers import pipeline_run_dict
         # Pre-insert 3 retry runs
         for i in range(3):
-            db_with_original_run.insert_pipeline_run({
-                "run_id": f"retry-pre-{i:03d}",
-                "template_path": "/tmp/t.yaml",
-                "template_id": "t1",
-                "input_json": "{}",
-                "mode": "dry_run",
-                "output_dir": f"/tmp/out/retry-pre-{i:03d}",
-                "retry_of_run_id": "orig-001",
-            })
+            db_with_original_run.insert_pipeline_run(pipeline_run_dict(
+                f"retry-pre-{i:03d}",
+                template_path="/tmp/t.yaml",
+                template_id="t1",
+                mode="dry_run",
+                output_dir=f"/tmp/out/retry-pre-{i:03d}",
+                retry_of_run_id="orig-001",
+            ))
 
         run = _base_run(run_id="orig-001", input_json={"budget_usd": 10.0})
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)
@@ -367,16 +367,16 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         mock_proc.pid = 12348
         mock_popen.return_value = mock_proc
 
+        from tests._helpers import pipeline_run_dict
         for i in range(2):
-            db_with_original_run.insert_pipeline_run({
-                "run_id": f"retry-pre-{i:03d}",
-                "template_path": "/tmp/t.yaml",
-                "template_id": "t1",
-                "input_json": "{}",
-                "mode": "dry_run",
-                "output_dir": f"/tmp/out/retry-pre-{i:03d}",
-                "retry_of_run_id": "orig-001",
-            })
+            db_with_original_run.insert_pipeline_run(pipeline_run_dict(
+                f"retry-pre-{i:03d}",
+                template_path="/tmp/t.yaml",
+                template_id="t1",
+                mode="dry_run",
+                output_dir=f"/tmp/out/retry-pre-{i:03d}",
+                retry_of_run_id="orig-001",
+            ))
 
         run = _base_run(run_id="orig-001", input_json={"budget_usd": 10.0},
                         model_override="claude-haiku-4-5-20241022")
@@ -432,16 +432,17 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         mock_proc.pid = 12350
         mock_popen.return_value = mock_proc
 
+        from tests._helpers import pipeline_run_dict
         # Insert a first retry that itself points at orig-001
-        db_with_original_run.insert_pipeline_run({
-            "run_id": "retry-001",
-            "template_path": "/tmp/template.yaml",
-            "template_id": "t1",
-            "input_json": json.dumps({"budget_usd": 5.0}),
-            "mode": "dry_run",
-            "output_dir": "/tmp/out/retry-001",
-            "retry_of_run_id": "orig-001",
-        })
+        db_with_original_run.insert_pipeline_run(pipeline_run_dict(
+            "retry-001",
+            template_path="/tmp/template.yaml",
+            template_id="t1",
+            input_json=json.dumps({"budget_usd": 5.0}),
+            mode="dry_run",
+            output_dir="/tmp/out/retry-001",
+            retry_of_run_id="orig-001",
+        ))
 
         # Now plan_and_execute for the first retry run
         run_for_retry = _base_run(
@@ -571,15 +572,15 @@ class TestRetryEnginePlanCustomMaxRetries:
     @patch("subprocess.Popen")
     def test_custom_max_retries(self, mock_popen, db_with_original_run):
         """max_retries=1 with 1 existing retry → failed (cap exhausted), no Popen."""
-        db_with_original_run.insert_pipeline_run({
-            "run_id": "retry-pre-000",
-            "template_path": "/tmp/t.yaml",
-            "template_id": "t1",
-            "input_json": "{}",
-            "mode": "dry_run",
-            "output_dir": "/tmp/out/retry-pre-000",
-            "retry_of_run_id": "orig-001",
-        })
+        from tests._helpers import pipeline_run_dict
+        db_with_original_run.insert_pipeline_run(pipeline_run_dict(
+            "retry-pre-000",
+            template_path="/tmp/t.yaml",
+            template_id="t1",
+            mode="dry_run",
+            output_dir="/tmp/out/retry-pre-000",
+            retry_of_run_id="orig-001",
+        ))
 
         run = _base_run(run_id="orig-001", input_json={"budget_usd": 10.0})
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)

@@ -101,19 +101,19 @@ def _make_automation(
     )
 
 
+# #862: route through the canonical helper to pick up future schema columns.
 def _insert_run(db: Database, run_id: str, status: str) -> None:
     """Insert a minimal pipeline_run row with the given status."""
-    db.insert_pipeline_run({
-        "run_id": run_id,
-        "template_path": "/tmp/fake.yaml",
-        "template_id": "coding-pipeline",
-        "input_json": "{}",
-        "mode": "standalone",
-        "output_dir": "/tmp/out",
-        "gateway_url": None,
-        "skip_scoring": 0,
-        "status": status,
-    })
+    from tests._helpers import insert_pipeline_run as _impl
+    _impl(
+        db,
+        run_id=run_id,
+        status=status,
+        template_path="/tmp/fake.yaml",
+        template_id="coding-pipeline",
+        mode="standalone",
+        output_dir="/tmp/out",
+    )
 
 
 def _insert_issue_map(

@@ -371,19 +371,15 @@ class TestRunLogs:
 
         # Directly insert a run record pointing to a nonexistent output_dir
         # so the endpoint has no log file to serve.
+        from tests._helpers import pipeline_run_dict
         run_id = str(_uuid.uuid4())[:8]
         db = Database(tmp_path / "test-engine.db")
-        db.insert_pipeline_run(
-            {
-                "run_id": run_id,
-                "template_path": "/tmp/fake.yaml",
-                "template_id": "fake-template",
-                "input_json": "{}",
-                "mode": "dry-run",
-                "output_dir": str(tmp_path / "nonexistent-dir"),
-                "status": "pending",
-            }
-        )
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path="/tmp/fake.yaml",
+            template_id="fake-template",
+            output_dir=str(tmp_path / "nonexistent-dir"),
+        ))
 
         res = client.get(f"/api/v1/runs/{run_id}/logs")
         assert res.status_code == 404
@@ -449,19 +445,16 @@ class TestDbMethods:
     def test_list_filtered_by_status(self, tmp_path):
         from orchestration_engine.db import Database
 
+        from tests._helpers import pipeline_run_dict
         db = Database(tmp_path / "db-test.db")
         run_id = str(uuid.uuid4())[:8]
-        db.insert_pipeline_run(
-            {
-                "run_id": run_id,
-                "template_path": "/tmp/fake.yaml",
-                "template_id": "test-template",
-                "input_json": "{}",
-                "mode": "dry-run",
-                "output_dir": str(tmp_path),
-                "status": "running",
-            }
-        )
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path="/tmp/fake.yaml",
+            template_id="test-template",
+            output_dir=str(tmp_path),
+            status="running",
+        ))
         results = db.list_pipeline_runs_filtered(status="running")
         assert any(r["run_id"] == run_id for r in results)
 
@@ -471,18 +464,15 @@ class TestDbMethods:
     def test_list_filtered_by_template_id(self, tmp_path):
         from orchestration_engine.db import Database
 
+        from tests._helpers import pipeline_run_dict
         db = Database(tmp_path / "db-test2.db")
         run_id = str(uuid.uuid4())[:8]
-        db.insert_pipeline_run(
-            {
-                "run_id": run_id,
-                "template_path": "/tmp/fake.yaml",
-                "template_id": "specific-template",
-                "input_json": "{}",
-                "mode": "dry-run",
-                "output_dir": str(tmp_path),
-            }
-        )
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path="/tmp/fake.yaml",
+            template_id="specific-template",
+            output_dir=str(tmp_path),
+        ))
         results = db.list_pipeline_runs_filtered(template_id="specific-template")
         assert any(r["run_id"] == run_id for r in results)
 
@@ -492,18 +482,15 @@ class TestDbMethods:
     def test_list_filtered_pagination(self, tmp_path):
         from orchestration_engine.db import Database
 
+        from tests._helpers import pipeline_run_dict
         db = Database(tmp_path / "db-test3.db")
         for i in range(5):
-            db.insert_pipeline_run(
-                {
-                    "run_id": str(uuid.uuid4())[:8],
-                    "template_path": "/tmp/fake.yaml",
-                    "template_id": "page-template",
-                    "input_json": "{}",
-                    "mode": "dry-run",
-                    "output_dir": str(tmp_path / f"out{i}"),
-                }
-            )
+            db.insert_pipeline_run(pipeline_run_dict(
+                str(uuid.uuid4())[:8],
+                template_path="/tmp/fake.yaml",
+                template_id="page-template",
+                output_dir=str(tmp_path / f"out{i}"),
+            ))
         page1 = db.list_pipeline_runs_filtered(template_id="page-template", limit=2, offset=0)
         page2 = db.list_pipeline_runs_filtered(template_id="page-template", limit=2, offset=2)
         assert len(page1) == 2
@@ -516,19 +503,16 @@ class TestDbMethods:
     def test_count_pipeline_runs(self, tmp_path):
         from orchestration_engine.db import Database
 
+        from tests._helpers import pipeline_run_dict
         db = Database(tmp_path / "db-test4.db")
         assert db.count_pipeline_runs() == 0
         for i in range(3):
-            db.insert_pipeline_run(
-                {
-                    "run_id": str(uuid.uuid4())[:8],
-                    "template_path": "/tmp/fake.yaml",
-                    "template_id": "count-template",
-                    "input_json": "{}",
-                    "mode": "dry-run",
-                    "output_dir": str(tmp_path / f"c{i}"),
-                }
-            )
+            db.insert_pipeline_run(pipeline_run_dict(
+                str(uuid.uuid4())[:8],
+                template_path="/tmp/fake.yaml",
+                template_id="count-template",
+                output_dir=str(tmp_path / f"c{i}"),
+            ))
         assert db.count_pipeline_runs() == 3
         assert db.count_pipeline_runs(template_id="count-template") == 3
         assert db.count_pipeline_runs(template_id="other") == 0
@@ -536,18 +520,15 @@ class TestDbMethods:
     def test_cancel_pipeline_run(self, tmp_path):
         from orchestration_engine.db import Database
 
+        from tests._helpers import pipeline_run_dict
         db = Database(tmp_path / "db-test5.db")
         run_id = str(uuid.uuid4())[:8]
-        db.insert_pipeline_run(
-            {
-                "run_id": run_id,
-                "template_path": "/tmp/fake.yaml",
-                "template_id": "cancel-template",
-                "input_json": "{}",
-                "mode": "dry-run",
-                "output_dir": str(tmp_path),
-            }
-        )
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path="/tmp/fake.yaml",
+            template_id="cancel-template",
+            output_dir=str(tmp_path),
+        ))
         result = db.cancel_pipeline_run(run_id)
         assert result is True
 
@@ -557,19 +538,16 @@ class TestDbMethods:
     def test_cancel_terminal_run_returns_false(self, tmp_path):
         from orchestration_engine.db import Database
 
+        from tests._helpers import pipeline_run_dict
         db = Database(tmp_path / "db-test6.db")
         run_id = str(uuid.uuid4())[:8]
-        db.insert_pipeline_run(
-            {
-                "run_id": run_id,
-                "template_path": "/tmp/fake.yaml",
-                "template_id": "done-template",
-                "input_json": "{}",
-                "mode": "dry-run",
-                "output_dir": str(tmp_path),
-                "status": "success",
-            }
-        )
+        db.insert_pipeline_run(pipeline_run_dict(
+            run_id,
+            template_path="/tmp/fake.yaml",
+            template_id="done-template",
+            output_dir=str(tmp_path),
+            status="success",
+        ))
         result = db.cancel_pipeline_run(run_id)
         assert result is False
 

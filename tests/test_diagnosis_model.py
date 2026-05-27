@@ -22,14 +22,14 @@ def db():
 @pytest.fixture
 def db_with_run(db):
     """DB with a minimal pipeline_run row for FK satisfaction."""
-    db.insert_pipeline_run({
-        "run_id": "test-run-001",
-        "template_path": "/tmp/t.yaml",
-        "template_id": "t1",
-        "input_json": "{}",
-        "mode": "dry_run",
-        "output_dir": "/tmp/out",
-    })
+    from tests._helpers import pipeline_run_dict
+    db.insert_pipeline_run(pipeline_run_dict(
+        "test-run-001",
+        template_path="/tmp/t.yaml",
+        template_id="t1",
+        mode="dry_run",
+        output_dir="/tmp/out",
+    ))
     return db
 
 

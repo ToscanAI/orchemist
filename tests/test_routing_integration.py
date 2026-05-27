@@ -34,15 +34,14 @@ def _make_db(tmp_path: Path) -> Database:
 
 def _seed_run(db: Database, run_id: str, output_dir: Path) -> None:
     """Insert a minimal pipeline_runs row so FK constraints pass."""
-    db.insert_pipeline_run({
-        "run_id": run_id,
-        "template_path": "/tmp/fake_template.yaml",
-        "template_id": "fake-template",
-        "input_json": "{}",
-        "mode": "dry-run",
-        "output_dir": str(output_dir),
-        "status": "running",
-    })
+    from tests._helpers import pipeline_run_dict
+    db.insert_pipeline_run(pipeline_run_dict(
+        run_id,
+        template_path="/tmp/fake_template.yaml",
+        template_id="fake-template",
+        output_dir=str(output_dir),
+        status="running",
+    ))
 
 
 def _call_routing(

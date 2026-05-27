@@ -46,17 +46,14 @@ def _seed_run(
     tmp_path: Path = Path("/tmp"),
 ) -> None:
     """Insert a minimal pipeline_runs row."""
-    db.insert_pipeline_run(
-        {
-            "run_id": run_id,
-            "template_path": "/tmp/fake.yaml",
-            "template_id": "fake-template",
-            "input_json": "{}",
-            "mode": "dry-run",
-            "output_dir": str(tmp_path),
-            "status": status,
-        }
-    )
+    from tests._helpers import pipeline_run_dict
+    db.insert_pipeline_run(pipeline_run_dict(
+        run_id,
+        template_path="/tmp/fake.yaml",
+        template_id="fake-template",
+        output_dir=str(tmp_path),
+        status=status,
+    ))
     if status != "pending":
         db.update_pipeline_run(run_id, status=status)
 

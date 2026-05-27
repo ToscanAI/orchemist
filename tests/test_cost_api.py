@@ -45,17 +45,24 @@ def _make_db(tmp_path: Path) -> Database:
     return Database(str(tmp_path / "test-cost-db.db"))
 
 
+# #862: route through the canonical helper so a future schema column is
+# automatically picked up. ``INSERT OR IGNORE`` is preserved by guarding the
+# call against pre-existing rows (callers of this helper insert each run_id
+# at most once per test, but the original used OR IGNORE defensively).
 def _insert_run(db: Database, run_id: str, template_id: str = "coding-pipeline-v1") -> None:
     """Insert a minimal pipeline_runs row so FK constraints pass."""
-    with db.transaction() as conn:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO pipeline_runs
-                (run_id, template_id, template_path, input_json, mode, output_dir, status, created_at)
-            VALUES (?, ?, 'templates/test.yaml', '{}', 'local', '/tmp/out', 'completed', CURRENT_TIMESTAMP)
-            """,
-            (run_id, template_id),
-        )
+    from tests._helpers import insert_pipeline_run as _impl
+    if db.get_pipeline_run(run_id) is not None:
+        return  # mimic INSERT OR IGNORE
+    _impl(
+        db,
+        run_id=run_id,
+        template_id=template_id,
+        template_path="templates/test.yaml",
+        mode="local",
+        output_dir="/tmp/out",
+        status="completed",
+    )
 
 
 def _insert_cost(

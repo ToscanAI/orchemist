@@ -39,14 +39,14 @@ def db():
 @pytest.fixture
 def db_with_run(db):
     """DB with a minimal pipeline_run row for FK satisfaction."""
-    db.insert_pipeline_run({
-        "run_id": "original-run-001",
-        "template_path": "/tmp/t.yaml",
-        "template_id": "t1",
-        "input_json": "{}",
-        "mode": "dry_run",
-        "output_dir": "/tmp/out",
-    })
+    from tests._helpers import pipeline_run_dict
+    db.insert_pipeline_run(pipeline_run_dict(
+        "original-run-001",
+        template_path="/tmp/t.yaml",
+        template_id="t1",
+        mode="dry_run",
+        output_dir="/tmp/out",
+    ))
     return db
 
 
@@ -425,30 +425,30 @@ class TestMigration011RetryColumns:
 
 class TestInsertPipelineRunWithRetryFields:
     def test_insert_with_retry_fields(self, db_with_run):
-        db_with_run.insert_pipeline_run({
-            "run_id": "retry-run-001",
-            "template_path": "/tmp/t.yaml",
-            "template_id": "t1",
-            "input_json": "{}",
-            "mode": "dry_run",
-            "output_dir": "/tmp/out",
-            "retry_of_run_id": "original-run-001",
-            "retry_strategy": "escalate_model",
-        })
+        from tests._helpers import pipeline_run_dict
+        db_with_run.insert_pipeline_run(pipeline_run_dict(
+            "retry-run-001",
+            template_path="/tmp/t.yaml",
+            template_id="t1",
+            mode="dry_run",
+            output_dir="/tmp/out",
+            retry_of_run_id="original-run-001",
+            retry_strategy="escalate_model",
+        ))
         run = db_with_run.get_pipeline_run("retry-run-001")
         assert run is not None
         assert run["retry_of_run_id"] == "original-run-001"
         assert run["retry_strategy"] == "escalate_model"
 
     def test_insert_without_retry_fields_defaults_to_null(self, db):
-        db.insert_pipeline_run({
-            "run_id": "plain-run-001",
-            "template_path": "/tmp/t.yaml",
-            "template_id": "t1",
-            "input_json": "{}",
-            "mode": "dry_run",
-            "output_dir": "/tmp/out",
-        })
+        from tests._helpers import pipeline_run_dict
+        db.insert_pipeline_run(pipeline_run_dict(
+            "plain-run-001",
+            template_path="/tmp/t.yaml",
+            template_id="t1",
+            mode="dry_run",
+            output_dir="/tmp/out",
+        ))
         run = db.get_pipeline_run("plain-run-001")
         assert run is not None
         assert run["retry_of_run_id"] is None
@@ -462,14 +462,14 @@ class TestInsertPipelineRunWithRetryFields:
 
 class TestUpdatePipelineRunWithRetryFields:
     def test_update_retry_of_run_id(self, db_with_run):
-        db_with_run.insert_pipeline_run({
-            "run_id": "retry-run-002",
-            "template_path": "/tmp/t.yaml",
-            "template_id": "t1",
-            "input_json": "{}",
-            "mode": "dry_run",
-            "output_dir": "/tmp/out",
-        })
+        from tests._helpers import pipeline_run_dict
+        db_with_run.insert_pipeline_run(pipeline_run_dict(
+            "retry-run-002",
+            template_path="/tmp/t.yaml",
+            template_id="t1",
+            mode="dry_run",
+            output_dir="/tmp/out",
+        ))
         result = db_with_run.update_pipeline_run(
             "retry-run-002",
             retry_of_run_id="original-run-001",

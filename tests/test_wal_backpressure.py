@@ -24,10 +24,15 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+# #863: ``fresh_db`` retained as a thin alias of the canonical ``db`` fixture
+# (kept under its module-local name so internal callers don't need touching).
+from tests._helpers import insert_pipeline_run as _insert_pipeline_run_helper
+from tests._helpers import pipeline_run_dict as _pipeline_run_dict  # noqa: F401
+
+
 @pytest.fixture
-def fresh_db(tmp_path):
-    from orchestration_engine.db import Database
-    return Database(tmp_path / "engine.db")
+def fresh_db(db):
+    return db
 
 
 def _insert_run(db, status: str, run_id: str = "abc12345"):
@@ -42,18 +47,17 @@ def _insert_run(db, status: str, run_id: str = "abc12345"):
     before the count is returned and the COUNT assertions would all
     drop to 0.
     """
-    db.insert_pipeline_run({
-        "run_id": run_id,
-        "template_path": "/tmp/x.yaml",
-        "template_id": "tpl",
-        "input_json": "{}",
-        "mode": "dry-run",
-        "output_dir": "/tmp",
-        "gateway_url": None,
-        "status": status,
-    })
-    # Set a live PID so the #754 zombie sweep preserves this row.
-    db.update_pipeline_run(run_id, pid=os.getpid())
+    # Use the canonical helper but preserve this file's historical values
+    # (template_id="tpl", output_dir="/tmp") to avoid semantic drift in
+    # tests that may pattern-match those strings.
+    _insert_pipeline_run_helper(
+        db,
+        run_id=run_id,
+        status=status,
+        pid=os.getpid(),
+        template_id="tpl",
+        output_dir="/tmp",
+    )
 
 
 class TestCountActiveRuns:
@@ -93,15 +97,12 @@ class TestCountActiveRuns:
 # ---------------------------------------------------------------------------
 
 
+# #874: ``isolated_launcher`` retained as a thin alias of the canonical
+# ``api_client`` fixture so existing call sites in this module keep working.
 @pytest.fixture
-def isolated_launcher(tmp_path, monkeypatch):
+def isolated_launcher(api_client):
     """Yield (client, db_path) where the engine + DB live under tmp."""
-    from fastapi.testclient import TestClient
-    from orchestration_engine.web.api import create_api_app
-
-    db_path = tmp_path / "engine.db"
-    monkeypatch.setenv("ORCH_DB_PATH", str(db_path))
-    return TestClient(create_api_app(db_path=str(db_path))), db_path
+    return api_client
 
 
 def _seed_active_runs(db_path: Path, count: int) -> None:
