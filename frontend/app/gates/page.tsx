@@ -28,11 +28,6 @@ import {
 } from '@/lib/api';
 import type { GateRecord, GateStatus, TrustProfileRecord, DecisionRecord } from '@/lib/api';
 import { formatRelative } from '@/lib/timeFmt';
-import {
-  DEMO_GATES,
-  DEMO_TRUST_PROFILES,
-  DEMO_DECISIONS,
-} from '@/lib/demo-data';
 
 /**
  * Operator-facing filter vocabulary. Maps to canonical engine `GateStatus`
@@ -105,7 +100,6 @@ export default function TrustAndGatesPage() {
   const [liveGates, setLiveGates] = useState<readonly GateRecord[] | null>(null);
   const [trustProfiles, setTrustProfiles] = useState<readonly TrustProfileRecord[] | null>(null);
   const [decisions, setDecisions] = useState<readonly DecisionRecord[] | null>(null);
-  const [engineUp, setEngineUp] = useState<boolean | null>(null);
   const [busyRunId, setBusyRunId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -114,9 +108,10 @@ export default function TrustAndGatesPage() {
       const statusParam = currentFilter === 'all' ? undefined : FILTER_TO_STATUS[currentFilter];
       const r = await listGates({ limit: 50, status: statusParam });
       setLiveGates(r.items);
-      setEngineUp(true);
     } catch (e) {
-      setEngineUp(false);
+      // Per #888 the EngineOfflineGuard wraps the layout, so a rejection
+      // here is a per-endpoint problem (gates 404) not engine-down. Leave
+      // liveGates null → empty-state copy renders.
     }
   }
 
@@ -125,7 +120,7 @@ export default function TrustAndGatesPage() {
   useEffect(() => { void refresh(filter); }, [filter]);
 
   // Trust profiles + decisions are filter-independent — fetch once on mount.
-  // Both fail soft: 404 / engine-offline → null, demo data renders.
+  // Both fail soft: 404 → null, empty-state copy renders.
   useEffect(() => {
     let cancelled = false;
     Promise.allSettled([listTrustProfiles(), listDecisions({ limit: 20 })])
@@ -137,23 +132,14 @@ export default function TrustAndGatesPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const usingLive = engineUp === true && liveGates !== null && liveGates.length > 0;
+  const usingLive = liveGates !== null && liveGates.length > 0;
 
-  const rows: readonly GateRow[] = usingLive
-    ? liveGates!.map(fromGateRecord)
-    : DEMO_GATES.map((g, i) => ({
-        key: `${g.repo}-${g.issueNumber}-${i}`,
-        headline: `${g.repo} · ${g.issueNumber}`,
-        subline: g.issueTitle,
-        template: g.template,
-        confidence: g.confidence,
-        threshold: g.threshold,
-        waitingLabel: g.waitingLabel,
-        waitingTone: g.waitingTone,
-      }));
+  const rows: readonly GateRow[] = liveGates
+    ? liveGates.map(fromGateRecord)
+    : [];
 
   async function handleApprove(row: GateRow) {
-    if (!row.approveId) { setActionError('Cannot approve demo row — engine offline'); return; }
+    if (!row.approveId) { setActionError('Cannot approve — no run id'); return; }
     setBusyRunId(row.approveId);
     setActionError(null);
     try {
@@ -168,7 +154,7 @@ export default function TrustAndGatesPage() {
   }
 
   async function handleReject(row: GateRow) {
-    if (!row.approveId) { setActionError('Cannot reject demo row — engine offline'); return; }
+    if (!row.approveId) { setActionError('Cannot reject — no run id'); return; }
     setBusyRunId(row.approveId);
     setActionError(null);
     try {
@@ -183,7 +169,7 @@ export default function TrustAndGatesPage() {
   }
 
   async function handleBulkApprove() {
-    if (!usingLive) { setActionError('Bulk approve disabled in demo mode'); return; }
+    if (!usingLive) { setActionError('Bulk approve disabled — no pending gates'); return; }
     setActionError(null);
     for (const row of rows) {
       if (row.approveId) {
@@ -204,7 +190,7 @@ export default function TrustAndGatesPage() {
       title={
         usingLive
           ? `${rows.length} gate${rows.length === 1 ? '' : 's'} need decision · live`
-          : '7 gates need decision · trust calibration per (repo, template, task)'
+          : 'No pending gates · trust calibration per (repo, template, task)'
       }
       screenIndex={4}
       breadcrumb={[
@@ -248,8 +234,8 @@ export default function TrustAndGatesPage() {
           </button>
         ))}
         {!usingLive && (
-          <span className="h-pill h-pill-warning text-[9px] ml-auto" data-testid="gates-demo-banner">
-            {engineUp === false ? 'demo data · engine offline' : 'demo data · no pending gates in engine'}
+          <span className="h-pill h-pill-warning text-[9px] ml-auto" data-testid="gates-empty-banner">
+            no pending gates in engine
           </span>
         )}
         {usingLive && (
@@ -348,7 +334,7 @@ export default function TrustAndGatesPage() {
             subtitle={
               trustProfiles && trustProfiles.length > 0
                 ? <span>per (repo, template, task) · {trustProfiles.length} live from /api/v1/trust-profiles</span>
-                : <span>per (repo, template, task) · <span className="text-harness-warning">demo · no trust profiles in engine yet</span></span>
+                : <span>per (repo, template, task) · <span className="text-harness-muted">no trust profiles in engine yet</span></span>
             }
             testId="section-trust"
           >
@@ -374,21 +360,9 @@ export default function TrustAndGatesPage() {
                     </div>
                   </li>
                 );
-              }) : DEMO_TRUST_PROFILES.map((p) => {
-                const pct = Math.min(100, p.confidence * 100);
-                const tone = p.verdict === 'auto' ? 'bg-harness-teal' : p.verdict === 'hold' ? 'bg-harness-warning' : 'bg-harness-danger';
-                return (
-                  <li key={p.key}>
-                    <div className="font-semibold text-harness-text">{p.key}</div>
-                    <div className="mt-1 h-1.5 w-full rounded bg-harness-border">
-                      <div className={['h-1.5 rounded', tone].join(' ')} style={{ width: `${pct}%` }} />
-                    </div>
-                    <div className="mt-1 text-[10px] text-harness-dim text-right">
-                      {p.confidence.toFixed(2)} {p.verdict === 'auto' ? '≥' : p.verdict === 'hold' ? '<' : '·'} {p.threshold.toFixed(2)} ({p.verdict})
-                    </div>
-                  </li>
-                );
-              })}
+              }) : (
+                <li className="text-harness-muted py-2">No trust profiles to display.</li>
+              )}
             </ul>
           </SectionCard>
         </div>
@@ -426,7 +400,7 @@ export default function TrustAndGatesPage() {
             subtitle={
               decisions && decisions.length > 0
                 ? <span>{decisions.length} live from /api/v1/decisions · closes ROADMAP §4.5</span>
-                : <span>closes ROADMAP §4.5 audit trail &amp; compliance export (issue #565) · <span className="text-harness-warning">demo · no decisions logged yet</span></span>
+                : <span>closes ROADMAP §4.5 audit trail &amp; compliance export (issue #565) · <span className="text-harness-muted">no decisions logged yet</span></span>
             }
             testId="section-decisions"
           >
@@ -463,20 +437,9 @@ export default function TrustAndGatesPage() {
                     <span className="text-harness-dim text-[10px]">{ago}</span>
                   </li>
                 );
-              }) : DEMO_DECISIONS.map((d, i) => (
-                <li key={i} className="flex items-center gap-3">
-                  <span className={[
-                    'w-16',
-                    d.verdict === 'approve' ? 'text-harness-teal' :
-                    d.verdict === 'reject' ? 'text-harness-danger' :
-                    'text-harness-purple',
-                  ].join(' ')}>
-                    {d.verdict === 'approve' ? '✓ approve' : d.verdict === 'reject' ? '✗ reject' : '⏏ auto'}
-                  </span>
-                  <span className="flex-1 text-harness-text truncate">{d.summary}</span>
-                  <span className="text-harness-dim text-[10px]">{d.when}</span>
-                </li>
-              ))}
+              }) : (
+                <li className="text-harness-muted py-2">No decisions logged yet.</li>
+              )}
             </ul>
             <div className="mt-3 text-[10px] text-harness-dim">
               Exports: <a className="h-link" href="#">CSV</a> · <a className="h-link" href="#">JSON</a> · <a className="h-link" href="#">SOC2 evidence pack</a> · all decisions immutable (no destructive UI affordance)
