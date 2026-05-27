@@ -29,10 +29,17 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
   ],
-  webServer: {
-    command: 'npm run dev -- --port 3000',
-    url: 'http://localhost:3000',
-    reuseExistingServer: !process.env['CI'],
-    timeout: 120_000,
-  },
+  // When PW_BASE_URL is set (e.g. CI workflow brings up Next manually on its
+  // own port), Playwright must NOT spawn its own webServer — otherwise two
+  // dev servers compete (one workflow-managed, one Playwright-managed) and
+  // Playwright blocks for 120s waiting for its self-spawned server at :3000.
+  // See PR #893 for the original motivation; the CI workflow drives bringup.
+  webServer: process.env['PW_BASE_URL']
+    ? undefined
+    : {
+        command: 'npm run dev -- --port 3000',
+        url: 'http://localhost:3000',
+        reuseExistingServer: !process.env['CI'],
+        timeout: 120_000,
+      },
 });

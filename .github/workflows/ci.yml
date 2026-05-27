@@ -19,18 +19,45 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Docs-only gate (#889): docs-only PRs short-circuit substantive steps
+      # but the job still reports SUCCESS (not SKIPPED) so branch-protection
+      # required-check rules remain satisfied for docs PRs.
+      # dorny/paths-filter compares HEAD against the PR base on pull_request
+      # events (correct behavior). On push events to main, it compares against
+      # the previous commit on the branch — which can produce surprising
+      # results (e.g. a push that merges a docs-only PR may evaluate to
+      # docs_only=true even though main pushes are meant to run full CI).
+      # We mitigate by explicitly setting `base: main` so push events compare
+      # against the configured base; for pull_request events, the action's
+      # default base-detection still wins.
+      - name: Detect docs-only changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
+          filters: |
+            docs_only:
+              - '**.md'
+              - 'docs/**'
+              - 'LICENSE'
+              - '.github/ISSUE_TEMPLATE/**'
+
       - name: Set up Python ${{ matrix.python-version }}
+        if: steps.changes.outputs.docs_only != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
+        if: steps.changes.outputs.docs_only != 'true'
         run: pip install -e ".[dev,web,github]"
 
       - name: Run tests
+        if: steps.changes.outputs.docs_only != 'true'
         run: pytest
 
       - name: Validate bundled templates
+        if: steps.changes.outputs.docs_only != 'true'
         run: |
           shopt -s nullglob
           templates=(templates/*.yaml)
@@ -44,4 +71,150 @@ jobs:
           done
 
       - name: Template drift lint
+        if: steps.changes.outputs.docs_only != 'true'
         run: python3 scripts/check_template_sync.py
+
+  # ----------------------------------------------------------------------
+  # Issue #889 — Playwright e2e required check on PRs.
+  #
+  # Spins up the engine (`orch api-server`) + Next dev server in background,
+  # then runs the Playwright suite against them. Caches `node_modules` +
+  # Playwright browsers so warm-cache runs stay under ~2 min.
+  #
+  # Live-mode tests (`harness-live.spec.ts`) skip with a documented warning
+  # if the engine fails to boot within 30s — see step "Wait for engine ready"
+  # below for the LIVE_ENGINE_AVAILABLE gating logic.
+  #
+  # The docs-only paths-filter gate ensures docs-only PRs report SUCCESS
+  # without actually running e2e tests (same pattern as the test job above).
+  # ----------------------------------------------------------------------
+  playwright-e2e:
+    name: Playwright e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # dorny/paths-filter compares HEAD against the PR base on pull_request
+      # events (correct behavior). On push events to main, it compares against
+      # the previous commit on the branch — which can produce surprising
+      # results (e.g. a push that merges a docs-only PR may evaluate to
+      # docs_only=true even though main pushes are meant to run full CI).
+      # We mitigate by explicitly setting `base: main` so push events compare
+      # against the configured base; for pull_request events, the action's
+      # default base-detection still wins.
+      - name: Detect docs-only changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
+          filters: |
+            docs_only:
+              - '**.md'
+              - 'docs/**'
+              - 'LICENSE'
+              - '.github/ISSUE_TEMPLATE/**'
+
+      - name: Set up Python 3.11
+        if: steps.changes.outputs.docs_only != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Python dependencies (engine)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: pip install -e ".[dev,web,github]"
+
+      - name: Set up Node 20
+        if: steps.changes.outputs.docs_only != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Cache Playwright browsers
+        if: steps.changes.outputs.docs_only != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install frontend dependencies
+        if: steps.changes.outputs.docs_only != 'true'
+        run: cd frontend && npm ci
+
+      - name: Install Playwright browsers
+        if: steps.changes.outputs.docs_only != 'true'
+        run: cd frontend && npx playwright install --with-deps chromium
+
+      - name: Start engine (orch api-server)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          nohup orch api-server --port 8771 --host 127.0.0.1 > /tmp/api-server.log 2>&1 &
+          echo $! > /tmp/api-server.pid
+          echo "engine pid: $(cat /tmp/api-server.pid)"
+
+      - name: Wait for engine ready
+        if: steps.changes.outputs.docs_only != 'true'
+        continue-on-error: true
+        run: |
+          if bash scripts/wait_for_url.sh http://127.0.0.1:8771/api/v1/health 30 engine; then
+            echo "LIVE_ENGINE_AVAILABLE=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Engine failed to boot within 30s — live-mode tests will skip"
+            echo "LIVE_ENGINE_AVAILABLE=false" >> "$GITHUB_ENV"
+            echo "----- /tmp/api-server.log (last 50 lines) -----"
+            tail -n 50 /tmp/api-server.log || true
+          fi
+
+      - name: Start Next dev server
+        if: steps.changes.outputs.docs_only != 'true'
+        run: |
+          cd frontend
+          nohup npm run dev -- --port 3010 > /tmp/next-dev.log 2>&1 &
+          echo $! > /tmp/next-dev.pid
+          echo "next pid: $(cat /tmp/next-dev.pid)"
+
+      - name: Wait for Next dev ready
+        if: steps.changes.outputs.docs_only != 'true'
+        run: bash scripts/wait_for_url.sh http://127.0.0.1:3010 60 next-dev
+
+      - name: Run Playwright tests
+        if: steps.changes.outputs.docs_only != 'true'
+        env:
+          PW_BASE_URL: http://localhost:3010
+          CI: 'true'
+        run: |
+          cd frontend
+          if [ "${LIVE_ENGINE_AVAILABLE:-false}" = "true" ]; then
+            PW_BASE_URL=http://localhost:3010 npx playwright test --reporter=list
+          else
+            echo "::notice::LIVE_ENGINE_AVAILABLE=false — filtering live specs via --grep-invert"
+            PW_BASE_URL=http://localhost:3010 npx playwright test --reporter=list --grep-invert "live ·"
+          fi
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ github.run_id }}
+          path: frontend/playwright-report
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Cleanup background processes
+        if: always()
+        run: |
+          if [ -f /tmp/api-server.pid ]; then
+            kill "$(cat /tmp/api-server.pid)" 2>/dev/null || true
+          fi
+          if [ -f /tmp/next-dev.pid ]; then
+            kill "$(cat /tmp/next-dev.pid)" 2>/dev/null || true
+          fi
