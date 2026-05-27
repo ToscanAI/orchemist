@@ -181,7 +181,7 @@ describe('listTemplates', () => {
     fetchMock.mockResolvedValue(makeResponse({ detail: 'Server error' }, 500));
 
     await expect(listTemplates()).rejects.toBeInstanceOf(ApiError);
-    const err = await listTemplates().catch((e: ApiError) => e);
+    const err = (await listTemplates().catch((e: ApiError) => e)) as ApiError;
     expect(err.status).toBe(500);
   });
 });
@@ -214,7 +214,7 @@ describe('getTemplate', () => {
     );
 
     await expect(getTemplate('x')).rejects.toBeInstanceOf(ApiError);
-    const err = await getTemplate('x').catch((e: ApiError) => e);
+    const err = (await getTemplate('x').catch((e: ApiError) => e)) as ApiError;
     expect(err.status).toBe(404);
   });
 });
@@ -483,7 +483,7 @@ describe('cancelRun', () => {
       makeResponse({ detail: 'Already in terminal state' }, 409),
     );
     await expect(cancelRun('done-run')).rejects.toBeInstanceOf(ApiError);
-    const err = await cancelRun('done-run').catch((e: ApiError) => e);
+    const err = (await cancelRun('done-run').catch((e: ApiError) => e)) as ApiError;
     expect(err.status).toBe(409);
   });
 });

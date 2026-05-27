@@ -27,6 +27,7 @@ import {
   ApiError,
 } from '@/lib/api';
 import type { GateRecord, GateStatus, TrustProfileRecord, DecisionRecord } from '@/lib/api';
+import { formatRelative } from '@/lib/timeFmt';
 import {
   DEMO_GATES,
   DEMO_TRUST_PROFILES,
@@ -438,22 +439,12 @@ export default function TrustAndGatesPage() {
                   v === 'approve' ? 'approve' :
                   v === 'request_changes' || v === 'reject' ? 'reject' :
                   'auto';
-                // Parse the engine timestamp. The API normalises naive UTC
-                // strings to "Z"-suffixed ISO; Date() handles both formats
-                // correctly. Anything that doesn't parse falls back to "—".
-                const ago = (() => {
-                  const t = new Date(d.created_at).getTime();
-                  if (!Number.isFinite(t)) return '—';
-                  const diffMs = Date.now() - t;
-                  if (diffMs < 0) return 'just now';
-                  const min = Math.floor(diffMs / 60000);
-                  if (min < 1) return 'just now';
-                  if (min < 60) return `${min} min ago`;
-                  const h = Math.floor(min / 60);
-                  if (h < 24) return `${h}h ago`;
-                  const days = Math.floor(h / 24);
-                  return `${days}d ago`;
-                })();
+                // Engine timestamp → human label via the shared formatter.
+                // The API normalises naive UTC strings to "Z"-suffixed ISO;
+                // formatRelative handles both and returns "—" for unparseable
+                // values, "just now" for sub-minute / future, "<N> min ago",
+                // "<N>h ago", "<N>d ago".
+                const ago = formatRelative(d.created_at);
                 const issueCount = Array.isArray(d.issues_found) ? d.issues_found.length : 0;
                 return (
                   <li key={d.review_id} className="flex items-center gap-3">

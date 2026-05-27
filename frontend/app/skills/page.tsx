@@ -11,11 +11,11 @@
  * in lockstep with the engine's canonical YAML.
  */
 
-import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
-import { listPhases } from '@/lib/api';
+import { listPhases, type PhasesResponse } from '@/lib/api';
+import { useApi } from '@/lib/useApi';
 import { derivePhaseDefs, type PhaseDef } from '@/lib/phaseLabels';
 
 interface PhaseCard {
@@ -85,19 +85,13 @@ const FALLBACK_CARDS: readonly PhaseCard[] = [
 ];
 
 export default function SkillsPackModePage() {
-  const [cards, setCards] = useState<readonly PhaseCard[]>(FALLBACK_CARDS);
-  useEffect(() => {
-    let cancelled = false;
-    listPhases().then(
-      (res) => {
-        if (!cancelled) {
-          setCards(derivePhaseDefs(res.phases).map((p, i) => asCard(p, i)));
-        }
-      },
-      () => { /* engine offline — keep FALLBACK_CARDS */ },
-    );
-    return () => { cancelled = true; };
-  }, []);
+  // #870 — migrated to useApi. On engine-offline, `data` stays `null` and
+  // the FALLBACK_CARDS render (preserving the pre-migration "swallow error,
+  // render fallback" semantics).
+  const { data } = useApi<PhasesResponse>(() => listPhases(), []);
+  const cards: readonly PhaseCard[] = data
+    ? derivePhaseDefs(data.phases).map((p, i) => asCard(p, i))
+    : FALLBACK_CARDS;
   return (
     <HarnessShell
       title="Track A · run the pipeline locally inside Claude Code"

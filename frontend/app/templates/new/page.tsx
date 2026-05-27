@@ -9,7 +9,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { createTemplate, ApiError } from '@/lib/api';
+import { createTemplate, extractApiErrorMessage } from '@/lib/api';
 import { Button } from '@/components/ui/Button';
 
 const DEFAULT_YAML = `id: my-new-template
@@ -48,28 +48,7 @@ export default function CreateTemplatePage() {
       });
       router.push(`/templates/${encodeURIComponent(result.id)}`);
     } catch (err: unknown) {
-      if (err instanceof ApiError) {
-        const detail = err.detail;
-        if (typeof detail === 'object' && detail !== null && 'detail' in detail) {
-          const inner = (detail as Record<string, unknown>).detail;
-          if (typeof inner === 'object' && inner !== null && 'errors' in inner) {
-            const errors = (inner as Record<string, unknown>).errors;
-            setError(
-              Array.isArray(errors) ? errors.join('\n') : String(errors),
-            );
-          } else if (typeof inner === 'object' && inner !== null && 'message' in inner) {
-            setError(String((inner as Record<string, unknown>).message));
-          } else {
-            setError(typeof inner === 'string' ? inner : err.message);
-          }
-        } else {
-          setError(err.message);
-        }
-      } else if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError('Failed to create template.');
-      }
+      setError(extractApiErrorMessage(err));
       setSubmitting(false);
     }
   }

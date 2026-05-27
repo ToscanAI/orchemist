@@ -14,34 +14,49 @@
  *     SVG mockup so visitors can see what the screen looks like.
  */
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
 import { getRunDialogue, type RunDialogue, type RunDialogueRound } from '@/lib/api';
+import { useApi } from '@/lib/useApi';
+
+// Sentinel returned by the no-op fetcher used when no `?run=<id>` URL param
+// is present. The page renders demo data in that case (loadState === 'idle').
+const IDLE_SENTINEL = Symbol('adversary-idle');
+type DialogueOrIdle = RunDialogue | typeof IDLE_SENTINEL;
 
 function AdversaryLoopInner() {
   const search = useSearchParams();
   const runIdParam = search?.get('run') ?? null;
 
-  const [dialogue, setDialogue] = useState<RunDialogue | null>(null);
-  const [loadState, setLoadState] = useState<'idle' | 'loading' | 'ok' | 'none' | 'error'>('idle');
+  // #870 — migrated to useApi. The fetcher resolves to IDLE_SENTINEL when
+  // there's no `?run=<id>` URL param, preserving the pre-migration "idle"
+  // branch without polluting the page with extra state.
+  const { data, error, loading } = useApi<DialogueOrIdle>(
+    () => (runIdParam ? getRunDialogue(runIdParam) : Promise.resolve(IDLE_SENTINEL as DialogueOrIdle)),
+    [runIdParam],
+  );
 
-  useEffect(() => {
-    if (!runIdParam) { setLoadState('idle'); return; }
-    let cancelled = false;
-    setLoadState('loading');
-    getRunDialogue(runIdParam)
-      .then((d) => { if (!cancelled) { setDialogue(d); setLoadState('ok'); } })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        // 404 is the common case — most runs have no dialogue artifact
-        const status = (err as { status?: number })?.status;
-        setLoadState(status === 404 ? 'none' : 'error');
-      });
-    return () => { cancelled = true; };
-  }, [runIdParam]);
+  const dialogue: RunDialogue | null =
+    data === null || data === IDLE_SENTINEL ? null : (data as RunDialogue);
+
+  // Map the useApi state machine onto the page's vocabulary. 404 errors map
+  // to 'none' (most common — most runs have no dialogue artifact); other
+  // rejections map to 'error'. ApiError preserves a numeric `.status` field
+  // which we read via a defensive cast.
+  let loadState: 'idle' | 'loading' | 'ok' | 'none' | 'error';
+  if (!runIdParam) {
+    loadState = 'idle';
+  } else if (loading) {
+    loadState = 'loading';
+  } else if (error) {
+    const status = (error as Error & { status?: number }).status;
+    loadState = status === 404 ? 'none' : 'error';
+  } else {
+    loadState = 'ok';
+  }
 
   const usingLive = loadState === 'ok' && dialogue !== null && dialogue.rounds.length > 0;
   const drafterModel = usingLive

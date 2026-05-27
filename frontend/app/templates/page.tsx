@@ -6,32 +6,22 @@
  * Displays all available pipeline templates as a card grid with search.
  */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import Link from 'next/link';
-import { listTemplates, ApiError } from '@/lib/api';
+import { listTemplates } from '@/lib/api';
+import { useApi } from '@/lib/useApi';
 import type { TemplateSummary } from '@/lib/types';
 import { TemplateCard } from '@/components/pipeline/TemplateCard';
 import { Button } from '@/components/ui/Button';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 
 export default function TemplatesPage() {
-  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // #870 — migrated to useApi. Single-shot fetch; loading/error/data states
+  // map 1:1 to the hand-rolled closure that lived here previously.
+  const { data, error, loading } = useApi<TemplateSummary[]>(() => listTemplates(), []);
+  const templates: readonly TemplateSummary[] = data ?? [];
+  const errorMessage: string | null = error ? error.message : null;
   const [search, setSearch] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    listTemplates()
-      .then((data) => { if (!cancelled) { setTemplates(data); setLoading(false); } })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load templates.');
-          setLoading(false);
-        }
-      });
-    return () => { cancelled = true; };
-  }, []);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return templates;
@@ -53,7 +43,7 @@ export default function TemplatesPage() {
     <div className="flex flex-col gap-6">
       <section>
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-100">
-          Templates{!loading && !error && templates.length > 0 && (
+          Templates{!loading && !errorMessage && templates.length > 0 && (
             <span className="ml-2 text-base font-normal text-zinc-500">({templates.length})</span>
           )}
         </h1>
@@ -63,7 +53,7 @@ export default function TemplatesPage() {
       </section>
 
       {/* Search + Create */}
-      {!loading && !error && (
+      {!loading && !errorMessage && (
         <div className="flex items-center gap-3">
           {templates.length > 0 && (
             <input
@@ -94,14 +84,14 @@ export default function TemplatesPage() {
         </div>
       )}
 
-      {!loading && error && (
+      {!loading && errorMessage && (
         <div className="card border-red-500/50 bg-red-900/10" role="status">
-          <p className="text-sm font-medium text-red-400">{error}</p>
+          <p className="text-sm font-medium text-red-400">{errorMessage}</p>
           <p className="mt-1 text-xs text-zinc-500">Is orch serve running?</p>
         </div>
       )}
 
-      {!loading && !error && filtered.length === 0 && (
+      {!loading && !errorMessage && filtered.length === 0 && (
         <div className="card flex flex-col items-center justify-center gap-2 py-12 text-center" role="status">
           <p className="text-sm text-zinc-400">
             {search ? 'No templates match your search.' : 'No templates found.'}
@@ -109,7 +99,7 @@ export default function TemplatesPage() {
         </div>
       )}
 
-      {!loading && !error && filtered.length > 0 && (
+      {!loading && !errorMessage && filtered.length > 0 && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((t) => (
             <TemplateCard key={t.id} template={t} />
