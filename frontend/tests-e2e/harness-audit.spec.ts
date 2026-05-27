@@ -68,7 +68,15 @@ async function shot(page: Page, screen: string, name: string) {
 
 test('harness audit · walk every screen', async ({ browser }) => {
   test.setTimeout(300_000);
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  // Inherit the project baseURL from playwright.config.ts (respects PW_BASE_URL)
+  // — `browser.newContext()` does NOT auto-apply the project's baseURL the way
+  // the default `page` fixture does. Read it from the env directly so the
+  // audit honors CI's PW_BASE_URL=http://localhost:3010 setting.
+  const baseURL = process.env['PW_BASE_URL'] ?? 'http://localhost:3000';
+  const ctx = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    baseURL,
+  });
   const page = await ctx.newPage();
 
   // ─── 1. Fleet Dashboard ───────────────────────────────────────────
