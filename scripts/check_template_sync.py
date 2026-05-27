@@ -61,6 +61,41 @@ except ImportError as exc:  # pragma: no cover — pyyaml is a project dep
     print(f"ERROR: PyYAML is required: {exc}", file=sys.stderr)
     sys.exit(2)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Repo root discovery (must run BEFORE the TemplateEngine import so we can
+# prepend the repo root to sys.path — Issue #704 made the drift lint
+# composition-aware by reading MERGED template prompts via TemplateEngine,
+# but the script is still invokable as a plain CLI from any cwd.)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _find_repo_root(start: Path) -> Path | None:
+    """Walk up from `start` until a directory containing pyproject.toml is found."""
+    current = start.resolve()
+    for candidate in [current, *current.parents]:
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    return None
+
+
+_REPO_ROOT_FOR_IMPORT = _find_repo_root(Path(__file__))
+if _REPO_ROOT_FOR_IMPORT is not None and str(_REPO_ROOT_FOR_IMPORT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT_FOR_IMPORT))
+
+# After sys.path manipulation, the engine import is safe.
+try:
+    from src.orchestration_engine.templates import (  # noqa: E402
+        TemplateEngine,
+    )
+except ImportError as exc:  # pragma: no cover — would mean repo layout broke
+    print(
+        f"ERROR: could not import TemplateEngine — drift lint requires the "
+        f"orchestration_engine package to be importable: {exc}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration — phase sets to monitor
 # ─────────────────────────────────────────────────────────────────────────────
@@ -76,20 +111,6 @@ ANCHORED_PHASES: frozenset[str] = frozenset({"acceptance_test"})
 # Matches an entire line:  optional whitespace, <!-- NAME_BEGIN -->, optional ws.
 _ANCHOR_BEGIN_RE = re.compile(r"^\s*<!--\s*(\w+)_BEGIN\s*-->\s*$")
 _ANCHOR_END_RE = re.compile(r"^\s*<!--\s*(\w+)_END\s*-->\s*$")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Repo root discovery
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def _find_repo_root(start: Path) -> Path | None:
-    """Walk up from `start` until a directory containing pyproject.toml is found."""
-    current = start.resolve()
-    for candidate in [current, *current.parents]:
-        if (candidate / "pyproject.toml").is_file():
-            return candidate
-    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -162,40 +183,40 @@ def _elide_anchors(text: str, *, where: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# YAML loading
+# Template loading — Issue #704 update: read MERGED templates so the lint
+# remains meaningful when one template `extends:` another.
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _load_template(path: Path) -> dict:
+def _load_template_phases(path: Path) -> dict[str, dict]:
+    """Return ``{phase_id: {"prompt_template": str}}`` for the MERGED template.
+
+    Uses :class:`TemplateEngine.load_template` so any ``extends:`` /
+    ``exclude_phases:`` directives are resolved before the drift check runs.
+    Prior to Issue #704 this read raw YAML — that worked because both
+    bundled coding-pipeline templates duplicated the locked phases verbatim.
+    After skip-spec switched to ``extends: coding-pipeline-standard``, the
+    raw YAML no longer contains the inherited phases at all, so a raw-YAML
+    lint would always fail with "phase missing".
+
+    Args:
+        path: Absolute path to the template YAML file.
+
+    Returns:
+        Mapping of phase id → ``{"prompt_template": str}``.
+
+    Raises:
+        FileNotFoundError: When the YAML file is missing.
+        ValueError: When the YAML parses to a non-dict or fails engine load.
+    """
     if not path.is_file():
         raise FileNotFoundError(f"template file not found: {path}")
-    with path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"template {path} did not parse to a mapping")
-    return data
-
-
-def _phases_by_id(template: dict, path: Path) -> dict[str, dict]:
-    """Return {phase_id: phase_dict} for the template.
-
-    Templates may put `phases:` at the top level (current convention) or nested
-    under a `pipeline:` key. Support both for forward-compat.
-    """
-    phases = template.get("phases")
-    if phases is None:
-        pipeline = template.get("pipeline") or {}
-        phases = pipeline.get("phases") or []
-    if not isinstance(phases, list):
-        raise ValueError(f"template {path}: phases is not a list")
-    out: dict[str, dict] = {}
-    for phase in phases:
-        if not isinstance(phase, dict):
-            continue
-        pid = phase.get("id")
-        if isinstance(pid, str):
-            out[pid] = phase
-    return out
+    engine = TemplateEngine()
+    template_obj = engine.load_template(path)
+    return {
+        phase.id: {"prompt_template": phase.prompt_template or ""}
+        for phase in template_obj.phases
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,7 +294,7 @@ def _check_anchored(
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    repo_root = _find_repo_root(Path(__file__))
+    repo_root = _REPO_ROOT_FOR_IMPORT
     default_standard = (
         repo_root / "templates" / "coding-pipeline-standard.yaml"
         if repo_root is not None
@@ -316,17 +337,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
-        std_template = _load_template(args.standard)
-        skip_template = _load_template(args.skip_spec)
+        std_phases = _load_template_phases(args.standard)
+        skip_phases = _load_template_phases(args.skip_spec)
     except FileNotFoundError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
-    except (ValueError, yaml.YAMLError) as e:
-        print(f"ERROR: failed to parse template: {e}", file=sys.stderr)
+    except (ValueError, yaml.YAMLError, KeyError) as e:
+        print(f"ERROR: failed to load template: {e}", file=sys.stderr)
         return 2
-
-    std_phases = _phases_by_id(std_template, args.standard)
-    skip_phases = _phases_by_id(skip_template, args.skip_spec)
 
     # Verify every configured phase exists in BOTH templates.
     configured = STRICT_PHASES | ANCHORED_PHASES

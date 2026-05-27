@@ -36,6 +36,12 @@ _ALLOWLIST = {
     # (issues #867 and #869). The test under this file IS the drift check for
     # the bundled templates, so by definition it must reference templates/ by path.
     "test_check_template_sync.py",
+    # Template-composition (extends/exclude_phases) regression guard (issue #704).
+    # BC-11 / BC-12 / BC-13 verify the BUNDLED coding-pipeline-standard.yaml and
+    # coding-pipeline-skip-spec.yaml still load + drift-lint after the refactor.
+    # Cannot be moved to examples/ because the contract being tested IS that the
+    # bundled production templates still work post-refactor.
+    "test_template_extends.py",
 }
 
 

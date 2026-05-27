@@ -1006,6 +1006,34 @@ class TestGlobPatternEdgeCases:
 STANDARD_YAML_PATH = REPO_ROOT.joinpath("templates").joinpath("coding-pipeline-standard.yaml")
 SKIP_SPEC_YAML_PATH = REPO_ROOT.joinpath("templates").joinpath("coding-pipeline-skip-spec.yaml")
 
+
+def _merged_template_text(path: Path) -> str:
+    """Return concatenated MERGED template content (prompt_templates + raw YAML).
+
+    Used by Issue #859 parity tests that pre-date Issue #704 template composition.
+    After skip-spec.yaml switched to ``extends: coding-pipeline-standard``, the
+    inherited prompt fragments are NO LONGER in the raw YAML — but they remain
+    in the loaded `PipelineTemplate.phases`. To keep the parity checks meaningful,
+    we concatenate (a) the raw YAML text (so top-level fields like version are
+    still checked) and (b) every loaded phase's prompt_template + command +
+    description so token-presence assertions still see the inherited content.
+    """
+    from src.orchestration_engine.templates import TemplateEngine  # noqa: F401
+    raw = path.read_text()
+    try:
+        template_obj = TemplateEngine().load_template(path)
+    except Exception:
+        return raw  # fall back to raw text if engine load fails
+    chunks: list[str] = [raw]
+    for phase in template_obj.phases:
+        if phase.prompt_template:
+            chunks.append(phase.prompt_template)
+        if phase.command:
+            chunks.append(phase.command)
+        if phase.description:
+            chunks.append(phase.description)
+    return "\n\n".join(chunks)
+
 # (token, min_occurrences_in_standard, min_occurrences_in_skip_spec)
 REQUIRED_TOKENS: List[tuple] = [
     # IMPLEMENT-phase HARD RULE block headers (3)
@@ -1093,11 +1121,17 @@ class TestSkipSpecParityWithStandard:
         `min_skip` times in coding-pipeline-skip-spec.yaml.
 
         This is the core issue #859 acceptance criterion.
+
+        Issue #704 update: skip-spec now uses ``extends: coding-pipeline-standard``
+        and inherits several phases verbatim. Tokens in inherited phases are no
+        longer in the raw YAML file — they live in the merged template. We use
+        :func:`_merged_template_text` to read the merged content so the parity
+        check still fires on inherited tokens.
         """
-        text = SKIP_SPEC_YAML_PATH.read_text()
+        text = _merged_template_text(SKIP_SPEC_YAML_PATH)
         count = text.count(token)
         assert count >= min_skip, (
-            f"coding-pipeline-skip-spec.yaml: token {token!r} appears {count} "
+            f"coding-pipeline-skip-spec.yaml (merged): token {token!r} appears {count} "
             f"times; expected >= {min_skip} for parity with "
             f"coding-pipeline-standard.yaml (issue #859)."
         )

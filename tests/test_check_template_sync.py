@@ -39,7 +39,17 @@ def _run_script(
     skip_spec: Path | None = None,
     extra_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Invoke scripts/check_template_sync.py with optional path overrides."""
+    """Invoke scripts/check_template_sync.py with optional path overrides.
+
+    Issue #704: when ``standard`` and ``skip_spec`` point at mutated copies in
+    a temp dir, set ``ORCH_TEMPLATES_PATH`` to that temp dir so the engine
+    resolves the child's ``extends: coding-pipeline-standard`` to the mutated
+    copy (not the bundled production template). This is essential because the
+    drift lint now consumes the MERGED template via TemplateEngine, and the
+    merge needs to follow ``extends:`` to the same temp-dir copy under test.
+    """
+    import os
+
     cmd: list[str] = [sys.executable, str(_SCRIPT_PATH)]
     if standard is not None:
         cmd += ["--standard", str(standard)]
@@ -47,11 +57,24 @@ def _run_script(
         cmd += ["--skip-spec", str(skip_spec)]
     if extra_args:
         cmd += extra_args
+    env = os.environ.copy()
+    # Prepend the temp dir containing the (possibly mutated) templates so the
+    # engine's `extends:` resolution finds those copies first.
+    if standard is not None or skip_spec is not None:
+        tmp_dirs: list[str] = []
+        if standard is not None:
+            tmp_dirs.append(str(standard.parent))
+        if skip_spec is not None and skip_spec.parent != (standard.parent if standard else None):
+            tmp_dirs.append(str(skip_spec.parent))
+        if tmp_dirs:
+            existing = env.get("ORCH_TEMPLATES_PATH", "")
+            env["ORCH_TEMPLATES_PATH"] = ":".join(tmp_dirs + ([existing] if existing else []))
     return subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         cwd=str(_REPO_ROOT),
+        env=env,
     )
 
 
@@ -131,16 +154,29 @@ def test_b1_clean_run_stdout_mentions_ok_and_phase_counts() -> None:
 
 
 def test_b3_strict_locked_drift_detected(tmp_templates: tuple[Path, Path]) -> None:
-    """B3: a single-character change in postmortem_review on one side → non-zero."""
+    """B3: a single-character change in postmortem_review on one side → non-zero.
+
+    Issue #704: ``postmortem_review`` is now INHERITED by skip-spec from the
+    standard parent. To inject drift we override it in the skip-spec child
+    with a one-character mutation, while standard keeps the original. The
+    drift lint operates on the MERGED template — so the override flows
+    through.
+    """
     standard, skip_spec = tmp_templates
-    data = _load_yaml(skip_spec)
-    phase = _get_phase(data, "postmortem_review")
-    phase["prompt_template"] = phase["prompt_template"].replace(
+    std_phase = _get_phase(_load_yaml(standard), "postmortem_review")
+    mutated_prompt = std_phase["prompt_template"].replace(
         "You are a technical analyst",
         "You are a technical_analyst",  # one-char drift (space -> underscore)
         1,
     )
-    _dump_yaml(data, skip_spec)
+    assert mutated_prompt != std_phase["prompt_template"], (
+        "test setup error: replace did not change the prompt"
+    )
+    # Inject an override in skip-spec that drifts from the parent.
+    skip_data = _load_yaml(skip_spec)
+    skip_phases = skip_data.setdefault("phases", [])
+    skip_phases.append({"id": "postmortem_review", "prompt_template": mutated_prompt})
+    _dump_yaml(skip_data, skip_spec)
 
     result = _run_script(standard=standard, skip_spec=skip_spec)
     assert result.returncode != 0, (
@@ -158,13 +194,19 @@ def test_b3_strict_locked_drift_detected(tmp_templates: tuple[Path, Path]) -> No
 def test_b4_trailing_newline_only_diff_in_strict_exits_zero(
     tmp_templates: tuple[Path, Path],
 ) -> None:
-    """B4: trailing newline / outer whitespace alone in strict phase → exit 0."""
+    """B4: trailing newline / outer whitespace alone in strict phase → exit 0.
+
+    Issue #704: same approach as B3 — postmortem_review is inherited, so we
+    inject the trailing-whitespace-only override in the skip-spec child.
+    """
     standard, skip_spec = tmp_templates
-    data = _load_yaml(skip_spec)
-    phase = _get_phase(data, "postmortem_review")
+    std_phase = _get_phase(_load_yaml(standard), "postmortem_review")
     # Add multiple trailing newlines — strip() should tolerate this.
-    phase["prompt_template"] = phase["prompt_template"].rstrip("\n") + "\n\n\n"
-    _dump_yaml(data, skip_spec)
+    perturbed = std_phase["prompt_template"].rstrip("\n") + "\n\n\n"
+    skip_data = _load_yaml(skip_spec)
+    skip_phases = skip_data.setdefault("phases", [])
+    skip_phases.append({"id": "postmortem_review", "prompt_template": perturbed})
+    _dump_yaml(skip_data, skip_spec)
 
     result = _run_script(standard=standard, skip_spec=skip_spec)
     assert result.returncode == 0, (
@@ -332,16 +374,21 @@ def test_b8_novel_anchor_name_elides_without_script_edit(
 def test_b9_missing_configured_phase_exits_two(
     tmp_templates: tuple[Path, Path],
 ) -> None:
-    """B9: if a configured drift-locked phase is absent from one template → exit 2."""
+    """B9: if a configured drift-locked phase is absent from one template → exit 2.
+
+    Issue #704: postmortem_review is inherited by skip-spec via ``extends:``.
+    To make it missing from the merged skip-spec template we add it to the
+    child's ``exclude_phases:`` list — that physically removes it.
+    """
     standard, skip_spec = tmp_templates
     data = _load_yaml(skip_spec)
-    # Remove the postmortem_review phase entirely from skip-spec.
+    # Drop postmortem_review via exclude_phases (works whether it's raw or inherited).
+    excl = data.setdefault("exclude_phases", [])
+    if "postmortem_review" not in excl:
+        excl.append("postmortem_review")
+    # Also drop it from raw phases if it happens to be redeclared there.
     if "phases" in data:
         data["phases"] = [p for p in data["phases"] if p.get("id") != "postmortem_review"]
-    else:
-        data["pipeline"]["phases"] = [
-            p for p in data["pipeline"]["phases"] if p.get("id") != "postmortem_review"
-        ]
     _dump_yaml(data, skip_spec)
 
     result = _run_script(standard=standard, skip_spec=skip_spec)
