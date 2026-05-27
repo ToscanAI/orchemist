@@ -73,7 +73,7 @@ test('harness audit · walk every screen', async ({ browser }) => {
 
   // ─── 1. Fleet Dashboard ───────────────────────────────────────────
   let detach = attach(page, '01-fleet', 'initial-load');
-  await page.goto('http://localhost:3000/', { waitUntil: 'networkidle', timeout: 30_000 });
+  await page.goto('/', { waitUntil: 'networkidle', timeout: 30_000 });
   await expect(page.getByTestId('bottom-strip')).toBeVisible({ timeout: 15_000 });
   await page.waitForTimeout(1500);
   await shot(page, '01-fleet', 'initial');
@@ -120,7 +120,7 @@ test('harness audit · walk every screen', async ({ browser }) => {
 
   // ─── 4. Adversary Loop (with bogus run param) ─────────────────────
   detach = attach(page, '03-adversary', 'invalid-run');
-  await page.goto('http://localhost:3000/adversary?run=totally-invalid-run-id', { waitUntil: 'networkidle' });
+  await page.goto('/adversary?run=totally-invalid-run-id', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);
   await shot(page, '03-adversary', 'invalid-run');
   detach();
@@ -134,7 +134,7 @@ test('harness audit · walk every screen', async ({ browser }) => {
   const realRunId = (runsList?.items?.[0]?.run_id ?? '') as string;
   if (realRunId) {
     detach = attach(page, '03-adversary', 'real-run');
-    await page.goto(`http://localhost:3000/adversary?run=${realRunId}`, { waitUntil: 'networkidle' });
+    await page.goto(`'/adversary?run=${realRunId}`, { waitUntil: 'networkidle' });
     await page.waitForTimeout(1500);
     await shot(page, '03-adversary', 'real-run');
     detach();
@@ -144,7 +144,7 @@ test('harness audit · walk every screen', async ({ browser }) => {
     // opens a long-lived SSE connection to /api/v1/runs/{id}/stream — that
     // connection never idles, so `networkidle` would block until timeout.
     detach = attach(page, '02-cockpit', 'real-run-direct');
-    const r = await page.goto(`http://localhost:3000/runs/${realRunId}`, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch((e: Error) => {
+    const r = await page.goto(`'/runs/${realRunId}`, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch((e: Error) => {
       findings.push({ screen: '02-cockpit', checkpoint: 'real-run-direct', kind: 'pageerror', severity: 'error', detail: `goto failed: ${e.message}` });
       return null;
     });
@@ -163,14 +163,14 @@ test('harness audit · walk every screen', async ({ browser }) => {
   // ─── 7. Run Cockpit via /runs/_ SPA fallback ──────────────────────
   // Same SSE-keepalive caveat as above — use domcontentloaded.
   detach = attach(page, '02-cockpit', 'spa-fallback');
-  await page.goto('http://localhost:3000/runs/_', { waitUntil: 'domcontentloaded', timeout: 15_000 });
+  await page.goto('/runs/_', { waitUntil: 'domcontentloaded', timeout: 15_000 });
   await page.waitForTimeout(1500);
   await shot(page, '02-cockpit', 'spa-fallback');
   detach();
 
   // ─── 8. /runs (list) ──────────────────────────────────────────────
   detach = attach(page, '02-runs-list', 'initial-load');
-  await page.goto('http://localhost:3000/runs', { waitUntil: 'networkidle' });
+  await page.goto('/runs', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);
   await shot(page, '02-runs-list', 'initial');
   // Click the first row if any
@@ -185,7 +185,7 @@ test('harness audit · walk every screen', async ({ browser }) => {
 
   // ─── 9. Admin / Activation ────────────────────────────────────────
   detach = attach(page, '05-admin', 'initial-load');
-  await page.goto('http://localhost:3000/admin', { waitUntil: 'networkidle' });
+  await page.goto('/admin', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);
   await shot(page, '05-admin', 'initial');
 
@@ -206,14 +206,14 @@ test('harness audit · walk every screen', async ({ browser }) => {
 
   // ─── 10. Skills Pack Mode ─────────────────────────────────────────
   detach = attach(page, '06-skills', 'initial-load');
-  await page.goto('http://localhost:3000/skills', { waitUntil: 'networkidle' });
+  await page.goto('/skills', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);
   await shot(page, '06-skills', 'initial');
   detach();
 
   // ─── 11. /templates ───────────────────────────────────────────────
   detach = attach(page, '07-templates', 'initial-load');
-  await page.goto('http://localhost:3000/templates', { waitUntil: 'networkidle' });
+  await page.goto('/templates', { waitUntil: 'networkidle' });
   await page.waitForTimeout(1500);
   await shot(page, '07-templates', 'initial');
   detach();
@@ -221,7 +221,7 @@ test('harness audit · walk every screen', async ({ browser }) => {
   // ─── 12. Cross-link sanity: click breadcrumb back from a deep page ─
   if (realRunId) {
     detach = attach(page, 'cross-links', 'cockpit-breadcrumb');
-    await page.goto(`http://localhost:3000/runs/${realRunId}`, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(() => {});
+    await page.goto(`'/runs/${realRunId}`, { waitUntil: 'domcontentloaded', timeout: 15_000 }).catch(() => {});
     await page.waitForTimeout(1000);
     // Try clicking a breadcrumb segment
     const bc = page.locator('header').getByRole('link', { name: /Fleet/i }).first();
