@@ -9,8 +9,17 @@ description: >
     - {output_dir}/spec.md         — implementation spec (Section B)
     - {output_dir}/behavioral.md   — behavioral contracts (Section A)
 
-  Phases: acceptance_test → acceptance_test_adversary → implement → acceptance_run → review → fix → test
-  Loops: acceptance_test ↔ acceptance_test_adversary (max 3), implement ↔ acceptance_run (max 3), review ↔ fix ↔ acceptance_run (max 3)
+  Phases: acceptance_test → acceptance_test_adversary → implement → verify_tests_integrity → acceptance_run → review → fix → postmortem_review → test
+  Loops: acceptance_test ↔ acceptance_test_adversary (max 5), implement ↔ acceptance_run (max 6), review ↔ fix ↔ acceptance_run (max 3)
+
+  Composition (Issue #704):
+    Uses `extends: coding-pipeline-standard` to inherit shared phases, top-level config_schema,
+    auto_merge, routing_config, and example_input from the standard pipeline. The spec-loop
+    phases (existing_symbols_inventory, spec, behavioral, spec_adversary, postmortem_spec) are
+    excluded via `exclude_phases:`. Skip-spec-only phases (acceptance_test_adversary,
+    verify_tests_integrity) are appended. Shared phases that differ from standard
+    (acceptance_test, implement, acceptance_run, review, fix) are field-level-overridden.
+    Phases `postmortem_review` and `test` are inherited verbatim (drift-locked).
 author: "Toscan"
 version: "2.1.0"
 category: "code"
@@ -20,75 +29,28 @@ use_cases:
   - "Issues reviewed through external adversarial process"
   - "Re-running implementation after spec loop completed in a prior run"
 
-config_schema:
-  type: object
-  required: [issue_title, issue_body, repo_path, branch_name, issue_number, repo_url]
-  properties:
-    issue_title:
-      type: string
-      description: "GitHub issue title"
-    issue_body:
-      type: string
-      description: "Full issue description with requirements and acceptance criteria"
-    repo_path:
-      type: string
-      description: "Absolute path to the repository"
-    branch_name:
-      type: string
-      description: "Git branch name to create/use"
-    test_command:
-      type: string
-      default: "python3 -m pytest tests/ -x -q"
-      description: "Command to run tests"
-    files_context:
-      type: string
-      default: ""
-      description: "Key files and their purpose — helps the builder understand the codebase"
-    language:
-      type: string
-      default: "python"
-    style_guide:
-      type: string
-      default: "Follow existing code style. Add docstrings. Type hints where practical."
-    acceptance_test_file:
-      type: string
-      default: ""
-      description: "Optional: path to a pre-written acceptance test file. If empty, one is generated from the spec."
-    issue_number:
-      type: integer
-      description: "GitHub issue number — auto-injected into PR body as 'Closes #N'"
-    repo_url:
-      type: string
-      description: "GitHub repo URL (e.g. https://github.com/ToscanAI/orchestration-engine)"
-    acceptance_max_retries:
-      type: integer
-      default: 3
-      description: "Max implement→acceptance_run loop iterations (set max_iterations on implement and acceptance_run phases)"
-
-example_input:
-  issue_title: "Sample issue title"
-  issue_body: "Sample issue description and requirements."
-  repo_path: "/path/to/repo"
-  branch_name: "fix/issue-123"
-  issue_number: 123
-  repo_url: "https://github.com/ToscanAI/orchestration-engine"
+extends: coding-pipeline-standard
+exclude_phases:
+  - existing_symbols_inventory
+  - spec
+  - behavioral
+  - spec_adversary
+  - postmortem_spec
 
 phases:
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # SPEC LOOP SKIPPED
-  #
-  # This template assumes {output_dir}/spec.md and {output_dir}/behavioral.md
-  # were pre-populated before launch. The acceptance_test phase reads
-  # behavioral.md directly — same as the standard pipeline after the spec
-  # loop completes.
+  # SPEC LOOP SKIPPED — phases excluded via `exclude_phases:` above.
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   # Phase 1: Behavioral Acceptance Tests
+  # Overrides the standard `acceptance_test` phase: routes success to the
+  # skip-spec-only adversary phase (instead of `implement`), adds a higher
+  # max_iterations, and substitutes the prompt_template with the skip-spec
+  # body that uses the ADVERSARY_FEEDBACK_INTEGRATION carve-out instead of
+  # the standard's PHASE_0_INVENTORY_HOOK. (Both carve-outs are anchored;
+  # the drift lint elides them — only the outer prompt body must match.)
   - id: acceptance_test
-    name: "Behavioral Acceptance Tests"
     description: "Write behavioral tests from contracts ONLY — never from implementation. These become immutable constraints for the implementing agent. Behavioral contracts were reviewed externally before reaching this pipeline."
-    model_tier: sonnet
-    thinking_level: high
     max_iterations: 5
     transitions:
       success: acceptance_test_adversary
@@ -165,7 +127,7 @@ phases:
       - Rationale for each contract (what aspect of the spec it validates)
       - Any ambiguities in the spec that required assumptions
 
-  # Phase 1b: Acceptance Test Adversary
+  # Phase 1b: Acceptance Test Adversary (skip-spec-only — APPENDED)
   - id: acceptance_test_adversary
     name: "Acceptance Test Adversary"
     description: "Adversarially reviews acceptance tests for coverage gaps, trivial satisfaction, leakage of implementation details, and missing edge cases. Approves or sends back for revision (max 5 rounds)."
@@ -239,16 +201,14 @@ phases:
       Do NOT write preamble before the verdict. First line must be the verdict word only.
 
   # Phase 2: Implementation
+  # Overrides the standard `implement` phase: routes success to the
+  # skip-spec-only verify_tests_integrity gate, and adds the ANTI-TAMPERING
+  # block that's specific to skip-spec where acceptance_tests.py is sealed
+  # by the upstream adversary phase.
   - id: implement
-    name: "Implementation"
-    description: "Write the code changes based on the spec, constrained by acceptance tests"
-    model_tier: sonnet
-    thinking_level: high
-    max_iterations: 3
     transitions:
       success: verify_tests_integrity
       failed: implement
-      timeout: implement
       timeout: implement
       exhausted: postmortem_review
     prompt_template: |
@@ -373,7 +333,7 @@ phases:
       - Full test suite results (pass/fail count)
       - Commit hash
 
-  # Phase 2a: Git-based test directory integrity check
+  # Phase 2a: Git-based test directory integrity check (skip-spec-only — APPENDED)
   - id: verify_tests_integrity
     name: "Test Dir Integrity Check"
     description: "Verifies the agent did not modify the tests/ directory. Uses git diff against main as source of truth."
@@ -387,10 +347,10 @@ phases:
       timeout: postmortem_review
 
   # Phase 2b: Engine-executed Acceptance Test Runner
+  # Inherits prompt-template & task_type from standard. Only differences:
+  # higher max_iterations (6 vs 3) and the working_dir override (standard
+  # implicitly resolves it but skip-spec is explicit).
   - id: acceptance_run
-    name: "Acceptance Test Runner"
-    description: "Engine executes pytest directly on acceptance_tests.py — no agent. Writes engine-verified results to acceptance_results.json."
-    task_type: acceptance_run
     max_iterations: 6
     working_dir: "{config[repo_path]}"
     transitions:
@@ -399,20 +359,12 @@ phases:
       exhausted: postmortem_review
 
   # Phase 3: Code Review (Opus)
+  # Inherits the full prompt_template, supervisor config, and all transition
+  # keys from the standard `review` phase. The only override is the addition
+  # of `exhausted: postmortem_review` (standard omits this — pipeline simply
+  # ends if review/fix loop exhausts on standard, while skip-spec routes to
+  # the dedicated postmortem phase).
   - id: review
-    name: "Opus Code Review"
-    description: "Senior code review by Opus — quality gate with APPROVE/REQUEST_CHANGES verdict"
-    model_tier: opus
-    thinking_level: high
-    max_iterations: 3
-    supervisor: true
-    supervisor_model: opus
-    supervisor_rubric: |
-      Evaluate the code review quality:
-      - Did it identify real issues vs nitpicks?
-      - Are security concerns addressed?
-      - Is backward compatibility verified?
-      - Are the suggested fixes actionable?
     transitions:
       approve: test
       request_changes: fix
@@ -421,121 +373,11 @@ phases:
       failed: review
       timeout: review
       exhausted: postmortem_review
-    prompt_template: |
-      [PIPELINE CONTEXT] You are executing the REVIEW phase. Your verdict determines whether the code proceeds to testing or goes back for fixes. Do not ask questions or send messages. [/PIPELINE CONTEXT]
-
-      You are a senior code reviewer (Opus-tier). Your job is to catch bugs, security issues, and design problems.
-
-      ## GROUND TRUTH — The Issue This Code Must Implement
-      **Title:** {config[issue_title]}
-      **Body:** {config[issue_body]}
-
-      The code you are reviewing must implement the feature in the issue above. Before reviewing for correctness, security, edge cases, or backward compatibility, run `git diff main...{config[branch_name]}` and verify the diff actually implements THIS issue. If the diff implements a different system, project, or feature than the issue above, your verdict on line 1 is `ABORT` followed by the single finding:
-
-        [BLOCKER][correctness] diff implements <other topic> instead of issue "<issue title>" — implementation must be redone from a corrected spec
-
-      Do NOT invent issues about features that are not in the issue above. Every finding you raise must trace back to a specific changed line or file in the diff.
-
-      ## Previous Work
-      {phase_summary}
-
-      ## Prior Rounds
-      {iteration_history}
-
-      ## Iteration Context
-      If prior rounds exist above, focus on: (1) verifying that prior fixes were applied, (2) finding NEW issues not raised before. Do NOT re-raise issues that were already fixed.
-
-      Read the implementation summary at: {output_dir}/implement.md
-      Read the spec at: {output_dir}/spec.md
-
-      ## Repository
-      **Path:** {config[repo_path]}
-      **Branch:** {config[branch_name]}
-
-      ## Task
-      1. Checkout the feature branch: `git checkout {config[branch_name]}`
-      2. Run `git diff main...{config[branch_name]}` to see all changes
-      3. Review EVERY changed file for:
-         - **Correctness** — Does it do what the spec says?
-         - **Security** — Injection, path traversal, unsafe operations?
-         - **Edge cases** — Missing error handling, boundary conditions?
-         - **Backward compatibility** — Does it break existing behavior?
-         - **Test coverage** — Are the changes adequately tested?
-
-      ### 7d — Re-implementation of existing symbol (sticky enforcement via Phase 0 inventory)
-
-      Verify every NEW top-level helper / loader / formatter / type / component / hook / utility in the diff was checked against existing equivalents.
-
-      Read `{output_dir}/existing_symbols.md` and cross-check EVERY new file/symbol in the diff against inventory sections 1-4. For each new symbol, verify ONE of:
-
-      - (a) **Consume verified** — the diff imports the canonical existing symbol from its inventory path.
-      - (b) **Divergence justified** — spec.md has a `## Divergence justification` subsection naming the existing symbol + the contract-required difference; the diff implements the divergence as documented.
-      - (c) **Authored as new** — the new symbol IS recorded in inventory §6 ("SPEC's proposed new symbols") with rationale (path + rationale); the diff authors it at the proposed path. A §6 entry that merely says "new symbol" without the path AND the rationale is NOT a valid arm-(c) — flag as `[MAJOR][test_coverage]` against inventory hygiene.
-
-      Any new symbol in the diff that overlaps with inventory §1-4 WITHOUT one of (a)/(b)/(c) is `[MAJOR][correctness]` — recommend refactor to consume the existing primitive.
-
-      **Backward-compat short-circuit:** if `{output_dir}/existing_symbols.md` is absent OR sections 1-4 are ALL empty-stubs ("(empty — consumer did not provide inventory inputs)"), the 3-arm test does NOT short-circuit to "no findings". Instead fall back to ad-hoc grep against the standard targets (project UI primitive package(s), `lib/`/`utils/`, sibling files, workspace barrels) and apply the same 3-arm logic. The Phase-0 inventory is the PRIMARY signal but not the ONLY signal — v2.0-fallback consumers still get the late-catch via this ad-hoc grep.
-
-      **Sub-check 7d-producer — Intra-symbol return-arm comparison:** in addition to the 7d-consumer 3-arm enumeration above (which catches "new symbol re-implements EXISTING inventory entry"), for every NEWLY-CREATED exported function or method in the PR diff that has more than one `return` or `throw` statement (or the language equivalent — Python `return` / `raise`, Go `return`, Rust `Ok` / `Err` arms, bash function `echo` + `exit` arms):
-
-      1. **Quote each return/throw arm VERBATIM in `review.md`** — one fenced code block per arm, citing `file:line` for the arm's leading token (e.g. `# apps/web/lib/queries/companies.ts:8-13`). The verbatim quote is evidentiary; do NOT paraphrase.
-      2. **Assert that at least ONE non-whitespace, non-identifier token differs between any two arms.** If two arms are identical-modulo-whitespace-modulo-identifiers (same SQL projection list, same destructuring shape, same type assertion, same call-site signature), flag `[MAJOR][correctness] intra-symbol dual-path duplication at <file>:<line-A> and <file>:<line-B>` as a REQUEST_CHANGES finding. Recommend refactor to extract the duplicate sub-block to a private helper (R2 fix-pass) OR confirm the IMPLEMENT phase returned BLOCKED per HARD RULE 7e-implement (in which case the case routes to SPEC amendment, not a REVIEWER finding).
-      3. **SPEC §B.5.x divergence-justification short-circuit:** if `spec.md` §B.5 names the dual-path explicitly with a divergence justification (per the SPEC_ADVERSARY 7e check's path-(b) escape — "document a divergence justification per branch in §B.5.x"), read §B.5 first and skip the arm comparison for arms that have an explicit §B.5.x justification entry. Cite the §B.5.x entry in `review.md` to document the skip (e.g. "Arms A and B identical-modulo-whitespace but §B.5.3 justifies via SB#2 fixture short-circuit boundary — short-circuit applied; no finding."). The §B.5.x justification MUST itself meet the concreteness bar (cites sealed string / sort order / precision / type narrowing / environment boundary — NOT "different use case"); a non-concrete §B.5.x triggers `[MAJOR][correctness] 7d-producer §B.5.x justification non-concrete` instead of the duplication finding.
-
-      This is the producer-side complement to the 3-arm 7d-consumer cross-check above: 7d-consumer catches new symbols that duplicate EXISTING inventory entries (caller-enumeration); 7d-producer catches new symbols whose own body contains intra-file byte-identical fragments (producer-enumeration). Empirical motivation: ToscanAI/value-investing#449 (lift commit `11db4eb`) shipped `findCompanyByTicker` with two byte-identical `await db<…>` SQL blocks separated by a fixture short-circuit; the 7d-consumer enumeration APPROVED because the symbol was newly-created (no inventory entry to consume), but 7d-producer's arm comparison would have flagged the intra-file duplication.
-
-      An LLM REVIEWER can quote-and-compare verbatim arms reliably; normalized-hash α-conversion (originally proposed in issue #857/skills#6 but downgraded per audit R1) requires AST manipulation an LLM would simulate inconsistently. The verbatim-quote requirement is the same level of concreteness as the existing 3-arm cross-check above.
-
-      ## Output
-      Write your review to {output_dir}/review.md.
-
-      **IMPORTANT:** Your response MUST start with one of these verdicts on the very first line:
-      - `APPROVE` — code is ready to merge (no blockers, at most minor issues)
-      - `REQUEST_CHANGES` — one or more blockers or major issues found
-      - `ABORT` — fatal issue discovered, pipeline cannot continue safely
-
-      **DO NOT** write any preamble, commentary, or "thinking out loud" text before the verdict.
-      The very first line of review.md must be the verdict word and nothing else.
-
-      ## Structured Output Format
-      Your review.md MUST follow this exact structure:
-
-      Line 1: APPROVE  -or-  REQUEST_CHANGES  -or-  ABORT  (nothing else on this line)
-
-      Then for each issue found, one line per issue using this tag format:
-        [SEVERITY][category] description of the issue
-
-      Where SEVERITY is one of: BLOCKER, MAJOR, MINOR, NITPICK
-      And category is a short label such as: security, correctness, style,
-        performance, test, compatibility, design
-
-      ✅ CORRECT example:
-      Correct example:
-        REQUEST_CHANGES
-        [BLOCKER][security] SQL query in db.py:42 uses string concatenation — use parameterized queries
-        [MAJOR][correctness] parse_output() returns None instead of empty list when input is empty
-        [MINOR][style] Missing docstring on helper function _build_query()
-        [NITPICK][style] Trailing whitespace on line 18 of utils.py
-
-      ❌ WRONG — never start with preamble before the verdict:
-      WRONG — never start with preamble before the verdict:
-        Now let me run the tests first to check the implementation...
-        REQUEST_CHANGES
-        [BLOCKER][security] ...
-
-      If there are no issues (APPROVE with clean code), write only:
-        APPROVE
-
-      Do NOT use any other tag format. Do NOT add extra headers or sections
-      between the verdict line and the issue lines.
 
   # Phase 3b: Fix Review Feedback
+  # Override: route success to verify_tests_integrity (skip-spec-only), add
+  # the ANTI-TAMPERING block that's specific to skip-spec.
   - id: fix
-    name: "Apply Review Fixes"
-    description: "Address code review feedback, then re-verify behavioral contracts before re-review"
-    model_tier: sonnet
-    thinking_level: low
-    max_iterations: 3
     transitions:
       success: verify_tests_integrity
       failed: fix
@@ -596,92 +438,11 @@ phases:
       - Updated test results
       - Commit hash
 
-  # Phase 4: Review Postmortem (runs only on exhausted)
-  - id: postmortem_review
-    name: "Review Loop Exhaustion Postmortem"
-    description: "When the review/fix loop exhausts iterations without approval, extract persistent review findings and diagnose why fixes failed to satisfy the reviewer."
-    model_tier: sonnet
-    thinking_level: medium
-    transitions: {}
-    prompt_template: |
-      [PIPELINE CONTEXT] You are executing the POSTMORTEM phase of an automated coding pipeline. The review and fix phases exhausted their iteration limit without the reviewer approving the implementation. Your job is to extract the reviewer's unresolved findings and diagnose why the fix agent could not satisfy them. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # `postmortem_review` and `test` are inherited verbatim from the standard
+  # pipeline — drift-locked. No override needed.
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-      You are a technical analyst performing a postmortem on a failed review/fix cycle.
-
-      ## Pipeline Context
-      **Issue:** {config[issue_title]} (#{config[issue_number]})
-      **Repository:** {config[repo_path]}
-      **Branch:** {config[branch_name]}
-      **What happened:** The reviewer and fix agent went through multiple rounds without the reviewer approving the implementation.
-
-      ## Current Files
-      Read the latest review at: {output_dir}/review.md
-      Read the latest fix notes at: {output_dir}/fix.md
-      Read the implementation spec at: {output_dir}/spec.md
-      Read the behavioral contracts at: {output_dir}/behavioral.md
-
-      ## Round History
-      Read ALL round files from {output_dir}/ to understand the full evolution:
-      - review_round1.md, fix_round1.md, review_round2.md, fix_round2.md, etc.
-      - These files contain the complete review/fix exchange across all rounds
-
-      ## Your Task
-
-      1. **Identify persistent findings** — Which review findings appeared in multiple rounds and were never resolved?
-      2. **Root cause analysis** — For each persistent finding, explain WHY the fix agent failed to resolve it. Common causes:
-         - The fix is cosmetic but the reviewer wants a structural change
-         - The fix introduces a new issue while solving the flagged one
-         - The fix agent lacks context about architectural constraints
-         - The review finding is subjective or contradicts the spec
-         - The acceptance tests pass but the reviewer wants changes beyond the spec
-      3. **Assessment** — For each persistent finding, classify it:
-         - **Spec gap:** The behavioral contracts don't cover this — needs a spec update
-         - **Implementation gap:** The code doesn't satisfy an existing contract — needs a better fix
-         - **Scope creep:** The reviewer is asking for changes beyond the issue scope — document and defer
-         - **Contradiction:** The reviewer's request conflicts with the spec or acceptance tests — escalate
-
-      Write your full postmortem to {output_dir}/postmortem_review.md
-
-      The pipeline ends here. The findings should inform the next pipeline run or a manual intervention.
-
-  # Phase 5: Test Verification (Command Phase)
-  - id: test
-    name: "Test Verification"
-    description: "Run full test suite to verify no regressions"
-    task_type: command
-    command: "{config[test_command]}"
-    working_dir: "{config[repo_path]}"
-    allowed_commands: ["python3", "python", "pytest"]
-
-# Auto-merge configuration
-auto_merge:
-  enabled: true
-  min_score: 0.90
-  require_approve: true
-  strategy: squash
-
-# Confidence-based routing
-routing_config:
-  tiers:
-    - name: auto_merge
-      min_score: 0.90
-      max_score: 1.01
-      requires: ["tests_pass"]
-      notify: ["log"]
-    - name: human_review
-      min_score: 0.75
-      max_score: 0.90
-      requires: []
-      notify: ["log"]
-    - name: auto_retry
-      min_score: 0.50
-      max_score: 0.75
-      requires: []
-      notify: ["log"]
-      strategy: escalate_model
-      max_retries: 1
-    - name: reject
-      min_score: 0.0
-      max_score: 0.50
-      requires: []
-      notify: ["log"]
+# Top-level fields (`auto_merge`, `routing_config`, `example_input`,
+# `config_schema`) are inherited from `coding-pipeline-standard.yaml` since
+# this child does not redeclare them.
