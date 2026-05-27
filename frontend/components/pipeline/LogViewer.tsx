@@ -25,7 +25,6 @@ export function LogViewer({ runId }: LogViewerProps) {
   const [error, setError] = useState<string | null>(null);
   const preRef = useRef<HTMLPreElement>(null);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const fetchLogs = useCallback(async () => {
     setLoading(true);
     setError(null);

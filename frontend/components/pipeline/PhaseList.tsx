@@ -61,7 +61,7 @@ export function PhaseList({ phases }: PhaseListProps) {
   // Empty state
   if (phases.length === 0) {
     return (
-      <p className="text-sm text-zinc-500">
+      <p className="text-sm text-content-tertiary">
         No phases defined for this template.
       </p>
     );
@@ -78,12 +78,12 @@ export function PhaseList({ phases }: PhaseListProps) {
           {/* Phase header: 1-based index + name + model tier badge */}
           <div className="flex items-center gap-2">
             <span
-              className="flex h-6 w-6 items-center justify-center rounded-full bg-zinc-700 text-xs font-semibold text-zinc-300 shrink-0"
+              className="flex h-6 w-6 items-center justify-center rounded-full bg-surface-3 text-xs font-semibold text-content-primary shrink-0"
               aria-hidden="true"
             >
               {index + 1}
             </span>
-            <span className="text-sm font-semibold text-zinc-100">
+            <span className="text-sm font-semibold text-content-primary">
               {phase.name}
             </span>
             <Badge variant={tierVariant(phase.model_tier)}>
@@ -93,21 +93,21 @@ export function PhaseList({ phases }: PhaseListProps) {
 
           {/* Description (optional) */}
           {phase.description && (
-            <p className="text-xs text-zinc-400 leading-relaxed">
+            <p className="text-xs text-content-secondary leading-relaxed">
               {phase.description}
             </p>
           )}
 
           {/* Metadata row: task_type + depends_on */}
-          <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-500">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-content-tertiary">
             <span>
               Type:{' '}
-              <span className="text-zinc-300">{phase.task_type}</span>
+              <span className="text-content-primary">{phase.task_type}</span>
             </span>
             {phase.depends_on.length > 0 && (
               <span>
                 Depends on:{' '}
-                <span className="text-zinc-300">
+                <span className="text-content-primary">
                   {phase.depends_on.join(', ')}
                 </span>
               </span>

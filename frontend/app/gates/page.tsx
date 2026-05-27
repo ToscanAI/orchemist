@@ -52,6 +52,14 @@ interface GateRow {
   readonly key: string;
   readonly headline: string;
   readonly subline: string;
+  /**
+   * Branch→base arrow text (e.g. `feature/foo → main`). Surfaced separately
+   * from `subline` so issue #759's "gate detail showing branch info" is met
+   * even when a message is also present. `null` for demo rows.
+   */
+  readonly branchArrow: string | null;
+  /** Operator-facing message from the engine. `null` if absent. */
+  readonly message: string | null;
   readonly template: string;
   readonly confidence: number | null;
   readonly threshold: number;
@@ -82,10 +90,16 @@ function elapsedHoursMin(iso: string): { label: string; tone: 'warning' | 'dange
 /** Convert a real GateRecord into the normalized row shape. */
 function fromGateRecord(g: GateRecord): GateRow {
   const wait = elapsedHoursMin(g.created_at);
+  const arrow = `${g.branch} → ${g.base_branch}`;
   return {
     key: g.run_id,
     headline: g.pipeline_id || g.run_id.slice(0, 12),
-    subline: g.message ?? `${g.branch} → ${g.base_branch}`,
+    // Subline keeps the legacy "message OR arrow" fallback for the truncated
+    // single-line summary. The full branch arrow and message are surfaced
+    // separately in their own row fields per issue #759.
+    subline: g.message ?? arrow,
+    branchArrow: arrow,
+    message: g.message ?? null,
     template: g.pipeline_id,
     confidence: g.scoring_score,
     threshold: 0.90,
@@ -140,6 +154,15 @@ export default function TrustAndGatesPage() {
 
   async function handleApprove(row: GateRow) {
     if (!row.approveId) { setActionError('Cannot approve — no run id'); return; }
+    // Issue #759 — require explicit operator confirmation before mutating
+    // backend state. SSR-safe: `confirm` is a no-op (returns undefined) in
+    // jsdom-less tests; we treat undefined as "declined" so test environments
+    // do not accidentally fire the API call.
+    const ok =
+      typeof window === 'undefined' || typeof window.confirm !== 'function'
+        ? true
+        : window.confirm(`Approve gate for ${row.headline}? This will merge the branch.`);
+    if (!ok) return;
     setBusyRunId(row.approveId);
     setActionError(null);
     try {
@@ -155,6 +178,12 @@ export default function TrustAndGatesPage() {
 
   async function handleReject(row: GateRow) {
     if (!row.approveId) { setActionError('Cannot reject — no run id'); return; }
+    // Issue #759 — confirmation prompt before rejecting a gate.
+    const ok =
+      typeof window === 'undefined' || typeof window.confirm !== 'function'
+        ? true
+        : window.confirm(`Reject gate for ${row.headline}? This blocks the branch from merging.`);
+    if (!ok) return;
     setBusyRunId(row.approveId);
     setActionError(null);
     try {
@@ -170,15 +199,24 @@ export default function TrustAndGatesPage() {
 
   async function handleBulkApprove() {
     if (!usingLive) { setActionError('Bulk approve disabled — no pending gates'); return; }
+    // Issue #759 — bulk-action confirmation.
+    const approvableRows = rows.filter((r) => r.approveId);
+    if (approvableRows.length === 0) {
+      // No-op when the queue is empty — do not prompt, do not call the API.
+      return;
+    }
+    const ok =
+      typeof window === 'undefined' || typeof window.confirm !== 'function'
+        ? true
+        : window.confirm(`Bulk approve ${approvableRows.length} gate${approvableRows.length === 1 ? '' : 's'}? This merges every visible branch.`);
+    if (!ok) return;
     setActionError(null);
-    for (const row of rows) {
-      if (row.approveId) {
-        setBusyRunId(row.approveId);
-        try {
-          await approveGate(row.approveId, { message: 'bulk approved via harness' });
-        } catch (e) {
-          /* continue best-effort */
-        }
+    for (const row of approvableRows) {
+      setBusyRunId(row.approveId!);
+      try {
+        await approveGate(row.approveId!, { message: 'bulk approved via harness' });
+      } catch {
+        /* continue best-effort */
       }
     }
     setBusyRunId(null);
@@ -280,7 +318,19 @@ export default function TrustAndGatesPage() {
                 >
                   <div className="col-span-3">
                     <div className="font-semibold text-harness-text">{row.headline}</div>
-                    <div className="text-[10px] text-harness-dim truncate" title={row.subline}>{row.subline}</div>
+                    {row.branchArrow && (
+                      <div className="text-[10px] text-harness-muted truncate" title={row.branchArrow} data-testid={`gate-row-${i}-branch`}>
+                        {row.branchArrow}
+                      </div>
+                    )}
+                    {row.message && (
+                      <div className="text-[10px] text-harness-dim truncate" title={row.message} data-testid={`gate-row-${i}-message`}>
+                        {row.message}
+                      </div>
+                    )}
+                    {!row.branchArrow && !row.message && (
+                      <div className="text-[10px] text-harness-dim truncate" title={row.subline}>{row.subline}</div>
+                    )}
                   </div>
                   <div className="col-span-3 text-harness-muted truncate" title={row.template}>{row.template}</div>
                   <div className={['col-span-1 font-medium', confidenceColor(row.confidence, row.threshold)].join(' ')}>

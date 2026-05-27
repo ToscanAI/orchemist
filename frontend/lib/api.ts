@@ -35,8 +35,13 @@ import type {
 
 // ── Base URL ──────────────────────────────────────────────────────────────────
 
-/** Base URL for all API requests. Defaults to same-origin. */
-const BASE_URL: string =
+/**
+ * Base URL for all API requests. Defaults to same-origin.
+ *
+ * Exported (issue #773) so the SSE module imports from here rather than
+ * duplicating the constant.
+ */
+export const BASE_URL: string =
   (typeof process !== 'undefined' &&
     process.env['NEXT_PUBLIC_API_BASE_URL']) ||
   '';

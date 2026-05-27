@@ -39,6 +39,7 @@ import { derivePhaseDefs, type PhaseDef } from '@/lib/phaseLabels';
 import { HarnessShell } from '@/components/harness/HarnessShell';
 import { SectionCard } from '@/components/harness/SectionCard';
 import { StatusDot } from '@/components/harness/StatusDot';
+import { useStaticExportParam } from '@/hooks/useStaticExportParam';
 
 // Phase rail metadata hydrates from `GET /api/v1/phases` at component mount
 // via `listPhases()`. Per #888 there is no demo `FALLBACK_PHASES` fallback —
@@ -46,10 +47,28 @@ import { StatusDot } from '@/components/harness/StatusDot';
 // unreachable, and on a reachable-engine 404 the rail renders empty until
 // the phases endpoint succeeds.
 
+/**
+ * Run statuses that indicate the pipeline has reached a terminal state.
+ * Module-scope (issue #774) so the array identity is stable across renders.
+ */
+const TERMINAL_STATUSES = [
+  'success',
+  'failed',
+  'cancelled',
+  'budget_exceeded',
+  'scoring_failed',
+] as const;
+
+/**
+ * Run statuses where the current phase is considered "failed" rather than
+ * "active" in the phase rail rendering.
+ */
+const FAILED_RUN_STATUSES: ReadonlySet<string> = new Set(['failed', 'budget_exceeded', 'scoring_failed']);
+
 function phaseStatus(phaseId: string, completed: readonly string[], current: string | null, runStatus: string): 'done' | 'active' | 'queued' | 'failed' {
   if (completed.includes(phaseId)) return 'done';
   if (current === phaseId) {
-    if (runStatus === 'failed' || runStatus === 'budget_exceeded') return 'failed';
+    if (FAILED_RUN_STATUSES.has(runStatus)) return 'failed';
     return 'active';
   }
   return 'queued';
@@ -59,42 +78,41 @@ function phaseStatus(phaseId: string, completed: readonly string[], current: str
 // Production (`output: 'export'`): the engine's FastAPI catch-all serves
 // `out/runs/_/index.html` for any unknown `/runs/<id>` path. The browser's
 // `window.location.pathname` still carries the real id, and `useParams`
-// returns the URL segment intact.
+// returns the URL segment intact. Shared `useStaticExportParam` hook (#774)
+// centralises that resolution.
 //
 // Development (`next dev`): the dev server is strict about generateStaticParams
 // and would 500 on any id not in the placeholder set. Our `next.config.js`
 // rewrite sends `/runs/:id` → `/runs/_?run=:id`, so the real id arrives via
-// useSearchParams instead. This helper picks the right one.
-function resolveRunId(pathParamId: string | undefined, searchRun: string | null): string {
-  if (pathParamId && pathParamId !== '_') return pathParamId;
-  if (searchRun) return searchRun;
-  if (typeof window !== 'undefined') {
-    const m = window.location.pathname.match(/\/runs\/([^/]+)/);
-    if (m && m[1] !== '_') return m[1];
-  }
-  return '';
-}
+// useSearchParams instead. The dev-mode query-param fallback lives here.
 
 // ── Page ──
 function RunCockpitInner() {
   const { id } = useParams<{ id: string }>();
   const search = useSearchParams();
 
+  // First try the route param (resolves placeholder via the shared hook),
+  // then fall back to the dev-mode `?run=...` search-param.
+  const resolvedFromPath = useStaticExportParam(id);
+  const searchRun = search?.get('run') ?? null;
+
   // Compute runId in a way that produces the SAME value on SSR and the first
   // client render (both: ignore window). After mount, useEffect populates the
-  // real id from window.location if needed. Without this two-step approach we
-  // hit a React hydration mismatch on `/runs/<id>` paths: server renders the
+  // real id from useStaticExportParam if needed. Without this two-step approach
+  // we hit a React hydration mismatch on `/runs/<id>` paths: server renders the
   // placeholder `_`, client renders the real id, React complains.
   const [runId, setRunId] = useState<string>(() => {
     if (id && id !== '_') return id;
-    if (search?.get('run')) return search.get('run')!;
+    if (searchRun) return searchRun;
     return '';
   });
   useEffect(() => {
-    const resolved = resolveRunId(id, search?.get('run') ?? null);
-    if (resolved && resolved !== runId) setRunId(resolved);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, search]);
+    const candidate =
+      resolvedFromPath && resolvedFromPath !== '_'
+        ? resolvedFromPath
+        : (searchRun ?? '');
+    if (candidate && candidate !== runId) setRunId(candidate);
+  }, [resolvedFromPath, searchRun, runId]);
 
   const [run, setRun] = useState<RunRecord | null>(null);
   const [runFetched, setRunFetched] = useState<boolean>(false);
@@ -133,8 +151,11 @@ function RunCockpitInner() {
     return () => { cancelled = true; };
   }, [runId]);
 
-  // SSE is enabled only when we have a real run record from the engine.
-  const { events } = useRunEvents(runId, run !== null);
+  // SSE is enabled only when we have a real run record from the engine AND
+  // the run has not reached a terminal state. Consuming the module-level
+  // `TERMINAL_STATUSES` keeps the array reference stable across renders (#774).
+  const isTerminal = run !== null && (TERMINAL_STATUSES as readonly string[]).includes(run.status);
+  const { events } = useRunEvents(runId, run !== null && !isTerminal);
 
   // Derive completed phases + current from the real run record (no demo fallback).
   const completed: readonly string[] = run ? run.completed_phases : [];

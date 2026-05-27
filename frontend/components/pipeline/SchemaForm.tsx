@@ -97,7 +97,7 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
     return (
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <label htmlFor="json-input" className="text-xs font-medium text-zinc-400">
+          <label htmlFor="json-input" className="text-xs font-medium text-content-secondary">
             Input (JSON)
           </label>
           {exampleInput && (
@@ -124,7 +124,7 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
               setRawJsonError(err instanceof Error ? err.message : 'Invalid JSON');
             }
           }}
-          className="min-h-[140px] w-full rounded-lg bg-zinc-900 border border-zinc-700 px-3 py-2 font-mono text-xs text-zinc-200 focus:outline-none focus:ring-2 focus:ring-sky-500 resize-y"
+          className="min-h-[140px] w-full rounded-lg bg-surface-0 border border-default px-3 py-2 font-mono text-xs text-content-primary focus:outline-none focus:ring-2 focus:ring-sky-500 resize-y"
           aria-invalid={rawJsonError !== null}
           spellCheck={false}
         />
@@ -159,7 +159,7 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
         if (prop.enum && prop.enum.length > 0) {
           return (
             <div key={key} className="flex flex-col gap-1.5">
-              <label htmlFor={fieldId} className="text-xs font-medium text-zinc-400">
+              <label htmlFor={fieldId} className="text-xs font-medium text-content-secondary">
                 {key}
                 {isRequired && <span className="ml-0.5 text-red-400">*</span>}
               </label>
@@ -168,7 +168,7 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
                 value={String(value ?? '')}
                 onChange={(e) => updateField(key, e.target.value)}
                 required={isRequired}
-                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 focus:border-sky-500 focus:outline-none"
+                className="rounded-md border border-default bg-surface-0 px-3 py-1.5 text-sm text-content-primary focus:border-sky-500 focus:outline-none"
               >
                 <option value="">Select…</option>
                 {prop.enum.map((opt) => (
@@ -178,7 +178,7 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
                 ))}
               </select>
               {prop.description && (
-                <p className="text-xs text-zinc-500">{prop.description}</p>
+                <p className="text-xs text-content-tertiary">{prop.description}</p>
               )}
             </div>
           );
@@ -188,18 +188,18 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
         if (prop.type === 'boolean') {
           return (
             <div key={key} className="flex flex-col gap-1.5">
-              <label className="flex items-center gap-2 text-xs font-medium text-zinc-400">
+              <label className="flex items-center gap-2 text-xs font-medium text-content-secondary">
                 <input
                   type="checkbox"
                   checked={!!value}
                   onChange={(e) => updateField(key, e.target.checked)}
-                  className="rounded border-zinc-600 bg-zinc-900 text-sky-500 focus:ring-sky-500"
+                  className="rounded border-default bg-surface-0 text-sky-500 focus:ring-sky-500"
                 />
                 {key}
                 {isRequired && <span className="ml-0.5 text-red-400">*</span>}
               </label>
               {prop.description && (
-                <p className="text-xs text-zinc-500">{prop.description}</p>
+                <p className="text-xs text-content-tertiary">{prop.description}</p>
               )}
             </div>
           );
@@ -209,7 +209,7 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
         if (prop.type === 'number' || prop.type === 'integer') {
           return (
             <div key={key} className="flex flex-col gap-1.5">
-              <label htmlFor={fieldId} className="text-xs font-medium text-zinc-400">
+              <label htmlFor={fieldId} className="text-xs font-medium text-content-secondary">
                 {key}
                 {isRequired && <span className="ml-0.5 text-red-400">*</span>}
               </label>
@@ -223,10 +223,10 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
                   updateField(key, v === '' ? undefined : Number(v));
                 }}
                 required={isRequired}
-                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 focus:border-sky-500 focus:outline-none"
+                className="rounded-md border border-default bg-surface-0 px-3 py-1.5 text-sm text-content-primary focus:border-sky-500 focus:outline-none"
               />
               {prop.description && (
-                <p className="text-xs text-zinc-500">{prop.description}</p>
+                <p className="text-xs text-content-tertiary">{prop.description}</p>
               )}
             </div>
           );
@@ -235,7 +235,7 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
         // Default: string → text input (or textarea for long descriptions)
         return (
           <div key={key} className="flex flex-col gap-1.5">
-            <label htmlFor={fieldId} className="text-xs font-medium text-zinc-400">
+            <label htmlFor={fieldId} className="text-xs font-medium text-content-secondary">
               {key}
               {isRequired && <span className="ml-0.5 text-red-400">*</span>}
             </label>
@@ -246,10 +246,10 @@ export function SchemaForm({ schema, exampleInput, onChange }: SchemaFormProps) 
               onChange={(e) => updateField(key, e.target.value)}
               required={isRequired}
               placeholder={prop.description ?? ''}
-              className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 placeholder-zinc-600 focus:border-sky-500 focus:outline-none"
+              className="rounded-md border border-default bg-surface-0 px-3 py-1.5 text-sm text-content-primary placeholder:text-content-tertiary focus:border-sky-500 focus:outline-none"
             />
             {prop.description && (
-              <p className="text-xs text-zinc-500">{prop.description}</p>
+              <p className="text-xs text-content-tertiary">{prop.description}</p>
             )}
           </div>
         );
