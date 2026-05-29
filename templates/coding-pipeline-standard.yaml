@@ -103,6 +103,21 @@ phases:
   #
   # The CONSUME / EXTEND / DIVERGENT / NEW-OK verdict labels are
   # consumed verbatim by SPEC, SPEC_ADVERSARY, IMPLEMENT, and REVIEW.
+  #
+  # ── DISPATCH CONTRACT (Claude-Code-as-orchestrator adapters) ─────────────
+  # When this YAML is adapted for Claude-Code-as-orchestrator use
+  # (e.g. ToscanAI/orchemist-skills, or a downstream consumer's
+  # PIPELINE.md doctrine), Phase 0 MUST be dispatched via a
+  # WRITE-CAPABLE subagent type (e.g. `general-purpose`). The prompt
+  # template below instructs the agent to write
+  # `{output_dir}/existing_symbols.md`; read-only subagent types
+  # (notably Claude Code's `Explore`, which has no Write/Edit tool)
+  # cannot satisfy that contract and silently break the file-write
+  # invariant that every downstream phase (SPEC, BEHAVIORAL,
+  # SPEC_ADVERSARY, IMPLEMENT, REVIEW, FIX) depends on. The engine
+  # itself (LiteLLM dispatch) is always write-capable — this
+  # constraint applies only to Claude-Code-as-orchestrator adapters.
+  # See ToscanAI/orchemist#903 for the field report.
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   - id: existing_symbols_inventory
