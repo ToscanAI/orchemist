@@ -18,7 +18,7 @@ AI agents hallucinate, drift off-topic across long chains, and produce work that
 - **Adversarial quality gates.** Spec adversary, acceptance-test adversary, and code review phases catch weaknesses BEFORE they become implementation bugs.
 - **Acceptance-test-driven development.** Tests are written before implementation by a separate agent. The implementing agent must pass them — it cannot modify or bypass them.
 
-300+ pipeline runs across content, coding, research, and compliance workflows have validated this approach.
+300+ internal pipeline runs (dogfood + integration testing) across content, coding, research, and compliance workflows have stress-tested this approach.
 
 ---
 
@@ -39,8 +39,8 @@ You declare your pipeline in a single YAML file. The engine handles phase sequen
 
 | Mode | Backend | Status |
 |---|---|---|
-| **openclaw** | Claude sub-agents via OpenClaw gateway | Battle-tested (300+ runs) |
-| **openrouter** | Any model via OpenRouter (Anthropic, OpenAI, Google, etc.) | New — first successful end-to-end coding pipeline run 2026-04-17 |
+| **openrouter** | Any model via OpenRouter (Anthropic, OpenAI, Google, etc.) | Primary — production path since 2026-04-17 |
+| **openclaw** | Claude sub-agents via OpenClaw gateway | Deprecated — gateway no longer active; historical use only |
 | **standalone** | Direct Anthropic API | Available for simple pipelines |
 | **dry-run** | Mock execution for template validation | Stable |
 
@@ -352,8 +352,8 @@ Orchemist is in **active development (alpha)**. What works, what doesn't:
 
 | Area | Status |
 |---|---|
-| Coding pipeline (openclaw mode) | Battle-tested across 300+ runs on content, coding, research, compliance pipelines |
-| Coding pipeline (openrouter mode) | First successful end-to-end run 2026-04-17 — produced correct code with 32/32 acceptance tests passing |
+| Coding pipeline (openrouter mode) | Primary path — first successful end-to-end run 2026-04-17, 32/32 acceptance tests passing |
+| Coding pipeline (openclaw mode) | Deprecated — 300+ internal dogfood runs before gateway sunset; kept for historical reference |
 | Pipeline templates | `coding-pipeline-standard` (11 phases) and `coding-pipeline-skip-spec` stable; content and research templates available |
 | Web UI | Functional for template browsing, run monitoring, and pipeline launching |
 | Orchemist IDE | Phases 2-5 complete (shell scaffold, pipeline explorer, live log streaming, template editor); schema-driven launch form in progress |
