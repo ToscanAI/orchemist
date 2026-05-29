@@ -104,25 +104,26 @@ phases:
   # The CONSUME / EXTEND / DIVERGENT / NEW-OK verdict labels are
   # consumed verbatim by SPEC, SPEC_ADVERSARY, IMPLEMENT, and REVIEW.
   #
-  # ── DISPATCH CONTRACT (Claude-Code-as-orchestrator adapters) ─────────────
+  # ── DISPATCH CONTRACT (Skills Pack / Claude-Code-as-orchestrator) ────────
   # When this YAML is adapted for Claude-Code-as-orchestrator use
-  # (e.g. ToscanAI/orchemist-skills, or a downstream consumer's
-  # PIPELINE.md doctrine), Phase 0 MUST be dispatched via a
-  # WRITE-CAPABLE subagent type (e.g. `general-purpose`). The prompt
-  # template below instructs the agent to write
-  # `{output_dir}/existing_symbols.md`; read-only subagent types
-  # (notably Claude Code's `Explore`, which has no Write/Edit tool)
-  # cannot satisfy that contract and silently break the file-write
-  # invariant that every downstream phase (SPEC, BEHAVIORAL,
-  # SPEC_ADVERSARY, IMPLEMENT, REVIEW, FIX) depends on. The engine
-  # itself (LiteLLM dispatch) is always write-capable — this
-  # constraint applies only to Claude-Code-as-orchestrator adapters.
-  # See ToscanAI/orchemist#903 for the field report.
+  # (the Skills Pack at ToscanAI/orchemist-skills, or a downstream
+  # consumer's PIPELINE.md doctrine), Phase 0 MUST be dispatched via
+  # the `general-purpose` subagent type — the canonical Claude Code
+  # type that has Write/Edit/Bash tools. The prompt template below
+  # instructs the agent to write `{output_dir}/existing_symbols.md`;
+  # read-only subagent types (notably Claude Code's `Explore`, which
+  # has no Write/Edit tool) cannot satisfy that contract and silently
+  # break the file-write invariant that every downstream phase (SPEC,
+  # BEHAVIORAL, SPEC_ADVERSARY, ACCEPTANCE_TEST, IMPLEMENT, REVIEW,
+  # FIX) depends on. The engine itself (LiteLLM dispatch) is always
+  # write-capable — this constraint applies only to Claude-Code-as-
+  # orchestrator adapters. See ToscanAI/orchemist#903 for the field
+  # report and ToscanAI/orchemist-skills#9 for the consumer-side fix.
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   - id: existing_symbols_inventory
     name: "Existing-symbols inventory (sub-check 7d pre-flight)"
-    description: "Greps the project for existing UI primitives, shared libraries, adjacent action/hook patterns, and workspace-barrel exports. Writes a sticky `existing_symbols.md` artifact read by every subsequent phase. Resolves the late-catch problem for sub-check 7d (re-implementation of existing symbol)."
+    description: "Greps the project for existing UI primitives, shared libraries, adjacent action/hook patterns, and workspace-barrel exports. Writes a sticky `existing_symbols.md` artifact read by every subsequent phase. Resolves the late-catch problem for sub-check 7d (re-implementation of existing symbol). DISPATCH: when adapted for Claude-Code-as-orchestrator use, this phase requires a write-capable subagent type (`general-purpose`) — see header comment + ToscanAI/orchemist#903."
     model_tier: sonnet
     thinking_level: medium
     max_iterations: 2
