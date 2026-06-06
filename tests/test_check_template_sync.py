@@ -49,15 +49,27 @@ def _run_script(
     merge needs to follow ``extends:`` to the same temp-dir copy under test.
     """
     import os
+    import tempfile
 
     cmd: list[str] = [sys.executable, str(_SCRIPT_PATH)]
     if standard is not None:
         cmd += ["--standard", str(standard)]
     if skip_spec is not None:
         cmd += ["--skip-spec", str(skip_spec)]
+    # Issue #917: these B-tests exercise ONLY the intra-engine standard↔skip-spec
+    # lint. The cross-repo parity mode (added in #917) would otherwise activate
+    # whenever ORCHEMIST_SKILLS_DIR is exported OR an ../orchemist-skills sibling
+    # exists, and it would mis-resolve the engine side to the (partial) temp dir
+    # these tests pass via --standard, exiting 2 on the absent maintenance.yaml.
+    # Keep this harness hermetic: scrub the env var AND force --skills-dir to a
+    # path that cannot exist, so cross-repo deterministically skips here. (Tests
+    # that explicitly want cross-repo live in tests/test_cross_repo_parity.py.)
+    if extra_args is None or not any(a == "--skills-dir" for a in extra_args):
+        cmd += ["--skills-dir", str(Path(tempfile.gettempdir()) / "orchemist-nonexistent-skills-dir-917")]
     if extra_args:
         cmd += extra_args
     env = os.environ.copy()
+    env.pop("ORCHEMIST_SKILLS_DIR", None)
     # Prepend the temp dir containing the (possibly mutated) templates so the
     # engine's `extends:` resolution finds those copies first.
     if standard is not None or skip_spec is not None:

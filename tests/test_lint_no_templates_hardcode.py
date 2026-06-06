@@ -42,6 +42,11 @@ _ALLOWLIST = {
     # Cannot be moved to examples/ because the contract being tested IS that the
     # bundled production templates still work post-refactor.
     "test_template_extends.py",
+    # Cross-repo parity guardrail (issue #917). Verifies the BUNDLED engine
+    # templates/ stay in sync with the ToscanAI/orchemist-skills pipelines/
+    # copies. By definition it must reference templates/ (the canonical side) by
+    # path — it is the cross-repo drift check for the bundled templates.
+    "test_cross_repo_parity.py",
 }
 
 
