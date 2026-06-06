@@ -2593,20 +2593,13 @@ class PhaseSequencer:
 
         The PhaseDefinition uses short names (haiku, sonnet, opus) while
         the schema uses versioned names (haiku-4-5, sonnet-4, opus-4-6).
-        Returns None if the tier is not recognised (runner will use its default).
+        Delegates to the canonical model_registry (#916) — the single
+        short↔versioned bridge. Returns None if the tier is not recognised
+        (runner will use its default).
         """
-        from .schemas import ModelTier
+        from .model_registry import resolve_tier
 
-        _MAP = {
-            "haiku": ModelTier.HAIKU,
-            "sonnet": ModelTier.SONNET,
-            "opus": ModelTier.OPUS,
-            # allow full enum values too
-            "haiku-4-5": ModelTier.HAIKU,
-            "sonnet-4": ModelTier.SONNET,
-            "opus-4-6": ModelTier.OPUS,
-        }
-        resolved = _MAP.get(model_tier_str.lower() if model_tier_str else "")
+        resolved = resolve_tier(model_tier_str)
         if resolved is None and model_tier_str:
             logger.debug(f"Unrecognised model_tier '{model_tier_str}'; using runner default")
         return resolved

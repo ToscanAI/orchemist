@@ -238,12 +238,34 @@ class TestPricingTableHelpers:
         """The bundled pricing.yaml contains at least the canonical model names."""
         pt = PricingTable()
         expected = [
+            # Retained stale keys (kept so externally-supplied literals price).
             "anthropic/claude-haiku-4-5-20241022",
             "anthropic/claude-sonnet-4-20250514",
             "anthropic/claude-opus-4-6",
+            # New Opus 4.7 / 4.8 keys, bare + prefixed (#911/#916).
+            "claude-opus-4-7",
+            "anthropic/claude-opus-4-7",
+            "claude-opus-4-8",
+            "anthropic/claude-opus-4-8",
         ]
         for model in expected:
             assert pt.has_model(model), f"Missing model: {model}"
+
+    def test_opus_pricing_is_first_party_5_25(self):
+        """#911: every Opus key (4.6/4.7/4.8, bare + prefixed) prices $5/$25."""
+        pt = PricingTable()
+        for model in (
+            "claude-opus-4-6", "anthropic/claude-opus-4-6",
+            "claude-opus-4-7", "anthropic/claude-opus-4-7",
+            "claude-opus-4-8", "anthropic/claude-opus-4-8",
+        ):
+            pricing = pt.get_pricing(model)
+            assert pricing["input_per_million"] == 5.0, model
+            assert pricing["output_per_million"] == 25.0, model
+        # Cost-level regression guard: the price drop from the old $15/$75
+        # (which gave 90.0 for 1M/1M) down to $5/$25 (= 30.0).
+        assert pt.compute_cost("anthropic/claude-opus-4-8", 1_000_000, 1_000_000) == 30.0
+        assert pt.compute_cost("claude-opus-4-6", 1_000_000, 1_000_000) == 30.0
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ from orchestration_engine.errors import (
     RateLimitError,
 )
 from orchestration_engine.openclaw_executor import (
+    MODEL_MAP,
     OpenClawExecutor,
     _CIRCUIT_BREAKERS,
     _CIRCUIT_BREAKERS_LOCK,
@@ -523,7 +524,10 @@ class TestCircuitBreaker:
         """When ALL tiers' CBs are open, execute() returns FAILED with
         ``all_tiers_unavailable`` (per #480: single-tier CB-open now escalates).
         """
-        for m in ("anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-6"):
+        # Pre-exhaust the breakers keyed by the RESOLVED model ids the execute
+        # chain probes. Re-keyed off MODEL_MAP (registry-backed, #916) so the
+        # opus breaker tracks the canonical opus id (now opus-4-8) automatically.
+        for m in (MODEL_MAP[ModelTier.SONNET], MODEL_MAP[ModelTier.OPUS]):
             self._exhaust_circuit_breaker(executor, sample_task, m, threshold=5)
 
         with patch.object(executor, "_run_session") as mock_run:
@@ -535,8 +539,10 @@ class TestCircuitBreaker:
 
     def test_circuit_breaker_error_message_mentions_model(self, executor, sample_task):
         """Error message must enumerate probed tiers (#480 / adversary F4)."""
-        sonnet = "anthropic/claude-sonnet-4-6"
-        opus = "anthropic/claude-opus-4-6"
+        # Re-keyed off MODEL_MAP (registry-backed, #916) so opus tracks the
+        # canonical opus id (now opus-4-8) automatically.
+        sonnet = MODEL_MAP[ModelTier.SONNET]
+        opus = MODEL_MAP[ModelTier.OPUS]
         for m in (sonnet, opus):
             self._exhaust_circuit_breaker(executor, sample_task, m, threshold=5)
 

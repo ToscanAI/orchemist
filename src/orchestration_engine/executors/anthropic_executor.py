@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from ..cost_tracker import PricingTable
+from ..model_registry import bare_id
 from ..schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 
 logger = logging.getLogger(__name__)
@@ -29,15 +30,15 @@ logger = logging.getLogger(__name__)
 # construction. cost_tracker imports only .db, so this introduces no cycle.
 _PRICING = PricingTable()
 
-# Model tier → Anthropic model ID mapping
+# Model tier → Anthropic (bare) model ID mapping, built from the canonical
+# model_registry (#916). Both ModelTier enum keys and SHORT string keys resolve
+# to the same canonical bare id; the OPUS tier emits claude-opus-4-8.
 _MODEL_MAP = {
-    ModelTier.HAIKU: "claude-haiku-4-5-20251001",
-    ModelTier.SONNET: "claude-sonnet-4-6",
-    ModelTier.OPUS: "claude-opus-4-6",
+    **{tier: bare_id(tier) for tier in ModelTier},
     # String fallbacks
-    "haiku": "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
-    "opus": "claude-opus-4-6",
+    "haiku": bare_id("haiku"),
+    "sonnet": bare_id("sonnet"),
+    "opus": bare_id("opus"),
 }
 
 # Thinking level → budget tokens (approximate)
@@ -80,15 +81,14 @@ class AnthropicExecutor:
         return True
 
     def estimate_cost(self, task: TaskSpec) -> float:
-        """Rough cost estimate based on model tier."""
-        # Very rough: input tokens ~500, output tokens ~2000
+        """Rough cost estimate based on model tier.
+
+        Delegates to the canonical PricingTable (#916) using a representative
+        token assumption (input ~500, output ~2000), so estimates stay in sync
+        with the same pricing.yaml the ledger bills against.
+        """
         tier = task.preferred_model or ModelTier.SONNET
-        costs = {
-            ModelTier.HAIKU: 0.002,
-            ModelTier.SONNET: 0.02,
-            ModelTier.OPUS: 0.10,
-        }
-        return costs.get(tier, 0.02)
+        return _PRICING.compute_cost(bare_id(tier), 500, 2000)
 
     def execute(
         self,

@@ -78,6 +78,11 @@ class TestModelsConfig:
         assert "haiku-4-5" in config.tier_mappings
         assert "sonnet-4" in config.tier_mappings
         assert "opus-4-6" in config.tier_mappings
+        # Canonical tier_mappings values (#916): stale ids purged; the opus-4-6
+        # tier key emits the maintainer-authorized opus-4-8 (#914/§0b).
+        assert config.tier_mappings["haiku-4-5"] == "anthropic/claude-haiku-4-5-20251001"
+        assert config.tier_mappings["sonnet-4"] == "anthropic/claude-sonnet-4-6"
+        assert config.tier_mappings["opus-4-6"] == "anthropic/claude-opus-4-8"
     
     def test_thinking_levels(self):
         """Test thinking level mappings."""

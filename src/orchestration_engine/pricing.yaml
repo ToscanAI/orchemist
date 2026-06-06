@@ -67,15 +67,35 @@ models:
     output_per_million: 15.0
 
   # -------------------------------------------------------------------------
-  # Claude Opus 4.6 — most capable / most expensive
+  # Claude Opus — most capable. First-party Anthropic pricing (#911): $5 / $25
+  # per million for all of 4.6 / 4.7 / 4.8. The OPUS *tier* emits 4.8 (see
+  # model_registry.py); 4.6 and 4.7 remain priced literals so any explicitly
+  # specified opus id still prices correctly. PricingTable does exact-match
+  # lookups, so each id needs both a bare and an anthropic/-prefixed key.
   # -------------------------------------------------------------------------
   claude-opus-4-6:
-    input_per_million: 15.0
-    output_per_million: 75.0
+    input_per_million: 5.0
+    output_per_million: 25.0
 
   anthropic/claude-opus-4-6:
-    input_per_million: 15.0
-    output_per_million: 75.0
+    input_per_million: 5.0
+    output_per_million: 25.0
+
+  claude-opus-4-7:
+    input_per_million: 5.0
+    output_per_million: 25.0
+
+  anthropic/claude-opus-4-7:
+    input_per_million: 5.0
+    output_per_million: 25.0
+
+  claude-opus-4-8:
+    input_per_million: 5.0
+    output_per_million: 25.0
+
+  anthropic/claude-opus-4-8:
+    input_per_million: 5.0
+    output_per_million: 25.0
 
   # -------------------------------------------------------------------------
   # Fallback — used when the requested model is not in this table.

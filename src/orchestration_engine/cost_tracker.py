@@ -22,7 +22,7 @@ Typical usage
     record = tracker.record_phase(
         run_id="run-abc123",
         phase_id="spec",
-        model="anthropic/claude-sonnet-4-20250514",
+        model="anthropic/claude-sonnet-4-6",
         input_tokens=1200,
         output_tokens=800,
     )
@@ -102,7 +102,7 @@ class PricingTable:
 
         table = PricingTable()
         cost = table.compute_cost(
-            model="anthropic/claude-sonnet-4-20250514",
+            model="anthropic/claude-sonnet-4-6",
             input_tokens=1000,
             output_tokens=500,
         )
@@ -171,7 +171,7 @@ class PricingTable:
         """Return the pricing dict for *model*, falling back to ``default``.
 
         Args:
-            model: Model identifier (e.g. ``"anthropic/claude-sonnet-4-20250514"``).
+            model: Model identifier (e.g. ``"anthropic/claude-sonnet-4-6"``).
 
         Returns:
             Dict with keys ``input_per_million`` and ``output_per_million``.

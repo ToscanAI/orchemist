@@ -1,18 +1,26 @@
 """Acceptance tests for issue #801 — per-tier cost fallback rates.
 
-Issue: when the OpenRouter API response omits `usage.total_cost` (the dominant
-case for Anthropic models), the executor falls back to a single flat rate of
-$10/Mtok, which over-estimates real OpenRouter billing by ~3x (run 6bb0349c:
-$61.01 reported vs $20.69 actual on 6.1M tokens).
+SUPERSEDED CONTRACT (updated for #911 + #913 / #916). The original #801 contract
+used a *blended* per-tier `$/1K` heuristic (haiku 0.002 / sonnet 0.006 /
+opus 0.033), deliberately biased to under-report. That heuristic was removed by
+two later maintainer decisions:
 
-Fix contract: the fallback rate is per-tier (sonnet / opus / haiku), substring-
-detected from the OpenRouter model id. Unknown models default to the sonnet
-tier. When `usage.total_cost` IS present, it is used unchanged.
+  * #911 — first-party Anthropic pricing (Opus $5/$25; Sonnet $3/$15;
+    Haiku $1/$5), and
+  * #913 — routing the no-`total_cost` fallback through
+    `PricingTable.compute_cost(model, prompt_tokens, completion_tokens)`, which
+    prices the two directions separately and exactly (no blended rate).
 
-These tests verify the behavioral contracts in
-`output/issue-801-run/behavioral.md` (Contracts A-G) and are written BEFORE
-implementation per the Orchemist acceptance-test phase contract. They are
-immutable after seal.
+The behavioral *invariants* the #801 contract guaranteed are preserved and
+re-asserted here against the recomputed first-party values: usage.total_cost is
+used unchanged when present; the no-`total_cost` cost is linear in tokens; tiers
+are ordered opus > sonnet > haiku; unknown ids price at the table `default`
+($3/$15, the sonnet class). Only the exact numbers change (they are now the
+true first-party costs, e.g. sonnet 500+500 = 0.009 rather than the
+deliberately-under-reported 0.006).
+
+These tests are a regular (NOT sealed) test file; the "immutable after seal"
+framing of the original acceptance phase no longer applies — see SPEC §0.
 """
 
 from __future__ import annotations
@@ -107,7 +115,11 @@ def test_contract_a_api_total_cost_used_when_present():
 
 
 def test_contract_b_sonnet_fallback_rate_500_plus_500_tokens():
-    """Contract B: no total_cost, sonnet model → 0.006/1K (= 0.006 for 1000 tokens)."""
+    """Contract B: no total_cost, sonnet → first-party PricingTable cost.
+
+    500 in * $3/Mtok + 500 out * $15/Mtok = 0.0015 + 0.0075 = 0.009
+    (superseded the old blended 0.006; #911/#913).
+    """
     result = _run(
         model_tier="sonnet",
         response_bytes=_mock_response(
@@ -115,9 +127,8 @@ def test_contract_b_sonnet_fallback_rate_500_plus_500_tokens():
         ),
     )
     assert result.state == TaskState.SUCCESS
-    # 1000 tokens * 0.006/1K = 0.006
-    assert float(result.cost_usd) == pytest.approx(0.006, abs=1e-9)
-    # Sanity: the new rate is STRICTLY LESS than the old $0.01/1K bug.
+    assert float(result.cost_usd) == pytest.approx(0.009, abs=1e-9)
+    # Sanity: still STRICTLY LESS than the old $0.01/1K flat bug.
     assert float(result.cost_usd) < 0.01
 
 
@@ -142,7 +153,12 @@ def test_contract_b_sonnet_fallback_scales_linearly_with_tokens():
 
 
 def test_contract_c_opus_fallback_rate_500_plus_500_tokens():
-    """Contract C: no total_cost, opus model → 0.033/1K (= 0.033 for 1000 tokens)."""
+    """Contract C: no total_cost, opus → first-party PricingTable cost.
+
+    500 in * $5/Mtok + 500 out * $25/Mtok = 0.0025 + 0.0125 = 0.015
+    (superseded the old blended 0.033, derived from the stale $15/$75 price;
+    #911/#913).
+    """
     result = _run(
         model_tier="opus",
         response_bytes=_mock_response(
@@ -150,8 +166,7 @@ def test_contract_c_opus_fallback_rate_500_plus_500_tokens():
         ),
     )
     assert result.state == TaskState.SUCCESS
-    # 1000 tokens * 0.033/1K = 0.033
-    assert float(result.cost_usd) == pytest.approx(0.033, abs=1e-9)
+    assert float(result.cost_usd) == pytest.approx(0.015, abs=1e-9)
 
 
 def test_contract_c_opus_cost_strictly_greater_than_sonnet_same_tokens():
@@ -166,20 +181,23 @@ def test_contract_c_opus_cost_strictly_greater_than_sonnet_same_tokens():
     )
     # The ratio MUST be > 1 (sanity gate against a regression collapsing tiers).
     assert float(opus_result.cost_usd) > float(sonnet_result.cost_usd)
-    # Specific ratio per behavioral contract: 0.033 / 0.006 ≈ 5.5
+    # First-party ratio: 0.015 / 0.009 ≈ 1.667 (opus > sonnet invariant preserved).
     ratio = float(opus_result.cost_usd) / float(sonnet_result.cost_usd)
-    assert ratio == pytest.approx(0.033 / 0.006, rel=1e-6)
+    assert ratio == pytest.approx(0.015 / 0.009, rel=1e-6)
 
 
 def test_contract_c_opus_passthrough_model_id_also_detected():
-    """Contract C: opus tier detection works on any model id containing 'opus'."""
-    # Passing a literal model id (not a tier alias) — substring match should still
-    # route to the opus rate per the behavioral spec's "lowercase form contains 'opus'".
+    """Contract C: a literal opus id passes through and prices via PricingTable.
+
+    The literal model id (not a tier alias) passes through to compute_cost; the
+    retained opus-4-6 pricing key prices it at $5/$25 → 0.015 for 500+500,
+    identical to the opus-4-8 the tier now emits (#911/#913).
+    """
     result = _run(
         model_tier="anthropic/claude-opus-4-6",
         response_bytes=_mock_response(prompt_tokens=500, completion_tokens=500),
     )
-    assert float(result.cost_usd) == pytest.approx(0.033, abs=1e-9)
+    assert float(result.cost_usd) == pytest.approx(0.015, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -188,13 +206,17 @@ def test_contract_c_opus_passthrough_model_id_also_detected():
 
 
 def test_contract_d_haiku_fallback_rate_500_plus_500_tokens():
-    """Contract D: no total_cost, haiku model → 0.002/1K (= 0.002 for 1000 tokens)."""
+    """Contract D: no total_cost, haiku → first-party PricingTable cost.
+
+    500 in * $1/Mtok + 500 out * $5/Mtok = 0.0005 + 0.0025 = 0.003
+    (superseded the old blended 0.002; #911/#913).
+    """
     result = _run(
         model_tier="haiku",
         response_bytes=_mock_response(prompt_tokens=500, completion_tokens=500),
     )
     assert result.state == TaskState.SUCCESS
-    assert float(result.cost_usd) == pytest.approx(0.002, abs=1e-9)
+    assert float(result.cost_usd) == pytest.approx(0.003, abs=1e-9)
 
 
 def test_contract_d_haiku_cost_strictly_less_than_sonnet_same_tokens():
@@ -216,14 +238,17 @@ def test_contract_d_haiku_cost_strictly_less_than_sonnet_same_tokens():
 
 
 def test_contract_e_unknown_model_id_uses_sonnet_rate():
-    """Contract E: unknown model id → sonnet-rate cost, no exception, state=SUCCESS."""
-    # 'meta-llama/llama-3.3-70b' contains neither 'opus' nor 'haiku' → sonnet default.
+    """Contract E: unknown model id → PricingTable `default` ($3/$15), no crash.
+
+    'meta-llama/llama-3.3-70b' has no pricing.yaml key → hits `default`
+    (sonnet class) → 500 in*$3 + 500 out*$15 per Mtok = 0.009 (#911/#913).
+    """
     result = _run(
         model_tier="meta-llama/llama-3.3-70b",
         response_bytes=_mock_response(prompt_tokens=500, completion_tokens=500),
     )
     assert result.state == TaskState.SUCCESS
-    assert float(result.cost_usd) == pytest.approx(0.006, abs=1e-9)
+    assert float(result.cost_usd) == pytest.approx(0.009, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -313,9 +338,10 @@ def test_contract_f_tool_loop_accumulates_per_tier_fallback_per_roundtrip():
         result = executor.execute(task, model_tier="sonnet")
 
     # Both round-trips should have completed; the cost equals 2x the per-round
-    # sonnet-rate fallback (1000 tokens * 0.006/1K = 0.006 per round, x2 = 0.012).
+    # first-party sonnet cost (500 in + 500 out → 0.009 per round, x2 = 0.018;
+    # #911/#913).
     assert result.state == TaskState.SUCCESS
-    assert float(result.cost_usd) == pytest.approx(0.012, abs=1e-9)
+    assert float(result.cost_usd) == pytest.approx(0.018, abs=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -323,14 +349,16 @@ def test_contract_f_tool_loop_accumulates_per_tier_fallback_per_roundtrip():
 # ---------------------------------------------------------------------------
 
 
-def test_headline_3x_overestimate_eliminated_for_sonnet():
-    """Headline: the old rate was $0.01/1K; the new sonnet rate is strictly lower.
+def test_headline_flat_rate_bug_eliminated_for_sonnet():
+    """Headline: the flat $10/Mtok bug is gone; cost is now exact first-party.
 
-    This is the issue's headline number: $61.01 reported vs $20.69 actual ≈ 3x.
-    With the fix, the sonnet rate drops from $10/Mtok to $6/Mtok — a 40%
-    reduction that brings the reported value within ~75% of the empirical
-    OpenRouter average ($3.4/Mtok), well inside the issue's 30%-error target
-    for the sonnet-dominated phases that drove the original overestimate.
+    The original $801 bug priced every model at a single flat $10/Mtok
+    ($61.01 reported vs $20.69 actual on 6.1M tokens). After #913 the
+    no-`total_cost` path computes the true first-party cost via PricingTable
+    with separate input/output rates. For 500k in + 500k out of sonnet that is
+    0.5*$3 + 0.5*$15 = $9.00 — strictly below the old flat $10 (the
+    overestimate is removed) and an *accurate* figure, not the deliberately
+    under-reported blended rate of the superseded #801 contract.
     """
     # Simulate the run-6bb0349c-style aggregate: 1M tokens of sonnet, no total_cost.
     result = _run(
@@ -340,9 +368,8 @@ def test_headline_3x_overestimate_eliminated_for_sonnet():
         ),
     )
     new_cost = float(result.cost_usd)
-    old_cost = (1_000_000 / 1000.0) * 0.01  # what the bug produced: $10
-    # New cost is at least 30% lower than the bug — proves the 3x is gone.
-    assert new_cost < old_cost * 0.7
-    # And it's at most 2x the empirical OpenRouter average ($3.4/Mtok = $3.40 for 1M).
-    empirical_actual = 3.40
-    assert new_cost <= 2.0 * empirical_actual
+    old_cost = (1_000_000 / 1000.0) * 0.01  # what the flat-rate bug produced: $10
+    # Exact first-party sonnet cost for this 50/50 token split.
+    assert new_cost == pytest.approx(9.0, abs=1e-9)
+    # And it is strictly below the old flat-rate bug — the overestimate is gone.
+    assert new_cost < old_cost

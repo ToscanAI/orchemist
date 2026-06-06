@@ -14,6 +14,9 @@ from typing import Dict, Any, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from decimal import Decimal
 
+from .model_registry import prefixed_id
+from .schemas import ModelTier
+
 
 class QueueConfig(BaseModel):
     """Queue management configuration."""
@@ -36,11 +39,14 @@ class ModelsConfig(BaseModel):
     default_tier: str = Field(default="sonnet-4", description="Default model tier")
     escalation_enabled: bool = Field(default=True, description="Enable model tier escalation on retry")
     
-    # Model mappings for OpenClaw
+    # Model mappings for OpenClaw — built from the canonical model_registry
+    # (#916). Keys remain the VERSIONED ModelTier enum values (#914 normalizes
+    # only the lookup boundary, not the enum values); values are the canonical
+    # anthropic/-prefixed ids (opus-4-6 tier key → claude-opus-4-8 emission).
     tier_mappings: Dict[str, str] = Field(default={
-        "haiku-4-5": "anthropic/claude-haiku-4-5-20241022",
-        "sonnet-4": "anthropic/claude-sonnet-4-20250514", 
-        "opus-4-6": "anthropic/claude-opus-4-6"
+        ModelTier.HAIKU.value: prefixed_id(ModelTier.HAIKU),
+        ModelTier.SONNET.value: prefixed_id(ModelTier.SONNET),
+        ModelTier.OPUS.value: prefixed_id(ModelTier.OPUS),
     })
     
     # Thinking levels per tier
@@ -289,9 +295,9 @@ default_tier = "sonnet-4"
 escalation_enabled = true
 
 [models.tier_mappings]
-"haiku-4-5" = "anthropic/claude-haiku-4-5-20241022"
-"sonnet-4" = "anthropic/claude-sonnet-4-20250514"
-"opus-4-6" = "anthropic/claude-opus-4-6"
+"haiku-4-5" = "anthropic/claude-haiku-4-5-20251001"
+"sonnet-4" = "anthropic/claude-sonnet-4-6"
+"opus-4-6" = "anthropic/claude-opus-4-8"
 
 [models.thinking_levels]
 "haiku-4-5" = ""  # No thinking for haiku
