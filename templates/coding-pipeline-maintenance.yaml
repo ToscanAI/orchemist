@@ -1,0 +1,188 @@
+id: coding-pipeline-maintenance
+name: "Coding Pipeline — Maintenance / Fix"
+description: "Right-sized pipeline for bug fixes, infra/deploy/CI changes, and small maintenance work where the full sealed-behavioral-contract ceremony is overkill. Flow: recon -> spec -> spec_adversary(opus) -> implement -> review(opus) -> test(suite) -> PR. SKIPS the behavioral contract + the sealed-acceptance trio (acceptance_test/test_adversary/acceptance_run) because maintenance/infra changes are validated by a FOCUSED test (when unit/e2e-testable) or by PROD VALIDATION (when the behavior is deploy-time/cloud-side and not locally sealable). Same phase IDs as the standard pipeline, so orchemist-run's subagent+model mapping applies (spec_adversary=orchemist-adversary/opus, implement=orchemist-implementer, review=general-purpose/opus, fix=general-purpose)."
+author: "Toscan"
+version: "1.0.0"
+category: "code"
+tags: [code, maintenance, fix, infra, bugfix, pipeline]
+use_cases:
+  - "Bug fixes (UI/runtime/calc) where a focused unit/e2e test suffices"
+  - "Infra / deploy / CI / config changes validated by prod observation (no locally-sealable contract)"
+  - "Small additive changes that don't warrant a full behavioral contract + sealed verify-script"
+
+# When NOT to use: a NEW feature with a real, locally-sealable behavioral
+# contract -> use coding-pipeline-standard (it adds behavioral + sealed
+# acceptance_test + test_adversary + acceptance_run, which earn their keep there).
+
+config_schema:
+  type: object
+  required: [issue_title, issue_body, repo_path, branch_name, issue_number, repo_url]
+  properties:
+    issue_title: { type: string }
+    issue_body: { type: string }
+    repo_path: { type: string }
+    branch_name: { type: string }
+    issue_number: { type: integer }
+    repo_url: { type: string }
+    test_command:
+      type: string
+      default: "pnpm typecheck && pnpm build"
+      description: "Suite command for the test phase (typecheck/build/lint/actionlint). NOT a sealed verify-script."
+    language: { type: string, default: "typescript" }
+    style_guide:
+      type: string
+      default: "Match surrounding code. Keep the change minimal + additive. Add a FOCUSED test only where it cheaply gates the fix; do NOT author a sealed verify-script."
+
+example_input:
+  issue_title: "Sample maintenance issue"
+  issue_body: "Sample fix description + acceptance criteria."
+  repo_path: "/path/to/repo"
+  branch_name: "fix/issue-123"
+  issue_number: 123
+  repo_url: "https://github.com/ToscanAI/value-investing"
+
+phases:
+  # ── Phase 0: recon (existing-symbols inventory) ──────────────────────────
+  - id: existing_symbols_inventory
+    name: "Recon — existing helpers / symbols"
+    description: "Grep the area-of-change for existing helpers, byte-locked seals, and prior art so the fix CONSUMES rather than re-authors, and does not disturb a sealed surface."
+    model_tier: sonnet
+    thinking_level: medium
+    max_iterations: 2
+    transitions:
+      success: spec
+      failed: existing_symbols_inventory
+      timeout: existing_symbols_inventory
+      exhausted: spec
+    prompt_template: |
+      [PIPELINE CONTEXT] MAINTENANCE pipeline — Phase 0 RECON. Read-only. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      Issue #{config[issue_number]}: {config[issue_title]}
+      {config[issue_body]}
+
+      Survey the area-of-change in {config[repo_path]}. Produce {output_dir}/existing_symbols.md covering: (1) existing helpers/symbols the fix should REUSE (file:line), (2) any byte-locked / SHA-pinned / HARD-NO seal surface near the change (verify scripts that pin these files), (3) the current behaviour being fixed (file:line), (4) whether the change is locally TESTABLE (unit/e2e) or only PROD-validatable (deploy-time/cloud-side). Keep it tight + evidence-based.
+
+  # ── SPEC (light) ─────────────────────────────────────────────────────────
+  - id: spec
+    name: "Spec — fix approach (light)"
+    description: "A short spec: root cause, the fix approach + tradeoffs, files to touch, and the validation plan. NOT a full behavioral contract."
+    model_tier: opus
+    thinking_level: high
+    max_iterations: 3
+    transitions:
+      success: spec_adversary
+      failed: spec
+      timeout: spec
+      exhausted: spec
+    prompt_template: |
+      [PIPELINE CONTEXT] MAINTENANCE pipeline — SPEC phase. Read {output_dir}/existing_symbols.md first. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      Issue #{config[issue_number]}: {config[issue_title]}
+      {config[issue_body]}
+
+      Write a LIGHT spec to {output_dir}/spec.md (no full behavioral contract):
+      - Root cause (file:line evidence).
+      - Fix approach + the real tradeoffs/alternatives considered.
+      - Exact files to touch (and the seal surface to AVOID, per recon).
+      - VALIDATION plan: a FOCUSED unit/e2e test if the change is locally testable; otherwise the concrete PROD-VALIDATION steps (deploy + observe). Explicitly state which, and why. Do NOT propose a sealed verify-script.
+      - Non-regression: what existing behaviour must stay unchanged.
+      Keep it tight. End the file with a line: success
+
+  # ── SPEC_ADVERSARY (opus) — vet the approach ─────────────────────────────
+  - id: spec_adversary
+    name: "Spec adversary — vet the approach (opus)"
+    description: "Independent opus adversary pressure-tests the fix APPROACH for correctness, safety, timing, and missed edge cases. The key quality gate for maintenance/prod-affecting work."
+    model_tier: opus
+    thinking_level: high
+    max_iterations: 4
+    transitions:
+      approve: implement
+      request_changes: spec
+      exhausted: spec
+      failed: spec_adversary
+      success: implement
+    prompt_template: |
+      [PIPELINE CONTEXT] MAINTENANCE pipeline — SPEC_ADVERSARY phase (opus, independent). Read {output_dir}/spec.md + {output_dir}/existing_symbols.md. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      Adversarially review the fix approach for issue #{config[issue_number]} ({config[issue_title]}) against the repo. This is maintenance/fix work (no sealed local contract) — focus on CORRECTNESS, SAFETY, TIMING, and MISSED EDGE CASES, not test-sealing. For prod-affecting/deploy changes: pressure-test ordering/race, preview-vs-prod safety, idempotency, rollback, trigger reliability, and the exact failure mode the fix exists to kill. Verify every load-bearing premise against the code (cite file:line); demand empirical proof for any runtime/cloud assumption. Confirm the change reuses existing helpers (no sub-check 7d duplication) and disturbs no seal.
+
+      Write {output_dir}/spec_adversary.md: numbered findings (BLOCKER/MAJOR/MINOR) each with a concrete fix or decision recommendation, plus a one-line approach verdict. End with exactly one line: `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES`.
+
+  # ── IMPLEMENT ────────────────────────────────────────────────────────────
+  - id: implement
+    name: "Implement the fix"
+    description: "Apply the fix on the feature branch per the approved spec. Add a FOCUSED test only where it cheaply gates the change; commit. No sealed verify-script."
+    model_tier: opus
+    thinking_level: high
+    max_iterations: 3
+    transitions:
+      success: review
+      failed: implement
+      timeout: implement
+      exhausted: implement
+    prompt_template: |
+      [PIPELINE CONTEXT] MAINTENANCE pipeline — IMPLEMENT phase. Read {output_dir}/spec.md + {output_dir}/spec_adversary.md (fold in its findings). Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      On branch {config[branch_name]} in {config[repo_path]}, implement the fix for #{config[issue_number]} ({config[issue_title]}) exactly per the approved spec, folding in the adversary's findings. Keep the change minimal + additive; reuse existing helpers; do NOT touch any byte-locked/sealed file flagged in recon (if a fix requires it, STOP and report BLOCKED). Add a FOCUSED unit/e2e test ONLY where it cheaply gates the fix (per the spec's validation plan) — do NOT author a sealed verify-script. Run {config[test_command]} + any focused test; confirm green. Commit (do NOT push or open a PR — the orchestrator does Phase PR). Write {output_dir}/implement.md: what changed (file:line), the test added (if any) + its result, suite result, commit SHA. End with `VERDICT: success` or `VERDICT: failed`.
+
+  # ── REVIEW (opus) ────────────────────────────────────────────────────────
+  - id: review
+    name: "Review the fix (opus)"
+    description: "Independent opus review of the implementation — correctness, safety, no-regression, seal-integrity."
+    model_tier: opus
+    thinking_level: high
+    max_iterations: 3
+    supervisor: true
+    supervisor_model: opus
+    transitions:
+      approve: test
+      request_changes: fix
+      abort: fix
+      success: test
+      failed: review
+      timeout: review
+    prompt_template: |
+      [PIPELINE CONTEXT] MAINTENANCE pipeline — REVIEW phase (opus, independent). Read the implement commit + {output_dir}/spec.md + {output_dir}/spec_adversary.md. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      Review the fix for #{config[issue_number]} ({config[issue_title]}) in {config[repo_path]}. Verify: the fix is correct + complete vs the spec + adversary findings; no regression; no sealed/byte-locked file disturbed (0-diff on the seal surface from recon); the focused test (if any) genuinely gates the fix (scrutinize for false-greens); and for prod-affecting changes, the runtime/deploy behaviour is sound. Note the PROD-VALIDATION steps the orchestrator still owns. Write {output_dir}/review.md: per-area findings + any BLOCKER/MAJOR/MINOR with a concrete fix. End with exactly one line: `VERDICT: APPROVE` or `VERDICT: REQUEST_CHANGES`.
+
+  # ── FIX (review request_changes loop) ────────────────────────────────────
+  - id: fix
+    name: "Fix review findings"
+    description: "Apply the review's requested changes, re-run the suite/focused test, re-commit."
+    model_tier: opus
+    thinking_level: high
+    max_iterations: 3
+    transitions:
+      success: review
+      failed: fix
+      timeout: fix
+      exhausted: review
+    prompt_template: |
+      [PIPELINE CONTEXT] MAINTENANCE pipeline — FIX phase. Read {output_dir}/review.md. Do not ask questions or send messages. [/PIPELINE CONTEXT]
+
+      Apply the REVIEW's requested changes for #{config[issue_number]} on branch {config[branch_name]} exactly. Keep the change minimal; disturb no seal. Re-run {config[test_command]} + any focused test. Commit (do not push). Write {output_dir}/fix.md: what changed + results + commit SHA. End with `VERDICT: success` or `VERDICT: failed`.
+
+  # ── TEST (suite — command phase, no LLM) ─────────────────────────────────
+  - id: test
+    name: "Suite (typecheck / build / lint)"
+    description: "Run the project suite. NOT a sealed verify-script — the focused test (if any) ran in implement; prod-validation is the orchestrator's post-merge step."
+    task_type: command
+    command: "{config[test_command]}"
+    working_dir: "{config[repo_path]}"
+    max_iterations: 2
+    transitions:
+      # on success: no target -> pipeline terminates; the orchestrator then opens the
+      # PR (Closes #N) + auto-merges on green CI, then runs PROD-VALIDATION.
+      failed: fix
+      timeout: test
+    allowed_commands: ["pnpm", "npm", "npx", "node", "turbo", "tsc", "vitest", "jest", "bash", "sh", "actionlint"]
+
+# After `test` succeeds the orchestrator: opens the PR (Closes #N, reviewer
+# Conny-Lazo), squash auto-merges on green CI, then performs PROD-VALIDATION
+# (the maintenance acceptance test): deploy + observe the fixed behaviour live.
+auto_merge:
+  enabled: true
+  min_score: 0.90
+  require_approve: true
+  strategy: squash
