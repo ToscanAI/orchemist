@@ -82,6 +82,74 @@ def _sigterm_handler(signum: int, frame: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Happy-path phase derivation for the postflight oracle (Issue #915)
+# ---------------------------------------------------------------------------
+
+# Outcome keys that advance a run along its happy path, in priority order.
+# ``approve`` is preferred over ``success`` so the walk follows the real happy
+# target on phases that carry BOTH (e.g. standard's ``spec_adversary`` has
+# ``approve: acceptance_test`` plus a defensive ``success: spec`` loop-back used
+# only when verdict extraction fails).
+_HAPPY_KEYS = ("approve", "success")
+
+
+def _happy_path_phase_ids(template: Any) -> List[str]:
+    """Return the happy-path reachable phase IDs of *template*.
+
+    Walks the transition graph from the entry phase (``template.phases[0].id``)
+    following ONLY the happy edges — ``approve`` preferred over ``success`` per
+    phase — using the merged transitions from
+    :meth:`TemplateEngine._compute_effective_transitions`.  A visited-set guards
+    against cycles (e.g. standard's ``spec_adversary success: spec`` back-edge),
+    and dangling targets (a happy edge pointing at an unknown id) are skipped.
+    The walk stops along a branch when a phase has no ``approve``/``success``
+    target (terminal).
+
+    Conditional/terminal phases reachable only via non-happy outcomes
+    (``request_changes``, ``abort``, ``exhausted``, ``failed``, ``timeout``) —
+    e.g. ``fix`` / ``postmortem_*`` — are therefore excluded, which is exactly
+    the oracle the postflight completeness check needs (a clean run never
+    executes them).  Issue #915.
+
+    Returns:
+        Ordered list of happy-path phase IDs (first-seen order).  Returns ``[]``
+        for a malformed or empty template so a failure degrades to a skipped
+        check rather than crashing the (advisory) postflight block.
+    """
+    try:
+        phases = getattr(template, "phases", None)
+        if not phases:
+            return []
+        from .templates import TemplateEngine
+        eff = TemplateEngine._compute_effective_transitions(template)
+        valid_ids = {p.id for p in phases}
+        entry = phases[0].id
+
+        visited: List[str] = []   # preserves first-seen order
+        seen: set = set()
+        stack: List[str] = [entry]
+        while stack:
+            pid = stack.pop()
+            if pid in seen or pid not in valid_ids:
+                continue          # cycle/self-loop guard + ignore dangling targets
+            seen.add(pid)
+            visited.append(pid)
+            outcomes = eff.get(pid, {})
+            # Follow ONE happy successor: prefer 'approve', else 'success'.
+            for key in _HAPPY_KEYS:
+                tgt = outcomes.get(key)
+                if tgt is not None:
+                    stack.append(tgt)
+                    break
+        return visited
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "_happy_path_phase_ids: failed to derive oracle (non-fatal): %s", exc
+        )
+        return []
+
+
+# ---------------------------------------------------------------------------
 # PID file helpers
 # ---------------------------------------------------------------------------
 
@@ -897,6 +965,13 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 _elapsed = (datetime.now() - _dt.fromisoformat(_started)).total_seconds()
         except Exception:
             pass
+        # Derive the happy-path oracle from the loaded template (Issue #915).
+        # A walk failure degrades to None → the completeness check is skipped,
+        # never crashing the advisory postflight block.
+        try:
+            _expected_phases = _happy_path_phase_ids(template) or None
+        except Exception:
+            _expected_phases = None
         _postflight = PostflightChecker(
             input_data=initial_input,
             run_id=run_id,
@@ -905,6 +980,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
             scoring_score=_scoring_score_val,
             completed_phases=completed_phases,
             elapsed_seconds=_elapsed,
+            expected_phases=_expected_phases,
         )
         _postflight_result = _postflight.run_all()
         logger.info("Postflight checks:\n%s", _postflight_result.summary())

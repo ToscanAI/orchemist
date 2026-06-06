@@ -13,6 +13,15 @@ from orchestration_engine.postflight import (
     PostflightResult,
     ensure_branch_pushed,
 )
+from orchestration_engine.templates import PhaseDefinition, PipelineTemplate
+from orchestration_engine.daemon import _happy_path_phase_ids
+
+
+def _phase(pid, **transitions):
+    """Build a minimal PhaseDefinition with the given outcome→target edges."""
+    return PhaseDefinition(
+        id=pid, name=pid.capitalize(), transitions=dict(transitions)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -68,10 +77,17 @@ class TestPhaseCompleteness:
                 run_id="test123",
                 output_dir=Path(tmpdir),
                 completed_phases=['spec', 'implement', 'review', 'test'],
+                expected_phases=['spec', 'implement', 'review', 'test'],
             )
             result = PostflightResult()
             checker._check_phase_completeness(result)
             assert all(c.passed for c in result.checks)
+            # Anti-vacuous: the completeness check must actually fire and pass,
+            # not be silently skipped by the derive-or-skip path.
+            assert any(
+                c.name == "phase_completeness" and c.passed
+                for c in result.checks
+            )
 
     def test_missing_phases(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -80,12 +96,122 @@ class TestPhaseCompleteness:
                 run_id="test123",
                 output_dir=Path(tmpdir),
                 completed_phases=['spec', 'implement'],
+                expected_phases=['spec', 'implement', 'review', 'test'],
             )
             result = PostflightResult()
             checker._check_phase_completeness(result)
             failing = [c for c in result.checks if not c.passed]
             assert len(failing) == 1
+            assert failing[0].name == "phase_completeness"
             assert "review" in failing[0].message
+
+
+# ---------------------------------------------------------------------------
+# Phase completeness — oracle derived from the loaded template (Issue #915)
+# ---------------------------------------------------------------------------
+
+class TestPhaseCompletenessFromTemplate:
+    """Oracle = happy-path reachable set derived from a PipelineTemplate.
+
+    No daemon, no subprocess — exercises ``_happy_path_phase_ids`` against
+    in-memory templates and feeds the result into ``_check_phase_completeness``.
+    """
+
+    def test_happy_path_oracle_catches_skipped(self):
+        # 2 happy phases; only 1 completed → 'implement' flagged.
+        tpl = PipelineTemplate(id="t", name="T", phases=[
+            _phase("spec", success="implement"),
+            _phase("implement"),
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=_valid_input(), run_id="r1", output_dir=Path(tmpdir),
+                completed_phases=['spec'],
+                expected_phases=_happy_path_phase_ids(tpl),
+            )
+            result = PostflightResult()
+            checker._check_phase_completeness(result)
+        failing = [c for c in result.checks if not c.passed]
+        assert len(failing) == 1 and 'implement' in failing[0].message
+
+    def test_all_happy_phases_complete(self):
+        tpl = PipelineTemplate(id="t", name="T", phases=[
+            _phase("spec", success="behavioral"),
+            _phase("behavioral", success="implement"),
+            _phase("implement", success="review"),
+            _phase("review", approve="test"),          # approve happy edge
+            _phase("test"),                             # terminal (no success/approve)
+        ])
+        expected = _happy_path_phase_ids(tpl)
+        assert expected == ["spec", "behavioral", "implement", "review", "test"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=_valid_input(), run_id="r1", output_dir=Path(tmpdir),
+                completed_phases=list(expected),        # ran exactly the happy path
+                expected_phases=expected,
+            )
+            result = PostflightResult()
+            checker._check_phase_completeness(result)
+        assert any(
+            c.name == "phase_completeness" and c.passed for c in result.checks
+        )
+
+    def test_conditional_phase_excluded_from_oracle(self):
+        # *** THE BLOCKER-PINNING TEST ***
+        # Template defines a `fix` phase reachable ONLY via review:request_changes
+        # (or test:failed). A clean run skips `fix`; the oracle MUST exclude it so
+        # completeness PASSES on a happy-path completed_phases that omits it.
+        tpl = PipelineTemplate(id="t", name="T", phases=[
+            _phase("spec", success="implement"),
+            _phase("implement", success="review"),
+            _phase("review", approve="test", request_changes="fix"),  # fix via request_changes
+            _phase("test", failed="fix"),                              # ...or via test:failed
+            _phase("fix", success="review"),                           # conditional; back-edge
+        ])
+        expected = _happy_path_phase_ids(tpl)
+        assert "fix" not in expected            # oracle must NOT demand 'fix'
+        assert expected == ["spec", "implement", "review", "test"]
+        # happy-path completed_phases (no 'fix') must NOT falsely fail:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=_valid_input(), run_id="r1", output_dir=Path(tmpdir),
+                completed_phases=["spec", "implement", "review", "test"],
+                expected_phases=expected,
+            )
+            result = PostflightResult()
+            checker._check_phase_completeness(result)
+        assert all(c.passed for c in result.checks)
+        assert any(
+            c.name == "phase_completeness" and c.passed for c in result.checks
+        )
+
+    def test_approve_preferred_over_success_fallback_loop(self):
+        # Mirrors standard spec_adversary: approve=happy target, success=defensive
+        # loop-back. The walk must follow `approve`, NOT the `success` back-edge.
+        tpl = PipelineTemplate(id="t", name="T", phases=[
+            _phase("spec", success="adversary"),
+            _phase("adversary", approve="implement", success="spec"),  # success loops back
+            _phase("implement", success="review"),
+            _phase("review", approve="test"),
+            _phase("test"),
+        ])
+        expected = _happy_path_phase_ids(tpl)
+        assert expected == ["spec", "adversary", "implement", "review", "test"]
+
+    def test_no_expected_phases_skips_check(self):
+        # Corrected semantics: None oracle → NO phase_completeness check emitted
+        # (must NOT fall back to the fossil hardcoded list).
+        with tempfile.TemporaryDirectory() as tmpdir:
+            checker = PostflightChecker(
+                input_data=_valid_input(), run_id="r1", output_dir=Path(tmpdir),
+                completed_phases=['spec'],
+                # expected_phases omitted → None
+            )
+            result = PostflightResult()
+            checker._check_phase_completeness(result)
+        assert not any(
+            c.name == "phase_completeness" for c in result.checks
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +347,9 @@ class TestRunAll:
                 run_id="test123",
                 output_dir=Path(tmpdir),
                 completed_phases=['spec'],
+                # Oracle is a superset of the single completed phase, so the
+                # completeness check legitimately fails → advisory warning.
+                expected_phases=['spec', 'implement', 'review'],
             )
             with patch('subprocess.run') as mock_run:
                 mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
