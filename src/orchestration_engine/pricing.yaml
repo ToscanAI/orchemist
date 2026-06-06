@@ -9,14 +9,42 @@
 models:
   # -------------------------------------------------------------------------
   # Claude Haiku 4.5 — cheapest / fastest
+  #
+  # Canonical price: $1.00 / $5.00 per million (Issue #908). The canonical
+  # model id is claude-haiku-4-5-20251001 (emitted by AnthropicExecutor as the
+  # bare form and by the OpenClaw executor as the anthropic/-prefixed form).
+  # PricingTable does exact-match lookups with NO prefix stripping, so BOTH the
+  # bare and prefixed runtime strings must have explicit keys or they fall back
+  # to the Sonnet-priced `default` entry.
+  #
+  # The stale 20241022 keys are retained (config.py and a presence-assertion
+  # test still reference them) but corrected to the same canonical price so
+  # every Haiku id resolves to one consistent price.
   # -------------------------------------------------------------------------
+  claude-haiku-4-5-20251001:
+    input_per_million: 1.0
+    output_per_million: 5.0
+
+  anthropic/claude-haiku-4-5-20251001:
+    input_per_million: 1.0
+    output_per_million: 5.0
+
+  # Suffix-less alias (documented alias; resolves to the same canonical price)
+  claude-haiku-4-5:
+    input_per_million: 1.0
+    output_per_million: 5.0
+
+  anthropic/claude-haiku-4-5:
+    input_per_million: 1.0
+    output_per_million: 5.0
+
   claude-haiku-4-5-20241022:
-    input_per_million: 0.25
-    output_per_million: 1.25
+    input_per_million: 1.0
+    output_per_million: 5.0
 
   anthropic/claude-haiku-4-5-20241022:
-    input_per_million: 0.25
-    output_per_million: 1.25
+    input_per_million: 1.0
+    output_per_million: 5.0
 
   # -------------------------------------------------------------------------
   # Claude Sonnet 4 — mid-range

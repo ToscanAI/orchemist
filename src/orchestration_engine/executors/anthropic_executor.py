@@ -18,9 +18,16 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+from ..cost_tracker import PricingTable
 from ..schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 
 logger = logging.getLogger(__name__)
+
+# Single source of truth for token pricing (Issue #908). Loaded once at import
+# time from the bundled pricing.yaml; CostTracker.record_phase computes cost via
+# the same PricingTable.compute_cost, so the executor and the ledger agree by
+# construction. cost_tracker imports only .db, so this introduces no cycle.
+_PRICING = PricingTable()
 
 # Model tier → Anthropic model ID mapping
 _MODEL_MAP = {
@@ -173,8 +180,14 @@ class AnthropicExecutor:
                 completed_at=datetime.now(),
                 model_used=model,
                 tokens_consumed=total_tokens,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 execution_time_seconds=elapsed,
-                cost_usd=self._estimate_cost(model, input_tokens, output_tokens),
+                cost_usd=_PRICING.compute_cost(
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                ),
             )
 
         except Exception as exc:
@@ -262,15 +275,3 @@ class AnthropicExecutor:
                 pass
 
         return None
-
-    @staticmethod
-    def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-        """Estimate USD cost from token counts."""
-        # Pricing per million tokens (approximate, as of Feb 2026)
-        pricing = {
-            "claude-haiku-4-5-20251001": (1.0, 5.0),
-            "claude-sonnet-4-6": (3.0, 15.0),
-            "claude-opus-4-6": (15.0, 75.0),
-        }
-        input_rate, output_rate = pricing.get(model, (3.0, 15.0))
-        return (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000

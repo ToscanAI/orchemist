@@ -582,25 +582,43 @@ def run_daemon(run_id: str, db_path: str) -> None:
         if _cost_tracker is not None:
             try:
                 _model = phase_result.get('model_used') or 'unknown'
-                _total_tokens = phase_result.get('tokens_consumed') or 0
-                if _total_tokens > 0:
-                    # The executor reports tokens_consumed as a single total
-                    # (no input/output split available).  Attribute all tokens
-                    # as input — this is conservative (input pricing >= output
-                    # pricing for most models) and safe for budget enforcement.
+                _in = phase_result.get('input_tokens')
+                _out = phase_result.get('output_tokens')
+                _cost_record = None
+                if _in is not None and _out is not None and (_in or _out):
+                    # Real input/output split available (Issue #908): bill each
+                    # portion at its own rate so the ledger is accurate.
                     _cost_record = _cost_tracker.record_phase(
                         run_id=run_id,
                         phase_id=phase_id,
                         model=_model,
-                        input_tokens=_total_tokens,
-                        output_tokens=0,
+                        input_tokens=int(_in),
+                        output_tokens=int(_out),
                     )
+                else:
+                    _total_tokens = phase_result.get('tokens_consumed') or 0
+                    if _total_tokens > 0:
+                        # No split available: bill the whole total at the OUTPUT
+                        # rate. output_per_million >= input_per_million for every
+                        # model in pricing.yaml, so this over-estimates rather
+                        # than under-estimates spend (conservative-high), which
+                        # is the safe direction for budget enforcement.
+                        _cost_record = _cost_tracker.record_phase(
+                            run_id=run_id,
+                            phase_id=phase_id,
+                            model=_model,
+                            input_tokens=0,
+                            output_tokens=_total_tokens,
+                        )
+                if _cost_record is not None:
                     logger.info(
                         "Cost recorded for phase '%s': $%.6f "
-                        "(tokens=%d, model=%s)",
+                        "(in=%s, out=%s, total=%s, model=%s)",
                         phase_id,
                         _cost_record['cost_usd'],
-                        _total_tokens,
+                        _cost_record['input_tokens'],
+                        _cost_record['output_tokens'],
+                        phase_result.get('tokens_consumed'),
                         _model,
                     )
             except Exception as _cost_exc:

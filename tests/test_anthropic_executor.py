@@ -5,7 +5,11 @@ import pytest
 from unittest.mock import patch, MagicMock
 from datetime import datetime
 
-from orchestration_engine.executors.anthropic_executor import AnthropicExecutor, _MODEL_MAP
+from orchestration_engine.executors.anthropic_executor import (
+    AnthropicExecutor,
+    _MODEL_MAP,
+    _PRICING,
+)
 from orchestration_engine.schemas import TaskSpec, TaskType, TaskState, ModelTier, Priority
 
 
@@ -152,6 +156,57 @@ class TestExecuteSuccess:
         assert result.execution_time_seconds >= 0
         assert result.started_at is not None
         assert result.completed_at is not None
+
+    @pytest.mark.parametrize("tier", ["haiku", "sonnet", "opus"])
+    @patch.object(AnthropicExecutor, "_call_api")
+    def test_cost_matches_pricing_table_exactly(
+        self, mock_api, executor, sample_task, tier
+    ):
+        """AC#1 — executor cost == PricingTable.compute_cost for the SAME
+        (model, in, out), byte-for-byte. After Issue #908 both sides call the
+        same compute_cost (which returns round(cost, 10)), so this is exact
+        equality, not a tolerance."""
+        in_tok, out_tok = 1234, 567
+        mock_api.return_value = self._mock_response(
+            input_tokens=in_tok, output_tokens=out_tok
+        )
+        result = executor.execute(sample_task, model_tier=tier)
+
+        expected = _PRICING.compute_cost(
+            model=result.model_used,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+        )
+        assert float(result.cost_usd) == expected
+
+    @patch.object(AnthropicExecutor, "_call_api")
+    def test_haiku_cost_uses_canonical_rate(self, mock_api, executor, sample_task):
+        """AC#2 — a real Haiku phase is billed at $1/$5, not the Sonnet default.
+        Regression guard for the silent-default bug (Issue #908)."""
+        mock_api.return_value = self._mock_response(
+            input_tokens=1000, output_tokens=500
+        )
+        result = executor.execute(sample_task, model_tier="haiku")
+
+        assert result.model_used == "claude-haiku-4-5-20251001"
+        # $1/M in + $5/M out: 0.001 + 0.0025 = 0.0035
+        assert abs(float(result.cost_usd) - 0.0035) < 1e-9
+        # And NOT the Sonnet/default rate ($3/$15) for the same split
+        sonnet_default = _PRICING.compute_cost("totally-made-up-model", 1000, 500)
+        assert float(result.cost_usd) != sonnet_default
+
+    @patch.object(AnthropicExecutor, "_call_api")
+    def test_input_output_split_recorded(self, mock_api, executor, sample_task):
+        """AC#3 — the real input/output split is surfaced on TaskResult, not
+        just the total (Issue #908)."""
+        mock_api.return_value = self._mock_response(
+            input_tokens=900, output_tokens=350
+        )
+        result = executor.execute(sample_task, model_tier="sonnet")
+
+        assert result.input_tokens == 900
+        assert result.output_tokens == 350
+        assert result.tokens_consumed == 1250  # total preserved for back-compat
 
 
 class TestExecuteFailure:
