@@ -574,3 +574,118 @@ class TestModuleExports:
         assert "PricingTable" in orchestration_engine.__all__
         assert "CostTracker" in orchestration_engine.__all__
         assert "BudgetExceededError" in orchestration_engine.__all__
+
+
+# ---------------------------------------------------------------------------
+# TestHaikuCanonicalPricing (Issue #908)
+# ---------------------------------------------------------------------------
+
+class TestHaikuCanonicalPricing:
+    """The bundled pricing.yaml resolves every live Haiku id string to the
+    canonical $1/$5 rate, including the anthropic/-prefixed form (no prefix
+    stripping in PricingTable), so a real Haiku phase is never silently billed
+    at the Sonnet default."""
+
+    # All three runtime-emitted forms must resolve:
+    #  - bare 20251001        → AnthropicExecutor._MODEL_MAP
+    #  - prefixed 20251001    → OpenClaw executor MODEL_MAP
+    #  - bare suffix-less     → documented alias
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-haiku-4-5-20251001",
+            "anthropic/claude-haiku-4-5-20251001",
+            "claude-haiku-4-5",
+        ],
+    )
+    def test_haiku_id_resolves_to_canonical_rate(self, model):
+        pt = PricingTable()  # bundled pricing.yaml
+        assert pt.has_model(model) is True
+        pricing = pt.get_pricing(model)
+        assert pricing["input_per_million"] == 1.0
+        assert pricing["output_per_million"] == 5.0
+        # 1M in + 1M out at $1/$5 = $6.00
+        assert pt.compute_cost(model, 1_000_000, 1_000_000) == 6.0
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-haiku-4-5-20251001",
+            "anthropic/claude-haiku-4-5-20251001",
+            "claude-haiku-4-5",
+        ],
+    )
+    def test_haiku_does_not_hit_default(self, model):
+        """REQUIRED regression guard tied to the no-prefix-stripping premise:
+        if a future refactor drops a key or adds prefix stripping, the Haiku
+        cost would collapse to the Sonnet default and this fails."""
+        pt = PricingTable()
+        default_cost = pt.compute_cost("totally-made-up-model", 1_000_000, 1_000_000)
+        haiku_cost = pt.compute_cost(model, 1_000_000, 1_000_000)
+        assert haiku_cost != default_cost
+
+    def test_stale_20241022_keys_still_present_at_canonical_rate(self):
+        """Option A keeps the stale 20241022 keys (config.py + presence test
+        still reference them) but corrected to the canonical price."""
+        pt = PricingTable()
+        for model in (
+            "claude-haiku-4-5-20241022",
+            "anthropic/claude-haiku-4-5-20241022",
+        ):
+            assert pt.has_model(model) is True
+            assert pt.compute_cost(model, 1_000_000, 1_000_000) == 6.0
+
+    def test_unknown_model_uses_sonnet_default(self):
+        """Unknown models fall back to the $3/$15 default — removing the inline
+        executor dict did not change unknown-model behavior."""
+        pt = PricingTable()
+        # $3/M in + $15/M out = $18.00
+        assert pt.compute_cost("totally-made-up-model", 1_000_000, 1_000_000) == 18.0
+
+
+# ---------------------------------------------------------------------------
+# TestRecordPhaseTokenSplit (Issue #908)
+# ---------------------------------------------------------------------------
+
+class TestRecordPhaseTokenSplit:
+    """The daemon cost-recording path: a real input/output split is priced per
+    portion, and the no-split fallback bills the total at the OUTPUT rate
+    (conservative-high), never the input rate."""
+
+    def test_real_split_priced_per_portion(self):
+        db = _make_db()
+        _seed_run(db, "run-split")
+        tracker = CostTracker(db)
+        # Haiku $1/$5: 1000 in + 500 out = 0.001 + 0.0025 = 0.0035
+        rec = tracker.record_phase(
+            "run-split", "implement", "claude-haiku-4-5-20251001",
+            input_tokens=1000, output_tokens=500,
+        )
+        assert rec["input_tokens"] == 1000
+        assert rec["output_tokens"] == 500
+        assert abs(rec["cost_usd"] - 0.0035) < 1e-9
+
+    def test_output_rate_fallback_is_conservative_high(self):
+        """When only a total is available the daemon records it as
+        input_tokens=0, output_tokens=total. For Haiku ($1 in / $5 out) the
+        output-rate result must be strictly GREATER than the old input-rate
+        (total-as-input) result."""
+        db = _make_db()
+        _seed_run(db, "run-fallback")
+        tracker = CostTracker(db)
+        total = 1500
+        model = "claude-haiku-4-5-20251001"
+
+        # New behavior: whole total billed at the OUTPUT rate.
+        fallback = tracker.record_phase(
+            "run-fallback", "spec", model,
+            input_tokens=0, output_tokens=total,
+        )
+        # Old (buggy) behavior would have billed the total as INPUT.
+        old_input_rate = tracker.pricing.compute_cost(model, total, 0)
+
+        assert fallback["input_tokens"] == 0
+        assert fallback["output_tokens"] == total
+        # 1500 out @ $5/M = 0.0075 ; 1500 in @ $1/M = 0.0015
+        assert abs(fallback["cost_usd"] - 0.0075) < 1e-9
+        assert fallback["cost_usd"] > old_input_rate

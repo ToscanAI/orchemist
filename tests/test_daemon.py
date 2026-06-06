@@ -1925,8 +1925,11 @@ phases:
         call_kwargs = mock_tracker.record_phase.call_args_list[0]
         assert call_kwargs.kwargs["run_id"] == run_id
         assert call_kwargs.kwargs["phase_id"] == "work"
-        assert call_kwargs.kwargs["output_tokens"] == 0  # always 0 (total as input)
-        assert call_kwargs.kwargs["input_tokens"] > 0
+        # Issue #908: this executor path reports only a total (no input/output
+        # split), so the daemon bills the whole total at the OUTPUT rate
+        # (conservative-high) — input_tokens=0, output_tokens=total>0.
+        assert call_kwargs.kwargs["input_tokens"] == 0
+        assert call_kwargs.kwargs["output_tokens"] > 0
 
     def test_cost_persisted_to_cost_tracking_table(self, tmp_path):
         """Real CostTracker writes cost rows to the cost_tracking DB table."""
@@ -1951,8 +1954,10 @@ phases:
         assert len(rows) >= 1, "Expected at least one cost row in cost_tracking"
         assert rows[0]["run_id"] == run_id
         assert rows[0]["phase_id"] == "work"
-        assert rows[0]["input_tokens"] > 0
-        assert rows[0]["output_tokens"] == 0
+        # Issue #908: no split available on this path → whole total billed at
+        # the OUTPUT rate (conservative-high): input_tokens=0, output_tokens>0.
+        assert rows[0]["input_tokens"] == 0
+        assert rows[0]["output_tokens"] > 0
         assert rows[0]["cost_usd"] >= 0.0
 
     def test_budget_exceeded_marks_run_as_budget_exceeded(self, tmp_path):

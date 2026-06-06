@@ -145,6 +145,8 @@ class TaskResult(BaseModel):
     completed_at: Optional[datetime] = None
     model_used: Optional[str] = None
     tokens_consumed: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
     execution_time_seconds: float = 0.0
     cost_usd: Optional[Decimal] = None
     
