@@ -130,6 +130,12 @@ class PostflightChecker:
         List of completed phase IDs.
     elapsed_seconds : float | None
         Total pipeline elapsed time.
+    expected_phases : list[str] | None
+        The oracle for the phase-completeness check: the happy-path phase IDs
+        derived from the loaded template (phases reachable from the entry phase
+        by following only approve/success edges).  When ``None`` or empty, the
+        phase-completeness check is skipped entirely (derive-or-skip) rather
+        than compared against a stale hardcoded list.  Issue #915.
     """
 
     def __init__(
@@ -141,6 +147,7 @@ class PostflightChecker:
         scoring_score: Optional[float] = None,
         completed_phases: Optional[List[str]] = None,
         elapsed_seconds: Optional[float] = None,
+        expected_phases: Optional[List[str]] = None,
     ):
         self.input_data = input_data
         self.run_id = run_id
@@ -149,6 +156,7 @@ class PostflightChecker:
         self.scoring_score = scoring_score
         self.completed_phases = completed_phases or []
         self.elapsed_seconds = elapsed_seconds
+        self.expected_phases = expected_phases
 
     def run_all(self) -> PostflightResult:
         """Execute all postflight checks and return aggregated result."""
@@ -213,8 +221,19 @@ class PostflightChecker:
             ))
 
     def _check_phase_completeness(self, result: PostflightResult) -> None:
-        """Verify all expected phases completed."""
-        expected_phases = ['spec', 'implement', 'review', 'test']
+        """Verify all expected phases completed.
+
+        The oracle is ``self.expected_phases`` — the happy-path phase IDs
+        derived from the loaded template by the daemon (Issue #915).  When it
+        is ``None`` or empty there is no oracle to compare against, so the
+        check is skipped entirely (derive-or-skip) rather than falling back to
+        a stale hardcoded list that no real pipeline matches.
+        """
+        expected_phases = self.expected_phases
+        if not expected_phases:
+            # No oracle (None/empty) → emit no phase_completeness check.
+            return
+
         missing = [p for p in expected_phases if p not in self.completed_phases]
 
         if missing:
@@ -227,7 +246,7 @@ class PostflightChecker:
             result.add_check(PostflightCheckItem(
                 name="phase_completeness",
                 passed=True,
-                message=f"All {len(expected_phases)} core phases completed",
+                message=f"All {len(expected_phases)} expected phases completed",
             ))
 
     def _check_branch_pushed(self, result: PostflightResult) -> None:
