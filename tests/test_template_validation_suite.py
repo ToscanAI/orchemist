@@ -36,6 +36,7 @@ import yaml
 from click.testing import CliRunner
 
 from src.orchestration_engine.cli import main
+from src.orchestration_engine.sequencer import _SafeDict
 from src.orchestration_engine.templates import TemplateEngine
 
 # ---------------------------------------------------------------------------
@@ -1218,3 +1219,141 @@ class TestSkipSpecParityWithStandard:
             "— Run the byte-identical added-block ...' (new step inserted "
             "between commit and test-suite per spec.md §B.4 Step 2)."
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #912 — render-smoke guardrail helpers
+# ---------------------------------------------------------------------------
+
+
+def _smoke_format_kwargs() -> _SafeDict:
+    """Return the FULL engine kwarg set for a render-smoke pass.
+
+    Mirrors the names the engine injects at ``sequencer.py:1882``
+    (``phase.prompt_template.format(...)``): config, output_dir, phase_summary,
+    iteration_history, phase_diff, previous_commit, input, previous_output,
+    previous_output_inline, skill_context, files, context, failure_context.
+
+    Reuses the engine's ``_SafeDict`` so that unknown top-level placeholders
+    (phase-id kwargs such as ``{requirements}`` or ``{config[some_field]}``) are
+    absorbed via ``__missing__`` instead of raising ``KeyError`` — only a
+    brace-syntax error (``ValueError``) should surface. Shared by the positive
+    per-(template, phase) smoke test and the negative single-brace test so both
+    render through the identical kwarg set.
+    """
+    empty = lambda: _SafeDict({})
+    return _SafeDict(
+        {
+            "config": empty(),
+            "output_dir": "/smoke/out",
+            "phase_summary": "",
+            "iteration_history": "",
+            "phase_diff": "",
+            "previous_commit": "",
+            "input": empty(),
+            "previous_output": empty(),
+            "previous_output_inline": empty(),
+            "skill_context": empty(),
+            "files": empty(),
+            "context": empty(),
+            "failure_context": "",
+        }
+    )
+
+
+def _smoke_render(prompt: str) -> str:
+    """Render ``prompt`` through the engine's ``format_map(_SafeDict(...))`` path.
+
+    Single rendering entry point shared by the positive and negative #912 tests
+    so they exercise byte-identical behaviour. An un-escaped single brace raises
+    ``ValueError`` here (rejected by Python's format-string parser before any
+    key lookup, so ``_SafeDict`` structurally cannot mask it).
+    """
+    return prompt.format_map(_smoke_format_kwargs())
+
+
+def _build_render_smoke_pairs():
+    """Yield ``(template_path, phase_id)`` for every phase with a truthy
+    ``prompt_template`` across ``ALL_TEMPLATES``.
+
+    Built once at collection time. ``load_template`` resolves ``extends:`` /
+    ``exclude_phases:`` so inherited prompts (e.g. skip-spec's merged phases) are
+    included and rendered byte-identically to the engine's stored string. A
+    template that fails to load is yielded as a sentinel pair whose test asserts
+    the load error rather than breaking collection for the whole suite (all 24
+    templates load cleanly today, so this is defensive only).
+    """
+    pairs = []
+    for path in ALL_TEMPLATES:
+        name = Path(path).name
+        try:
+            template = _load_template(path)
+        except Exception as exc:  # pragma: no cover - defensive, no template hits this today
+            pairs.append((path, f"<load-error: {exc!r}>"))
+            continue
+        for phase in template.phases:
+            if phase.prompt_template:
+                pairs.append((path, phase.id))
+    return pairs
+
+
+_RENDER_SMOKE_PAIRS = _build_render_smoke_pairs()
+
+
+class TestPromptRenderSmoke:
+    """Issue #912 — render-smoke guardrail.
+
+    Every bundled template's every non-empty ``prompt_template`` must render via
+    the engine's ``format_map(_SafeDict(...))`` path WITHOUT raising
+    ``ValueError``. ``ValueError`` ("Single '}' encountered in format string") is
+    the signature of an un-escaped single brace — e.g. a literal ``};`` that
+    should be ``}};`` — the defect class that broke the skills mirror and nearly
+    broke #907 / #14. The engine's error handler (``sequencer.py:1897``) catches
+    only ``(KeyError, IndexError, AttributeError)``, so such a ``ValueError``
+    crashes the phase uncaught at runtime.
+
+    ``_SafeDict`` absorbs ``KeyError`` (missing placeholder keys), and the
+    ``{phase_id.output}`` cross-phase pattern raises a benign ``AttributeError``
+    under smoke kwargs (a plain ``str`` from ``__missing__`` has no ``.output``;
+    production injects ``_PhaseOutput``). Neither is a brace bug, so the test
+    tolerates ``KeyError`` / ``IndexError`` / ``AttributeError`` and asserts only
+    on ``ValueError``.
+    """
+
+    @pytest.mark.parametrize(
+        "template_path,phase_id",
+        _RENDER_SMOKE_PAIRS,
+        ids=lambda v: f"{Path(v[0]).name}::{v[1]}" if isinstance(v, tuple) else str(v),
+    )
+    def test_prompt_renders_without_valueerror(self, template_path, phase_id):
+        if phase_id.startswith("<load-error:"):  # pragma: no cover - defensive
+            pytest.fail(
+                f"{Path(template_path).name}: template failed to load at collection "
+                f"time — {phase_id}"
+            )
+        template = _load_template(template_path)
+        phase = next(p for p in template.phases if p.id == phase_id)
+        try:
+            _smoke_render(phase.prompt_template)
+        except ValueError as exc:
+            pytest.fail(
+                f"{Path(template_path).name} / phase {phase_id!r}: prompt_template "
+                f"raised ValueError during render — likely an un-escaped single brace "
+                f"(use '}}}}' not '}}' for a literal brace). Error: {exc}"
+            )
+        except (KeyError, IndexError, AttributeError):
+            # Benign: missing placeholder data / {phase_id.output} attribute
+            # access under smoke kwargs — not a brace-syntax bug.
+            pass
+
+    def test_single_brace_raises_valueerror(self):
+        """Committed negative proof that the guardrail's failure path fires.
+
+        Feeds a literal single ``}`` through the SAME smoke-kwargs render helper
+        used by the positive test and asserts ``ValueError`` is raised. This is
+        the exact signature an un-escaped brace (the skills-mirror ``};`` defect)
+        produces, proving the smoke test would catch a regression — without
+        mutating a bundled template (no manual mutate-and-revert).
+        """
+        with pytest.raises(ValueError):
+            _smoke_render("a literal closing brace } that is not escaped")
