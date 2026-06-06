@@ -226,7 +226,9 @@ phases:
       Three of these apply when the new symbol overlaps with sections 1-4 above (grep returned plausibly-related symbols):
 
       1. **CONSUME** (preferred) — import the existing symbol byte-identical, no signature change. SPEC's Files-to-Modify lists the import-add at the call site; nothing else changes.
+      <!-- INVENTORY_MOTIVATION_BEGIN -->
       2. **EXTEND** (added v4.2, 2026-05-24; §3a wired in v2.2.0, 2026-05-26) — parameterize the existing symbol (add an options arg / safe-superset wrapper / accept a path or callback) so the existing call site AND the new call site both consume the same source. The existing symbol moves nowhere; its contract widens. SPEC's Files-to-Modify describes the parameterization in Implementation Steps; SPEC's Files-to-Create lists nothing new. Use when CONSUME is "almost" but the new use site needs one more arg / one slightly different code path. **Includes EXTEND-ing an existing dual-path helper surfaced in §3a** — when the new use site needs the same multi-branch shape an existing helper already implements (e.g. fixture short-circuit + production fallback), prefer EXTEND over authoring a new dual-path helper that would itself trigger the 7e intra-symbol duplication audit downstream.
+      <!-- INVENTORY_MOTIVATION_END -->
       3. **DIVERGENT** — a near-equivalent that has a contract-required difference (different sort order, different precision, different sealed string). NOT duplication — but the spec MUST include a `## Divergence justification` subsection naming the existing symbol and the contract-required difference. SPEC's Files-to-Create lists the new symbol with a clear divergence rationale.
 
       The fourth applies when there is NO overlap with sections 1-4:
@@ -494,6 +496,9 @@ phases:
       4. **Leakage** — Does behavioral.md name internal methods, class names, or implementation details from spec.md? If yes → REJECT. (You must read spec.md to detect what constitutes "internal details".)
       5. **Alignment** — Do behavioral contracts match what spec.md describes? Are there implementation paths in spec.md with no corresponding behavioral contract? Divergence → REJECT
 
+      <!-- PROJECT_SUBCHECKS_BEGIN -->
+      <!-- PROJECT_SUBCHECKS_END -->
+
       ### 7d — Sticky enforcement against existing-symbols inventory (Phase 0)
 
       Read `{output_dir}/existing_symbols.md` and cross-check every symbol the spec proposes against inventory sections 1-4 (UI primitives, shared libraries, adjacent actions/hooks, workspace barrels). The spec MUST assign exactly ONE of the four SPEC-author verdicts defined in inventory §5 ("The four SPEC-author verdicts" — CONSUME / EXTEND / DIVERGENT / NEW-OK). Apply the §5 definitions as the rubric; the verdict-specific adversary cross-checks below add adversary-phase findings on top of (not in place of) §5's verdict criteria.
@@ -506,6 +511,10 @@ phases:
       - On a **NEW-OK** verdict: inventory §6 entry for the symbol exists with the `Existing:` line set to the "no overlap" placeholder per §5, plus a one-line rationale citing the inventory sections that were checked.
 
       Any proposed-new symbol that overlaps with sections 1-4 WITHOUT one of the four explicit verdicts is `[divergence]` with the specific inventory-entry pointer.
+
+      Search targets (adapt per project — these are the canonical scan paths): the project's UI primitive package(s); `lib/`, `utils/`, `_shared/` directories; sibling files in the same directory (across language extensions — `.ts`, `.js`, `.py`, `.go` — pick the relevant ones); cross-package symbols accessible via workspace boundaries.
+
+      Note: if the SPEC_ADVERSARY phase does NOT have repo grep access (some daemons restrict adversary tooling), raise this as `[divergence]` to push the search responsibility to IMPLEMENT (which has 7d as a HARD RULE and MUST grep before authoring). The flag itself ensures the IMPLEMENT agent treats the proposed new symbol with extra scrutiny.
 
       **Backward-compat short-circuit:** if `{output_dir}/existing_symbols.md` is absent OR sections 1-4 are all empty-stubs, skip this 7d check (Phase 0 may have exhausted or the consumer did not provide grep paths). The IMPLEMENT phase still has its own 7d HARD RULE with ad-hoc grep as a fallback. Do NOT fabricate an inventory-entry pointer when no inventory exists.
 
@@ -644,7 +653,7 @@ phases:
 
       Skip this section if `existing_symbols.md` is absent or its sections are all empty stubs — the IMPLEMENT phase still has its 7d HARD RULE as a fallback. Do NOT invent inventory entries when none exist.
       <!-- PHASE_0_INVENTORY_HOOK_END -->
-
+      <!-- MULTI_LANG_BEGIN -->
       ## Task
       1. Read the behavioral contracts carefully
       2. Write a Python test file `{output_dir}/acceptance_tests.py` that:
@@ -675,6 +684,7 @@ phases:
            "note": "Tests written pre-implementation. Run after implement phase."
          }}
          ```
+      <!-- MULTI_LANG_END -->
 
       ## Output
       Write a summary to {output_dir}/acceptance_test.md:

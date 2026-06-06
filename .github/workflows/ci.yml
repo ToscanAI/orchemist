@@ -75,6 +75,58 @@ jobs:
         run: python3 scripts/check_template_sync.py
 
   # ----------------------------------------------------------------------
+  # Issue #917 — Cross-repo template/skill parity guardrail.
+  #
+  # The engine is canonical for the shared coding-pipeline prompts; the
+  # standalone copies in ToscanAI/orchemist-skills must not silently drift.
+  # This job clones the skills repo as a sibling and runs the cross-repo
+  # parity check (prompt byte/anchor equality + the spec_adversary.model_tier
+  # == opus lock). Skills has no CI of its own, so THIS job is the sole
+  # authoritative parity gate. It is `needs:`-free so it runs in parallel.
+  #
+  # The intra-engine `test` job's line-75 drift lint is unchanged (skills not
+  # present there → cross-repo auto-skips). The docs-only paths-filter gate
+  # makes docs-only PRs report SUCCESS without running the check.
+  # ----------------------------------------------------------------------
+  cross-repo-parity:
+    name: Cross-repo parity (engine ↔ skills)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout engine
+        uses: actions/checkout@v4
+
+      - name: Detect docs-only changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
+          filters: |
+            docs_only:
+              - '**.md'
+              - 'docs/**'
+              - 'LICENSE'
+              - '.github/ISSUE_TEMPLATE/**'
+
+      - name: Clone orchemist-skills (sibling)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: git clone --depth 1 https://github.com/ToscanAI/orchemist-skills.git ../orchemist-skills
+
+      - name: Set up Python 3.11
+        if: steps.changes.outputs.docs_only != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies (engine)
+        if: steps.changes.outputs.docs_only != 'true'
+        run: pip install -e ".[dev]"
+
+      - name: Cross-repo parity check
+        if: steps.changes.outputs.docs_only != 'true'
+        run: python3 scripts/check_template_sync.py --skills-dir ../orchemist-skills/pipelines
+
+  # ----------------------------------------------------------------------
   # Issue #889 — Playwright e2e required check on PRs.
   #
   # Spins up the engine (`orch api-server`) + Next dev server in background,

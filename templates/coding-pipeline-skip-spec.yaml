@@ -89,7 +89,7 @@ phases:
       - Add new tests ONLY if the adversary flagged a COVERAGE gap
       If this is round 1 (no adversary findings above), write the test file from scratch.
       <!-- ADVERSARY_FEEDBACK_INTEGRATION_END -->
-
+      <!-- MULTI_LANG_BEGIN -->
       ## Task
       1. Read the behavioral contracts carefully
       2. Write a Python test file `{output_dir}/acceptance_tests.py` that:
@@ -120,6 +120,7 @@ phases:
            "note": "Tests written pre-implementation. Run after implement phase."
          }}
          ```
+      <!-- MULTI_LANG_END -->
 
       ## Output
       Write a summary to {output_dir}/acceptance_test.md:
