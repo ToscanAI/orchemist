@@ -87,7 +87,7 @@ class DiagnosisResult:
                           diagnostician model.  May be None for programmatic
                           diagnoses that don't generate an explanation.
         model_used:       Identifier of the model used to produce the
-                          diagnosis (e.g. ``'claude-haiku-4-5-20241022'``).
+                          diagnosis (e.g. ``'claude-haiku-4-5-20251001'``).
                           None for rule-based diagnostics.
         tokens_consumed:  Token count used by the diagnostician call.
                           0 for rule-based diagnostics.

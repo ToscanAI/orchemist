@@ -223,8 +223,9 @@ class TestAdaptiveRetryEngine:
 
     def test_quality_gap_sets_model_override(self, engine):
         diag = _make_diagnosis(FailureClass.QUALITY_GAP)
+        # Ladder re-keyed to canonical bare ids (#916); haiku is now -20251001.
         plan = engine.plan(diag, original_run_id="run-002",
-                           current_model="claude-haiku-4-5-20241022")
+                           current_model="claude-haiku-4-5-20251001")
         assert plan is not None
         assert plan.model_override == "claude-sonnet-4-6"
 
@@ -233,14 +234,17 @@ class TestAdaptiveRetryEngine:
         plan = engine.plan(diag, original_run_id="run-003",
                            current_model="claude-sonnet-4-6")
         assert plan is not None
-        assert plan.model_override == "claude-opus-4-6"
+        # Ladder top rung is now opus-4-8 (maintainer-authorized upgrade, #916).
+        assert plan.model_override == "claude-opus-4-8"
 
     def test_escalation_at_top_stays_at_opus(self, engine):
         diag = _make_diagnosis(FailureClass.QUALITY_GAP)
+        # Feed the canonical in-ladder top id so this exercises the top-rung
+        # idempotency branch (min(idx+1, len-1)), not the unknown-id fallback.
         plan = engine.plan(diag, original_run_id="run-004",
-                           current_model="claude-opus-4-6")
+                           current_model="claude-opus-4-8")
         assert plan is not None
-        assert plan.model_override == "claude-opus-4-6"
+        assert plan.model_override == "claude-opus-4-8"
 
     def test_escalation_unknown_model_falls_back_to_top(self, engine):
         diag = _make_diagnosis(FailureClass.QUALITY_GAP)

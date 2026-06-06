@@ -78,24 +78,33 @@ class TestModelTierResolution:
             assert sent_body["model"] == "anthropic/claude-sonnet-4-6"
 
     def test_opus_resolves_to_anthropic_opus(self):
-        """Given model_tier='opus', resolves to anthropic/claude-opus-4-6."""
+        """Given model_tier='opus', resolves to anthropic/claude-opus-4-8.
+
+        The OPUS tier now emits opus-4-8 (maintainer-authorized model upgrade,
+        #916 registry). Same $5/$25 price as 4.6/4.7.
+        """
         executor = OpenRouterExecutor(api_key="sk-or-test")
         task = _make_task()
         with patch("urllib.request.urlopen") as mock_url:
             mock_url.return_value = _mock_urlopen(_mock_response())
             executor.execute(task, model_tier="opus")
             sent_body = json.loads(mock_url.call_args[0][0].data)
-            assert sent_body["model"] == "anthropic/claude-opus-4-6"
+            assert sent_body["model"] == "anthropic/claude-opus-4-8"
 
     def test_haiku_resolves_to_anthropic_haiku(self):
-        """Given model_tier='haiku', resolves to anthropic/claude-haiku-4.5."""
+        """Given model_tier='haiku', resolves to anthropic/claude-haiku-4-5-20251001.
+
+        The stale dotted id (anthropic/claude-haiku-4.5) is purged from
+        DEFAULT_MODEL_MAP — it had no pricing.yaml key and silently billed at
+        the sonnet default (#916/#913).
+        """
         executor = OpenRouterExecutor(api_key="sk-or-test")
         task = _make_task()
         with patch("urllib.request.urlopen") as mock_url:
             mock_url.return_value = _mock_urlopen(_mock_response())
             executor.execute(task, model_tier="haiku")
             sent_body = json.loads(mock_url.call_args[0][0].data)
-            assert sent_body["model"] == "anthropic/claude-haiku-4.5"
+            assert sent_body["model"] == "anthropic/claude-haiku-4-5-20251001"
 
     def test_unknown_tier_passes_through_as_literal(self):
         """Given unknown model_tier, passes it directly as model name."""
@@ -175,12 +184,12 @@ class TestCostTracking:
             assert float(result.cost_usd) == pytest.approx(0.0042)
 
     def test_cost_estimated_when_total_cost_absent(self):
-        """Given no usage.total_cost, estimates at the per-tier fallback rate.
+        """Given no usage.total_cost, the cost is computed via PricingTable.
 
-        Per issue #801: the old single $0.01/1K rate over-estimated 3x vs
-        OpenRouter actuals. The fix uses per-tier rates: sonnet → $0.006/1K,
-        opus → $0.033/1K, haiku → $0.002/1K. This test exercises the sonnet
-        path (the default tier).
+        The former blended per-tier `$/1K` heuristic was removed (#913/#916);
+        the no-`total_cost` path now prices the prompt/completion tokens with
+        first-party Anthropic rates. Sonnet (the default tier) at 500 in +
+        500 out = 500*$3/Mtok + 500*$15/Mtok = 0.009.
         """
         executor = OpenRouterExecutor(api_key="sk-or-test")
         task = _make_task()
@@ -189,8 +198,7 @@ class TestCostTracking:
                 _mock_response(prompt_tokens=500, completion_tokens=500, total_cost=None)
             )
             result = executor.execute(task, model_tier="sonnet")
-            # 1000 tokens * $0.006/1K (sonnet-tier fallback) = $0.006
-            assert float(result.cost_usd) == pytest.approx(0.006)
+            assert float(result.cost_usd) == pytest.approx(0.009)
 
 
 class TestThinkingSupport:

@@ -71,7 +71,8 @@ class TestModelMap:
         assert MODEL_MAP["sonnet"] == "anthropic/claude-sonnet-4-6"
 
     def test_opus_string(self):
-        assert MODEL_MAP["opus"] == "anthropic/claude-opus-4-6"
+        # OPUS tier emits opus-4-8 (maintainer-authorized upgrade, #916 registry)
+        assert MODEL_MAP["opus"] == "anthropic/claude-opus-4-8"
 
     def test_haiku_enum(self):
         assert MODEL_MAP[ModelTier.HAIKU] == "anthropic/claude-haiku-4-5-20251001"
@@ -80,7 +81,8 @@ class TestModelMap:
         assert MODEL_MAP[ModelTier.SONNET] == "anthropic/claude-sonnet-4-6"
 
     def test_opus_enum(self):
-        assert MODEL_MAP[ModelTier.OPUS] == "anthropic/claude-opus-4-6"
+        # OPUS tier emits opus-4-8 (maintainer-authorized upgrade, #916 registry)
+        assert MODEL_MAP[ModelTier.OPUS] == "anthropic/claude-opus-4-8"
 
 
 class TestThinkingMap:
@@ -232,7 +234,8 @@ class TestModelTierMapping:
 
     def test_opus(self, executor, sample_task):
         model = self._run_with_mock(executor, sample_task, "opus")
-        assert model == "anthropic/claude-opus-4-6"
+        # OPUS tier emits opus-4-8 (maintainer-authorized upgrade, #916 registry)
+        assert model == "anthropic/claude-opus-4-8"
 
     def test_default_to_sonnet_when_none(self, executor, sample_task):
         # task has no preferred_model set → should default to sonnet

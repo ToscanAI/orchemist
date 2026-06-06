@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from .cost_tracker import PricingTable
 from .errors import (
     AuthenticationError,
     GatewayHTTPError,
@@ -38,6 +39,7 @@ from .errors import (
     classify_http_error,
 )
 from .model_fallback import ModelFallbackChain
+from .model_registry import prefixed_id
 from .recovery import CircuitBreakerState, ErrorType, ExecutorRetryConfig, classify_exception_error_type
 from .runner import TaskExecutor
 from .schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
@@ -78,14 +80,20 @@ logger.addFilter(_SecretRedactingFilter())
 # Module-level constants (spec requirement)
 # ---------------------------------------------------------------------------
 
+# Single source of truth for token pricing (#916) — used by estimate_cost so
+# estimates agree with the ledger by construction.
+_PRICING = PricingTable()
+
+# Model tier → OpenClaw (anthropic/-prefixed) model ID mapping, built from the
+# canonical model_registry (#916). SHORT string keys and ModelTier enum keys
+# resolve to the same canonical prefixed id; the OPUS tier emits
+# anthropic/claude-opus-4-8.
 MODEL_MAP: Dict[str, str] = {
-    "haiku": "anthropic/claude-haiku-4-5-20251001",
-    "sonnet": "anthropic/claude-sonnet-4-6",
-    "opus": "anthropic/claude-opus-4-6",
+    "haiku": prefixed_id("haiku"),
+    "sonnet": prefixed_id("sonnet"),
+    "opus": prefixed_id("opus"),
     # ModelTier enum fallbacks
-    ModelTier.HAIKU: "anthropic/claude-haiku-4-5-20251001",
-    ModelTier.SONNET: "anthropic/claude-sonnet-4-6",
-    ModelTier.OPUS: "anthropic/claude-opus-4-6",
+    **{tier: prefixed_id(tier) for tier in ModelTier},
 }
 
 THINKING_MAP: Dict[str, Optional[str]] = {
@@ -410,14 +418,10 @@ class OpenClawExecutor(TaskExecutor):
         return True
 
     def estimate_cost(self, task: TaskSpec) -> float:  # noqa: D102
-        # Rough cost estimate (same scale as AnthropicExecutor)
+        # Rough cost estimate via the canonical PricingTable (#916), using a
+        # representative token assumption (input ~500, output ~2000).
         tier = task.preferred_model or ModelTier.SONNET
-        costs = {
-            ModelTier.HAIKU: 0.002,
-            ModelTier.SONNET: 0.02,
-            ModelTier.OPUS: 0.10,
-        }
-        return costs.get(tier, 0.02)
+        return _PRICING.compute_cost(prefixed_id(tier), 500, 2000)
 
     def execute(
         self,

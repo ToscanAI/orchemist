@@ -66,12 +66,14 @@ class TestModelMapping:
         assert _MODEL_MAP[ModelTier.SONNET] == "claude-sonnet-4-6"
 
     def test_opus_maps(self):
-        assert _MODEL_MAP[ModelTier.OPUS] == "claude-opus-4-6"
+        # OPUS tier emits opus-4-8 (maintainer-authorized upgrade, #916 registry)
+        assert _MODEL_MAP[ModelTier.OPUS] == "claude-opus-4-8"
 
     def test_string_fallbacks(self):
         assert _MODEL_MAP["haiku"] == "claude-haiku-4-5-20251001"
         assert _MODEL_MAP["sonnet"] == "claude-sonnet-4-6"
-        assert _MODEL_MAP["opus"] == "claude-opus-4-6"
+        # OPUS tier emits opus-4-8 (maintainer-authorized upgrade, #916 registry)
+        assert _MODEL_MAP["opus"] == "claude-opus-4-8"
 
 
 class TestExecuteSuccess:
@@ -109,7 +111,8 @@ class TestExecuteSuccess:
         mock_api.return_value = self._mock_response()
         result = executor.execute(sample_task, model_tier="opus")
 
-        assert result.model_used == "claude-opus-4-6"
+        # OPUS tier emits opus-4-8 (maintainer-authorized upgrade, #916 registry)
+        assert result.model_used == "claude-opus-4-8"
 
     @patch.object(AnthropicExecutor, "_call_api")
     def test_json_output_parsed(self, mock_api, executor, sample_task):

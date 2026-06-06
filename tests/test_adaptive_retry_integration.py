@@ -179,13 +179,15 @@ class TestEstimateCost:
     """Unit tests for AdaptiveRetryEngine.estimate_cost() static method."""
 
     def test_haiku_cost(self):
-        assert AdaptiveRetryEngine.estimate_cost("claude-haiku-4-5-20241022") == 0.05
+        # Heuristic re-keyed to canonical bare ids (#916); value unchanged.
+        assert AdaptiveRetryEngine.estimate_cost("claude-haiku-4-5-20251001") == 0.05
 
     def test_sonnet_cost(self):
         assert AdaptiveRetryEngine.estimate_cost("claude-sonnet-4-6") == 0.15
 
     def test_opus_cost(self):
-        assert AdaptiveRetryEngine.estimate_cost("claude-opus-4-6") == 0.50
+        # Heuristic re-keyed to opus-4-8 (#916); value unchanged.
+        assert AdaptiveRetryEngine.estimate_cost("claude-opus-4-8") == 0.50
 
     def test_none_model_returns_max(self):
         assert AdaptiveRetryEngine.estimate_cost(None) == 0.50
@@ -217,7 +219,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         run = _base_run(
             run_id="orig-001",
             input_json={"budget_usd": 1.0},
-            model_override="claude-haiku-4-5-20241022",
+            model_override="claude-haiku-4-5-20251001",
         )
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)
         engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=":memory:")
@@ -284,7 +286,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
             input_json={
                 "budget_usd": 0.20,
                 "timeout_seconds": 60,
-                "model_override": "claude-haiku-4-5-20241022",
+                "model_override": "claude-haiku-4-5-20251001",
             },
         )
         diagnosis = _make_diagnosis(FailureClass.TIMEOUT)
@@ -325,7 +327,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         run = _base_run(
             run_id="orig-001",
             input_json={},  # No budget key
-            model_override="claude-haiku-4-5-20241022",
+            model_override="claude-haiku-4-5-20251001",
         )
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)
         engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=":memory:")
@@ -382,7 +384,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
             ))
 
         run = _base_run(run_id="orig-001", input_json={"budget_usd": 10.0},
-                        model_override="claude-haiku-4-5-20241022")
+                        model_override="claude-haiku-4-5-20251001")
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)
         engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=":memory:")
 
@@ -412,7 +414,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         mock_popen.return_value = mock_proc
 
         run = _base_run(run_id="orig-001", input_json={"budget_usd": 5.0},
-                        model_override="claude-haiku-4-5-20241022")
+                        model_override="claude-haiku-4-5-20251001")
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)
         engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=":memory:")
 
@@ -482,7 +484,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         TIMEOUT → INCREASE_TIMEOUT → plan.model_override is None, so we must
         fall back to current_model when computing the cost estimate.
 
-        With the fix: estimate_cost(None or 'claude-haiku-4-5-20241022') → $0.05
+        With the fix: estimate_cost(None or 'claude-haiku-4-5-20251001') → $0.05
         $0.05 < $0.20 budget → retry IS spawned.
         """
         mock_proc = MagicMock()
@@ -492,7 +494,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         run = _base_run(
             run_id="orig-001",
             input_json={"budget_usd": 0.20, "timeout_seconds": 60},
-            model_override="claude-haiku-4-5-20241022",
+            model_override="claude-haiku-4-5-20251001",
         )
         diagnosis = _make_diagnosis(FailureClass.TIMEOUT)
         engine = AdaptiveRetryEngine(db=db_with_original_run, db_path=":memory:")
@@ -530,7 +532,7 @@ class TestAdaptiveRetryEnginePlanAndExecute:
         run = _base_run(
             run_id="orig-001",
             input_json={"budget_usd": 5.0},
-            model_override="claude-haiku-4-5-20241022",
+            model_override="claude-haiku-4-5-20251001",
         )
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)
         db_path = ":memory:"
@@ -619,7 +621,7 @@ class TestRetryEnginePlanCustomMaxRetries:
         run = _base_run(
             run_id="orig-001",
             input_json={"cost_limit_usd": 0.05},
-            model_override="claude-haiku-4-5-20241022",
+            model_override="claude-haiku-4-5-20251001",
         )
         # QUALITY_GAP → escalate to Sonnet ($0.15) > limit ($0.05)
         diagnosis = _make_diagnosis(FailureClass.QUALITY_GAP)

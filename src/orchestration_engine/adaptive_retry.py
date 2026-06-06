@@ -32,6 +32,8 @@ from enum import Enum
 from typing import Any, Dict, Optional, Union
 
 from .diagnosis import DiagnosisResult, FailureClass, Remediation
+from .model_registry import bare_id
+from .schemas import ModelTier
 
 _logger = logging.getLogger(__name__)
 
@@ -150,10 +152,12 @@ DEFAULT_STRATEGY_MAP: Dict[FailureClass, Optional[RetryStrategy]] = {
 #: to pick the next tier above the current model.
 #:
 #: Index 0 is the lightest (cheapest) tier; higher indices are more capable.
+#: Built from the canonical model_registry (#916): canonical bare ids, order
+#: preserved (haiku → sonnet → opus). The top rung is now claude-opus-4-8.
 MODEL_ESCALATION_LADDER: list[str] = [
-    "claude-haiku-4-5-20241022",
-    "claude-sonnet-4-6",
-    "claude-opus-4-6",
+    bare_id(ModelTier.HAIKU),
+    bare_id(ModelTier.SONNET),
+    bare_id(ModelTier.OPUS),
 ]
 
 #: Default timeout multiplier applied when strategy is ``INCREASE_TIMEOUT``.
@@ -227,7 +231,7 @@ class AdaptiveRetryEngine:
                               :class:`~orchestration_engine.diagnosis.DiagnosisEngine`.
             original_run_id:  Run ID of the failed run being retried.
             current_model:    Model identifier used by the original run (e.g.
-                              ``"claude-haiku-4-5-20241022"``).  Required for
+                              ``"claude-haiku-4-5-20251001"``).  Required for
                               meaningful model escalation; ``None`` falls back
                               to the top of the escalation ladder.
 
@@ -327,10 +331,15 @@ class AdaptiveRetryEngine:
 
     #: Heuristic per-run cost estimates for each model tier.
     #: Used by :meth:`estimate_cost` to decide whether a retry is budget-safe.
+    #: Keyed on the canonical bare model ids (#916); values are deliberately the
+    #: same ordered heuristic magnitudes (haiku < sonnet < opus) so the unknown/
+    #: None path in :meth:`estimate_cost` returns ``max()`` = opus (safe default).
+    #: This stays an ordered heuristic dict (NOT a PricingTable delegation)
+    #: because the budget-guard semantics depend on a small ordered tier set.
     MODEL_COST_HEURISTIC: Dict[str, float] = {
-        "claude-haiku-4-5-20241022": 0.05,
-        "claude-sonnet-4-6": 0.15,
-        "claude-opus-4-6": 0.50,
+        bare_id(ModelTier.HAIKU): 0.05,
+        bare_id(ModelTier.SONNET): 0.15,
+        bare_id(ModelTier.OPUS): 0.50,
     }
 
     @staticmethod
@@ -343,9 +352,9 @@ class AdaptiveRetryEngine:
         not accidentally cleared by the budget guard.
 
         Heuristics:
-            * ``"claude-haiku-4-5-20241022"`` → $0.05
+            * ``"claude-haiku-4-5-20251001"`` → $0.05
             * ``"claude-sonnet-4-6"``         → $0.15
-            * ``"claude-opus-4-6"``           → $0.50
+            * ``"claude-opus-4-8"``           → $0.50
             * ``None`` or unknown             → $0.50 (max / safe default)
 
         Args:

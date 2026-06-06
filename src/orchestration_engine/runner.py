@@ -18,6 +18,8 @@ from uuid import uuid4
 
 from .db import Database
 from .config import EngineConfig, get_global_config
+from .cost_tracker import PricingTable
+from .model_registry import prefixed_id, resolve_tier
 from .queue import TaskQueue
 from .schemas import TaskSpec, TaskResult, TaskState, TaskType, Priority
 from .concurrency import WorkerPool
@@ -26,6 +28,10 @@ from .progress import ProgressTracker, ProgressEventType, ProgressEvent
 
 
 logger = logging.getLogger(__name__)
+
+# Single source of truth for token pricing (#916) — used by the legacy
+# OpenClawExecutor.estimate_cost so estimates agree with the ledger.
+_PRICING = PricingTable()
 
 
 class TaskExecutor(ABC):
@@ -321,11 +327,15 @@ class OpenClawExecutor(TaskExecutor):
             # Format task into OpenClaw-compatible prompt
             prompt = self._format_task_prompt(task)
             
-            # Get model configuration
-            model_name = self.config.models.tier_mappings.get(
-                model_tier or self.config.models.default_tier,
-                "anthropic/claude-sonnet-4-20250514"
-            )
+            # Get model configuration — route through the canonical registry
+            # (#914/#916): resolve short/versioned tier, honor tier_mappings
+            # override, else fall back to the registry canonical/default id.
+            raw_tier = model_tier or self.config.models.default_tier
+            resolved_tier = resolve_tier(raw_tier)
+            if resolved_tier is not None and resolved_tier.value in self.config.models.tier_mappings:
+                model_name = self.config.models.tier_mappings[resolved_tier.value]
+            else:
+                model_name = prefixed_id(resolved_tier)
             
             thinking = self.config.models.thinking_levels.get(
                 model_tier or self.config.models.default_tier
@@ -428,11 +438,22 @@ class OpenClawExecutor(TaskExecutor):
         return "\n".join(prompt_parts)
     
     def _resolve_model(self, model_tier: str = None) -> str:
-        """Resolve model name from tier, falling back to configured default."""
-        return self.config.models.tier_mappings.get(
-            model_tier or self.config.models.default_tier,
-            "anthropic/claude-sonnet-4-6"
-        )
+        """Resolve model name from tier, falling back to configured default.
+
+        Routes through the canonical model_registry (#914) so SHORT keys
+        (``"haiku"``) and VERSIONED keys (``"haiku-4-5"``) both resolve, and an
+        operator's ``tier_mappings`` override is honored. Unrecognised tiers
+        fall back to the registry default rather than a hardcoded id.
+        """
+        raw = model_tier or self.config.models.default_tier
+        tier = resolve_tier(raw)
+        if tier is not None:
+            key = tier.value  # canonical versioned key
+            if key in self.config.models.tier_mappings:  # honor operator override
+                return self.config.models.tier_mappings[key]
+            return prefixed_id(tier)
+        # truly unrecognised → registry default
+        return prefixed_id(None)
 
     def _resolve_thinking(self, model_tier: str = None,
                           thinking_level: str = None) -> str:
@@ -629,24 +650,22 @@ class OpenClawExecutor(TaskExecutor):
         return True
     
     def estimate_cost(self, task: TaskSpec) -> float:
-        """Estimate cost based on task type and model tier."""
-        # Cost estimates per 1K tokens (approximate)
-        costs = {
-            "haiku-4-5": 0.0003,
-            "sonnet-4": 0.003,
-            "opus-4-6": 0.015
-        }
-        
+        """Estimate cost based on task type and model tier.
+
+        Routes through the canonical PricingTable (#916): resolves the
+        configured default tier to its canonical id and prices the
+        payload-derived token estimate, so the estimate stays consistent with
+        the same pricing.yaml the ledger bills against (and scales with payload
+        size).
+        """
         # Estimate token usage based on payload size
         payload_size = len(str(task.payload))
         estimated_tokens = max(100, payload_size * 2)  # Rough estimate
-        
-        model_cost = costs.get(
-            self.config.models.default_tier,
-            costs["sonnet-4"]
-        )
-        
-        return (estimated_tokens / 1000) * model_cost
+
+        model_id = prefixed_id(self.config.models.default_tier)
+        # Split the rough estimate across input/output (the legacy heuristic did
+        # not distinguish direction); magnitude is approximate by design.
+        return _PRICING.compute_cost(model_id, estimated_tokens, estimated_tokens)
 
 
 class TaskRunner:

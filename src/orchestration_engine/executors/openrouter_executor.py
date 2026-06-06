@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from ..cost_tracker import PricingTable
+from ..model_registry import prefixed_id
 from ..schemas import (
     ModelTier,
     TaskError,
@@ -52,11 +54,18 @@ from .openrouter_tools import (
 
 logger = logging.getLogger(__name__)
 
-# Default model tier → OpenRouter model ID mapping (Anthropic models)
+# Single source of truth for token pricing (#916). The no-`total_cost` fallback
+# (#913) routes through this PricingTable.compute_cost instead of a blended
+# $/1K heuristic, using the real per-direction prompt/completion token counts.
+_PRICING = PricingTable()
+
+# Default model tier → OpenRouter model ID mapping (Anthropic models), built
+# from the canonical model_registry (#916). Every value has an exact
+# pricing.yaml key; the OPUS tier emits anthropic/claude-opus-4-8.
 DEFAULT_MODEL_MAP: Dict[str, str] = {
-    "haiku": "anthropic/claude-haiku-4.5",
-    "sonnet": "anthropic/claude-sonnet-4-6",
-    "opus": "anthropic/claude-opus-4-6",
+    "haiku": prefixed_id("haiku"),
+    "sonnet": prefixed_id("sonnet"),
+    "opus": prefixed_id("opus"),
 }
 
 # Thinking level → budget tokens for Anthropic extended thinking
@@ -74,49 +83,12 @@ _THINKING_SUPPORTED_PREFIXES = (
     "anthropic/claude-3-5-sonnet",
 )
 
-# Per-tier fallback cost ($/1K tokens) when usage.total_cost is absent.
-#
-# OpenRouter Anthropic responses routinely omit ``usage.total_cost``; the
-# fallback path is the dominant path for this project (see issue #801 — run
-# 6bb0349c reported $61.01 vs the OpenRouter dashboard's actual $20.69, a 3x
-# overestimate driven by a single flat $10/Mtok rate).
-#
-# Blended rates approximate a 70/30 input/output token mix (typical for
-# tool-loop pipeline phases — long prompts, shorter completions):
-#
-#   Sonnet 4.6 : $3/Mtok input * 0.7 + $15/Mtok output * 0.3 = $6.6/Mtok
-#                → $0.006/1K (rounded slightly under to bias toward
-#                  under-reporting rather than over-reporting per #801).
-#   Opus       : $15/Mtok input * 0.7 + $75/Mtok output * 0.3 = $33/Mtok
-#                → $0.033/1K.
-#   Haiku 4.5  : $1/Mtok input * 0.7 + $5/Mtok output * 0.3 = $2.2/Mtok
-#                → $0.002/1K (rounded under).
-#
-# Unknown model id → sonnet rate (the project's primary tier and a safe
-# middle-ground default).
-_FALLBACK_COST_PER_1K_TOKENS_BY_TIER: Dict[str, float] = {
-    "haiku": 0.002,
-    "sonnet": 0.006,
-    "opus": 0.033,
-}
-
-
-def _fallback_cost_per_1k(model: str) -> float:
-    """Return the per-1K-token fallback rate for an OpenRouter model id.
-
-    Tier detection is by substring on the lowercased model id, matching the
-    same coarse tiering used by ``DEFAULT_MODEL_MAP``:
-
-    - ``"opus"`` in model → opus tier
-    - ``"haiku"`` in model → haiku tier
-    - everything else → sonnet (the project's default tier)
-    """
-    m = (model or "").lower()
-    if "opus" in m:
-        return _FALLBACK_COST_PER_1K_TOKENS_BY_TIER["opus"]
-    if "haiku" in m:
-        return _FALLBACK_COST_PER_1K_TOKENS_BY_TIER["haiku"]
-    return _FALLBACK_COST_PER_1K_TOKENS_BY_TIER["sonnet"]
+# When usage.total_cost is absent (the dominant case for Anthropic models on
+# OpenRouter), the cost is computed from the first-party PricingTable using the
+# real per-direction prompt/completion token counts (#913). This supersedes the
+# former blended `$/1K` heuristic (issue #801: run 6bb0349c reported $61.01 vs
+# the dashboard's actual $20.69); exact-match pricing with separate input/output
+# rates is more accurate than a single blended rate. See `_PRICING` above.
 
 # Tool-loop limits
 MAX_TOOL_ITERATIONS = 100
@@ -203,9 +175,10 @@ class OpenRouterExecutor:
         return True
 
     def estimate_cost(self, task: TaskSpec) -> float:
+        # Rough cost estimate via the canonical PricingTable (#916), using a
+        # representative token assumption (input ~500, output ~2000).
         tier = task.preferred_model or ModelTier.SONNET
-        tier_str = tier.value if isinstance(tier, ModelTier) else str(tier)
-        return {"haiku": 0.002, "sonnet": 0.015, "opus": 0.075}.get(tier_str, 0.02)
+        return _PRICING.compute_cost(prefixed_id(tier), 500, 2000)
 
     def execute(
         self,
@@ -395,7 +368,7 @@ class OpenRouterExecutor:
                 total_tokens += prompt_tokens + completion_tokens
                 call_cost = usage.get("total_cost")
                 if call_cost is None:
-                    call_cost = ((prompt_tokens + completion_tokens) / 1000.0) * _fallback_cost_per_1k(model)
+                    call_cost = _PRICING.compute_cost(model, prompt_tokens, completion_tokens)
                 total_cost += Decimal(str(call_cost))
 
                 choice = (resp.get("choices") or [{}])[0]
@@ -838,7 +811,7 @@ class OpenRouterExecutor:
         total_tokens = prompt_tokens + completion_tokens
         total_cost = usage.get("total_cost")
         if total_cost is None:
-            total_cost = (total_tokens / 1000.0) * _fallback_cost_per_1k(model)
+            total_cost = _PRICING.compute_cost(model, prompt_tokens, completion_tokens)
 
         return TaskResult(
             task_id=task.id,
