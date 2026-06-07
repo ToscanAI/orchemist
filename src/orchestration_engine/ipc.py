@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
 __all__ = [
+    "DEFAULT_TEST_COMMAND",
     "IPCProtocolError",
     "IPCError",
     "TestDetail",
@@ -59,6 +60,13 @@ _id_counter = 0
 # ---------------------------------------------------------------------------
 # Module-level constants
 # ---------------------------------------------------------------------------
+
+#: Default command the validator daemon runs to verify a project. This is a
+#: bare command resolved on PATH (the daemon's own validation subprocess), and
+#: is deliberately DISTINCT from the user-project pipeline default in the
+#: templates ("python3 -m pytest tests/ -x -q"), which an agent runs inside a
+#: project worktree. Do not unify the two — they are different facts.
+DEFAULT_TEST_COMMAND = "pytest"
 
 # Fields that indicate a ValidationResult response (used in deserialize_response).
 # Module-level to avoid repeated frozenset allocation on every call.
@@ -176,7 +184,7 @@ class ValidationRequest:
     test_store_path: str
     repo_path: str
     branch: str
-    test_command: str = "pytest"
+    test_command: str = DEFAULT_TEST_COMMAND
     timeout_seconds: int = 300
     test_manifest_hash: Optional[str] = None
     request_id: Optional[int] = None  # used by serialize_request; not part of params
@@ -352,7 +360,7 @@ def deserialize_request(line: str) -> Union[ValidationRequest, HealthRequest]:
             test_store_path=params["test_store_path"],
             repo_path=params["repo_path"],
             branch=params["branch"],
-            test_command=params.get("test_command", "pytest"),
+            test_command=params.get("test_command", DEFAULT_TEST_COMMAND),
             timeout_seconds=params.get("timeout_seconds", 300),
             test_manifest_hash=params.get("test_manifest_hash", None),
             id=rpc_id,

@@ -21,7 +21,15 @@ import re
 import unicodedata
 
 
-__all__ = ["slugify", "slugify_branch", "snake_case"]
+__all__ = ["FINDING_RE", "slugify", "slugify_branch", "snake_case"]
+
+
+#: Canonical tagged-finding line matcher used by the single-bracket adversary
+#: parsers: "[category] description". Group 1 = category (letters/underscore),
+#: group 2 = description. Requires >=1 whitespace separator and a NON-EMPTY
+#: description. NOTE: acceptance_test_adversary intentionally accepts an EMPTY
+#: description (\s*(.*)$) and is therefore NOT a consumer of this constant.
+FINDING_RE = re.compile(r"^\s*\[([A-Za-z_]+)\]\s+(.+)$")
 
 
 def slugify(text: str) -> str:

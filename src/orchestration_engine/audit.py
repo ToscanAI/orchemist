@@ -39,13 +39,12 @@ Module exports
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from .review_parser import parse_review_output
+from .review_parser import _ISSUE_RE, parse_review_output
 
 __all__ = [
     "AuditIssue",
@@ -56,11 +55,13 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Compiled regular expressions (mirrors review_parser._ISSUE_RE)
+# Compiled regular expressions
 # ---------------------------------------------------------------------------
 
-#: Matches a tagged issue line: [SEVERITY][category] description
-_ISSUE_RE = re.compile(r"^\s*\[([A-Za-z]+)\]\[([^\]]+)\]\s+(.+)$")
+# ``_ISSUE_RE`` (the tagged issue-line matcher "[SEVERITY][category] description")
+# is imported from :mod:`review_parser` — the single source of truth — rather
+# than redefined here. review_parser does not import audit, so this import edge
+# is one-directional (no cycle).
 
 #: Adversarial audit system prompt — security-focused, designed to challenge
 #: the original reviewer's findings rather than validate them.

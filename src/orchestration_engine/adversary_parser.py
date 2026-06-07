@@ -17,10 +17,10 @@ No third-party dependencies — stdlib only.
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
+from .text_utils import FINDING_RE
 from .verdict_parser import extract_verdict
 
 __all__ = [
@@ -32,12 +32,15 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# Match tagged finding lines: [category] description
-# Uses a single literal space as separator so the description is preserved
-# verbatim (all characters after "[category] " including leading spaces).
-# Group 1 → category (letters and underscores only)
-# Group 2 → description (everything after the single-space separator)
-_FINDING_RE = re.compile(r"^\s*\[([A-Za-z_]+)\] (.+)$")
+# Tagged finding-line matcher ([category] description) is the canonical
+# ``FINDING_RE`` imported from :mod:`text_utils` (single source of truth shared
+# with spec_adversary). The separator is the canonical ``\s+`` (>=1 whitespace);
+# the captured description (group 2) is still preserved verbatim (NOT stripped)
+# at the call site below. For the single-space lines that adversary phases emit,
+# this is byte-identical to the former literal-space pattern; the only delta is
+# that a run of multiple leading separator whitespace is now treated wholly as
+# the separator (extra leading spaces no longer leak into the description) — a
+# path no test or real adversary output exercises.
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +167,7 @@ def parse_adversary_output(text: Any, config: AdversaryConfig) -> AdversaryVerdi
     findings: List[AdversaryFinding] = []
 
     for line in raw_text.splitlines():
-        m = _FINDING_RE.match(line)
+        m = FINDING_RE.match(line)
         if not m:
             continue
         category_token = m.group(1).lower()

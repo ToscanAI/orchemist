@@ -21,6 +21,7 @@ from uuid import uuid4
 from ..cost_tracker import PricingTable
 from ..model_registry import bare_id
 from ..schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
+from ._thinking import THINKING_BUDGET, DEFAULT_THINKING_BUDGET
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +40,6 @@ _MODEL_MAP = {
     "haiku": bare_id("haiku"),
     "sonnet": bare_id("sonnet"),
     "opus": bare_id("opus"),
-}
-
-# Thinking level → budget tokens (approximate)
-_THINKING_BUDGET = {
-    "off": 0,
-    "low": 2048,
-    "medium": 8192,
-    "high": 32768,
 }
 
 
@@ -133,7 +126,7 @@ class AnthropicExecutor:
 
         # Add thinking if requested
         thinking = thinking_level or "off"
-        budget = _THINKING_BUDGET.get(thinking, 0)
+        budget = THINKING_BUDGET.get(thinking, DEFAULT_THINKING_BUDGET)
         if budget > 0:
             body["thinking"] = {
                 "type": "enabled",
