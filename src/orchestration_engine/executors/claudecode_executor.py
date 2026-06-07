@@ -18,10 +18,9 @@ import json
 import logging
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
 
-from ..runner import TaskExecutor
 from ..schemas import TaskError, TaskResult, TaskSpec, TaskState, TaskType
+from ._common import BaseExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +42,7 @@ class _EmptyResponseError(Exception):
 _REJECTION_STOP_REASONS = frozenset({"error", "denied", "cancelled"})
 
 
-class ClaudeCodeExecutor(TaskExecutor):
+class ClaudeCodeExecutor(BaseExecutor):
     """Executor that routes prompts through the active Claude Code MCP session.
 
     Implements the MCP sampling pattern: calls context.session.create_message()
@@ -91,8 +90,8 @@ class ClaudeCodeExecutor(TaskExecutor):
         Returns:
             TaskResult with state SUCCESS on success, FAILED on any error.
         """
-        start_time = datetime.now()
-        task_id = task.id if hasattr(task, "id") and task.id else str(uuid4())
+        start_time = self._capture_start_time()
+        task_id = self._resolve_task_id(task)
 
         # Extract prompt — fall back to JSON-serialized payload
         prompt = task.payload.get("prompt", "")

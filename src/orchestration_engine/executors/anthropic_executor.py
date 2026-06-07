@@ -16,20 +16,20 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 from typing import Any, Dict, Optional
-from uuid import uuid4
 
-from ..cost_tracker import PricingTable
 from ..model_registry import bare_id
 from ..schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
+from ._common import BaseExecutor, _PRICING
 from ._thinking import THINKING_BUDGET, DEFAULT_THINKING_BUDGET
 
 logger = logging.getLogger(__name__)
 
-# Single source of truth for token pricing (Issue #908). Loaded once at import
-# time from the bundled pricing.yaml; CostTracker.record_phase computes cost via
-# the same PricingTable.compute_cost, so the executor and the ledger agree by
-# construction. cost_tracker imports only .db, so this introduces no cycle.
-_PRICING = PricingTable()
+# Token pricing is the single shared ``_PRICING`` instance from ``_common``
+# (Issue #927). It is re-exported here (imported above) so existing importers —
+# e.g. ``tests/test_anthropic_executor.py`` — keep working unchanged. The former
+# module-scope ``_PRICING = PricingTable()`` is gone; CostTracker.record_phase
+# still computes cost via the same PricingTable.compute_cost, so the executor and
+# the ledger agree by construction.
 
 # Model tier → Anthropic (bare) model ID mapping, built from the canonical
 # model_registry (#916). Both ModelTier enum keys and SHORT string keys resolve
@@ -43,7 +43,7 @@ _MODEL_MAP = {
 }
 
 
-class AnthropicExecutor:
+class AnthropicExecutor(BaseExecutor):
     """Executor that calls the Anthropic Messages API directly.
 
     Supports all Claude models with optional extended thinking.
@@ -101,8 +101,8 @@ class AnthropicExecutor:
         Returns:
             TaskResult with the API response or error details.
         """
-        start_time = datetime.now()
-        task_id = task.id if hasattr(task, "id") else str(uuid4())
+        start_time = self._capture_start_time()
+        task_id = self._resolve_task_id(task)
 
         # Resolve model
         tier = model_tier or (

@@ -28,9 +28,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from uuid import uuid4
 
-from .cost_tracker import PricingTable
 from .errors import (
     AuthenticationError,
     GatewayHTTPError,
@@ -38,10 +36,10 @@ from .errors import (
     RateLimitError,
     classify_http_error,
 )
+from .executors._common import BaseExecutor, _PRICING
 from .model_fallback import ModelFallbackChain
 from .model_registry import prefixed_id
 from .recovery import CircuitBreakerState, ErrorType, ExecutorRetryConfig, classify_exception_error_type
-from .runner import TaskExecutor
 from .schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 
 logger = logging.getLogger(__name__)
@@ -80,9 +78,9 @@ logger.addFilter(_SecretRedactingFilter())
 # Module-level constants (spec requirement)
 # ---------------------------------------------------------------------------
 
-# Single source of truth for token pricing (#916) — used by estimate_cost so
+# Token pricing is the single shared ``_PRICING`` instance from
+# ``executors._common`` (#927; imported above) — used by estimate_cost so
 # estimates agree with the ledger by construction.
-_PRICING = PricingTable()
 
 # Model tier → OpenClaw (anthropic/-prefixed) model ID mapping, built from the
 # canonical model_registry (#916). SHORT string keys and ModelTier enum keys
@@ -157,7 +155,7 @@ OUTPUT_CAPTURE_INSTRUCTION = (
 )
 
 
-class OpenClawExecutor(TaskExecutor):
+class OpenClawExecutor(BaseExecutor):
     """Executor that spawns real OpenClaw sub-agent sessions per pipeline phase.
 
     The executor communicates with the OpenClaw gateway over HTTP:
@@ -441,8 +439,8 @@ class OpenClawExecutor(TaskExecutor):
         Returns:
             TaskResult with the session output or error details.
         """
-        start_time = datetime.now()
-        task_id = task.id if hasattr(task, "id") else str(uuid4())
+        start_time = self._capture_start_time()
+        task_id = self._resolve_task_id(task)
 
         # ── COMMAND TASK: run locally via subprocess, skip LLM agent ────────
         if task.type == TaskType.COMMAND:

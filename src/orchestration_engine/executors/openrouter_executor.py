@@ -31,10 +31,8 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from ..config import _DEFAULT_OR_TIMEOUT
-from ..cost_tracker import PricingTable
 from ..model_registry import prefixed_id
 from ..schemas import (
     ModelTier,
@@ -44,6 +42,7 @@ from ..schemas import (
     TaskState,
     TaskType,
 )
+from ._common import BaseExecutor, _PRICING
 from ._thinking import THINKING_BUDGET, DEFAULT_THINKING_BUDGET
 from .openrouter_tools import (
     TOOL_SCHEMAS,
@@ -56,10 +55,10 @@ from .openrouter_tools import (
 
 logger = logging.getLogger(__name__)
 
-# Single source of truth for token pricing (#916). The no-`total_cost` fallback
-# (#913) routes through this PricingTable.compute_cost instead of a blended
-# $/1K heuristic, using the real per-direction prompt/completion token counts.
-_PRICING = PricingTable()
+# Token pricing is the single shared ``_PRICING`` instance from ``_common``
+# (#927; imported above). The no-`total_cost` fallback (#913) routes through this
+# PricingTable.compute_cost instead of a blended $/1K heuristic, using the real
+# per-direction prompt/completion token counts.
 
 # Default model tier → OpenRouter model ID mapping (Anthropic models), built
 # from the canonical model_registry (#916). Every value has an exact
@@ -134,7 +133,7 @@ class _CancellationContext:
         return self._event.wait(seconds)
 
 
-class OpenRouterExecutor:
+class OpenRouterExecutor(BaseExecutor):
     """Executor that calls the OpenRouter API (OpenAI-compatible)."""
 
     DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -181,8 +180,12 @@ class OpenRouterExecutor:
         model_tier: Optional[str] = None,
         thinking_level: Optional[str] = None,
     ) -> TaskResult:
+        # NOTE: start_time is a float epoch (time.time()) used across the tool
+        # loop's float arithmetic. OpenRouter's `started_at=datetime.now()` bug
+        # (set at completion, not entry) is DEFERRED per #927 scope — converting
+        # this to a datetime touches 10+ internal call sites in the tool loop.
         start_time = time.time()
-        task_id = task.id if hasattr(task, "id") else str(uuid4())
+        task_id = self._resolve_task_id(task)
 
         tier_str = model_tier or "sonnet"
         if isinstance(tier_str, ModelTier):
