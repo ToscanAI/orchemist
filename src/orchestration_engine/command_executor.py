@@ -28,12 +28,12 @@ Security model
 from __future__ import annotations
 
 import logging
-import re
 import shlex
 import subprocess
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from .command_security import DANGEROUS_PATTERNS
 from .schemas import TaskResult, TaskSpec, TaskState, TaskType
 
 logger = logging.getLogger(__name__)
@@ -47,23 +47,10 @@ MAX_OUTPUT_BYTES: int = 1_048_576  # 1 MB
 # explicit ``allowed_commands`` list if they need additional commands.
 DEFAULT_ALLOWED_COMMANDS: List[str] = ["python3", "pytest", "git"]
 
-# Denylist — matched against the FULL command string (before shlex split).
-# These patterns are blocked unconditionally regardless of what
-# ``allowed_commands`` the template declares.
-DANGEROUS_PATTERNS: List[re.Pattern] = [
-    re.compile(r"\brm\s+(-\w*f\w*|-\w*r\w*){1,}"),      # rm -rf, rm -fr, rm -f, rm -r
-    re.compile(r"\bsudo\b"),                               # privilege escalation
-    re.compile(r"\bsu\s"),                                 # switch user
-    re.compile(r"\bcurl\b.*\|\s*(?:sh|bash|zsh|fish)"),  # curl | sh (RCE pattern)
-    re.compile(r"\bwget\b.*\|\s*(?:sh|bash|zsh|fish)"),  # wget | sh (RCE pattern)
-    re.compile(r">\s*/dev/sd[a-z]"),                      # disk overwrite
-    re.compile(r"\bdd\b.*of=/dev/"),                      # dd to device
-    re.compile(r"\bmkfs\b"),                              # format filesystem
-    re.compile(r"\bchmod\s+777\b"),                       # world-writable
-    re.compile(r"\bchown\s+root\b"),                      # chown to root
-    re.compile(r":\(\)\{.*\}"),                           # fork bomb
-    re.compile(r"\bpkill\b|\bkillall\b"),                 # mass process kill
-]
+# ``DANGEROUS_PATTERNS`` is the single-source denylist; it now lives in
+# :mod:`orchestration_engine.command_security` and is imported above so the
+# OpenRouter shell path and this executor share one definition. ``_check_security``
+# references it by name below, so the import is transparent.
 
 # Default timeout in seconds for command execution
 DEFAULT_TIMEOUT: int = 120

@@ -32,6 +32,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..command_security import check_shell_command
 from ..config import _DEFAULT_OR_TIMEOUT
 from ..model_registry import prefixed_id
 from ..schemas import (
@@ -218,7 +219,7 @@ class OpenRouterExecutor(BaseExecutor):
             if cmd:
                 return self._execute_command_locally(
                     cmd, payload.get("working_dir") or os.getcwd(),
-                    task, worker_id, start_time, phase_id,
+                    task, worker_id, start_time, phase_id, payload,
                 )
 
         # Normalise sandbox_roots once up front; detect fallback and warn ONCE per instance.
@@ -618,15 +619,63 @@ class OpenRouterExecutor(BaseExecutor):
 
     _MAX_COMMAND_OUTPUT_BYTES = 1_000_000  # 1 MB — matches CommandExecutor.MAX_OUTPUT_BYTES
 
+    # Exit-code sentinels (disambiguate failure modes in metadata["exit_code"]).
+    _EXIT_TIMEOUT: int = -1   # TimeoutExpired (preserves pre-existing -1 contract)
+    _EXIT_EXEC_ERR: int = -2  # other exec-level exception (OSError, etc.)
+    _EXIT_SECURITY: int = -1  # security gate blocked before the shell ran
+
     def _execute_command_locally(
         self, command: str, working_dir: str,
         task: TaskSpec, worker_id: str, start_time: float, phase_id: str,
+        payload: Optional[Dict[str, Any]] = None,
     ) -> TaskResult:
-        """Run a shell command locally via subprocess — zero token cost."""
+        """Run a shell command locally via subprocess — zero token cost.
+
+        A security gate (:func:`command_security.check_shell_command`) runs
+        BEFORE the shell. The denylist is the always-on floor (both modes); the
+        allowlist (from ``payload["allowed_commands"]``) is best-effort
+        defense-in-depth applied only when non-empty. ``shell=True`` is retained
+        for the actual run because the shipped tamper/maintenance gates depend on
+        shell operators.
+        """
         import subprocess as _sp
 
         logger.info("OpenRouterExecutor: local command for phase %s: %s", phase_id, command[:200])
+
+        # ── Security gate (denylist floor always; allowlist if non-empty) ────
+        # [] and None both collapse to denylist-only mode.
+        allowed = (payload or {}).get("allowed_commands") or None
+        security_block = check_shell_command(command, allowed)
+        if security_block is not None:
+            error_code, security_message = security_block
+            logger.warning(
+                "OpenRouterExecutor: SECURITY — command blocked for phase %s: %s",
+                phase_id, command[:200],
+            )
+            duration = time.time() - start_time
+            return TaskResult(
+                task_id=task.id, task_type=task.type, state=TaskState.FAILED,
+                confidence=0.0,
+                result={"output": security_message}, model_used="local-subprocess",
+                execution_time_seconds=duration, tokens_consumed=0, cost_usd=Decimal("0"),
+                started_at=datetime.now(), completed_at=datetime.now(),
+                errors=[TaskError(
+                    code=error_code,
+                    message=security_message,
+                    severity="error",
+                )],
+                metadata={
+                    "worker_id": worker_id, "exit_code": self._EXIT_SECURITY,
+                    "stdout_chars": 0, "stderr_chars": len(security_message),
+                    "command": command[:200],
+                    "tool_call_count": 0, "round_trip_count": 0, "retry_count": 0,
+                    "xml_leak_detected": False, "xml_leak_content_snippet": "",
+                    "parallel_tool_calls_observed": False, "jsonl_write_failed": False,
+                },
+            )
+
         cwd = working_dir or os.getcwd()
+        error_code: Optional[str] = None
         try:
             proc = _sp.run(command, shell=True, cwd=cwd, capture_output=True, timeout=self.timeout_seconds)
             stdout_raw = proc.stdout[:self._MAX_COMMAND_OUTPUT_BYTES]
@@ -635,20 +684,26 @@ class OpenRouterExecutor(BaseExecutor):
             stderr = stderr_raw.decode("utf-8", errors="replace")
             exit_code = proc.returncode
             state = TaskState.SUCCESS if exit_code == 0 else TaskState.FAILED
+            if state == TaskState.FAILED:
+                error_code = "command_failed"
         except _sp.TimeoutExpired as exc:
             stdout = ((exc.stdout or b"")[:self._MAX_COMMAND_OUTPUT_BYTES]).decode("utf-8", errors="replace")
             stderr = ((exc.stderr or b"")[:self._MAX_COMMAND_OUTPUT_BYTES]).decode("utf-8", errors="replace")
-            exit_code = -1
+            exit_code = self._EXIT_TIMEOUT
             state = TaskState.FAILED
+            error_code = "command_timeout"
         except Exception as exc:
-            stdout, stderr, exit_code, state = "", str(exc), -1, TaskState.FAILED
+            stdout, stderr = "", str(exc)
+            exit_code = self._EXIT_EXEC_ERR
+            state = TaskState.FAILED
+            error_code = "command_error"
 
         duration = time.time() - start_time
         output_text = stdout if stdout else stderr
         errors = []
         if state == TaskState.FAILED:
             errors.append(TaskError(
-                code="command_failed" if exit_code != -1 else "command_timeout",
+                code=error_code or "command_failed",
                 message=f"exit {exit_code}: {stderr[:500]}" if stderr else f"exit {exit_code}",
                 severity="error",
             ))
