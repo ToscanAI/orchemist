@@ -228,3 +228,16 @@ def test_dangerous_patterns_constant_exists():
     assert len(DANGEROUS_PATTERNS) > 0
     for p in DANGEROUS_PATTERNS:
         assert isinstance(p, re.Pattern), f"Expected re.Pattern, got {type(p)}"
+
+
+def test_dangerous_patterns_single_sourced_from_command_security():
+    """#925: command_executor must import DANGEROUS_PATTERNS from the shared
+    command_security module — same object, not a copy. If anyone re-defines the
+    denylist inline, this identity check fails."""
+    from orchestration_engine.command_security import (
+        DANGEROUS_PATTERNS as shared_patterns,
+    )
+    from orchestration_engine.command_executor import (
+        DANGEROUS_PATTERNS as executor_patterns,
+    )
+    assert shared_patterns is executor_patterns
