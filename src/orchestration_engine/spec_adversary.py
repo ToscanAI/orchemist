@@ -22,12 +22,12 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
+from .text_utils import FINDING_RE
 from .verdict_parser import extract_verdict as _extract_verdict
 
 __all__ = [
@@ -48,10 +48,10 @@ _VALID_CATEGORIES: frozenset[str] = frozenset(
     ["vague", "trivial", "missing_edge_case", "leakage", "divergence"]
 )
 
-# Compiled regex for tagged finding lines: [category] description
-# Group 1 → category (letters and underscores)
-# Group 2 → description (anything after the space)
-_FINDING_RE = re.compile(r"^\s*\[([A-Za-z_]+)\]\s+(.+)$")
+# Tagged finding-line matcher ([category] description) is the canonical
+# ``FINDING_RE`` imported from :mod:`text_utils` (single source of truth shared
+# with adversary_parser). This phase strips the captured description at the call
+# site below.
 
 # Valid verdict tokens — checked as exact stripped first-word match
 _VALID_VERDICTS: tuple[str, ...] = ("APPROVE", "REQUEST_CHANGES")
@@ -112,7 +112,7 @@ def parse_adversary_output(text) -> AdversaryVerdict:
        whose first whitespace-stripped token exactly matches ``APPROVE`` or
        ``REQUEST_CHANGES`` (case-insensitive) is taken as the verdict.
     3. **Parse findings** — all lines matching ``[category] description``
-       (``_FINDING_RE``) are parsed as findings.  Category tokens are
+       (``FINDING_RE``) are parsed as findings.  Category tokens are
        normalised to lowercase.  Lines that do not match the pattern are
        silently skipped.  Lines with unrecognised category tokens are also
        silently skipped.
@@ -153,7 +153,7 @@ def parse_adversary_output(text) -> AdversaryVerdict:
     # ── Finding extraction (all lines matching [category] description) ────────
     findings: List[AdversaryFinding] = []
     for line in lines:
-        m = _FINDING_RE.match(line)
+        m = FINDING_RE.match(line)
         if not m:
             logger.debug(
                 "spec_adversary: skipping non-finding line: %r", line.strip()[:80]

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from ..config import _DEFAULT_OR_TIMEOUT
 from ..cost_tracker import PricingTable
 from ..model_registry import prefixed_id
 from ..schemas import (
@@ -43,6 +44,7 @@ from ..schemas import (
     TaskState,
     TaskType,
 )
+from ._thinking import THINKING_BUDGET, DEFAULT_THINKING_BUDGET
 from .openrouter_tools import (
     TOOL_SCHEMAS,
     TOOL_DISPATCH,
@@ -66,14 +68,6 @@ DEFAULT_MODEL_MAP: Dict[str, str] = {
     "haiku": prefixed_id("haiku"),
     "sonnet": prefixed_id("sonnet"),
     "opus": prefixed_id("opus"),
-}
-
-# Thinking level → budget tokens for Anthropic extended thinking
-_THINKING_BUDGET: Dict[str, int] = {
-    "off": 0,
-    "low": 2048,
-    "medium": 8192,
-    "high": 32768,
 }
 
 # Models known to support extended thinking (Anthropic Claude 3.5+ and 4+)
@@ -150,7 +144,7 @@ class OpenRouterExecutor:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model_map: Optional[Dict[str, str]] = None,
-        timeout_seconds: int = 600,
+        timeout_seconds: int = _DEFAULT_OR_TIMEOUT,
         max_tokens: int = 16384,
     ):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
@@ -730,7 +724,7 @@ class OpenRouterExecutor:
             body["parallel_tool_calls"] = False
             body["stream"] = False
         if use_thinking:
-            budget = _THINKING_BUDGET.get(thinking_level, 8192)
+            budget = THINKING_BUDGET.get(thinking_level, DEFAULT_THINKING_BUDGET)
             if budget > 0:
                 body["thinking"] = {"type": "enabled", "budget_tokens": budget}
         return body

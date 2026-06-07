@@ -748,3 +748,11 @@ class TestModuleExports:
         for lib in ["pydantic", "requests", "attrs", "numpy", "click"]:
             assert f"import {lib}" not in source, f"Unexpected third-party import: {lib}"
             assert f"from {lib}" not in source, f"Unexpected third-party import: {lib}"
+
+
+def test_issue_re_is_imported_from_review_parser():
+    """Item 4a (#919): audit reuses the single ``_ISSUE_RE`` from review_parser
+    rather than redefining it, so the two cannot drift."""
+    import orchestration_engine.audit as audit_mod
+    import orchestration_engine.review_parser as review_parser
+    assert audit_mod._ISSUE_RE is review_parser._ISSUE_RE

@@ -23,6 +23,7 @@ from orchestration_engine.ipc import (
     IPCError,
     TestDetail,
     IPCProtocolError,
+    DEFAULT_TEST_COMMAND,
 )
 
 
@@ -397,7 +398,7 @@ def test_validation_request_defaults_timeout_and_test_command():
     result = deserialize_request(req_line)
 
     assert result.timeout_seconds == 300, "timeout_seconds must default to 300"
-    assert result.test_command == "pytest", "test_command must default to 'pytest'"
+    assert result.test_command == DEFAULT_TEST_COMMAND, "test_command must default to the ipc default"
     assert result.test_manifest_hash is None, "test_manifest_hash must default to None"
 
 

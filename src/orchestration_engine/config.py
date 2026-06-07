@@ -116,6 +116,12 @@ class GitHubAppConfig(BaseModel):
         return str(Path(v).expanduser())
 
 
+#: Default OpenRouter HTTP request timeout (seconds). Single source of truth
+#: shared by OpenRouterConfig and OpenRouterExecutor so the model default and
+#: the executor constructor default cannot drift.
+_DEFAULT_OR_TIMEOUT: int = 300
+
+
 class OpenRouterConfig(BaseModel):
     """OpenRouter executor configuration."""
     model_config = ConfigDict(extra="ignore")
@@ -133,7 +139,7 @@ class OpenRouterConfig(BaseModel):
         description="Custom model tier → model ID overrides (e.g. {'sonnet': 'openai/gpt-4o'}).",
     )
     timeout_seconds: int = Field(
-        default=300, ge=10, le=3600,
+        default=_DEFAULT_OR_TIMEOUT, ge=10, le=3600,
         description="HTTP request timeout in seconds.",
     )
     max_tokens: int = Field(
