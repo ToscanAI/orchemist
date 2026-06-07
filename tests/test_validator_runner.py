@@ -218,3 +218,58 @@ class TestForbiddenImports:
                         violations.append(node.module)
                         break
         assert not violations, f"Found forbidden imports: {violations}"
+
+
+class TestParsePytestOutputWrapper:
+    """Unit tests for the _parse_pytest_output wrapper (#927).
+
+    After consolidation the wrapper delegates counting to the shared
+    ``count_pytest_results`` but KEEPS the validator-only
+    ``errors=1 when total==0 and returncode!=0`` rule, plus its verdict mapping.
+    """
+
+    def test_empty_output_nonzero_rc_sets_errors_1(self):
+        # T3 / AC13: the wrapper DOES apply the rule the shared helper omits.
+        from orchestration_engine.validator_runner import _parse_pytest_output
+
+        result = _parse_pytest_output("", 1, 0.0)
+        assert result.tests_errored == 1
+        assert result.tests_total == 1
+        assert result.verdict == "ERROR"
+        assert result.retry_recommended is False
+
+    def test_empty_output_zero_rc_stays_pass(self):
+        # rc==0 with no output must NOT be forced to an error.
+        from orchestration_engine.validator_runner import _parse_pytest_output
+
+        result = _parse_pytest_output("", 0, 0.0)
+        assert result.tests_errored == 0
+        assert result.tests_total == 0
+        assert result.verdict == "PASS"
+
+    def test_all_pass_summary(self):
+        from orchestration_engine.validator_runner import _parse_pytest_output
+
+        result = _parse_pytest_output("==== 5 passed in 0.5s ====", 0, 1.0)
+        assert result.tests_passed == 5
+        assert result.tests_total == 5
+        assert result.pass_rate == 1.0
+        assert result.verdict == "PASS"
+
+    def test_failures_yield_fail_verdict(self):
+        from orchestration_engine.validator_runner import _parse_pytest_output
+
+        result = _parse_pytest_output("==== 2 passed, 1 failed in 0.5s ====", 1, 0.5)
+        assert result.tests_failed == 1
+        assert result.tests_total == 3
+        assert result.verdict == "FAIL"
+        assert result.retry_recommended is True
+
+    def test_errors_only_yield_error_verdict(self):
+        from orchestration_engine.validator_runner import _parse_pytest_output
+
+        result = _parse_pytest_output("==== 2 errors in 0.5s ====", 1, 0.5)
+        assert result.tests_errored == 2
+        assert result.tests_passed == 0
+        assert result.tests_failed == 0
+        assert result.verdict == "ERROR"

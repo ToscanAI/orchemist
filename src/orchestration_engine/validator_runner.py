@@ -41,6 +41,7 @@ from orchestration_engine.ipc import (
     serialize_error_response,
     serialize_response,
 )
+from orchestration_engine.pytest_output_parser import count_pytest_results
 from orchestration_engine.test_store import TestStore, TestStoreError
 
 logger = logging.getLogger(__name__)
@@ -137,43 +138,15 @@ def _parse_pytest_output(
     duration: float,
 ) -> ValidationResult:
     """Parse pytest -v --tb=short output into a ValidationResult."""
-    import re
+    counts = count_pytest_results(stdout, returncode)
+    passed = counts.passed
+    failed = counts.failed
+    errors = counts.errors
+    total = counts.total
 
-    passed = 0
-    failed = 0
-    errors = 0
-
-    if stdout:
-        # Look for summary line: "X passed, Y failed, Z error(s) in N.Ns"
-        summary_re = re.compile(
-            r"=+\s*"
-            r"(?:(\d+)\s+passed)?"
-            r"(?:,?\s*(\d+)\s+failed)?"
-            r"(?:,?\s*(\d+)\s+error(?:s)?)?"
-            r"\s+in\s+[\d.]+s"
-            r"\s*=+",
-        )
-        match = summary_re.search(stdout)
-        if match:
-            passed = int(match.group(1) or 0)
-            failed = int(match.group(2) or 0)
-            errors = int(match.group(3) or 0)
-        elif re.search(r"no tests (?:ran|collected)", stdout, re.IGNORECASE):
-            pass  # all zeros
-        else:
-            # Fallback: scan individual count patterns
-            m_passed = re.search(r"(\d+)\s+passed", stdout)
-            m_failed = re.search(r"(\d+)\s+failed", stdout)
-            m_errors = re.search(r"(\d+)\s+error(?:s)?", stdout)
-            if m_passed:
-                passed = int(m_passed.group(1))
-            if m_failed:
-                failed = int(m_failed.group(1))
-            if m_errors:
-                errors = int(m_errors.group(1))
-
-    # If no tests were collected and pytest returned non-zero, treat as error
-    total = passed + failed + errors
+    # validator_runner-specific rule (NOT in the shared helper): if no tests were
+    # collected and pytest returned non-zero, treat it as a single error so the
+    # verdict downgrades to ERROR rather than a misleading PASS.
     if total == 0 and returncode != 0:
         errors = 1
         total = 1

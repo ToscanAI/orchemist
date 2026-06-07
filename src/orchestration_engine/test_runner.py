@@ -21,38 +21,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+from .pytest_output_parser import count_pytest_results
+
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Regex patterns for parsing pytest -v --tb=short output
-# ---------------------------------------------------------------------------
-
-# Summary line patterns (various pytest output formats):
-# "2 passed, 1 failed, 0 errors in 0.35s"
-# "3 passed in 0.12s"
-# "1 error in 0.05s"
-_SUMMARY_RE = re.compile(
-    r"=+\s*"
-    r"(?:(\d+)\s+passed)?"
-    r"(?:,?\s*(\d+)\s+failed)?"
-    r"(?:,?\s*(\d+)\s+error(?:s)?)?"
-    r"\s+in\s+[\d.]+s"
-    r"\s*=+",
-)
-
-# Fallback for errors-only lines: "3 errors in 0.05s"
-_ERRORS_ONLY_RE = re.compile(
-    r"=+\s*(\d+)\s+error(?:s)?\s+in\s+[\d.]+s\s*=+",
-)
-
-# "no tests ran" or "no tests collected"
-_NO_TESTS_RE = re.compile(r"no tests (?:ran|collected)", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -105,44 +81,16 @@ def parse_pytest_output(stdout: str, returncode: int) -> TestRunResult:
     Returns:
         Populated ``TestRunResult``. Never raises.
     """
-    passed = 0
-    failed = 0
-    errors = 0
-
-    if stdout:
-        # Primary: look for the === ... in N.Ns === summary line
-        match = _SUMMARY_RE.search(stdout)
-        if match:
-            passed = int(match.group(1) or 0)
-            failed = int(match.group(2) or 0)
-            errors = int(match.group(3) or 0)
-        elif _NO_TESTS_RE.search(stdout):
-            # "no tests ran" — all zeros
-            pass
-        else:
-            # Fallback: scan for individual count patterns when the combined
-            # summary line doesn't match (e.g. unusual pytest output formats)
-            m_passed = re.search(r"(\d+)\s+passed", stdout)
-            m_failed = re.search(r"(\d+)\s+failed", stdout)
-            m_errors = re.search(r"(\d+)\s+error(?:s)?", stdout)
-            if m_passed:
-                passed = int(m_passed.group(1))
-            if m_failed:
-                failed = int(m_failed.group(1))
-            if m_errors:
-                errors = int(m_errors.group(1))
-
-    total = passed + failed + errors
-    pass_rate = passed / total if total > 0 else 0.0
+    counts = count_pytest_results(stdout, returncode)
 
     failure_details = _extract_failure_details(stdout or "")
 
     return TestRunResult(
-        passed=passed,
-        failed=failed,
-        errors=errors,
-        total=total,
-        pass_rate=pass_rate,
+        passed=counts.passed,
+        failed=counts.failed,
+        errors=counts.errors,
+        total=counts.total,
+        pass_rate=counts.pass_rate,
         failure_details=failure_details,
         full_output=stdout or "",
         exit_code=returncode,
