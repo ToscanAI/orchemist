@@ -179,22 +179,6 @@ Checks for common problems: high queue depth (>100), high dead letter count (>50
 
 ---
 
-### `orch execute` — Force-run a specific task immediately
-
-```bash
-orch execute 3f8a1c2d-...
-
-# Override model and timeout
-orch execute --model sonnet-4 --timeout 900 3f8a1c2d-...
-
-# Bypass worker pool capacity check
-orch execute --force 3f8a1c2d-...
-```
-
-Bypasses the normal queue and executes the task immediately. Useful for debugging or urgent one-off runs.
-
----
-
 ### `orch watch` — Monitor a running task
 
 ```bash

@@ -1693,24 +1693,6 @@ class OpenClawExecutor(TaskExecutor):
             self._active_session_key = None
             return output, total_tokens
 
-    @staticmethod
-    def _extract_output(response: Dict[str, Any]) -> str:
-        """Extract text output from a completed session response.
-
-        Tries common keys used by different gateway versions.
-        """
-        for key in ("output", "result", "content", "text", "message"):
-            val = response.get(key)
-            if val and isinstance(val, str):
-                return val
-            if val and isinstance(val, dict):
-                # Nested: e.g. result.text
-                for inner_key in ("output", "text", "content", "message"):
-                    inner = val.get(inner_key)
-                    if inner and isinstance(inner, str):
-                        return inner
-        return ""
-
     # ------------------------------------------------------------------
     # Dry-run helpers
     # ------------------------------------------------------------------

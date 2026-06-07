@@ -17,9 +17,8 @@ from src.orchestration_engine.templates import (
     TemplateEngine,
 )
 from src.orchestration_engine.sequencer import PhaseSequencer, _SafeDict
-from src.orchestration_engine.runner import DryRunExecutor, TaskRunner
-from src.orchestration_engine.config import EngineConfig, QueueConfig, ModelsConfig
-from src.orchestration_engine.db import Database
+from src.orchestration_engine.pipeline_runner import PipelineRunner
+from src.orchestration_engine.runner import DryRunExecutor
 from src.orchestration_engine.schemas import TaskType
 
 
@@ -29,28 +28,11 @@ from src.orchestration_engine.schemas import TaskType
 
 
 @pytest.fixture
-def test_config():
-    """Minimal engine config in dry-run mode."""
-    return EngineConfig(
-        queue=QueueConfig(max_workers=2, poll_interval_seconds=1),
-        models=ModelsConfig(default_tier="sonnet-4"),
-        dry_run=True,
+def fast_runner():
+    """PipelineRunner with a zero-delay, zero-failure-rate DryRunExecutor."""
+    return PipelineRunner(
+        executors=[DryRunExecutor(delay_seconds=0.0, failure_rate=0.0)]
     )
-
-
-@pytest.fixture
-def test_db():
-    """Isolated in-memory database for each test."""
-    return Database(":memory:")
-
-
-@pytest.fixture
-def fast_runner(test_db, test_config):
-    """TaskRunner with a zero-delay, zero-failure-rate DryRunExecutor."""
-    runner = TaskRunner(database=test_db, config=test_config)
-    # Override the default 2-second delay executor with an instant one
-    runner.executors = [DryRunExecutor(delay_seconds=0.0, failure_rate=0.0)]
-    return runner
 
 
 @pytest.fixture
@@ -590,15 +572,13 @@ class TestPhaseSequencerExecution:
 
     def test_pipeline_aborts_on_phase_failure(self):
         """Pipeline stops and returns aborted=True when a phase fails."""
-        from orchestration_engine.runner import DryRunExecutor, TaskRunner
-        from orchestration_engine.db import Database
-        from orchestration_engine.config import EngineConfig
+        from orchestration_engine.pipeline_runner import PipelineRunner
+        from orchestration_engine.runner import DryRunExecutor
 
-        db = Database(":memory:")
-        config = EngineConfig(dry_run=True)
-        runner = TaskRunner(db, config)
-        # Replace executor with one that always fails
-        runner.executors = [DryRunExecutor(delay_seconds=0.0, failure_rate=1.0)]
+        # Runner whose executor always fails
+        runner = PipelineRunner(
+            executors=[DryRunExecutor(delay_seconds=0.0, failure_rate=1.0)]
+        )
 
         tpl = _simple_template("a", "b", depends_on_map={"b": ["a"]})
         seq = PhaseSequencer(tpl, runner)
@@ -611,14 +591,12 @@ class TestPhaseSequencerExecution:
 
     def test_config_missing_key_uses_placeholder(self):
         """Missing config keys produce SafeDict placeholders, not crashes."""
-        from orchestration_engine.runner import DryRunExecutor, TaskRunner
-        from orchestration_engine.db import Database
-        from orchestration_engine.config import EngineConfig
+        from orchestration_engine.pipeline_runner import PipelineRunner
+        from orchestration_engine.runner import DryRunExecutor
 
-        db = Database(":memory:")
-        config = EngineConfig(dry_run=True)
-        runner = TaskRunner(db, config)
-        runner.executors = [DryRunExecutor(delay_seconds=0.0, failure_rate=0.0)]
+        runner = PipelineRunner(
+            executors=[DryRunExecutor(delay_seconds=0.0, failure_rate=0.0)]
+        )
 
         phase = PhaseDefinition(
             id="test",
