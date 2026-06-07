@@ -647,42 +647,6 @@ def health() -> None:
 
 
 @main.command()
-@click.argument('task_id', required=True)
-@click.option('--force', is_flag=True, help='Force execution even if worker pool is full')
-@click.option('--model', type=str, help='Override model tier (haiku-4-5, sonnet-4, opus-4-6)')
-@click.option('--timeout', type=int, help='Override timeout in seconds')
-def execute(task_id: str, force: bool, model: Optional[str], timeout: Optional[int]) -> None:
-    """Execute a specific queued task immediately by task ID."""
-    try:
-        # Import here to avoid circular imports during CLI parsing
-        from .runner import TaskRunner
-        from .config import get_global_config
-        
-        config = get_global_config()
-        runner = TaskRunner(config=config)
-        
-        # Check if runner is already running
-        if not runner._running:
-            click.echo("Starting task runner...")
-            runner.start()
-            time.sleep(2)  # Give it a moment to start
-        
-        # Execute the task
-        success = runner.execute_task_immediately(task_id)
-        
-        if success:
-            click.echo(f"✅ Task {task_id} started successfully")
-            click.echo(f"Use 'orch watch {task_id}' to monitor progress")
-        else:
-            click.echo(f"❌ Failed to start task {task_id}")
-            sys.exit(1)
-    
-    except Exception as e:
-        click.echo(f"Error executing task: {e}", err=True)
-        sys.exit(1)
-
-
-@main.command()
 @click.argument('run_id', required=True)
 @click.option('--json-output', '--json', 'json_mode', is_flag=True, help='Machine-readable JSON output')
 @click.option('--refresh', default=3, help='Refresh interval in seconds')

@@ -23,9 +23,8 @@ from src.orchestration_engine.templates import (
     TemplateEngine,
 )
 from src.orchestration_engine.sequencer import PhaseSequencer, _SafeDict
-from src.orchestration_engine.runner import DryRunExecutor, TaskRunner
-from src.orchestration_engine.config import EngineConfig, QueueConfig, ModelsConfig
-from src.orchestration_engine.db import Database
+from src.orchestration_engine.pipeline_runner import PipelineRunner
+from src.orchestration_engine.runner import DryRunExecutor
 
 
 # ---------------------------------------------------------------------------
@@ -50,19 +49,10 @@ def template_dir(tmp_path):
 
 
 @pytest.fixture
-def test_config():
-    return EngineConfig(
-        queue=QueueConfig(max_workers=1, poll_interval_seconds=1),
-        models=ModelsConfig(default_tier="sonnet-4"),
-        dry_run=True,
+def fast_runner():
+    runner = PipelineRunner(
+        executors=[DryRunExecutor(delay_seconds=0.0, failure_rate=0.0)]
     )
-
-
-@pytest.fixture
-def fast_runner(test_config):
-    db = Database(":memory:")
-    runner = TaskRunner(database=db, config=test_config)
-    runner.executors = [DryRunExecutor(delay_seconds=0.0, failure_rate=0.0)]
     return runner
 
 
