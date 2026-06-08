@@ -5,7 +5,7 @@ Verifies the governance file set required by the v1 readiness gate:
   - MAINTAINERS.md   (who can release)
   - CODE_OF_CONDUCT.md (adopted-by-reference link to Contributor Covenant v2.1)
   - .github/CODEOWNERS (gates supply-chain files)
-  - .github/workflows/publish.yaml (runs `git tag -v` in WARN mode)
+  - .github/workflows/publish.yaml (runs `git tag -v` FAIL-closed against the committed signing key)
   - docs/RELEASE-SOP.md §6 table updated for CI-enforced rows
 
 These are static-content checks: stdlib only, no network, no git.
@@ -148,7 +148,7 @@ def test_codeowners_exists_and_owns_supply_chain_files() -> None:
 
 
 # ----------------------------------------------------------------------
-# A.4 + A.9  publish.yaml — signed tag verification (WARN mode)
+# A.4 + A.9  publish.yaml — signed tag verification (FAIL-closed)
 # ----------------------------------------------------------------------
 
 def test_publish_workflow_runs_signed_tag_verification() -> None:
@@ -169,18 +169,15 @@ def test_publish_workflow_runs_signed_tag_verification() -> None:
     )
 
 
-def test_publish_workflow_warn_mode_with_fail_date() -> None:
+def test_publish_workflow_fail_closed_signed_tag() -> None:
     text = _read(".github/workflows/publish.yaml")
 
-    assert "2026-06-03" in text, (
-        "publish.yaml must reference the WARN->FAIL transition date "
-        "2026-06-03 as a TODO/comment for the follow-up PR"
-    )
-
-    has_warn_marker = ("::warning::" in text) or ("WARN" in text)
-    assert has_warn_marker, (
-        "publish.yaml must mark the tag-verify step as WARN-mode "
-        "(via ::warning:: annotation or a 'WARN' comment)"
+    # FAIL-closed since #935: the workflow imports the committed release-signing
+    # public key, then verifies the tag with NO fallthrough, so an unsigned or
+    # unverifiable tag blocks build + publish.
+    assert "gpg --import .github/release-signing-pubkey.asc" in text, (
+        "publish.yaml must import the release-signing public key "
+        "(.github/release-signing-pubkey.asc) before verifying the tag"
     )
 
     # Find the executable line (not a YAML comment) that invokes `git tag -v`.
@@ -197,10 +194,10 @@ def test_publish_workflow_warn_mode_with_fail_date() -> None:
         any("||" in ln for ln in exec_lines)
         or "continue-on-error: true" in text
     )
-    assert has_fallthrough, (
-        "The executable `git tag -v` line must NOT fail the workflow in "
-        "WARN mode. Use `git tag -v ... || echo ...` or "
-        "`continue-on-error: true` at the step level."
+    assert not has_fallthrough, (
+        "The executable `git tag -v` line must FAIL the workflow on an "
+        "unsigned/unverifiable tag (FAIL-closed): no `||` fallthrough and "
+        "no `continue-on-error: true`."
     )
 
 

@@ -31,20 +31,14 @@ jobs:
           python-version: "3.11"
 
       # ----------------------------------------------------------------
-      # Signed-tag verification — issue #890.
+      # Signed-tag verification — issue #890 (FAIL-closed since #935).
       #
-      # WARN MODE (current): the step emits a workflow warning if the
-      # tag is unsigned or its signature cannot be verified, but does
-      # NOT fail the workflow. The runner has no maintainer pubkeys
-      # imported yet so every tag will WARN for now; this is the
-      # intended transitional state.
-      #
-      # TODO (2026-06-03): flip this step to FAIL mode in a follow-up
-      # PR. The follow-up must (a) import the maintainer GPG public
-      # key from a secret (e.g. ${{ secrets.MAINTAINER_GPG_PUBKEY }})
-      # into the runner keyring before `git tag -v`, and (b) drop the
-      # `|| echo` fallthrough so a verification failure exits non-zero
-      # and short-circuits the publish step.
+      # The release tag is verified against the committed release-signing
+      # public key: the next two steps import it and run `git tag -v` with
+      # NO fallthrough, so an unsigned or unverifiable tag exits non-zero
+      # and short-circuits build + publish. The maintainer public key lives
+      # in-repo at .github/release-signing-pubkey.asc (not a secret) for
+      # auditability.
       # ----------------------------------------------------------------
       - name: Import release-signing public key
         # Public key committed at .github/release-signing-pubkey.asc
