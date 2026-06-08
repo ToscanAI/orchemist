@@ -46,10 +46,17 @@ jobs:
       # `|| echo` fallthrough so a verification failure exits non-zero
       # and short-circuits the publish step.
       # ----------------------------------------------------------------
-      - name: Verify signed tag (WARN mode, FAIL gate 2026-06-03)
+      - name: Verify signed tag (WARN mode)
         # WARN MODE: never fail the workflow. The `git tag -v ... || echo`
         # idiom keeps the step exit code 0 even when the tag is unsigned.
-        run: git tag -v "$GITHUB_REF_NAME" || echo "::warning::Tag $GITHUB_REF_NAME is not signed or its signature could not be verified. This is currently a WARN; on 2026-06-03 this step will FAIL closed per issue #890."
+        # MUST be a block scalar (`run: |`): as an inline plain scalar the
+        # space-prefixed `#` in the issue ref was parsed as a YAML comment,
+        # truncating the command and unbalancing the quote — bash then failed
+        # with "unexpected EOF" (exit 2), skipping build+publish. Regression
+        # introduced with the step (#890); never exercised until publish run
+        # 27146596968 (v0.12.0). Keep this as a block scalar.
+        run: |
+          git tag -v "$GITHUB_REF_NAME" || echo "::warning::Tag $GITHUB_REF_NAME is not signed or its signature could not be verified. WARN mode for now; FAIL-closed gate tracked in issue #890."
 
       - name: Install build tools
         run: pip install build twine
