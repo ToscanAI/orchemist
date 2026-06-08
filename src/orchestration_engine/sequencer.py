@@ -337,8 +337,37 @@ class PhaseSequencer:
                     }
                 continue
 
-            # Build the prompt for this phase
-            phase_input = self._build_phase_input(phase, initial_input)
+            # Build the prompt for this phase. The shared missing_sink collects
+            # any <MISSING:> markers emitted by config/input/previous_output
+            # substitution in BOTH the prompt and the command/working_dir.
+            _missing_sink: set = set()
+            phase_input = self._build_phase_input(
+                phase, initial_input, missing_sink=_missing_sink
+            )
+            command_extras = self._build_command_extras(
+                phase, initial_input, missing_sink=_missing_sink
+            )
+
+            # Reject the phase before dispatch if a genuine config/input/
+            # previous_output reference rendered <MISSING:> (#535) — a broken
+            # config/template must abort the pipeline rather than send garbage
+            # to the executor. The guard precedes submit_task so a placeholder
+            # failure never enters the retry loop (a config error won't
+            # self-heal).
+            placeholder_failure = self._check_for_unresolved_placeholders(
+                phase, _missing_sink
+            )
+            if placeholder_failure is not None:
+                result = placeholder_failure
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+                self._invoke_on_phase_complete(phase_id, result)
+                return {
+                    "phase_outputs": self.phase_outputs,
+                    "final_output": result,
+                    "failed_phase": phase_id,
+                    "aborted": True,
+                }
 
             # Resolve model tier to a ModelTier enum value (if possible)
             preferred_model = self._resolve_model_tier(phase.model_tier)
@@ -352,7 +381,7 @@ class PhaseSequencer:
                     "pipeline_id": self.template.id,
                     "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
                     "sandbox_roots": self._sandbox_roots(),  # #794: tool-call sandbox
-                    **self._build_command_extras(phase, initial_input),
+                    **command_extras,
                 },
                 priority=Priority.HIGH,
                 preferred_model=preferred_model,
@@ -577,9 +606,35 @@ class PhaseSequencer:
                 self._invoke_on_phase_complete(phase_id, result)
                 return result
 
-            # Build prompt — read phase_outputs under lock to avoid races
+            # Build prompt — read phase_outputs under lock to avoid races. The
+            # missing_sink (a fresh per-worker local set) collects <MISSING:>
+            # markers from config/input/previous_output substitution.
+            _missing_sink: set = set()
             with self._phase_outputs_lock:
-                phase_input = self._build_phase_input(phase, initial_input)
+                phase_input = self._build_phase_input(
+                    phase, initial_input, missing_sink=_missing_sink
+                )
+
+            # command_extras reads only phase/config (immutable here) — no lock.
+            command_extras = self._build_command_extras(
+                phase, initial_input, missing_sink=_missing_sink
+            )
+
+            # Reject the phase before dispatch if a genuine config/input/
+            # previous_output reference rendered <MISSING:> (#535). The marker
+            # set and command_extras are local values, so the guard runs OUTSIDE
+            # the phase_outputs lock safely. The parallel worker returns the
+            # bare phase-result; the pool aggregator keys on permanently_failed
+            # and wraps it into the pipeline abort.
+            placeholder_failure = self._check_for_unresolved_placeholders(
+                phase, _missing_sink
+            )
+            if placeholder_failure is not None:
+                result = placeholder_failure
+                with self._phase_outputs_lock:
+                    self.phase_outputs[phase_id] = result
+                self._invoke_on_phase_complete(phase_id, result)
+                return result
 
             preferred_model = self._resolve_model_tier(phase.model_tier)
 
@@ -591,7 +646,7 @@ class PhaseSequencer:
                     "pipeline_id": self.template.id,
                     "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
                     "sandbox_roots": self._sandbox_roots(),  # #794: tool-call sandbox
-                    **self._build_command_extras(phase, initial_input),
+                    **command_extras,
                 },
                 priority=Priority.HIGH,
                 preferred_model=preferred_model,
@@ -1728,7 +1783,7 @@ class PhaseSequencer:
                 return phase
         raise KeyError(f"Phase '{phase_id}' not found in template '{self.template.id}'")
 
-    def _build_phase_input(self, phase: PhaseDefinition, initial_input: dict, failure_context: str = "", iteration_history: str = "", **extra_format_vars) -> str:
+    def _build_phase_input(self, phase: PhaseDefinition, initial_input: dict, failure_context: str = "", iteration_history: str = "", missing_sink: Optional[set] = None, **extra_format_vars) -> str:
         """Build the prompt string for a phase.
 
         Uses Python's ``str.format()`` to interpolate:
@@ -1775,9 +1830,14 @@ class PhaseSequencer:
         if not phase.prompt_template:
             return ""
 
-        # Wrap dicts in a safe mapping that returns a placeholder for missing keys
-        safe_input = _SafeDict(initial_input)
-        safe_config = _SafeDict(self.config)
+        # Wrap dicts in a safe mapping that returns a placeholder for missing keys.
+        # `missing_sink` (when provided by the dispatch-level guard) collects the
+        # markers that THESE config/input/previous_output substitutions emit, so
+        # the guard can reject genuinely-missing references without false-firing
+        # on <MISSING:...> text that arrives via inlined context_files /
+        # skill_context / {context.*} placeholders (#535).
+        safe_input = _SafeDict(initial_input, missing_sink=missing_sink)
+        safe_config = _SafeDict(self.config, missing_sink=missing_sink)
 
         # ── fix/243: smart previous_output proxy ──────────────────────────────
         # When output_dir is set, {previous_output} emits compact file-path
@@ -1785,9 +1845,12 @@ class PhaseSequencer:
         # {previous_output_inline} always gives the full raw content regardless.
         _output_dir_for_proxy = str(self.output_dir) if self.output_dir else None
         previous_output_proxy = _PreviousOutputProxy(
-            self.phase_outputs, _output_dir_for_proxy, self._phase_map
+            self.phase_outputs, _output_dir_for_proxy, self._phase_map,
+            missing_sink=missing_sink,
         )
-        previous_output_inline_proxy = _PreviousOutputInlineProxy(self.phase_outputs)
+        previous_output_inline_proxy = _PreviousOutputInlineProxy(
+            self.phase_outputs, missing_sink=missing_sink
+        )
 
         # Load skill_refs and build skill_context dict
         skill_context: Dict[str, str] = {}
@@ -1902,6 +1965,120 @@ class PhaseSequencer:
             prompt = phase.prompt_template
 
         return prompt
+
+    def _is_dry_run_mode(self) -> bool:
+        """Return True when the pipeline is running in dry-run mode.
+
+        Two independent signals are honoured so all entry points are covered:
+
+        * ``self.config["dry_run"]`` is truthy (some callers set this flag on
+          the config dict; also used by ``_handle_file_write``), OR
+        * every registered executor is a ``DryRunExecutor`` (the CLI/web/daemon
+          dry-run paths construct the runner via ``PipelineRunner.dry_run()``).
+          This mirrors the existing dry-run detection idiom at
+          :meth:`_resolve_dialogue_executor`.
+
+        Dry-run mode is deliberately forgiving of missing input/config so
+        operators can smoke-test pipeline structure (issue #659); the
+        unresolved-placeholder guard (#535) therefore does not abort in dry-run.
+        """
+        try:
+            if self.config.get("dry_run"):
+                return True
+        except AttributeError:
+            pass
+        try:
+            executors = list(getattr(self.runner, "executors", []) or [])
+        except Exception:
+            return False
+        if not executors:
+            return False
+        return all("dryrun" in type(ex).__name__.lower() for ex in executors)
+
+    def _check_for_unresolved_placeholders(
+        self,
+        phase: "PhaseDefinition",
+        markers: "set[str]",
+    ) -> Optional[dict]:
+        """Reject a phase whose config/input/previous_output rendered <MISSING:> (#535).
+
+        When ``_build_phase_input`` / ``_build_command_extras`` render an
+        unresolved ``{config[...]}``, ``{input[...]}`` or
+        ``{previous_output[...]}`` reference, ``_SafeDict`` /
+        ``_PreviousOutputProxy`` emit a ``<MISSING:...>`` token AND record it
+        into a per-render ``missing_sink`` set. Dispatching such a phase sends a
+        broken prompt (or command/working_dir) to the executor, which silently
+        produces garbage. Given the collected ``markers`` set, this guard
+        returns a terminal phase-result dict so the caller can abort the
+        pipeline; it returns ``None`` when the set is empty.
+
+        Why the sink (not a substring scan of the rendered prompt): templates
+        commonly inline file/skill content via ``{files[...]}`` /
+        ``{skill_context[...]}``, and that inlined content can legitimately
+        contain literal ``<MISSING:...>`` text or ``{config[...]}`` doc examples
+        (e.g. the project's own source/docs inlined by the audit pipelines).
+        Those never invoke ``_SafeDict.__missing__`` and so are never recorded
+        — only genuinely-missing config/input/previous_output references are.
+        ``{context.*}`` markers (runtime-injected, legitimately empty in
+        dry-run) are likewise NOT recorded, so dry-runs of git pipelines are
+        unaffected.
+
+        Both config-derived (``<MISSING:key>``) and previous-output
+        (``<MISSING:previous_output[phase]>``) forms are rejected. The error
+        names every offending marker plus the phase id so operators can fix
+        their config or template. Wording mirrors
+        ``preflight.py:_check_missing_placeholders`` for consistent operator
+        messaging.
+
+        Args:
+            phase:   The phase definition (used for its id).
+            markers: The set of ``<MISSING:...>`` markers recorded by the
+                     config/input/previous_output substitutions for this phase.
+
+        Returns:
+            A ``permanently_failed`` phase-result dict naming the markers when
+            the set is non-empty; otherwise ``None``.
+        """
+        if not markers:
+            return None
+
+        ordered_markers = sorted(markers)
+        marker_list = ", ".join(ordered_markers)
+
+        # Dry-run mode is intentionally forgiving of missing input/config:
+        # phases run against synthetic output so operators can smoke-test
+        # pipeline STRUCTURE without supplying real inputs (issue #659). Aborting
+        # here would break that — so in dry-run we log the markers and let the
+        # phase dispatch with the placeholder text. The guard only enforces an
+        # abort for real executions (standalone / openclaw).
+        if self._is_dry_run_mode():
+            logger.warning(
+                "Pipeline %s: phase '%s' rendered %d unresolved placeholder(s) "
+                "%s — allowed in dry-run mode (would abort on a real run).",
+                self.template.id, phase.id, len(markers), marker_list,
+            )
+            return None
+
+        message = (
+            f"Phase '{phase.id}': unresolved placeholders: {marker_list}. "
+            "These <MISSING:...> markers were rendered because the referenced "
+            "config keys or upstream phase outputs do not exist. Add the "
+            "missing keys to your config (or fix the template) and re-run. "
+            "To emit a literal '<MISSING:...>' string, escape the braces with "
+            "{{ }} in the template."
+        )
+        logger.error(
+            "Pipeline %s: phase '%s' rejected before dispatch — %d unresolved "
+            "placeholder(s): %s",
+            self.template.id, phase.id, len(markers), marker_list,
+        )
+        return {
+            "state": "permanently_failed",
+            "error_code": "UNRESOLVED_PLACEHOLDERS",
+            "errors": [{"code": "UNRESOLVED_PLACEHOLDERS", "message": message}],
+            "result": {"text": ""},
+            "confidence": 0.0,
+        }
 
     @staticmethod
     def _load_skill(skill_ref: str, template_dir: Optional[Path] = None) -> Tuple[str, str]:
@@ -2315,7 +2492,8 @@ class PhaseSequencer:
         )
 
     def _build_command_extras(
-        self, phase: "PhaseDefinition", initial_input: dict
+        self, phase: "PhaseDefinition", initial_input: dict,
+        missing_sink: Optional[set] = None,
     ) -> Dict[str, Any]:
         """Build extra payload fields for command task_type phases.
 
@@ -2342,8 +2520,8 @@ class PhaseSequencer:
         # Interpolate {config[key]} and {input[key]} placeholders.
         # Use _SafeDict so unknown placeholders are left intact rather than
         # raising KeyError — matches the behaviour of _build_phase_input.
-        safe_input = _SafeDict(initial_input)
-        safe_config = _SafeDict(self.config)
+        safe_input = _SafeDict(initial_input, missing_sink=missing_sink)
+        safe_config = _SafeDict(self.config, missing_sink=missing_sink)
         output_dir_str = str(self.output_dir) if self.output_dir else ""
 
         try:
@@ -2949,10 +3127,25 @@ class _SafeDict(dict):
     This prevents ``str.format()`` calls from raising ``KeyError`` when the
     template references a phase output that has not yet been produced (e.g.
     due to template authoring errors).
+
+    When a ``missing_sink`` set is supplied, every emitted ``<MISSING:key>``
+    marker is also recorded into it. This lets callers distinguish markers that
+    THIS mapping actually generated (a genuine missing config/input reference)
+    from ``<MISSING:...>`` substrings that merely appear in inlined content
+    (e.g. ``context_files`` / ``skill_context`` text) — the latter never
+    invoke ``__missing__`` and so are never recorded (#535).
     """
+
+    def __init__(self, *args, missing_sink: Optional[set] = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Stored via object.__setattr__ so __getattr__ below never intercepts it.
+        object.__setattr__(self, "_missing_sink", missing_sink)
 
     def __missing__(self, key: str) -> str:
         logger.warning(f"Template referenced missing key: '{key}' — substituting <MISSING:{key}>")
+        sink = object.__getattribute__(self, "_missing_sink")
+        if sink is not None:
+            sink.add(f"<MISSING:{key}>")
         return f"<MISSING:{key}>"
 
     def __getattr__(self, key: str) -> Any:
@@ -2960,6 +3153,12 @@ class _SafeDict(dict):
             return self[key]
         except KeyError:
             logger.warning(f"Template referenced missing attribute: '{key}' — substituting <MISSING:{key}>")
+            try:
+                sink = object.__getattribute__(self, "_missing_sink")
+            except AttributeError:
+                sink = None
+            if sink is not None:
+                sink.add(f"<MISSING:{key}>")
             return f"<MISSING:{key}>"
 
 
@@ -3005,10 +3204,15 @@ class _PreviousOutputProxy:
     template authoring errors produce visible, non-crashing placeholders.
     """
 
-    def __init__(self, phase_outputs: dict, output_dir: Optional[str], phase_map: dict) -> None:
+    def __init__(self, phase_outputs: dict, output_dir: Optional[str], phase_map: dict,
+                 missing_sink: Optional[set] = None) -> None:
         self._phase_outputs = phase_outputs
         self._output_dir = output_dir
         self._phase_map = phase_map
+        # Optional set that collects emitted <MISSING:previous_output[...]>
+        # markers so the dispatch-level guard can reject genuinely-missing
+        # upstream references (#535).
+        self._missing_sink = missing_sink
 
     # ── str.format() calls __format__ for {previous_output} ──────────────────
 
@@ -3026,6 +3230,8 @@ class _PreviousOutputProxy:
 
     def __getitem__(self, key: str) -> str:
         if key not in self._phase_outputs:
+            if self._missing_sink is not None:
+                self._missing_sink.add(f"<MISSING:previous_output[{key}]>")
             return f"<MISSING:previous_output[{key}]>"
         inline = _extract_phase_text(self._phase_outputs[key])
         if self._output_dir:
@@ -3065,8 +3271,9 @@ class _PreviousOutputInlineProxy:
     whether *output_dir* is configured.
     """
 
-    def __init__(self, phase_outputs: dict) -> None:
+    def __init__(self, phase_outputs: dict, missing_sink: Optional[set] = None) -> None:
         self._phase_outputs = phase_outputs
+        self._missing_sink = missing_sink
 
     def __format__(self, format_spec: str) -> str:
         return format(str(self._phase_outputs), format_spec)
@@ -3076,6 +3283,8 @@ class _PreviousOutputInlineProxy:
 
     def __getitem__(self, key: str) -> str:
         if key not in self._phase_outputs:
+            if self._missing_sink is not None:
+                self._missing_sink.add(f"<MISSING:previous_output_inline[{key}]>")
             return f"<MISSING:previous_output_inline[{key}]>"
         return _extract_phase_text(self._phase_outputs[key])
 
@@ -3467,6 +3676,7 @@ class StateMachineSequencer(PhaseSequencer):
         phase: PhaseDefinition,
         initial_input: dict,
         failure_context: str = "",
+        missing_sink: Optional[set] = None,
     ) -> str:
         """Build the prompt string, injecting ``{iteration_history}`` for loop phases.
 
@@ -3507,6 +3717,7 @@ class StateMachineSequencer(PhaseSequencer):
             initial_input,
             failure_context,
             iteration_history=history_str,
+            missing_sink=missing_sink,
             previous_commit=previous_commit,
             phase_diff=phase_diff,
         )
@@ -3811,7 +4022,50 @@ class StateMachineSequencer(PhaseSequencer):
                 # Set current iteration so _build_phase_input override can inject
                 # the correct {iteration_history} value (Issue #648a).
                 self._current_build_iter = current_iter
-                phase_input = self._build_phase_input(phase, initial_input)
+                _missing_sink: set = set()
+                phase_input = self._build_phase_input(
+                    phase, initial_input, missing_sink=_missing_sink
+                )
+                command_extras = self._build_command_extras(
+                    phase, initial_input, missing_sink=_missing_sink
+                )
+
+                # Reject the phase before dispatch if a genuine config/input/
+                # previous_output reference rendered <MISSING:> (#535). Mirrors
+                # the folder-guard abort below — append the prior output to
+                # iteration_history, stamp the iteration on metadata, invoke the
+                # pipeline-complete hook, and return the abort dict with
+                # iteration_history / iteration_counts. The guard precedes
+                # _execute_and_wait so a placeholder failure never enters the
+                # retry loop.
+                placeholder_failure = self._check_for_unresolved_placeholders(
+                    phase, _missing_sink
+                )
+                if placeholder_failure is not None:
+                    result = placeholder_failure
+                    with self._phase_outputs_lock:
+                        if current_phase_id in self.phase_outputs:
+                            self.iteration_history[current_phase_id].append(
+                                self.phase_outputs[current_phase_id]
+                            )
+                        result.setdefault("metadata", {})["iteration"] = current_iter
+                        self.phase_outputs[current_phase_id] = result
+                    self._invoke_on_phase_complete(current_phase_id, result)
+                    self._safe_call_hook(
+                        self.on_pipeline_complete,
+                        self.pipeline_context,
+                        None,
+                        pipeline_id=self.template.id,
+                    )
+                    return {
+                        "phase_outputs": self.phase_outputs,
+                        "final_output": result,
+                        "failed_phase": current_phase_id,
+                        "aborted": True,
+                        "iteration_history": dict(self.iteration_history),
+                        "iteration_counts": dict(self.iteration_counts),
+                    }
+
                 preferred_model = self._resolve_model_tier(phase.model_tier)
 
                 task = TaskSpec(
@@ -3822,7 +4076,7 @@ class StateMachineSequencer(PhaseSequencer):
                         "pipeline_id": self.template.id,
                         "model_chain": phase.model_chain or [],  # #347: propagate fallback chain
                         "sandbox_roots": self._sandbox_roots(),  # #794: tool-call sandbox
-                        **self._build_command_extras(phase, initial_input),
+                        **command_extras,
                     },
                     priority=Priority.HIGH,
                     preferred_model=preferred_model,

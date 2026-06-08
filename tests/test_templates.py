@@ -590,7 +590,15 @@ class TestPhaseSequencerExecution:
         assert "b" not in result["phase_outputs"]
 
     def test_config_missing_key_uses_placeholder(self):
-        """Missing config keys produce SafeDict placeholders, not crashes."""
+        """Missing config keys produce SafeDict placeholders, not crashes.
+
+        Note (#535): this runs under a DryRunExecutor, and the dispatch-level
+        unresolved-placeholder guard is deliberately forgiving in dry-run mode
+        (issue #659 — dry-run smoke-tests pipeline structure with synthetic
+        output, so missing input/config must not abort). On a REAL run the same
+        missing {config[...]} reference WOULD abort; that path is covered by
+        tests/test_missing_placeholder_guard.py.
+        """
         from orchestration_engine.pipeline_runner import PipelineRunner
         from orchestration_engine.runner import DryRunExecutor
 
@@ -607,7 +615,8 @@ class TestPhaseSequencerExecution:
         seq = PhaseSequencer(tpl, runner, config={})
         result = seq.execute({})
 
-        # Should complete without error — missing key becomes placeholder
+        # Should complete without error — missing key becomes placeholder and,
+        # in dry-run, the phase still dispatches with synthetic output.
         assert "test" in result["phase_outputs"]
         assert result.get("aborted") is not True
 

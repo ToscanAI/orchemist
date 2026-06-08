@@ -403,9 +403,17 @@ async def _execute_pipeline(
     import json as _json
     from orchestration_engine.pipeline_runner import PipelineRunner
     from orchestration_engine.sequencer import PhaseSequencer
+    from orchestration_engine.daemon import apply_config_schema_defaults
 
     run = active_runs[run_id]
     run["status"] = "running"
+
+    # Apply config_schema defaults before the sequencer reads `initial_input`
+    # for prompt rendering (#676). Without this, web-launched runs that omit a
+    # newly-added optional field would render the literal <MISSING:field> into
+    # phase prompts. Mirrors the CLI/daemon callers (cli.py:1238, daemon.py:417).
+    # Existing caller-supplied keys are never overwritten.
+    apply_config_schema_defaults(initial_input, getattr(template, "config_schema", None))
 
     # Fix 5: Use asyncio.get_running_loop() (replaces deprecated get_event_loop).
     loop = asyncio.get_running_loop()

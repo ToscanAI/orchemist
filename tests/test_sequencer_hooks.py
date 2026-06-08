@@ -231,7 +231,16 @@ class TestPipelineContextInPrompts:
         assert "diff --git a/foo.py" in captured_prompts[0]
 
     def test_missing_context_key_uses_placeholder(self) -> None:
-        """Missing {context.key} returns a <MISSING:key> placeholder — no crash."""
+        """Missing {context.key} returns a <MISSING:key> placeholder — no crash.
+
+        Note (#535): the dispatch-level unresolved-placeholder guard
+        deliberately does NOT abort on {context.*} markers. Pipeline-context
+        values (e.g. branch_name / git_diff) are injected at runtime by hooks
+        and are legitimately absent in dry-run / hook-less execution, so a
+        missing {context.key} must render a harmless placeholder and dispatch
+        (the guard only rejects genuinely-missing config/input/previous_output
+        references).
+        """
         phase = _phase("phase", prompt="Value: {context.nonexistent_key}")
         template = _make_template([phase])
         runner = _mock_runner()
@@ -252,10 +261,11 @@ class TestPipelineContextInPrompts:
         runner.executors[0].execute.side_effect = capture_execute
 
         seq = PhaseSequencer(template, runner)
-        seq.execute({})
+        result = seq.execute({})
 
         assert len(captured_prompts) == 1
         assert "MISSING" in captured_prompts[0] or "nonexistent_key" in captured_prompts[0]
+        assert not result.get("aborted", False)
 
 
 class TestNoHooksRegression:
