@@ -223,6 +223,10 @@ class TestMarkdownOutput:
                 "run", str(hello_yaml), "--mode", "standalone",
                 "--api-key", "sk-ant-test",
                 "--output-dir", str(out),
+                # Provide the required input — a REAL run must supply {input[name]}
+                # or the #535 unresolved-placeholder guard aborts (dry-run would
+                # forgive it, but this exercises standalone mode).
+                "--input", '{"name": "World"}',
             ])
 
         assert result.exit_code == 0, result.output
@@ -291,6 +295,9 @@ class TestRichTerminalOutput:
                 "run", str(hello_yaml), "--mode", "standalone",
                 "--api-key", "sk-ant-test",
                 "--output-dir", str(out),
+                # Provide the required input — a REAL run must supply {input[name]}
+                # or the #535 unresolved-placeholder guard aborts.
+                "--input", '{"name": "World"}',
             ])
 
         assert result.exit_code == 0, result.output

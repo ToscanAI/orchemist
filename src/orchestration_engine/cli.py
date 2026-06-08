@@ -1230,11 +1230,14 @@ def run_template(
     # --- 2c. Validate required config fields (#411) ---
     missing = _validate_required_config(template, initial_input)
     # Apply schema defaults for optional fields (#835) — runs AFTER required-
-    # field validation so missing-required errors are reported on the original
-    # input, but BEFORE the sequencer reads `initial_input` for prompt
-    # rendering. Without this, pre-v2.1 consumers running `orch run` against
-    # the v2.1.0 standard pipeline would see <MISSING:ui_primitive_paths>
-    # (and similar) literals rendered into Phase 0 prompts.
+    # field validation so missing-required errors are still reported on the
+    # original input, but BEFORE the sequencer reads `initial_input` for prompt
+    # rendering. Note (#676): _validate_required_config treats a field that is
+    # both required AND defaulted as satisfiable (it will be filled here), so
+    # such a field is not reported missing; truly-required fields with no
+    # default still error. Without applying defaults, pre-v2.1 consumers
+    # running `orch run` against the v2.1.0 standard pipeline would see
+    # <MISSING:ui_primitive_paths> (and similar) literals in Phase 0 prompts.
     apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
     if missing:
         if mode == 'dry-run':
@@ -2772,7 +2775,23 @@ def _validate_required_config(template, initial_input: Dict[str, Any]) -> List[s
     required = schema.get("required", [])
     if not required:
         return []
-    return [field for field in required if field not in initial_input]
+    # A required field is only reported missing when it is absent from the
+    # input AND the schema has no default for it (#676). Fields that are both
+    # required AND defaulted are filled by apply_config_schema_defaults right
+    # after this validation, so reporting them as missing is a false positive.
+    # Validation still sees the original (pre-default-fill) input — it simply
+    # treats a defaulted field as satisfiable. Truly-required fields with no
+    # default still error.
+    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    return [
+        field
+        for field in required
+        if field not in initial_input
+        and not (
+            isinstance(properties.get(field), dict)
+            and "default" in properties[field]
+        )
+    ]
 
 
 def _slugify_title(title: str) -> str:
