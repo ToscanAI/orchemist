@@ -76,9 +76,24 @@ Once the release PR merges to `main`:
    git tag -s vX.Y.Z -m "Release vX.Y.Z"
    ```
 
-   If `git tag -s` fails with "gpg failed to sign" or "no secret key",
-   configure `user.signingkey` first (see <https://docs.github.com/en/authentication/managing-commit-signature-verification/telling-git-about-your-signing-key>);
-   never push an unsigned release tag.
+   The release-signing key is already configured on the release host
+   (ed25519, fpr `E3A2819B37178D9844E45AD1FD72AF771848CF42`, passphraseless;
+   public key committed at `.github/release-signing-pubkey.asc`). The
+   `orchemist` repo sets `tag.gpgsign=true`, so tags created there are signed
+   automatically; `-s` makes it explicit.
+
+   **CI enforces this FAIL-closed (#890):** `publish.yaml` imports
+   `.github/release-signing-pubkey.asc` and runs `git tag -v` — an unsigned tag,
+   or one signed by a key not in that file, **blocks the publish**. Never push
+   an unsigned release tag.
+
+   If `git tag -s` fails with "no secret key" you are on a host without the
+   private key: sign on the release host, or add the new signer's public key to
+   `.github/release-signing-pubkey.asc` (append its armored block) and commit it
+   before tagging. Caveat: a passphraseless key co-located with release
+   automation proves *provenance* (the tag came from a host holding the key),
+   not independent human authorization — it is comparable in trust to the
+   Trusted-Publisher repo/workflow binding, not stronger.
 
 3. Push the tag:
 
