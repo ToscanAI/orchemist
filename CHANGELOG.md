@@ -4,10 +4,19 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-08
+
 ### Changed
 - **`spec_adversary` phase bumped to `model_tier: opus`** (#887) — VISION pillar 8 alignment: both the adversary boundary (Phase 1c) and the review gate (Phase 4) now run at opus tier. Closes drift from `feedback_max_effort_adversary_reviewer.md`. Cost impact: each spec round invokes opus at both the adversary step (up to 3 iterations) and the review step (up to 3 iterations), roughly 2× the per-run opus token cost vs prior baseline. Frozen-state drift sentinel `tests/test_phases_endpoint.py::test_only_review_is_opus_today` retired; replaced with `test_spec_adversary_and_review_are_opus`. The skip-spec pipeline has no `spec_adversary` phase (sync invariant satisfied vacuously). v1 epic #892 Gate 2.
+- **Canonical model registry + first-party Opus pricing** (#916, #914, #911, #913) — model-identity cluster: a single `model_registry.py` source for tier→model-id mapping; Opus priced first-party at $5/$25 per 1M (was mispriced ~3×); `tier_mappings` namespace fix so user overrides apply.
+- **`BaseExecutor` consolidation** (#927) — the five model executors (anthropic/openrouter/gemini/claudecode/openclaw) now share one base for result/start-time/task-id scaffolding and a single `PricingTable`; plus a shared stdlib-only pytest-output parser. Fixes a latent Gemini `started_at` bug.
+- **OpenRouter command path hardened** (#925) — always-on denylist floor + best-effort shell-aware allowlist over the `shell=True` command phase, with disambiguated exit codes. Closes a path that previously ran raw commands with no checks.
+- **Cost + constant consolidations** — single pricing source with accurate token split (#908); minor divergent constants unified (#919); postflight expected-phases derived from the template happy path (#915).
+- **Pipeline quality-bar sync** — skip-spec synced to the standard quality bar (#859); SPEC/SPEC_ADVERSARY verdict restatements replaced with §5 indirection (#868); template drift lints for postmortem_review + acceptance_test (#867, #869).
+- **Harness graduation** (#888) — dropped FALLBACK demo data; added `EngineOfflineGuard` error UI. **README honesty pass** (#902).
 
 ### Added
+- **Template composition** (#704) — pipeline templates support `extends:` (inherit a base template's phases) and `exclude_phases:` (drop inherited phases), ending hand-maintained template sync. The single most-leveraged v1 item per epic #892.
 - **v1 backend reliability cluster — Gate 1 fixes** (#735, #753, #480; Refs #892) — Three v1-gating bugs landed together:
   - **#753** — `OpenClawExecutor` now reads `subagents.runTimeoutSeconds` from `~/.openclaw/openclaw.json` via new `_read_subagent_timeout_from_config()` static helper (mirrors byte-shape of `_read_token_from_config()`). Constructor fallback chain: explicit positive arg → config value → `DEFAULT_TIMEOUT_SECONDS` (1200s). Removes silent timeout misconfiguration that caused 50% phase abort rate.
   - **#480** — Circuit-breaker first gate now defers to `ModelFallbackChain`: chain built BEFORE the CB check; tier-walking loop advances while current tier's CB is open and `chain.has_next()`; all tiers exhausted returns new error code `all_tiers_unavailable` (enumerating probed tiers + CB states). Single-tier configs preserve the existing `circuit_open` error code. Prevents executor from returning `circuit_open` on task entry when a fallback tier is available.
@@ -24,6 +33,17 @@ All notable changes to Orchemist (formerly Orchestration Engine).
   - **REVIEW 7d-producer** — intra-symbol return-arm comparison. REVIEWER quotes each return/throw arm verbatim in `review.md` and flags `[MAJOR][correctness] intra-symbol dual-path duplication` when two arms are identical modulo whitespace/identifiers; §B.5.x divergence-justification short-circuit available with concreteness bar.
 
   Defense-in-depth across the producer-side variant: 7d catches "new symbol duplicates EXISTING symbol" (consumer); 7e catches "intra-symbol arms duplicate each other" at SPEC, IMPLEMENT (self-check + diff lint), and REVIEW. Ported from `orchemist-skills` PR #8 (commit `66727a0`), which closed skills#6 with empirical anchor in ToscanAI/value-investing#449 lift commit `11db4eb`.
+- **Cross-repo template/skill parity guardrail** (#917) — CI check that the engine's bundled templates and the orchemist-skills mirror don't drift.
+- **Pipeline guardrails** — render-smoke check over bundled templates (#912); 5 dedup-blindspot sub-checks across phases (#905); Phase 0 dispatch contract documented for Claude-Code adapters (#903); maintenance pipeline mirrored into canonical templates (#907).
+- **Project governance + CI** — Playwright e2e required check on PRs (#889); governance hardening: MAINTAINERS + CODE_OF_CONDUCT + CODEOWNERS + signed-tag CI (#890); per-tier cost fallback rates, sonnet vs opus (#801).
+
+### Fixed
+- **Frontend P1 cluster** (#759, #761, #772–#776) — v1 gate #4; frontend cleanup cluster (#861, #870–#873).
+- **Engine-helper + test-infrastructure consolidation** (#860/#864/#865/#866; #862/#863/#874/#875).
+- **Zombie pipeline-run sweep at startup** (#754); spec_adversary verdict extraction with markdown header prefix (#799).
+
+### Removed
+- **Dead code** (#918) — `orch execute`, `runner.py` legacy executors, and the fallback subsystem.
 
 ## [0.11.0] - 2026-05-25
 
