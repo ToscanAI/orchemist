@@ -19,6 +19,8 @@ from .errors import (
     GatewayHTTPError,
     GatewayUnavailableError,
     RateLimitError,
+    SpawnNoPromptDelivered,
+    SpawnTransportTimeout,
 )
 from .schemas import TaskType, ModelTier, TaskState, select_model_tier
 from .timestamps import now_utc
@@ -52,6 +54,22 @@ class ExecutorRetryConfig:
 
     circuit_breaker_reset_seconds: int = 300
     """Seconds before an open circuit breaker transitions to half-open (5 minutes)."""
+
+    socket_timeout_initial: float = 30.0
+    """Initial HTTP socket timeout (seconds) for the gateway spawn call on the
+    first attempt. Preserves the historical hardcoded 30s (issue #732)."""
+
+    socket_timeout_multiplier: float = 2.0
+    """Per-retry multiplier applied to the spawn socket timeout (30→60→120)."""
+
+    socket_timeout_max: float = 120.0
+    """Cap on the per-retry spawn socket timeout (seconds)."""
+
+    spawn_startup_grace_seconds: float = 60.0
+    """Grace window (seconds) after a successful spawn within which the session
+    must produce its first message; otherwise the task fails fast with
+    ``spawn_no_prompt_delivered`` rather than polling until the full task
+    timeout (issue #732, Bug B)."""
 
 
 def classify_exception_error_type(exc: Exception) -> "ErrorType":
@@ -94,7 +112,22 @@ def classify_exception_error_type(exc: Exception) -> "ErrorType":
         # 5xx and other codes — treat as transient.
         return ErrorType.TRANSIENT
 
-    # Python's built-in TimeoutError.
+    # Transport-layer timeout during a gateway spawn HTTP call (issue #732).
+    # SpawnTransportTimeout subclasses TimeoutError, so this MUST be checked
+    # BEFORE the generic TimeoutError branch below (first-match-wins), else it
+    # would be swallowed as a task-deadline TIMEOUT and incorrectly increment
+    # the circuit breaker / escalate the model.
+    if isinstance(exc, SpawnTransportTimeout):
+        return ErrorType.TRANSPORT_TIMEOUT
+
+    # A spawned session that never delivered a first message within the startup
+    # grace window is a gateway prompt-delivery symptom — same non-CB-incrementing,
+    # non-escalating treatment as a transport timeout (issue #732, Bug B). Its
+    # distinct error code is set separately in the executor's error-code branch.
+    if isinstance(exc, SpawnNoPromptDelivered):
+        return ErrorType.TRANSPORT_TIMEOUT
+
+    # Python's built-in TimeoutError (e.g. the _run_session task-deadline).
     if isinstance(exc, TimeoutError):
         return ErrorType.TIMEOUT
 
@@ -119,6 +152,7 @@ class ErrorType(str, Enum):
     RESOURCE = "resource"       # Resource exhaustion, wait and retry
     TIMEOUT = "timeout"         # Task timeout, may retry with longer limit
     RATE_LIMIT = "rate_limit"   # API rate limiting, backoff and retry
+    TRANSPORT_TIMEOUT = "transport_timeout"  # HTTP socket timeout during spawn — do NOT open CB / escalate (#732)
 
 
 class ErrorSeverity(str, Enum):

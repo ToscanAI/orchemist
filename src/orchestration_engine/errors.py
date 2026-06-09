@@ -42,6 +42,38 @@ class ValidationError(OrchestratorError):
     """Raised when a pipeline template fails structural validation."""
 
 
+class SpawnTransportTimeout(TimeoutError):
+    """Raised when the HTTP transport (urllib socket) times out before any
+    gateway response arrives.
+
+    Subclasses :class:`TimeoutError` so that any code path which broadly
+    catches ``TimeoutError`` (e.g. the ``sessions_history`` polling loop) still
+    catches it, while ``isinstance(exc, SpawnTransportTimeout)`` lets the
+    circuit-breaker gate single it out distinctly from the *task-deadline*
+    ``TimeoutError`` raised by ``_run_session`` ("session did not complete
+    within Ns").
+
+    A transport timeout is a connectivity symptom during the spawn HTTP call —
+    not a task-level agent failure — so it must NOT increment the circuit
+    breaker and must NOT trigger model escalation (issue #732, Bug A).
+    """
+
+
+class SpawnNoPromptDelivered(RuntimeError):
+    """Raised when a session is spawned successfully (a session key is
+    returned) but no first message appears in ``sessions_history`` within the
+    configured startup grace period (issue #732, Bug B).
+
+    Subclasses :class:`RuntimeError` (NOT :class:`TimeoutError`) so it does not
+    collide with the transport/task timeout branches. Like a transport timeout,
+    it is treated as a gateway prompt-delivery symptom: it must NOT increment
+    the circuit breaker and must NOT escalate the model (escalating a delivery
+    fault to another model risks repeating it). Its distinct error code
+    (``spawn_no_prompt_delivered``) differentiates it from a transport timeout
+    on the resulting :class:`~.schemas.TaskResult`.
+    """
+
+
 class GatewayHTTPError(OrchestratorError):
     """Raised when the OpenClaw gateway returns an HTTP error response.
 
