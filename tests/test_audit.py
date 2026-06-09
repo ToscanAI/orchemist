@@ -932,8 +932,11 @@ class TestSeverityRenderedOutput:
         assert "Severity." not in rendered
 
     def test_a5_fstring_requires_value_for_bare_string(self):
-        # The underlying invariant scoring.py:352 relies on: rendering a
-        # Severity member into an f-string REQUIRES .value to get the bare
-        # token (str-mixed members format as "Severity.BLOCKER" on Py>=3.11).
+        # The underlying invariant scoring.py:352 relies on: .value is the
+        # version-robust way to render a Severity member into the bare token
+        # in human-facing f-string output, across all supported Python
+        # versions. (The bare ``f"{Severity.BLOCKER}"`` form is intentionally
+        # NOT asserted here: it goes through Enum.__format__, whose result for
+        # a str-mixed member is CPython-version-dependent — "BLOCKER" on 3.10
+        # but "Severity.BLOCKER" on 3.11+ — i.e. a stdlib quirk, not our code.)
         assert f"[{Severity.BLOCKER.value}]" == "[BLOCKER]"
-        assert f"[{Severity.BLOCKER}]" == "[Severity.BLOCKER]"
