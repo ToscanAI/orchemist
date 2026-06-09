@@ -35,7 +35,8 @@ from typing import Any, Callable, Optional
 READ_FILE_BINARY_PROBE_BYTES = 8 * 1024
 READ_FILE_UTF8_ERRORS_POLICY = "replace"
 
-BASH_DEFAULT_TIMEOUT_S = 120
+# Default bash-tool timeout in seconds (OpenRouter tool schema).
+BASH_DEFAULT_TIMEOUT_SECONDS = 120
 BASH_MAX_TIMEOUT_S = 600
 BASH_SIGTERM_GRACE_S = 5
 BASH_STREAM_CAP_BYTES = 256 * 1024
@@ -130,7 +131,7 @@ TOOL_SCHEMAS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "command": {"type": "string"},
-                    "timeout_seconds": {"type": "integer", "default": BASH_DEFAULT_TIMEOUT_S},
+                    "timeout_seconds": {"type": "integer", "default": BASH_DEFAULT_TIMEOUT_SECONDS},
                     "cwd": {"type": "string"},
                 },
                 "required": ["command"],
@@ -418,7 +419,7 @@ def handle_bash(
                 "message": f"command matches guardrail pattern: {m.group(0)}",
             }
 
-    timeout_seconds = args.get("timeout_seconds", BASH_DEFAULT_TIMEOUT_S)
+    timeout_seconds = args.get("timeout_seconds", BASH_DEFAULT_TIMEOUT_SECONDS)
     try:
         timeout_seconds = int(timeout_seconds)
     except (TypeError, ValueError):

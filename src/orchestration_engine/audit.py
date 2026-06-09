@@ -27,7 +27,7 @@ Typical usage::
     print(f"Reviewer accuracy: {result.reviewer_accuracy_score:.2f}")
     for issue in result.caught_issues:
         if issue.missed_by_reviewer:
-            print(f"  MISSED: [{issue.severity}][{issue.category}] {issue.description}")
+            print(f"  MISSED: [{issue.severity.value}][{issue.category}] {issue.description}")
 
 Module exports
 --------------
@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from .review_parser import _ISSUE_RE, parse_review_output
+from .review_parser import Severity, _ISSUE_RE, parse_review_output
 from .timestamps import now_utc
 
 __all__ = [
@@ -112,8 +112,9 @@ class AuditIssue:
     also flagged this issue.
 
     Attributes:
-        severity:          One of ``"BLOCKER"``, ``"MAJOR"``, ``"MINOR"``,
-                           ``"NITPICK"``.
+        severity:          A :class:`~review_parser.Severity` member
+                           (``BLOCKER``/``MAJOR``/``MINOR``/``NITPICK``).
+                           ``str``-mixed, so it serialises to the bare token.
         category:          Short label (e.g. ``"security"``, ``"correctness"``,
                            ``"style"``).
         description:       Human-readable description of the issue.
@@ -123,7 +124,7 @@ class AuditIssue:
         raw:               The original unmodified line from the audit output.
     """
 
-    severity: str
+    severity: Severity
     category: str
     description: str
     missed_by_reviewer: bool
@@ -192,7 +193,11 @@ class AuditResult:
             "audit_verdict": self.audit_verdict,
             "caught_issues": [
                 {
-                    "severity": i.severity,
+                    "severity": (
+                        i.severity.value
+                        if isinstance(i.severity, Severity)
+                        else i.severity
+                    ),
                     "category": i.category,
                     "description": i.description,
                     "missed_by_reviewer": i.missed_by_reviewer,
@@ -430,15 +435,12 @@ class AuditPhase:
             )
             missed_by_reviewer = not already_caught
 
-            severity_str = (
-                issue.severity.value
-                if hasattr(issue.severity, "value")
-                else str(issue.severity)
-            )
-
+            # ``issue`` is a ReviewIssue whose ``.severity`` is already a
+            # Severity member; AuditIssue.severity is now also Severity, so we
+            # pass it through directly (no str() coercion needed — #919 item 4c).
             result.append(
                 AuditIssue(
-                    severity=severity_str,
+                    severity=issue.severity,
                     category=issue.category,
                     description=issue.description,
                     missed_by_reviewer=missed_by_reviewer,
@@ -496,6 +498,6 @@ class AuditPhase:
             return False
 
         return any(
-            i.missed_by_reviewer and i.severity in ("BLOCKER", "MAJOR")
+            i.missed_by_reviewer and i.severity in (Severity.BLOCKER, Severity.MAJOR)
             for i in caught_issues
         )

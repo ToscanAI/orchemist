@@ -38,8 +38,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["GeminiCliExecutor"]
 
-# Default timeout — deep-think mode can take 5+ min per #677
-_DEFAULT_TIMEOUT_SECONDS: int = 600
+# Default gemini-CLI subprocess timeout in seconds (deep-think, #677).
+# Public (no leading underscore) to match the engine timeout-constant convention.
+DEFAULT_TIMEOUT_SECONDS: int = 600
 
 # Default binary name; honour shutil.which() so PATH overrides work.
 _DEFAULT_BINARY: str = "gemini"
@@ -69,7 +70,7 @@ class GeminiCliExecutor(BaseExecutor):
         self,
         binary: str = _DEFAULT_BINARY,
         default_model: Optional[str] = None,
-        default_timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
+        default_timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         extra_args: Optional[List[str]] = None,
     ) -> None:
         self.binary = binary

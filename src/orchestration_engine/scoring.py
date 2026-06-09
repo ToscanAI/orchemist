@@ -349,7 +349,7 @@ def _print_audit_summary(console: Any, audit_result: Any) -> None:
         console.print(f"  Missed by reviewer:   {len(missed)}")
         for issue in missed:
             console.print(
-                f"    [yellow]•[/yellow] [{issue.severity}][{issue.category}] "
+                f"    [yellow]•[/yellow] [{issue.severity.value}][{issue.category}] "
                 f"{issue.description}"
             )
     console.print()

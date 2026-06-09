@@ -53,8 +53,8 @@ DEFAULT_ALLOWED_COMMANDS: List[str] = ["python3", "pytest", "git"]
 # OpenRouter shell path and this executor share one definition. ``_check_security``
 # references it by name below, so the import is transparent.
 
-# Default timeout in seconds for command execution
-DEFAULT_TIMEOUT: int = 120
+# Default shell-command execution timeout in seconds.
+DEFAULT_TIMEOUT_SECONDS: int = 120
 
 
 class CommandSecurityError(ValueError):
@@ -93,13 +93,13 @@ class CommandExecutor:
         default_allowed_commands: List of command prefixes that are permitted.
             Defaults to :data:`DEFAULT_ALLOWED_COMMANDS`.
         default_timeout:          Timeout in seconds for each command.
-            Defaults to :data:`DEFAULT_TIMEOUT`.
+            Defaults to :data:`DEFAULT_TIMEOUT_SECONDS`.
     """
 
     def __init__(
         self,
         default_allowed_commands: Optional[List[str]] = None,
-        default_timeout: int = DEFAULT_TIMEOUT,
+        default_timeout: int = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         self.default_allowed_commands: List[str] = (
             list(default_allowed_commands)

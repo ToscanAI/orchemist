@@ -24,6 +24,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from .text_utils import FINDING_RE_EMPTY_OK
 from .verdict_parser import extract_verdict as _extract_verdict
 
 __all__ = [
@@ -42,10 +43,12 @@ _VALID_CATEGORIES: frozenset = frozenset(
     ["coverage", "trivial_satisfaction", "leakage", "specificity"]
 )
 
-# Compiled regex for tagged finding lines: [category] description
+# Shared empty-tolerant finding matcher (see text_utils.FINDING_RE_EMPTY_OK).
+# Aliased to a module-local name for the parse loop below; kept identical to
+# the shared object so the two single-bracket parsers do not diverge.
 # Group 1 → category (letters and underscores)
 # Group 2 → description (anything after the optional whitespace — may be empty)
-_FINDING_RE = re.compile(r"^\s*\[([A-Za-z_]+)\]\s*(.*)$")
+_FINDING_RE = FINDING_RE_EMPTY_OK
 
 # Primary verdict scan — first-match-wins, structured VERDICT: lines only
 # Mirrors verdict_parser._PASS1_RE but restricted to approve/request_changes
