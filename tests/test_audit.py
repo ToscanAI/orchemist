@@ -22,6 +22,7 @@ All tests are independent — no shared mutable state, no real LLM calls.
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import fields
 from typing import Any, Dict, List
@@ -35,6 +36,7 @@ from orchestration_engine.audit import (
     AuditResult,
 )
 from orchestration_engine.confidence import DEFAULT_WEIGHTS
+from orchestration_engine.review_parser import Severity
 
 
 # ---------------------------------------------------------------------------
@@ -756,3 +758,185 @@ def test_issue_re_is_imported_from_review_parser():
     import orchestration_engine.audit as audit_mod
     import orchestration_engine.review_parser as review_parser
     assert audit_mod._ISSUE_RE is review_parser._ISSUE_RE
+
+
+# ===========================================================================
+# §6.A — Severity str-enum migration (#929 part A)
+#
+# AuditIssue.severity is now the str-mixed review_parser.Severity enum. These
+# tests pin that the SERIALIZED / on-disk form stays the bare string
+# ("BLOCKER"), that the false-approval gate still fires on BLOCKER/MAJOR via
+# Severity members, that the enum is str-mixed, and (A-5) that human-facing
+# RENDERED console output uses ``.value`` so it shows ``[BLOCKER]`` and never
+# ``[Severity.BLOCKER]`` (f-strings use Enum.__format__, not the equality path,
+# so str-mixing alone does NOT protect a render site).
+# ===========================================================================
+
+
+class _RecordingConsole:
+    """Minimal stand-in for a rich Console that records rendered strings.
+
+    ``scoring._print_audit_summary`` only calls ``.print(...)`` on the console,
+    so we accumulate every printed argument's ``str()`` for later assertion.
+    """
+
+    def __init__(self) -> None:
+        self.lines: List[str] = []
+
+    def print(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
+        self.lines.append(" ".join(str(a) for a in args))
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.lines)
+
+
+def _audit_result_with(severity: Severity, *, missed: bool = True) -> AuditResult:
+    """Build an AuditResult carrying one AuditIssue at *severity*."""
+    return AuditResult(
+        audit_id="aid-sev",
+        run_id="run-sev",
+        audit_model="test-model",
+        original_verdict="APPROVE",
+        audit_verdict="REQUEST_CHANGES",
+        caught_issues=[
+            AuditIssue(
+                severity=severity,
+                category="security",
+                description="critical flaw",
+                missed_by_reviewer=missed,
+                raw="[BLOCKER][security] critical flaw",
+            )
+        ],
+        reviewer_accuracy_score=0.0,
+    )
+
+
+class TestSeveritySerializeRoundTrip:
+    """A-1 / A-2: to_dict()/json emit the bare string for both member & str."""
+
+    def test_a1_to_dict_emits_bare_string(self):
+        result = _audit_result_with(Severity.BLOCKER)
+        d = result.to_dict()
+        sev = d["caught_issues"][0]["severity"]
+        assert sev == "BLOCKER"
+        assert isinstance(sev, str)
+        # The serialized value is a *plain* str, not an Enum member.
+        assert type(sev) is str
+
+    def test_a1_json_dumps_emits_bare_string(self):
+        result = _audit_result_with(Severity.BLOCKER)
+        dumped = json.dumps(result.to_dict())
+        assert '"severity": "BLOCKER"' in dumped
+        assert "Severity.BLOCKER" not in dumped
+
+    def test_a2_member_and_bare_string_both_round_trip(self):
+        # Bare string (as test_audit.py:90-97 historically constructs).
+        from_str = AuditIssue(
+            severity="BLOCKER",
+            category="security",
+            description="x",
+            missed_by_reviewer=True,
+            raw="[BLOCKER][security] x",
+        )
+        # Enum member.
+        from_member = AuditIssue(
+            severity=Severity.BLOCKER,
+            category="security",
+            description="x",
+            missed_by_reviewer=True,
+            raw="[BLOCKER][security] x",
+        )
+        for issue in (from_str, from_member):
+            assert issue.severity == "BLOCKER"
+            res = AuditResult(
+                audit_id="a",
+                run_id="r",
+                audit_model="m",
+                original_verdict="APPROVE",
+                audit_verdict="REQUEST_CHANGES",
+                caught_issues=[issue],
+                reviewer_accuracy_score=0.0,
+            )
+            assert res.to_dict()["caught_issues"][0]["severity"] == "BLOCKER"
+
+
+class TestSeverityGateFiresOnMembers:
+    """A-3: _detect_false_approval fires on BLOCKER/MAJOR members, not MINOR/NITPICK."""
+
+    def test_a3_gate_fires_on_blocker(self):
+        assert (
+            AuditPhase._detect_false_approval(
+                "APPROVE", _audit_result_with(Severity.BLOCKER).caught_issues
+            )
+            is True
+        )
+
+    def test_a3_gate_fires_on_major(self):
+        assert (
+            AuditPhase._detect_false_approval(
+                "APPROVE", _audit_result_with(Severity.MAJOR).caught_issues
+            )
+            is True
+        )
+
+    def test_a3_gate_does_not_fire_on_minor(self):
+        assert (
+            AuditPhase._detect_false_approval(
+                "APPROVE", _audit_result_with(Severity.MINOR).caught_issues
+            )
+            is False
+        )
+
+    def test_a3_gate_does_not_fire_on_nitpick(self):
+        assert (
+            AuditPhase._detect_false_approval(
+                "APPROVE", _audit_result_with(Severity.NITPICK).caught_issues
+            )
+            is False
+        )
+
+
+class TestSeverityIsStrMixed:
+    """A-4: pins the chosen str-mixed Enum contract (catches a revert to plain Enum)."""
+
+    def test_a4_is_str_instance(self):
+        assert isinstance(Severity.BLOCKER, str)
+
+    def test_a4_equals_bare_string(self):
+        assert Severity.BLOCKER == "BLOCKER"
+        assert Severity.BLOCKER in ("BLOCKER", "MAJOR")
+
+    def test_a4_value_is_plain_string(self):
+        assert Severity.BLOCKER.value == "BLOCKER"
+        assert type(Severity.BLOCKER.value) is str
+
+
+class TestSeverityRenderedOutput:
+    """A-5: rendered console output is the BARE string (guards scoring.py:352).
+
+    str-mixing protects ``==``/``in``/``json.dumps`` but NOT f-string rendering
+    (which goes through ``Enum.__format__``). This drives the actual
+    ``scoring._print_audit_summary`` site and asserts ``[BLOCKER]`` not
+    ``[Severity.BLOCKER]`` — it fails RED if scoring.py:352 drops ``.value``.
+    """
+
+    def test_a5_print_audit_summary_renders_bare_severity(self):
+        from orchestration_engine.scoring import _print_audit_summary
+
+        console = _RecordingConsole()
+        _print_audit_summary(console, _audit_result_with(Severity.BLOCKER))
+        rendered = console.text
+        assert "[BLOCKER]" in rendered
+        assert "[Severity.BLOCKER]" not in rendered
+        assert "Severity." not in rendered
+
+    def test_a5_fstring_requires_value_for_bare_string(self):
+        # The underlying invariant scoring.py:352 relies on: .value is the
+        # version-robust way to render a Severity member into the bare token
+        # in human-facing f-string output, across all supported Python
+        # versions. (The bare ``f"{Severity.BLOCKER}"`` form is intentionally
+        # NOT asserted here: it goes through Enum.__format__, whose result for
+        # a str-mixed member is CPython-version-dependent — "BLOCKER" on 3.10
+        # but "Severity.BLOCKER" on 3.11+ — i.e. a stdlib quirk, not our code.)
+        assert f"[{Severity.BLOCKER.value}]" == "[BLOCKER]"

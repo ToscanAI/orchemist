@@ -21,15 +21,25 @@ import re
 import unicodedata
 
 
-__all__ = ["FINDING_RE", "slugify", "slugify_branch", "snake_case"]
+__all__ = ["FINDING_RE", "FINDING_RE_EMPTY_OK", "slugify", "slugify_branch", "snake_case"]
 
 
 #: Canonical tagged-finding line matcher used by the single-bracket adversary
 #: parsers: "[category] description". Group 1 = category (letters/underscore),
 #: group 2 = description. Requires >=1 whitespace separator and a NON-EMPTY
 #: description. NOTE: acceptance_test_adversary intentionally accepts an EMPTY
-#: description (\s*(.*)$) and is therefore NOT a consumer of this constant.
+#: description and so consumes the empty-tolerant sibling
+#: :data:`FINDING_RE_EMPTY_OK` (same module) rather than this constant.
 FINDING_RE = re.compile(r"^\s*\[([A-Za-z_]+)\]\s+(.+)$")
+
+
+#: Empty-tolerant variant of FINDING_RE for acceptance_test_adversary, which
+#: intentionally accepts findings with NO description and ZERO whitespace after
+#: the category bracket (e.g. "[coverage]"). Group 1 = category, group 2 =
+#: description (possibly empty). Differs from FINDING_RE only in the quantifiers
+#: (\s* + (.*) vs \s+ + (.+)). Shared so the two parsers do not duplicate the
+#: pattern; see #929 / #919 item 4b.
+FINDING_RE_EMPTY_OK = re.compile(r"^\s*\[([A-Za-z_]+)\]\s*(.*)$")
 
 
 def slugify(text: str) -> str:

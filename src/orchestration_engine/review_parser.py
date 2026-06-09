@@ -73,8 +73,15 @@ _ISSUE_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 
-class Severity(Enum):
+class Severity(str, Enum):
     """Issue severity levels, ordered from most to least critical.
+
+    A ``str``-mixed :class:`~enum.Enum`: each member *is* its string value, so
+    ``Severity.BLOCKER == "BLOCKER"``, ``Severity.BLOCKER in ("BLOCKER", ...)``,
+    ``hash``/set-membership, and ``json.dumps`` all yield the bare token. This
+    keeps the serialized / on-disk form an exact string (see audit.py:to_dict).
+    NOTE (Py>=3.11): ``f"{Severity.BLOCKER}"`` renders ``"Severity.BLOCKER"`` —
+    use ``.value`` at any f-string/``str.__format__`` site (see scoring.py).
 
     Values match the tag tokens used in the review output format::
 
