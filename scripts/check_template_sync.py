@@ -54,10 +54,33 @@ SKIPPED gracefully (stdout message, exit 0) so plain ``pytest``/CI stays green
 where only the engine is checked out. The intra-engine standard↔skip-spec lint
 ALWAYS runs and is unchanged.
 
+PHASE-SKILL BOILERPLATE MODE (Issue #929 part 2)
+------------------------------------------------
+The phase-WRAPPER skill files in the sibling repo
+(``orchemist-skills/skills/orchemist-*.md``) copy-paste two load-bearing
+fresh-subagent policy sentences [[feedback_fresh_subagent_per_phase]]: a Step-1
+"non-negotiable; do NOT execute the prompt inline" preamble and a Step-2
+"the fresh-context-window property is non-negotiable" safe-default clause. This
+is an INTRA-SKILLS consistency check (distinct from the engine↔skills cross-repo
+parity above). It is a SUBSTRING-CONTAINMENT check (NOT block/line equality):
+each pinned wrapper file must CONTAIN both anchor substrings verbatim, which
+tolerates all intentional per-phase prose (role prefixes, the implement.md
+trailing parenthetical, the existing-symbols-inventory bare preamble) by
+construction — the anchors carry no phase token. The pinned set is the 7 files
+in ``PHASE_SKILL_ANCHOR_FILES`` (``adversary`` is excluded by design — its
+preamble is differently worded; the command/orchestrator phases carry no such
+block). The skills ``skills/`` directory is DERIVED as the sibling of the
+resolved ``pipelines/`` dir (``<skills pipelines dir>.parent / "skills"``) so
+the existing ``--skills-dir ../orchemist-skills/pipelines`` invocation reaches
+this check with no new flag; when it is absent the check is SKIPPED gracefully
+(stdout message, exit-0 contribution) exactly like the cross-repo check.
+
 Exit codes:
-    0 — no drift detected (intra-engine always; cross-repo if it ran)
+    0 — no drift detected (intra-engine always; cross-repo + phase-skill
+        boilerplate if they ran)
     1 — drift detected (prints DRIFT lines + unified diff to stderr); this
-        includes a cross-repo prompt drift OR a model_tier lock mismatch
+        includes a cross-repo prompt drift, a model_tier lock mismatch, OR a
+        missing/altered phase-skill boilerplate anchor
     2 — configuration error (missing template files / missing configured
         phases / unbalanced or cross-named anchors)
 
@@ -200,6 +223,45 @@ CROSS_REPO_METADATA_LOCKS: dict[str, dict[str, dict[str, str]]] = {
     "coding-pipeline-maintenance.yaml": {"spec_adversary": {"model_tier": "opus"}},
     # skip-spec has no spec_adversary phase → no lock.
 }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase-skill boilerplate config (Issue #929 part 2) — intra-SKILLS consistency.
+#
+# The fresh-subagent "non-negotiable" policy sentence is copy-pasted across the
+# phase-WRAPPER skill files in orchemist-skills/skills/. These two substrings are
+# the load-bearing INVARIANT; the surrounding prose is intentionally per-phase,
+# so this is a SUBSTRING-CONTAINMENT check (NOT block equality). adversary is
+# excluded by design (differently worded, carries neither anchor); the command
+# phases (acceptance-run, test) and the orchestrator (run) carry no such block.
+# Membership was determined empirically by anchor presence, NOT by phase role.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ANCHOR 1 — Step-1 fresh-subagent preamble (em-dash is U+2014).
+PHASE_SKILL_ANCHOR_STEP1 = (
+    "Per [[feedback_fresh_subagent_per_phase]] — the fresh-context-window "
+    "property is non-negotiable; do NOT execute the prompt inline"
+)
+
+# ANCHOR 2 — Step-2 safe-default closing clause.
+PHASE_SKILL_ANCHOR_STEP2 = (
+    "per [[feedback_fresh_subagent_per_phase]], the fresh-context-window "
+    "property is non-negotiable"
+)
+
+# The exact set of phase-wrapper skill files that MUST carry BOTH anchors.
+# adversary is intentionally absent (different wording); existing-symbols-
+# inventory is present. Verified via grep -l on 2026-06-09 (each anchor: 7 files,
+# 1 occurrence each, zero pre-existing drift).
+PHASE_SKILL_ANCHOR_FILES: tuple[str, ...] = (
+    "orchemist-spec.md",
+    "orchemist-behavioral.md",
+    "orchemist-acceptance-test.md",
+    "orchemist-existing-symbols-inventory.md",
+    "orchemist-implement.md",
+    "orchemist-review.md",
+    "orchemist-fix.md",
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -522,6 +584,61 @@ def _run_cross_repo(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Phase-skill boilerplate drift check (Issue #929 part 2) — intra-skills
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _run_phase_skill_boilerplate(skills_md_dir: Path) -> list[str]:
+    """Assert the fresh-subagent INVARIANT anchors are present (verbatim
+    substring) in every phase-wrapper skill file that must carry them.
+
+    This is an intra-SKILLS consistency check (Issue #929 part 2), distinct
+    from the engine↔skills cross-repo parity check. It tolerates all
+    intentional per-phase wording by checking substring CONTAINMENT of two
+    fixed anchor sentences (which contain no phase token), not block equality.
+
+    Args:
+        skills_md_dir: the orchemist-skills ``skills/`` directory (the one that
+            contains ``orchemist-*.md``). Caller guarantees ``is_dir()``.
+
+    Returns:
+        A list of human-readable DRIFT lines (empty if every expected file
+        contains both anchors). The first line of each drift entry starts with
+        ``DRIFT:`` so ``main``'s FAIL summary counts it.
+    """
+    drift_lines: list[str] = []
+    for name in PHASE_SKILL_ANCHOR_FILES:
+        path = skills_md_dir / name
+        if not path.is_file():
+            # A file in the pinned set is MISSING entirely → drift (the policy
+            # sentence cannot be present if the wrapper file is gone). This is a
+            # real regression, not a graceful-skip case: graceful-skip is only
+            # for the whole skills/ dir being absent (docs-only PR / engine-only
+            # checkout), handled by the caller's is_dir() gate.
+            drift_lines.append(
+                f"DRIFT: phase-skill={name} — expected wrapper file is MISSING "
+                f"from {skills_md_dir} (cannot verify fresh-subagent anchors)"
+            )
+            continue
+        text = path.read_text(encoding="utf-8")
+        if PHASE_SKILL_ANCHOR_STEP1 not in text:
+            drift_lines.append(
+                f"DRIFT: phase-skill={name} — Step-1 fresh-subagent anchor "
+                f"missing or altered. Expected verbatim substring:\n"
+                f"    {PHASE_SKILL_ANCHOR_STEP1!r}\n"
+                f"  in {path}"
+            )
+        if PHASE_SKILL_ANCHOR_STEP2 not in text:
+            drift_lines.append(
+                f"DRIFT: phase-skill={name} — Step-2 safe-default anchor "
+                f"missing or altered. Expected verbatim substring:\n"
+                f"    {PHASE_SKILL_ANCHOR_STEP2!r}\n"
+                f"  in {path}"
+            )
+    return drift_lines
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -720,7 +837,64 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"comparison(s)); model_tier locks OK"
             )
 
-    if intra_failed or cross_failed:
+    # ── Phase-skill boilerplate check (Issue #929 part 2) ───────────────────
+    # Intra-SKILLS consistency: the fresh-subagent policy anchors must be
+    # present (verbatim substring) in every phase-wrapper skill .md. The
+    # skills .md files live in the SIBLING `skills/` dir of `pipelines/`.
+    # Derived from the already-resolved `skills_dir` (the pipelines/ dir) so the
+    # existing `--skills-dir ../orchemist-skills/pipelines` CI invocation reaches
+    # this check with NO new flag. Graceful-skip (exit-0 contribution) when the
+    # skills/ dir is absent, mirroring the cross-repo gate above. This block is
+    # intentionally OUTSIDE the cross-repo try/except: a missing/altered anchor
+    # is a DRIFT (exit 1), never a config error (exit 2).
+    #
+    # The wrappers `skills/` dir and the `pipelines/` dir are ALWAYS distinct
+    # siblings (real invocation: `--skills-dir .../orchemist-skills/pipelines`
+    # → derived `.../orchemist-skills/skills`). If the resolved `--skills-dir`
+    # is *itself* a dir named `skills`, the derivation `.parent / "skills"`
+    # degenerates to that same directory — it has NOT located a genuine sibling
+    # wrappers dir, so we graceful-skip rather than mis-read a pipelines dir as
+    # the wrappers dir. (This keeps the check additive for callers that point
+    # `--skills-dir` at a non-`pipelines/`-named tree.)
+    phase_failed = False
+    skills_md_dir = (
+        skills_dir.parent / "skills" if skills_dir is not None else None
+    )
+    degenerate = (
+        skills_md_dir is not None
+        and skills_dir is not None
+        and skills_md_dir.resolve() == skills_dir.resolve()
+    )
+    if skills_md_dir is None or degenerate or not skills_md_dir.is_dir():
+        shown = (
+            skills_md_dir if skills_md_dir is not None else "<no skills dir resolved>"
+        )
+        print(
+            f"INFO: orchemist-skills phase-wrapper skills not found at {shown} — "
+            "phase-skill boilerplate check skipped"
+        )
+    else:
+        phase_drift = _run_phase_skill_boilerplate(skills_md_dir)
+        if phase_drift:
+            for line in phase_drift:
+                print(line, file=sys.stderr)
+            print(
+                f"FAIL: phase-skill boilerplate drift detected in "
+                f"{len([1 for l in phase_drift if l.startswith('DRIFT')])} "
+                f"file(s)/anchor(s) under {skills_md_dir}. The fresh-subagent "
+                "policy anchor must stay byte-identical across the phase-wrapper "
+                "skills — reconcile the altered/missing file.",
+                file=sys.stderr,
+            )
+            phase_failed = True
+        else:
+            print(
+                f"OK: phase-skill boilerplate anchors present in "
+                f"{len(PHASE_SKILL_ANCHOR_FILES)} phase-wrapper skill(s) "
+                f"under {skills_md_dir}"
+            )
+
+    if intra_failed or cross_failed or phase_failed:
         return 1
     return 0
 
