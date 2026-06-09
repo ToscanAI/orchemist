@@ -377,7 +377,8 @@ class Database:
                 cost_usd DECIMAL(10,4),
                 peak_memory_mb INTEGER,
 
-                FOREIGN KEY(task_id) REFERENCES tasks(id)
+                FOREIGN KEY(task_id) REFERENCES tasks(id),
+                UNIQUE(task_id, attempt_number)
             )
         """)
         
