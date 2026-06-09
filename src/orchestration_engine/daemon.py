@@ -322,8 +322,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # --- Fetch run configuration ---
     run = db.get_pipeline_run(run_id)
     if run is None:
-        print(f"[daemon] ERROR: run_id '{run_id}' not found in DB '{db_path}'",
-              file=sys.stderr)
+        logger.error("run_id %r not found in DB %r", run_id, db_path)
         sys.exit(1)
 
     output_dir = Path(run['output_dir'])
@@ -2593,8 +2592,7 @@ def _post_github_result_hook(
 
 if __name__ == '__main__':
     if len(sys.argv) != 3:
-        print(f"Usage: python -m orchestration_engine.daemon <run_id> <db_path>",
-              file=sys.stderr)
+        logger.error("Usage: python -m orchestration_engine.daemon <run_id> <db_path>")
         sys.exit(1)
 
     _run_id = sys.argv[1]

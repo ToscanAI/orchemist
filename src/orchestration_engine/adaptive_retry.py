@@ -56,9 +56,6 @@ class RetryStrategy(str, Enum):
     ADD_CONTEXT = "add_context"
     """Inject additional context into the failing phase prompt."""
 
-    SPLIT_TASK = "split_task"
-    """Decompose the failing phase into smaller sub-tasks (deferred to 3.2.2)."""
-
     REPHRASE_PROMPT = "rephrase_prompt"
     """Rewrite the failing phase prompt to reduce ambiguity."""
 
@@ -848,12 +845,11 @@ class AdaptiveRetryEngine:
             retry_input = self._apply_rephrase_prompt(plan, input_json, diagnosis)
 
         else:
-            # SPLIT_TASK is deferred to a future issue; fall back to unchanged.
-            _logger.warning(
-                "Strategy %s has no executor implementation yet; falling back to RETRY_UNCHANGED.",
-                strategy.value,
-            )
-            retry_input = self._apply_retry_unchanged(plan, input_json)
+            # Every strategy the planner can emit (via DEFAULT_STRATEGY_MAP) has an
+            # explicit branch above. Reaching here means a RetryPlan was constructed
+            # with an unsupported/out-of-enum strategy: fail loudly rather than
+            # silently degrading to RETRY_UNCHANGED under a different name (#932).
+            raise ValueError(f"Unsupported retry strategy: {strategy.value!r}")
 
         # ── Issue #615: Re-fetch issue body on retry ──────────────────────────
         # If the original run had issue_number (truthy), fetch the current issue
