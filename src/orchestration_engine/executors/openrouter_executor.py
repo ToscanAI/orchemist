@@ -52,6 +52,7 @@ from .openrouter_tools import (
     normalise_sandbox_roots,
     summarise_args,
     summarise_result,
+    truncate_tool_content,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,12 +147,18 @@ class OpenRouterExecutor(BaseExecutor):
         model_map: Optional[Dict[str, str]] = None,
         timeout_seconds: int = _DEFAULT_OR_TIMEOUT,
         max_tokens: int = 16384,
+        tool_result_cap: int = 10000,
     ):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self.base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         self.model_map = {**DEFAULT_MODEL_MAP, **(model_map or {})}
         self.timeout_seconds = timeout_seconds
         self.max_tokens = max_tokens
+        # Issue #800: char cap on the JSON-stringified tool-result CONTENT stored in
+        # the message history (configurable; default 10,000). Mirrors the
+        # ``timeout_seconds`` / ``max_tokens`` constructor-tunable pattern. The full
+        # result is spilled to disk and the JSONL summary stays derived-from-full.
+        self.tool_result_cap = tool_result_cap
         # Warn-once flag for the "sandbox_roots missing/empty → tmp-only fallback" case.
         self._sandbox_fallback_warned = False
 
@@ -271,6 +278,7 @@ class OpenRouterExecutor(BaseExecutor):
             start_time=start_time,
             roots=roots,
             jsonl_path=jsonl_path,
+            phase_id=phase_id,
         )
 
     # ── Tool loop ─────────────────────────────────────────────────────
@@ -286,6 +294,7 @@ class OpenRouterExecutor(BaseExecutor):
         start_time: float,
         roots: Dict[str, str],
         jsonl_path: Optional[Path],
+        phase_id: str,
     ) -> TaskResult:
         messages: List[dict] = [{"role": "user", "content": prompt}]
 
@@ -462,10 +471,27 @@ class OpenRouterExecutor(BaseExecutor):
                         if not ok:
                             jsonl_write_failed = True
 
+                    # Issue #800: cap the stored tool-result content. The full
+                    # serialization is spilled to disk so the model can read it back;
+                    # a marker is emitted ONLY when that spill write succeeds (Option
+                    # A — a marker always implies a readable file). The JSONL block
+                    # above stays derived from the FULL untruncated result dict.
+                    full_content = json.dumps(tool_result)
+                    content = full_content
+                    output_dir = roots.get("output_dir")
+                    if output_dir and len(full_content) > self.tool_result_cap:
+                        spill_path = Path(output_dir) / (
+                            f"{_safe_phase_id(phase_id)}_toolcall_{tool_call_count}.txt"
+                        )
+                        if _write_spill_file(spill_path, full_content):
+                            content, _ = truncate_tool_content(
+                                full_content, self.tool_result_cap, str(spill_path)
+                            )
+                        # else: spill write failed -> keep full_content, no marker.
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_id,
-                        "content": json.dumps(tool_result),
+                        "content": content,
                     })
             # End for loop.
             # If we got here without final_captured, every iteration was an XML-leak
@@ -982,6 +1008,26 @@ def _append_jsonl(path: Path, record: dict) -> bool:
         return True
     except OSError as exc:
         logger.warning("JSONL write failed at %s: %s (subsequent failures suppressed)", path, exc)
+        return False
+
+
+def _write_spill_file(path: Path, text: str) -> bool:
+    """Write the FULL tool-result content to ``path`` (issue #800 disk spill).
+
+    Mirrors :func:`_append_jsonl` resilience: mkdir parents, swallow ``OSError``,
+    return a bool. Unconditional overwrite — NOT ``safe_write_phase_output``'s
+    skip-if-larger guard, since the spill must always hold the complete output for
+    read-back. Returns True on a confirmed write, False on any ``OSError`` (a
+    read-only FS, a full disk, etc.); the caller emits no marker on False.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+        return True
+    except OSError as exc:
+        logger.warning("tool-result spill write failed at %s: %s", path, exc)
         return False
 
 

@@ -46,6 +46,14 @@ GLOB_PATH_CAP = 500
 JSONL_ARG_STR_TRUNCATE_CHARS = 200
 JSONL_ARG_STR_MARKER = "…[truncated]"
 
+# Issue #800: cap on the JSON-stringified tool-result CONTENT stored in the
+# message history (chars, not bytes). Distinct from BASH_STREAM_CAP_BYTES, which
+# caps raw bash stdout/stderr in BYTES before the result dict is built.
+# NOTE: no leading "\n" — the marker is appended directly after the cap-length
+# prefix so that stripping the marker leaves EXACTLY the first `cap` chars
+# (behavioral Contract 1.4: total stored length == cap + len(marker)).
+TOOL_RESULT_TRUNCATION_MARKER = "[... truncated from {n} chars. Full output at {path}]"
+
 # Bash deny-list. UX guardrail only. See module docstring.
 BASH_DENY_PATTERNS: list[str] = [
     r"rm\s+-rf\s+/",
@@ -544,6 +552,26 @@ def _truncate_stream(data: bytes, label: str) -> tuple[str, bool]:
     truncated = encoded.decode("utf-8", errors="ignore")
     dropped = len(data) - len(encoded)
     return (truncated + f"\n[... {label} truncated, {dropped} bytes dropped ...]\n", True)
+
+
+def truncate_tool_content(content: str, cap: int, spill_path: str) -> tuple[str, bool]:
+    """Cap the JSON-stringified tool-result CONTENT at ``cap`` CHARACTERS for the
+    message-history append (issue #800).
+
+    Returns ``(content_to_append, truncated)``:
+      - if ``len(content) <= cap``: ``(content, False)`` — passthrough, byte-identical
+        to the pre-#800 behaviour.
+      - else: ``(content[:cap] + marker, True)``, where the marker names the full
+        count ``N == len(content)`` (the PRE-truncation total) and the on-disk spill
+        path the model can read back via ``read_file``.
+
+    Char-scoped (``len()``), distinct from the byte-scoped :func:`_truncate_stream`.
+    Pure function — no disk I/O; the caller writes the spill file separately.
+    """
+    if len(content) <= cap:
+        return content, False
+    marker = TOOL_RESULT_TRUNCATION_MARKER.format(n=len(content), path=spill_path)
+    return content[:cap] + marker, True
 
 
 def handle_grep(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
