@@ -2773,3 +2773,256 @@ phases:
             f"Expected 'failed' after phase exception, got: {run['status']!r}"
         assert failure_message in (run.get("error_message") or ""), \
             f"Error message must contain failure description: {run.get('error_message')!r}"
+
+
+# ===========================================================================
+# Tests for Issue #516: Daemon status display lag (Part A)
+# ===========================================================================
+#
+# The daemon's phase callbacks (``_on_phase_start`` / ``_on_phase_complete``)
+# are NESTED closures inside ``run_daemon`` (daemon.py:524/546) and are not
+# importable. Per the spec test contract (§A.6) we pin the OBSERVABLE DB
+# behaviour these callbacks must produce, exercising the exact DB write shapes
+# against a real ``Database``:
+#   - phase START writes ONLY ``current_phase`` (the running phase), leaving
+#     ``completed_phases`` untouched (daemon.py:524 + the new start-write).
+#   - phase COMPLETE writes ``current_phase`` + appends to ``completed_phases``
+#     in one atomic update (daemon.py:606-611).
+# These tests guarantee status reflects the running phase (lag gone) and the
+# completed list stays append-only / order-preserving. They do NOT import the
+# closures and do NOT assert the out-of-scope strict
+# ``current_phase ∉ completed_phases`` concurrency invariant.
+
+
+class TestDaemonStatusLagIssue516:
+    """Part A — phase-start writes current_phase; status no longer lags."""
+
+    @staticmethod
+    def _start_write(db, run_id: str, phase_id: str) -> None:
+        """Replicate the daemon ``_on_phase_start`` DB write (current_phase only)."""
+        db.update_pipeline_run(run_id, current_phase=phase_id)
+
+    @staticmethod
+    def _complete_write(db, run_id: str, completed_phases: list, phase_id: str) -> None:
+        """Replicate the daemon ``_on_phase_complete`` atomic DB write."""
+        completed_phases.append(phase_id)
+        db.update_pipeline_run(
+            run_id,
+            current_phase=phase_id,
+            completed_phases=json.dumps(completed_phases),
+            phase_outputs=json.dumps({p: {} for p in completed_phases}, default=str),
+        )
+
+    def test_oa1_start_write_sets_current_phase(self, in_memory_db, sample_run):
+        """OA-1: a phase-start write sets current_phase to the running phase."""
+        in_memory_db.insert_pipeline_run(sample_run)
+        self._start_write(in_memory_db, sample_run["run_id"], "phaseB")
+        run = in_memory_db.get_pipeline_run(sample_run["run_id"])
+        assert run["current_phase"] == "phaseB"
+
+    def test_oa2_start_write_does_not_mutate_completed_phases(self, in_memory_db, sample_run):
+        """OA-2: phase-start does NOT add the running phase to completed_phases."""
+        in_memory_db.insert_pipeline_run(sample_run)
+        # Seed a completed list as _on_phase_complete would have.
+        in_memory_db.update_pipeline_run(
+            sample_run["run_id"], completed_phases=json.dumps(["A"])
+        )
+        before = json.loads(
+            in_memory_db.get_pipeline_run(sample_run["run_id"]).get("completed_phases") or "[]"
+        )
+        # Now start phase B (start-write only touches current_phase).
+        self._start_write(in_memory_db, sample_run["run_id"], "B")
+        after = json.loads(
+            in_memory_db.get_pipeline_run(sample_run["run_id"]).get("completed_phases") or "[]"
+        )
+        assert after == before == ["A"]
+
+    def test_oa3_running_phase_reflected_lag_gone(self, in_memory_db, sample_run):
+        """OA-3: after complete(A) → start(B), status shows Current: B (not A)."""
+        in_memory_db.insert_pipeline_run(sample_run)
+        completed: list = []
+        self._complete_write(in_memory_db, sample_run["run_id"], completed, "A")
+        # Without the start-write, current_phase would still be "A" here (the lag).
+        self._start_write(in_memory_db, sample_run["run_id"], "B")
+        run = in_memory_db.get_pipeline_run(sample_run["run_id"])
+        assert run["current_phase"] == "B"
+        assert json.loads(run.get("completed_phases") or "[]") == ["A"]
+
+    def test_oa4_completed_count_and_names_accurate(self, in_memory_db, sample_run):
+        """OA-4: completing A, B, C yields completed_phases == [A, B, C] in order."""
+        in_memory_db.insert_pipeline_run(sample_run)
+        completed: list = []
+        for phase in ["A", "B", "C"]:
+            self._start_write(in_memory_db, sample_run["run_id"], phase)
+            self._complete_write(in_memory_db, sample_run["run_id"], completed, phase)
+        run = in_memory_db.get_pipeline_run(sample_run["run_id"])
+        decoded = json.loads(run.get("completed_phases") or "[]")
+        assert decoded == ["A", "B", "C"]
+        assert len(decoded) == 3
+
+    def test_oa5_rapid_transitions_do_not_skip(self, in_memory_db, sample_run):
+        """OA-5: back-to-back start/complete pairs never drop a completed phase."""
+        in_memory_db.insert_pipeline_run(sample_run)
+        completed: list = []
+        phases = [f"p{i}" for i in range(8)]
+        for phase in phases:
+            # No delay between transitions — append-only list is timing-independent.
+            self._start_write(in_memory_db, sample_run["run_id"], phase)
+            self._complete_write(in_memory_db, sample_run["run_id"], completed, phase)
+        run = in_memory_db.get_pipeline_run(sample_run["run_id"])
+        decoded = json.loads(run.get("completed_phases") or "[]")
+        assert decoded == phases
+        # Every phase appears exactly once, in order.
+        for phase in phases:
+            assert decoded.count(phase) == 1
+
+    def test_oa6_crash_midphase_keeps_running_phase(self, in_memory_db, sample_run):
+        """OA-6: crash mid-phase → status 'crashed', current_phase = running phase."""
+        from orchestration_engine.cli import _print_run_detail
+
+        in_memory_db.insert_pipeline_run(sample_run)
+        run_id = sample_run["run_id"]
+        # A start-write recorded the running phase, then the run "crashed".
+        self._start_write(in_memory_db, run_id, "phaseX")
+        # Mark running with a definitely-dead pid (crash-detection seam).
+        dead_pid = 2 ** 31 - 1  # an extremely unlikely-to-be-alive pid
+        in_memory_db.update_pipeline_run(run_id, status="running", pid=dead_pid)
+
+        run = in_memory_db.get_pipeline_run(run_id)
+        with patch("orchestration_engine.cli.Database", return_value=in_memory_db), \
+             patch("orchestration_engine.daemon.is_process_alive", return_value=False):
+            _print_run_detail(run)
+
+        # crash detection persisted status='crashed'; current_phase is unchanged.
+        after = in_memory_db.get_pipeline_run(run_id)
+        assert after["status"] == "crashed"
+        assert after["current_phase"] == "phaseX"
+
+    def test_oa7_daemon_launched_unbuffered(self, tmp_path, monkeypatch):
+        """OA-7: the daemon Popen carries PYTHONUNBUFFERED=1, bufsize=0, inherited env."""
+        from click.testing import CliRunner
+        from orchestration_engine.cli import main
+
+        runner = CliRunner()
+        tpl = tmp_path / "content-pipeline.yaml"
+        tpl.write_text(
+            "id: content-pipeline\n"
+            "name: Content Pipeline\n"
+            "phases: []\n"
+            "config_schema:\n"
+            "  required: []\n"
+            "  properties: {}\n"
+        )
+        monkeypatch.setenv("OPENCLAW_GATEWAY_URL", "http://localhost:18789")
+        monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "test-token")
+
+        with patch("orchestration_engine.cli.Database") as mock_db_cls, \
+             patch("orchestration_engine.cli.subprocess.Popen") as mock_popen:
+            mock_db = MagicMock()
+            mock_db.insert_pipeline_run.return_value = "run-unbuf"
+            mock_db_cls.return_value = mock_db
+            mock_popen.return_value.pid = 4242
+
+            runner.invoke(main, ["launch", str(tpl), "--mode", "dry-run"])
+
+        assert mock_popen.called, "daemon Popen should have been invoked"
+        _kwargs = mock_popen.call_args.kwargs
+        assert _kwargs.get("bufsize") == 0
+        _env = _kwargs.get("env")
+        assert _env is not None, "Popen must be launched with an explicit env"
+        assert _env.get("PYTHONUNBUFFERED") == "1"
+        # Inherited parent environment is preserved (not a bare one-key dict).
+        assert "PATH" in _env
+
+
+# ===========================================================================
+# Tests for Issue #624: docs-pipeline PR title (Part B) — hook argument wiring
+# ===========================================================================
+#
+# These pin _post_github_result_hook's wiring into create_content_pr: the
+# doc_title fallback, the prefix differentiation (docs vs content), the
+# issue_number pass-through, and the meaningful run-ID fallback. The actual
+# PR creation is mocked at the issue_automation source (the hook imports
+# create_content_pr lazily, so patch the canonical module symbol).
+
+
+class TestContentDocsPrHookWiringIssue624:
+    """Part B — hook → create_content_pr argument wiring."""
+
+    @staticmethod
+    def _call_hook(initial_input: dict, template_category: str, run_id: str = "run-624"):
+        """Invoke the hook with a patched create_content_pr; return the mock."""
+        from orchestration_engine.daemon import _post_github_result_hook
+
+        with patch(
+            "orchestration_engine.issue_automation.create_content_pr",
+            return_value="https://github.com/owner/repo/pull/3",
+        ) as mock_pr:
+            _post_github_result_hook(
+                run_id=run_id,
+                db=MagicMock(),
+                initial_input=initial_input,
+                phase_outputs={},
+                final_status="success",
+                error_message=None,
+                diagnosis=None,
+                output_dir=Path("/tmp"),
+                template_category=template_category,
+            )
+        return mock_pr
+
+    def test_ob3_doc_title_resolved_and_docs_prefix(self):
+        """OB-3: docs run → create_content_pr called with topic=doc_title, prefix='docs'."""
+        mock_pr = self._call_hook(
+            {"doc_title": "X Guide", "repo_url": "o/r", "branch_name": "b"},
+            template_category="docs",
+        )
+        assert mock_pr.called
+        kwargs = mock_pr.call_args.kwargs
+        assert kwargs["topic"] == "X Guide"
+        assert kwargs["prefix"] == "docs"
+
+    def test_ob2_content_run_uses_topic_and_content_prefix(self):
+        """OB-2 (hook): content run → topic=topic, prefix='content'."""
+        mock_pr = self._call_hook(
+            {"topic": "My Topic", "repo_url": "o/r", "branch_name": "b"},
+            template_category="content",
+        )
+        kwargs = mock_pr.call_args.kwargs
+        assert kwargs["topic"] == "My Topic"
+        assert kwargs["prefix"] == "content"
+
+    def test_ob5_hook_passes_issue_number_when_present(self):
+        """OB-4/OB-5: issue_number from initial_input is forwarded to create_content_pr."""
+        mock_pr = self._call_hook(
+            {
+                "doc_title": "Guide",
+                "repo_url": "o/r",
+                "branch_name": "b",
+                "issue_number": 624,
+            },
+            template_category="docs",
+        )
+        kwargs = mock_pr.call_args.kwargs
+        assert kwargs["issue_number"] == 624
+
+    def test_ob5_hook_creates_pr_without_issue_number(self):
+        """OB-5: a docs run with NO issue_number still creates the PR (issue_number=None)."""
+        mock_pr = self._call_hook(
+            {"doc_title": "Guide", "repo_url": "o/r", "branch_name": "b"},
+            template_category="docs",
+        )
+        assert mock_pr.called, "PR must still be created when issue_number is absent"
+        kwargs = mock_pr.call_args.kwargs
+        assert kwargs["issue_number"] is None
+
+    def test_ob6_meaningful_runid_fallback_when_no_title_source(self):
+        """OB-6: no topic/title/doc_title → topic='pipeline run <run_id>' (not 'content')."""
+        mock_pr = self._call_hook(
+            {"repo_url": "o/r", "branch_name": "b"},
+            template_category="docs",
+            run_id="abc123",
+        )
+        kwargs = mock_pr.call_args.kwargs
+        assert kwargs["topic"] == "pipeline run abc123"
+        assert kwargs["topic"] != "content"
