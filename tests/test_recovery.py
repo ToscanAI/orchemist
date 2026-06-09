@@ -3,7 +3,7 @@
 import threading
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 from src.orchestration_engine.recovery import (
@@ -226,7 +226,7 @@ class TestCircuitBreakerState:
         assert cb.is_open(threshold, reset_timeout)
         
         # Manually age the opened_at timestamp
-        cb.opened_at = datetime.now() - timedelta(minutes=2)
+        cb.opened_at = datetime.now(timezone.utc) - timedelta(minutes=2)
         
         # Should allow half-open state
         assert not cb.is_open(threshold, reset_timeout)
@@ -288,7 +288,7 @@ class TestTaskRetryState:
         
         assert retry_state.current_attempt == 1
         assert len(retry_state.attempts) == 1
-        assert retry_at > datetime.now()
+        assert retry_at > datetime.now(timezone.utc)
         
         attempt = retry_state.attempts[0]
         assert attempt.attempt_number == 1
@@ -403,7 +403,7 @@ class TestRecoveryManager:
         )
         
         assert should_retry
-        assert retry_at > datetime.now()
+        assert retry_at > datetime.now(timezone.utc)
         assert next_model in ["haiku-4-5", "sonnet-4"]  # Escalation path
         
         # Verify retry state is created
@@ -484,8 +484,8 @@ class TestRecoveryManager:
         manager = RecoveryManager(test_db, test_config)
         
         # Create some retries with different schedules
-        past_time = datetime.now() - timedelta(minutes=1)
-        future_time = datetime.now() + timedelta(minutes=5)
+        past_time = datetime.now(timezone.utc) - timedelta(minutes=1)
+        future_time = datetime.now(timezone.utc) + timedelta(minutes=5)
         
         # Mock database responses for retry queue
         with patch.object(manager.db, 'fetch_all') as mock_fetch:

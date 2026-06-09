@@ -20,12 +20,13 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .confidence import ConfidenceCalculator
 from .db import default_db_path
+from .timestamps import now_utc
 from .output_utils import (
     extract_output_text as _extract_output_text,
     safe_write_phase_output as _safe_write_phase_output,
@@ -352,7 +353,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
         run_id,
         status='running',
         pid=os.getpid(),
-        started_at=datetime.now().isoformat(),
+        started_at=now_utc().isoformat(),
     )
 
     # --- Load template ---
@@ -810,7 +811,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
         db.update_pipeline_run(
             run_id,
             status='cancelled',
-            completed_at=datetime.now().isoformat(),
+            completed_at=now_utc().isoformat(),
             error_message='Cancelled by SIGTERM',
         )
         _remove_pid_file(pid_path)
@@ -825,7 +826,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
         db.update_pipeline_run(
             run_id,
             status='budget_exceeded',
-            completed_at=datetime.now().isoformat(),
+            completed_at=now_utc().isoformat(),
             error_message=_budget_msg,
         )
         _remove_pid_file(pid_path)
@@ -840,7 +841,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
         db.update_pipeline_run(
             run_id,
             status='failed',
-            completed_at=datetime.now().isoformat(),
+            completed_at=now_utc().isoformat(),
             error_message=msg,
         )
         # --- Diagnose failure (non-fatal) ---
@@ -961,8 +962,10 @@ def run_daemon(run_id: str, db_path: str) -> None:
         try:
             _started = run.get('started_at')
             if _started:
-                from datetime import datetime as _dt
-                _elapsed = (datetime.now() - _dt.fromisoformat(_started)).total_seconds()
+                _parsed = datetime.fromisoformat(_started)
+                if _parsed.tzinfo is None:
+                    _parsed = _parsed.replace(tzinfo=timezone.utc)
+                _elapsed = (now_utc() - _parsed).total_seconds()
         except Exception:
             pass
         # Derive the happy-path oracle from the loaded template (Issue #915).
@@ -1039,7 +1042,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
     db.update_pipeline_run(
         run_id,
         status=_final_status,
-        completed_at=datetime.now().isoformat(),
+        completed_at=now_utc().isoformat(),
         completed_phases=json.dumps(completed_phases),
         phase_outputs=json.dumps(phase_outputs, default=str),
     )
@@ -2134,7 +2137,7 @@ def _fail(db: Any, run_id: str, pid_path: Path, message: str) -> None:
         db.update_pipeline_run(
             run_id,
             status='failed',
-            completed_at=datetime.now().isoformat(),
+            completed_at=now_utc().isoformat(),
             error_message=message,
         )
     except Exception as exc:
@@ -2164,7 +2167,7 @@ def _write_summary(
 ) -> None:
     """Write _final_output.json, _final_output.md, and _summary.md."""
     completed_phases = list(result.get('phase_outputs', {}).keys())
-    run_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run_date = now_utc().strftime("%Y-%m-%d %H:%M:%S")
 
     # _final_output.json
     (output_dir / "_final_output.json").write_text(

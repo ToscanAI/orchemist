@@ -5,7 +5,7 @@ and utility functions for the orchestration engine schemas.
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -245,7 +245,7 @@ class TestTaskStatus:
     
     def test_task_status_creation(self):
         """Test creating TaskStatus object."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         
         status = TaskStatus(
             task_id="task-123",
@@ -272,7 +272,7 @@ class TestTaskStatus:
             task_type=TaskType.CONTENT,
             state=TaskState.QUEUED,
             priority=Priority.NORMAL,
-            created_at=datetime.now(),
+            created_at=datetime.now(timezone.utc),
             orchestra_id="orch-456",
             orchestra_phase="write"
         )
@@ -316,7 +316,7 @@ class TestOrchestraStatus:
     
     def test_orchestra_status_creation(self):
         """Test creating OrchestraStatus."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         
         status = OrchestraStatus(
             orchestra_id="orch-123",
@@ -349,7 +349,7 @@ class TestOrchestraStatus:
             template="test",
             state=OrchestraState.RUNNING,
             priority=Priority.NORMAL,
-            created_at=datetime.now(),
+            created_at=datetime.now(timezone.utc),
             total_tasks=10,
             completed_tasks=7
         )
@@ -524,7 +524,7 @@ class TestSerialization:
     
     def test_task_result_roundtrip(self):
         """Test TaskResult JSON roundtrip."""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         
         result = TaskResult(
             task_id="task-123",

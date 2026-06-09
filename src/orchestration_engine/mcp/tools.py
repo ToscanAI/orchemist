@@ -14,12 +14,13 @@ import re
 import subprocess
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from orchestration_engine.db import Database, default_db_path, parse_json_list
 from orchestration_engine.templates import TemplateEngine, TemplateNotFoundError
+from orchestration_engine.timestamps import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ def register_tools(mcp) -> None:
             safe_id = re.sub(r"[^\w\-]", "_", template.id)
             output_dir = Path(
                 f"./output/{safe_id}"
-                f"-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                f"-{now_utc().strftime('%Y%m%d-%H%M%S')}"
                 f"-{run_id}"
             )
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -182,7 +183,15 @@ def register_tools(mcp) -> None:
             elif completed_at is not None:
                 elapsed = float((completed_at - started_at).total_seconds())
             else:
-                elapsed = float((datetime.now() - started_at).total_seconds())
+                # ``started_at`` may be a naive datetime (e.g. an injected/mocked
+                # row); re-tag it UTC so the subtraction against the now-aware
+                # ``now_utc()`` does not raise. A string ``started_at`` (the
+                # pre-existing _row_to_dict str-sub path, out of #932-item2
+                # scope) is left untouched and still raises as before.
+                _start = started_at
+                if isinstance(_start, datetime) and _start.tzinfo is None:
+                    _start = _start.replace(tzinfo=timezone.utc)
+                elapsed = float((now_utc() - _start).total_seconds())
 
             return json.dumps(
                 {

@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -24,6 +24,7 @@ from decimal import Decimal
 
 from .daemon import apply_config_schema_defaults
 from .db import Database, default_db_path
+from .timestamps import now_utc
 from .output_utils import (
     extract_output_text as _extract_output_text,
     safe_write_phase_output as _safe_write_phase_output,
@@ -333,10 +334,14 @@ def _print_run_detail(run: Dict[str, Any]) -> None:
     if started_at:
         try:
             start_dt = datetime.fromisoformat(started_at)
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone.utc)
             if completed_at:
                 end_dt = datetime.fromisoformat(completed_at)
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
             else:
-                end_dt = datetime.now()
+                end_dt = now_utc()
             elapsed_s = (end_dt - start_dt).total_seconds()
             elapsed_str = _fmt_elapsed(elapsed_s)
         except Exception:
@@ -786,7 +791,7 @@ def _watch_pipeline_run(
                     score_str = f" (score={_score:.3f})" if _score is not None else ""
                     icon = {'success': '✅', 'pending_review': '📋', 'failed': '❌',
                             'crashed': '💀', 'scoring_failed': '🔴'}.get(current_status, '❓')
-                    ts = datetime.now().strftime('%H:%M:%S')
+                    ts = now_utc().strftime('%H:%M:%S')
                     if json_mode:
                         click.echo(_json.dumps({
                             "time": ts, "type": "run_complete",
@@ -816,7 +821,7 @@ def _print_watch_event(evt: dict, json_mode: bool) -> None:
     phase = evt.get('phase_id') or ''
     tokens = evt.get('tokens_consumed')
     state = evt.get('state')
-    ts = datetime.now().strftime('%H:%M:%S')
+    ts = now_utc().strftime('%H:%M:%S')
 
     try:
         meta = _json.loads(evt.get('metadata_json', '{}'))
@@ -1181,7 +1186,7 @@ def run_template(
     run_id = str(uuid4())[:8]
     if output_dir is None:
         _safe_id = re.sub(r'[^\w\-]', '_', template.id)
-        _ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+        _ts = now_utc().strftime('%Y%m%d-%H%M%S')
         output_dir = Path(f"./output/{_safe_id}-{_ts}-{run_id}")
 
     # --- 2. Resolve pipeline input ------------------------------------
@@ -1585,7 +1590,7 @@ def run_template(
     (output_dir / "_final_output.md").write_text(f"# Final Output\n\n{final_text}\n")
 
     # _summary.md (Feature #71)
-    run_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    run_date = now_utc().strftime("%Y-%m-%d %H:%M:%S")
     summary_lines = [
         f"# Run Summary: {template.name}",
         "",
@@ -1969,7 +1974,7 @@ def pipeline_launch(
     run_id = str(uuid.uuid4())[:8]
     if output_dir is None:
         _safe_id = re.sub(r'[^\w\-]', '_', template.id)
-        _ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+        _ts = now_utc().strftime('%Y%m%d-%H%M%S')
         output_dir = Path(f"./output/{_safe_id}-{_ts}-{run_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2206,7 +2211,7 @@ def pipeline_wait(run_id: str, timeout: int, interval: int, db_path: Optional[st
 
         current_phase = run.get('current_phase') or '(none)'
         if current_phase != last_phase:
-            click.echo(f"  [{datetime.now().strftime('%H:%M:%S')}] status={current_status}  phase={current_phase}")
+            click.echo(f"  [{now_utc().strftime('%H:%M:%S')}] status={current_status}  phase={current_phase}")
             last_phase = current_phase
 
         if current_status in terminal_states:

@@ -14,11 +14,11 @@ import os
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime
 from typing import Any, Dict, Optional
 
 from ..model_registry import bare_id
 from ..schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
+from ..timestamps import now_utc
 from ._common import BaseExecutor, _PRICING
 from ._thinking import THINKING_BUDGET, DEFAULT_THINKING_BUDGET
 
@@ -143,7 +143,7 @@ class AnthropicExecutor(BaseExecutor):
 
         try:
             response = self._call_api(body)
-            elapsed = (datetime.now() - start_time).total_seconds()
+            elapsed = (now_utc() - start_time).total_seconds()
 
             # Extract text from response
             output_text = ""
@@ -170,7 +170,7 @@ class AnthropicExecutor(BaseExecutor):
                 result=output_data,
                 errors=[],
                 started_at=start_time,
-                completed_at=datetime.now(),
+                completed_at=now_utc(),
                 model_used=model,
                 tokens_consumed=total_tokens,
                 input_tokens=input_tokens,
@@ -184,7 +184,7 @@ class AnthropicExecutor(BaseExecutor):
             )
 
         except Exception as exc:
-            elapsed = (datetime.now() - start_time).total_seconds()
+            elapsed = (now_utc() - start_time).total_seconds()
             logger.error(f"API call failed for task {task_id}: {exc}")
 
             return TaskResult(
@@ -201,7 +201,7 @@ class AnthropicExecutor(BaseExecutor):
                     )
                 ],
                 started_at=start_time,
-                completed_at=datetime.now(),
+                completed_at=now_utc(),
                 model_used=model,
                 execution_time_seconds=elapsed,
             )

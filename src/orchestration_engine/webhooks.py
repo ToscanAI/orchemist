@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from .timestamps import now_utc
+
 _logger = logging.getLogger(__name__)
 
 
@@ -117,7 +119,7 @@ class TriggerConfig:
             "rate_limit": self.rate_limit,
             "input_map": self.input_map,   # JSON-serialised by DB layer
             "filters": self.filters,       # JSON-serialised by DB layer
-            "created_at": self.created_at or datetime.now().isoformat(),
+            "created_at": self.created_at or now_utc().isoformat(),
             "enabled": self.enabled,
         }
 

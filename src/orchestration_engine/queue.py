@@ -18,6 +18,7 @@ from .schemas import (
     generate_task_id, generate_orchestra_id, calculate_retry_delay,
     select_model_tier, DEFAULT_MAX_RETRIES, DeadLetterTask
 )
+from .timestamps import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +244,7 @@ class TaskQueue:
             Dict with task data or None if no tasks available
         """
         # Update worker heartbeat
-        self._worker_heartbeats[worker_id] = datetime.now()
+        self._worker_heartbeats[worker_id] = now_utc()
         
         # Get next task from database
         task_data = self.db.get_next_task(worker_id)
@@ -293,11 +294,11 @@ class TaskQueue:
         success = self.db.update_task_status(
             task_id,
             final_state.value,
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             metadata={
                 'result': result.model_dump(),
                 'worker_id': worker_id,
-                'completion_timestamp': datetime.now().isoformat()
+                'completion_timestamp': now_utc().isoformat()
             }
         )
         
@@ -372,7 +373,7 @@ class TaskQueue:
         # Update completion timestamp
         self.db.update_task_run(
             run_id,
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             status=TaskState.FAILED.value
         )
         
@@ -384,7 +385,7 @@ class TaskQueue:
             success = self.db.update_task_status(
                 task_id,
                 TaskState.PERMANENTLY_FAILED.value,
-                completed_at=datetime.now()
+                completed_at=now_utc()
             )
             
             if success:
@@ -409,7 +410,7 @@ class TaskQueue:
         # Calculate additional metrics
         active_workers = len([
             worker_id for worker_id, last_seen in self._worker_heartbeats.items()
-            if datetime.now() - last_seen < timedelta(minutes=5)
+            if now_utc() - last_seen < timedelta(minutes=5)
         ])
         
         # Check for warnings
@@ -444,7 +445,7 @@ class TaskQueue:
         Returns:
             int: Number of workers cleaned up
         """
-        cutoff = datetime.now() - timedelta(minutes=5)
+        cutoff = now_utc() - timedelta(minutes=5)
         stale_workers = [
             worker_id for worker_id, last_seen in self._worker_heartbeats.items()
             if last_seen < cutoff
@@ -520,7 +521,7 @@ class TaskQueue:
             self.db.update_task_status(
                 task_id,
                 TaskState.PERMANENTLY_FAILED.value,
-                completed_at=datetime.now()
+                completed_at=now_utc()
             )
             
             # Move to dead letter queue
@@ -540,7 +541,7 @@ class TaskQueue:
         """
         retry_count = task_data['retry_count'] + 1
         delay_seconds = calculate_retry_delay(retry_count)
-        next_retry_at = datetime.now() + timedelta(seconds=delay_seconds)
+        next_retry_at = now_utc() + timedelta(seconds=delay_seconds)
         
         self.db.update_task_status(
             task_id,

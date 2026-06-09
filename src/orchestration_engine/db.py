@@ -25,7 +25,7 @@ sqlite3.register_converter(
 )
 
 from .schemas import TaskState, OrchestraState, Priority, TaskType
-from .timestamps import normalize_ts
+from .timestamps import normalize_ts, now_utc
 
 # ---------------------------------------------------------------------------
 # Shared terminal-state set — single source of truth used by db, api, and
@@ -1000,9 +1000,9 @@ class Database:
         
         # Handle status-specific updates
         if status == 'running' and 'started_at' not in kwargs:
-            kwargs['started_at'] = datetime.now()
+            kwargs['started_at'] = now_utc()
         elif status in ['success', 'failed', 'permanently_failed'] and 'completed_at' not in kwargs:
-            kwargs['completed_at'] = datetime.now()
+            kwargs['completed_at'] = now_utc()
         
         # Add additional updates
         for key, value in kwargs.items():
@@ -1407,7 +1407,7 @@ class Database:
         dead_letter_count = cursor.fetchone()[0]
         
         return {
-            'timestamp': datetime.now(),
+            'timestamp': now_utc(),
             'queued': status_counts.get('queued', 0),
             'running': status_counts.get('running', 0),
             'completed': status_counts.get('success', 0),
@@ -1644,7 +1644,7 @@ class Database:
             return 0
 
         if now is None:
-            now = datetime.now().isoformat()
+            now = now_utc().isoformat()
 
         # Step 1 — snapshot the candidate rows under a read lock.
         try:
@@ -1986,7 +1986,7 @@ class Database:
                 WHERE run_id = ?
                   AND status NOT IN ('success', 'failed', 'cancelled', 'crashed', 'scoring_failed', 'pending_review', 'rejected')
                 """,
-                (datetime.now().isoformat(), run_id),
+                (now_utc().isoformat(), run_id),
             )
             return cursor.rowcount > 0
 
@@ -2196,7 +2196,7 @@ class Database:
                 trigger_data.get("rate_limit", 0),
                 json.dumps(trigger_data.get("input_map") or {}),
                 json.dumps(trigger_data.get("filters") or []),
-                trigger_data.get("created_at") or datetime.now().isoformat(),
+                trigger_data.get("created_at") or now_utc().isoformat(),
                 int(trigger_data.get("enabled", True)),
             ))
         return trigger_data["id"]
@@ -2290,7 +2290,7 @@ class Database:
         """
         allowed = {"mode", "secret", "rate_limit", "input_map", "filters", "enabled"}
         updates = ["updated_at = ?"]
-        values = [datetime.now().isoformat()]
+        values = [now_utc().isoformat()]
 
         for key, value in kwargs.items():
             if key not in allowed:
@@ -2342,7 +2342,7 @@ class Database:
         with self.transaction() as conn:
             conn.execute(
                 "INSERT INTO webhook_invocations (trigger_id, invoked_at) VALUES (?, ?)",
-                (trigger_id, datetime.now().isoformat()),
+                (trigger_id, now_utc().isoformat()),
             )
 
     def count_webhook_invocations_since(self, trigger_id: str, since_dt: datetime) -> int:
@@ -3741,7 +3741,7 @@ class Database:
             ``True`` if a row was updated, ``False`` if no matching
             pending_review run was found.
         """
-        now = datetime.now().isoformat()
+        now = now_utc().isoformat()
         with self.transaction() as conn:
             cursor = conn.execute(
                 """
@@ -3774,7 +3774,7 @@ class Database:
             ``True`` if a row was updated, ``False`` if no matching
             pending_review run was found.
         """
-        now = datetime.now().isoformat()
+        now = now_utc().isoformat()
         with self.transaction() as conn:
             cursor = conn.execute(
                 """

@@ -4,13 +4,15 @@ All task inputs, outputs, and metadata follow strict Pydantic schemas for
 type safety, validation, and consistent interfaces across all task types.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum, IntEnum
 from typing import Any, Dict, List, Optional, Union, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from .timestamps import now_utc
 
 
 # Core Enums
@@ -140,7 +142,7 @@ class TaskResult(BaseModel):
     warnings: List[str] = []
     
     # Execution details
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=now_utc)
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     model_used: Optional[str] = None
@@ -290,7 +292,7 @@ class TaskStats(BaseModel):
 
 class QueueStats(BaseModel):
     """Overall queue statistics and health metrics."""
-    timestamp: datetime = Field(default_factory=datetime.now)
+    timestamp: datetime = Field(default_factory=now_utc)
     
     # Task counts by state
     queued: int = 0
@@ -368,7 +370,7 @@ class TaskRunResult(BaseModel):
     worker_id: Optional[str] = None
     
     # Timing
-    started_at: datetime = Field(default_factory=datetime.now)
+    started_at: datetime = Field(default_factory=now_utc)
     completed_at: Optional[datetime] = None
     
     # Results
@@ -394,7 +396,7 @@ class DeadLetterTask(BaseModel):
     failure_reason: str
     failure_count: int
     payload: Dict[str, Any]  # Original task payload
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=now_utc)
     
     # Analysis metadata
     error_patterns: List[str] = []
@@ -497,7 +499,7 @@ class ProgressEvent(BaseModel):
         "escalated", "completed", "failed", "cancelled", "timeout",
         "resource_limit", "circuit_breaker"
     ]
-    timestamp: datetime = Field(default_factory=datetime.now)
+    timestamp: datetime = Field(default_factory=now_utc)
     
     # Event-specific data
     message: Optional[str] = None
@@ -528,8 +530,9 @@ class CircuitBreakerState(BaseModel):
         """Check if circuit breaker is open."""
         if self.state == "open" and self.opened_at:
             # Check if reset timeout has passed
-            reset_time = self.opened_at + timedelta(minutes=reset_timeout_minutes)
-            if datetime.now() >= reset_time:
+            opened = self.opened_at if self.opened_at.tzinfo else self.opened_at.replace(tzinfo=timezone.utc)
+            reset_time = opened + timedelta(minutes=reset_timeout_minutes)
+            if now_utc() >= reset_time:
                 return False  # Allow half-open state
             return True
         

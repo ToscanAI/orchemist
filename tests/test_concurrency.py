@@ -2,7 +2,7 @@
 
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -410,7 +410,7 @@ class TestWorkerPoolBackgroundTasks:
             
             # Manually trigger stale detection (background thread runs every 30s)
             stale_timeout = timedelta(minutes=config.queue.stale_worker_timeout_minutes)
-            now = datetime.now()
+            now = datetime.now(timezone.utc)
             with pool._lock:
                 stale_workers = [
                     wid for wid, w in pool._workers.items()
@@ -436,7 +436,7 @@ class TestWorkerPoolBackgroundTasks:
         
         # Manually age the worker
         worker = pool._workers[worker_id]
-        worker.last_heartbeat = datetime.now() - timedelta(hours=25)
+        worker.last_heartbeat = datetime.now(timezone.utc) - timedelta(hours=25)
         
         # Trigger cleanup manually (rather than waiting for thread)
         pool._cleanup_monitor()

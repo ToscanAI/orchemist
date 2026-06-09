@@ -10,7 +10,7 @@ adversary flagged at line ~139) computes without a ``float - datetime``
 """
 
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -49,9 +49,9 @@ class TestStartedAtCapturedAtEntry:
             lambda *a, **k: _fake_completed(),
         )
 
-        time_before = datetime.now()
+        time_before = datetime.now(timezone.utc)
         result = executor.execute(task, worker_id="w1")
-        time_after = datetime.now()
+        time_after = datetime.now(timezone.utc)
 
         assert result.state == TaskState.SUCCESS
         assert isinstance(result.started_at, datetime)
@@ -88,9 +88,9 @@ class TestStartedAtCapturedAtEntry:
         # must also be the entry datetime (the helper now takes a datetime).
         empty_task = TaskSpec(type=TaskType.REVIEW, payload={"prompt": ""})
 
-        time_before = datetime.now()
+        time_before = datetime.now(timezone.utc)
         result = executor.execute(empty_task, worker_id="w1")
-        time_after = datetime.now()
+        time_after = datetime.now(timezone.utc)
 
         assert result.state == TaskState.FAILED
         assert result.errors[0].code == "empty_prompt"

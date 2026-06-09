@@ -18,7 +18,7 @@ All tests use mocked executors via ``unittest.mock`` — no real API calls.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import List, Optional
@@ -64,8 +64,8 @@ def _mk_result(
         confidence=0.0 if state == TaskState.FAILED else 0.8,
         result={"output": text},
         errors=errors or [],
-        started_at=datetime.now(),
-        completed_at=datetime.now(),
+        started_at=datetime.now(timezone.utc),
+        completed_at=datetime.now(timezone.utc),
         model_used="mock-model",
         tokens_consumed=tokens,
         execution_time_seconds=0.01,

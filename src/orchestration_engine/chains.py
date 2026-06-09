@@ -323,11 +323,11 @@ def spawn_chain_runs(
             )
             # Mark as failed in DB so status queries don't stall
             try:
-                from datetime import datetime
+                from .timestamps import now_utc
                 db.update_pipeline_run(
                     child_run_id,
                     status="failed",
-                    completed_at=datetime.now().isoformat(),
+                    completed_at=now_utc().isoformat(),
                     error_message=f"Daemon spawn failed: {exc}",
                 )
             except Exception:

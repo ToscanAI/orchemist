@@ -6,7 +6,7 @@ Tracks task lifecycle events with timestamps and contextual information.
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Dict, Any, List, Optional, Iterator
 from uuid import uuid4
@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .db import Database
 from .schemas import TaskState
+from .timestamps import now_utc
 
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class ProgressEvent(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     task_id: str
     event_type: ProgressEventType
-    timestamp: datetime = Field(default_factory=datetime.now)
+    timestamp: datetime = Field(default_factory=now_utc)
     
     # Event-specific data
     message: Optional[str] = None
@@ -76,7 +77,7 @@ class TaskProgress(BaseModel):
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    last_update: datetime = Field(default_factory=datetime.now)
+    last_update: datetime = Field(default_factory=now_utc)
     
     # Current status
     current_message: Optional[str] = None
@@ -100,9 +101,12 @@ class TaskProgress(BaseModel):
         """Calculate current execution time."""
         if self.started_at is None:
             return None
-        
-        end_time = self.completed_at or datetime.now()
-        return (end_time - self.started_at).total_seconds()
+
+        started = self.started_at if self.started_at.tzinfo else self.started_at.replace(tzinfo=timezone.utc)
+        end_time = self.completed_at or now_utc()
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        return (end_time - started).total_seconds()
     
     @property
     def is_active(self) -> bool:
@@ -388,7 +392,7 @@ class ProgressTracker:
         Returns:
             Number of events removed
         """
-        cutoff = datetime.now() - timedelta(days=older_than_days)
+        cutoff = now_utc() - timedelta(days=older_than_days)
         
         result = self.db.execute("""
             DELETE FROM progress_events 

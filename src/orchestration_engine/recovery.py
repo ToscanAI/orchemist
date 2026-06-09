@@ -7,7 +7,7 @@ and circuit breaker patterns based on the error recovery documentation.
 import logging
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
@@ -21,6 +21,7 @@ from .errors import (
     RateLimitError,
 )
 from .schemas import TaskType, ModelTier, TaskState, select_model_tier
+from .timestamps import now_utc
 
 
 logger = logging.getLogger(__name__)
@@ -158,7 +159,8 @@ class CircuitBreakerState:
         """Check if circuit breaker is open."""
         if self.state == "open" and self.opened_at:
             # Check if reset timeout has passed
-            if datetime.now() - self.opened_at > timedelta(minutes=reset_timeout_minutes):
+            opened = self.opened_at if self.opened_at.tzinfo else self.opened_at.replace(tzinfo=timezone.utc)
+            if now_utc() - opened > timedelta(minutes=reset_timeout_minutes):
                 self.state = "half_open"
                 return False
             return True
@@ -174,11 +176,11 @@ class CircuitBreakerState:
     def record_failure(self, threshold: int) -> None:
         """Record failed execution."""
         self.failure_count += 1
-        self.last_failure = datetime.now()
-        
+        self.last_failure = now_utc()
+
         if self.failure_count >= threshold and self.state != "open":
             self.state = "open"
-            self.opened_at = datetime.now()
+            self.opened_at = now_utc()
 
 
 @dataclass
@@ -229,7 +231,7 @@ class TaskRetryState:
             backoff_max
         )
         
-        scheduled_at = datetime.now() + timedelta(seconds=backoff_seconds)
+        scheduled_at = now_utc() + timedelta(seconds=backoff_seconds)
         
         attempt = RetryAttempt(
             attempt_number=self.current_attempt + 1,
@@ -694,7 +696,7 @@ class RecoveryManager:
         Returns:
             List of tasks that should be retried now
         """
-        now = datetime.now()
+        now = now_utc()
         results = self.db.fetch_all("""
             SELECT DISTINCT task_id, MIN(scheduled_at) as next_retry
             FROM retry_attempts 

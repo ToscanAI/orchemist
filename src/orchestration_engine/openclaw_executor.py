@@ -41,6 +41,7 @@ from .model_fallback import ModelFallbackChain
 from .model_registry import prefixed_id
 from .recovery import CircuitBreakerState, ErrorType, ExecutorRetryConfig, classify_exception_error_type
 from .schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
+from .timestamps import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -721,7 +722,7 @@ class OpenClawExecutor(BaseExecutor):
 
         # ── 4c. Handle overall failure ───────────────────────────────────────
         if not succeeded:
-            elapsed = (datetime.now() - start_time).total_seconds()
+            elapsed = (now_utc() - start_time).total_seconds()
             result_data = {"partial_output": partial_output} if partial_output else {}
             return TaskResult(
                 task_id=task_id,
@@ -737,14 +738,14 @@ class OpenClawExecutor(BaseExecutor):
                     )
                 ],
                 started_at=start_time,
-                completed_at=datetime.now(),
+                completed_at=now_utc(),
                 model_used=model,
                 execution_time_seconds=elapsed,
                 tokens_consumed=partial_tokens,
             )
 
         # ── 4d. Post-success checks ──────────────────────────────────────────
-        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed = (now_utc() - start_time).total_seconds()
 
         if not output_text or (isinstance(output_text, str) and not output_text.strip()):
             return TaskResult(
@@ -761,7 +762,7 @@ class OpenClawExecutor(BaseExecutor):
                     )
                 ],
                 started_at=start_time,
-                completed_at=datetime.now(),
+                completed_at=now_utc(),
                 model_used=model,
                 execution_time_seconds=elapsed,
             )
@@ -776,7 +777,7 @@ class OpenClawExecutor(BaseExecutor):
             result=output_data,
             errors=[],
             started_at=start_time,
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             model_used=model,
             tokens_consumed=tokens_consumed,
             execution_time_seconds=elapsed,
@@ -866,7 +867,7 @@ class OpenClawExecutor(BaseExecutor):
                 f"[dry-run] Would execute: {raw_command}\n"
                 f"[dry-run] working_dir={working_dir}, allowed={allowed_commands}"
             )
-            elapsed = (datetime.now() - start_time).total_seconds()
+            elapsed = (now_utc() - start_time).total_seconds()
             self._write_command_output(output_dir, task_id, raw_command, mock_output, 0)
             return TaskResult(
                 task_id=task_id,
@@ -876,7 +877,7 @@ class OpenClawExecutor(BaseExecutor):
                 result={"output": mock_output, "dry_run": True, "command": raw_command},
                 errors=[],
                 started_at=start_time,
-                completed_at=datetime.now(),
+                completed_at=now_utc(),
                 model_used="local-subprocess",
                 execution_time_seconds=elapsed,
             )
@@ -911,7 +912,7 @@ class OpenClawExecutor(BaseExecutor):
             )
 
         combined_output = (proc.stdout or "") + (proc.stderr or "")
-        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed = (now_utc() - start_time).total_seconds()
 
         # ── Write output file ─────────────────────────────────────────
         self._write_command_output(
@@ -934,7 +935,7 @@ class OpenClawExecutor(BaseExecutor):
                 },
                 errors=[],
                 started_at=start_time,
-                completed_at=datetime.now(),
+                completed_at=now_utc(),
                 model_used="local-subprocess",
                 execution_time_seconds=elapsed,
             )
@@ -962,7 +963,7 @@ class OpenClawExecutor(BaseExecutor):
                     )
                 ],
                 started_at=start_time,
-                completed_at=datetime.now(),
+                completed_at=now_utc(),
                 model_used="local-subprocess",
                 execution_time_seconds=elapsed,
             )
@@ -1024,7 +1025,7 @@ class OpenClawExecutor(BaseExecutor):
                 exit_code=0,
             )
             test_runner.write_acceptance_results(mock_result, output_dir)
-            elapsed = (datetime.now() - start_time).total_seconds()
+            elapsed = (now_utc() - start_time).total_seconds()
             return TaskResult(
                 task_id=task_id,
                 task_type=task.type,
@@ -1033,7 +1034,7 @@ class OpenClawExecutor(BaseExecutor):
                 result={"text": "[dry-run] acceptance_run: 3 passed, 0 failed"},
                 errors=[],
                 started_at=start_time,
-                completed_at=datetime.now(),
+                completed_at=now_utc(),
                 model_used="local-subprocess",
                 execution_time_seconds=elapsed,
             )
@@ -1048,7 +1049,7 @@ class OpenClawExecutor(BaseExecutor):
 
         test_runner.write_acceptance_results(result, output_dir)
 
-        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed = (now_utc() - start_time).total_seconds()
         all_passed = (result.failed == 0 and result.errors == 0 and result.total > 0)
         state = TaskState.SUCCESS if all_passed else TaskState.FAILED
 
@@ -1069,7 +1070,7 @@ class OpenClawExecutor(BaseExecutor):
             result={"text": summary},
             errors=[],
             started_at=start_time,
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             model_used="local-subprocess",
             execution_time_seconds=elapsed,
         )
@@ -1092,9 +1093,9 @@ class OpenClawExecutor(BaseExecutor):
             result={"text": ""},
             errors=[TaskError(code=code, message=message, severity="error")],
             started_at=start_time,
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             model_used="local-subprocess",
-            execution_time_seconds=(datetime.now() - start_time).total_seconds(),
+            execution_time_seconds=(now_utc() - start_time).total_seconds(),
         )
 
     def _write_command_output(
@@ -1145,9 +1146,9 @@ class OpenClawExecutor(BaseExecutor):
             result={},
             errors=[TaskError(code=code, message=message, severity="error")],
             started_at=start_time,
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             model_used="local-subprocess",
-            execution_time_seconds=(datetime.now() - start_time).total_seconds(),
+            execution_time_seconds=(now_utc() - start_time).total_seconds(),
         )
 
     # ------------------------------------------------------------------
@@ -1703,7 +1704,7 @@ class OpenClawExecutor(BaseExecutor):
         start_time: datetime,
     ) -> TaskResult:
         """Return a mock successful TaskResult without any HTTP calls."""
-        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed = (now_utc() - start_time).total_seconds()
         mock_output = (
             f"[dry-run] OpenClaw sub-agent would execute via model {model}. "
             f"Phase payload keys: {list(task.payload.keys())}."
@@ -1716,7 +1717,7 @@ class OpenClawExecutor(BaseExecutor):
             result={"text": mock_output, "dry_run": True},
             errors=[],
             started_at=start_time,
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             model_used=model,
             tokens_consumed=0,
             execution_time_seconds=elapsed,

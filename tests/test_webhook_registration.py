@@ -331,8 +331,8 @@ class TestCheckSuiteWebhookEndToEnd:
 
         assert response.status_code == 200
         # Verify an invocation was recorded
-        from datetime import datetime, timedelta
-        since = datetime.now() - timedelta(seconds=10)
+        from datetime import datetime, timedelta, timezone
+        since = datetime.now(timezone.utc) - timedelta(seconds=10)
         count = db.count_webhook_invocations_since(_TRIGGER_ID, since)
         assert count >= 1
 

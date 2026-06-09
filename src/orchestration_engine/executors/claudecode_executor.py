@@ -20,6 +20,7 @@ from datetime import datetime
 from typing import Any
 
 from ..schemas import TaskError, TaskResult, TaskSpec, TaskState, TaskType
+from ..timestamps import now_utc
 from ._common import BaseExecutor
 
 logger = logging.getLogger(__name__)
@@ -122,7 +123,7 @@ class ClaudeCodeExecutor(BaseExecutor):
                 f"MCP session error: {exc}"
             )
 
-        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed = (now_utc() - start_time).total_seconds()
         return TaskResult(
             task_id=task_id,
             task_type=task.type,
@@ -131,7 +132,7 @@ class ClaudeCodeExecutor(BaseExecutor):
             result={"output": result_text},
             errors=[],
             started_at=start_time,
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             model_used="claude-code-session",
             execution_time_seconds=elapsed,
         )
@@ -215,7 +216,7 @@ class ClaudeCodeExecutor(BaseExecutor):
                 )
             ],
             started_at=start_time,
-            completed_at=(completed_at := datetime.now()),
+            completed_at=(completed_at := now_utc()),
             model_used="claude-code-session",
             execution_time_seconds=(completed_at - start_time).total_seconds(),
         )
