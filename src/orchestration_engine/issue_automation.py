@@ -1092,29 +1092,57 @@ def create_pr_for_issue(
 # ---------------------------------------------------------------------------
 
 
+def _truncate_title(text: str, limit: int = 80) -> str:
+    """Truncate *text* to at most *limit* chars without splitting a word.
+
+    If *text* is already within *limit*, it is returned unchanged (stripped).
+    Otherwise truncate to *limit*, then drop back to the last whitespace so the
+    final word is not cut mid-token; the result is right-stripped. If there is no
+    whitespace within the window (a single very long token), fall back to a hard
+    *limit*-char slice so the title is still bounded.
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    truncated = text[:limit]
+    cut = truncated.rfind(' ')
+    if cut > 0:
+        truncated = truncated[:cut]
+    return truncated.rstrip()
+
+
 def create_content_pr(
     repo: str,
     branch_name: str,
     topic: str,
     body: str,
     run_id: str,
+    issue_number: Optional[int] = None,
+    prefix: str = "content",
 ) -> Optional[str]:
     """Open a content pull request on *repo* for *branch_name*.
 
     Unlike :func:`create_pr_for_issue`, this function:
 
     - Does NOT require an issue number.
-    - Uses the content-appropriate title format ``content: {topic}``.
-    - Does NOT append ``Closes #N`` to the body.
+    - Uses a configurable title format ``{prefix}: {topic}`` (default
+      ``content:``; pass ``prefix="docs"`` for docs pipelines).
+    - Appends ``Closes #N`` to the body ONLY when *issue_number* is provided.
 
     Used for content-category and docs-category pipelines (Issue #578).
 
     Args:
-        repo:        Repository slug (e.g. ``"owner/repo"``).
-        branch_name: Source branch name for the PR head.
-        topic:       Content topic — used in the PR title (truncated to 80 chars).
-        body:        PR description body (Markdown).
-        run_id:      Pipeline run ID appended as a footer for traceability.
+        repo:         Repository slug (e.g. ``"owner/repo"``).
+        branch_name:  Source branch name for the PR head.
+        topic:        Content topic — used in the PR title (truncated word-safe
+                      to 80 chars).
+        body:         PR description body (Markdown).
+        run_id:       Pipeline run ID appended as a footer for traceability.
+        issue_number: Optional GitHub issue number. When set, ``Closes #N`` is
+                      appended to the body (dedup-guarded) so GitHub links and
+                      closes the issue on merge. Default ``None`` (no ``Closes``).
+        prefix:       PR title prefix; the title is ``{prefix}: {topic}``.
+                      Default ``"content"``.
 
     Returns:
         The PR HTML URL string on success, ``None`` on any failure — errors
@@ -1122,9 +1150,13 @@ def create_content_pr(
     """
     import subprocess
 
-    topic_truncated = (topic[:80].strip()) if topic else 'content'
-    title = f"content: {topic_truncated}"
+    topic_truncated = _truncate_title(topic.strip()) if topic else 'content'
+    title = f"{prefix}: {topic_truncated}"
     pr_body = f"{body}\n\n---\n*Run ID: `{run_id}`*"
+    if issue_number is not None:
+        _closes_marker = f"Closes #{issue_number}"
+        if _closes_marker not in pr_body:
+            pr_body = f"{pr_body}\n\n{_closes_marker}"
 
     try:
         result = subprocess.run(

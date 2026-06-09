@@ -2002,6 +2002,8 @@ def pipeline_launch(
         start_new_session=True,
         stdout=log_fh,
         stderr=log_fh,
+        env={**os.environ, 'PYTHONUNBUFFERED': '1'},
+        bufsize=0,
     )
     log_fh.close()
 

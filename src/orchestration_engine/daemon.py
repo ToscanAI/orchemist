@@ -543,6 +543,12 @@ def run_daemon(run_id: str, db_path: str) -> None:
         _write_phase_event(db, run_id, phase_id, "phase_started",
                           extra_metadata=start_metadata)
 
+        # Persist the running phase so `orch status` reflects it immediately
+        # (#516). Mirrors the current_phase write in _on_phase_complete
+        # (daemon.py:606-611) but touches ONLY current_phase — completed_phases
+        # and phase_outputs are unchanged at phase START.
+        db.update_pipeline_run(run_id, current_phase=phase_id)
+
     def _on_phase_complete(phase_id: str, phase_result: dict) -> None:
         """Update DB after each phase completes."""
         if _shutdown_requested:
@@ -2398,7 +2404,8 @@ def _post_github_result_hook(
             _content_topic: str = (
                 initial_input.get('topic')
                 or initial_input.get('title')
-                or 'content'
+                or initial_input.get('doc_title')
+                or f"pipeline run {run_id}"
             )
             _last_text = ""
             if phase_outputs:
@@ -2410,6 +2417,8 @@ def _post_github_result_hook(
                 )[:500]
             _pr_body = _last_text or f"Automated content pipeline run `{run_id}`."
 
+            _pr_prefix = 'docs' if _normalised_category == 'docs' else 'content'
+
             try:
                 url = create_content_pr(
                     repo=_content_repo,
@@ -2417,6 +2426,8 @@ def _post_github_result_hook(
                     topic=_content_topic,
                     body=_pr_body,
                     run_id=run_id,
+                    issue_number=initial_input.get('issue_number'),
+                    prefix=_pr_prefix,
                 )
                 if url:
                     logger.info(
