@@ -5,6 +5,7 @@ and circuit breaker patterns based on the error recovery documentation.
 """
 
 import logging
+import sqlite3
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -656,9 +657,14 @@ class RecoveryManager:
     
     def _load_circuit_breaker_state(self, key: str) -> CircuitBreakerState:
         """Load circuit breaker state from database."""
-        rows = self.db.fetch_all("""
-            SELECT * FROM circuit_breaker_state WHERE name = ?
-        """, [key])
+        # Serialize the read against concurrent circuit-breaker writes. Under a
+        # shared-cache in-memory DB (tests / dry-run) table-level locking would
+        # otherwise raise ``OperationalError: database table is locked`` here
+        # (see db._locked / db.py:153-159). For file DBs this is a no-op.
+        with self.db._locked():
+            rows = self.db.fetch_all("""
+                SELECT * FROM circuit_breaker_state WHERE name = ?
+            """, [key])
         row = rows[0] if rows else None
         
         if row:
@@ -681,13 +687,20 @@ class RecoveryManager:
     def _save_circuit_breaker_state(self, key: str) -> None:
         """Save circuit breaker state to database (best-effort, tolerates DB contention)."""
         cb = self._circuit_breakers[key]
-        
+
         try:
-            self.db.execute("""
-                INSERT OR REPLACE INTO circuit_breaker_state (name, failure_count, last_failure, opened_at, state)
-                VALUES (?, ?, ?, ?, ?)
-            """, [cb.name, cb.failure_count, cb.last_failure, cb.opened_at, cb.state])
-        except Exception as e:
+            # Serialize the write through transaction() so it is ordered against
+            # concurrent circuit-breaker access (shared-cache table-level locking)
+            # and rolls back on failure. Use the yielded conn, not self.db.execute,
+            # to avoid re-entering get_connection and double-committing.
+            with self.db.transaction() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO circuit_breaker_state (name, failure_count, last_failure, opened_at, state)
+                    VALUES (?, ?, ?, ?, ?)
+                """, [cb.name, cb.failure_count, cb.last_failure, cb.opened_at, cb.state])
+        except sqlite3.OperationalError as e:
+            # Best-effort tolerance for transient DB contention only; genuine
+            # programming errors (schema drift, etc.) are no longer swallowed.
             logger.warning(f"Failed to persist circuit breaker state for {key}: {e}")
     
     def _record_retry_attempt(self, task_id: str, attempt: RetryAttempt) -> None:

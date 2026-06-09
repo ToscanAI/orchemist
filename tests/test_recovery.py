@@ -627,3 +627,68 @@ class TestRecoveryIntegration:
             if should_retry:
                 assert retry_at is not None
                 assert next_model is not None
+
+    def test_concurrent_failure_handling_repeat_stress(self, test_db, test_config):
+        """Regression guard for #938: serialized circuit-breaker state access.
+
+        Repeats the exact 3-thread x 3-task ``handle_task_failure`` scenario from
+        ``test_concurrent_failure_handling`` ``N`` times to deterministically trip
+        the shared-cache SQLite ``database table is locked: circuit_breaker_state``
+        flake. On the unfixed code the circuit-breaker read/write bypass the DB
+        ``_write_lock`` serialization, so under contention a worker thread either
+        has its write silently swallowed (lost write -> ``len(results) < 9``) or
+        hits an unhandled ``OperationalError`` on the read path (dead thread ->
+        ``len(results) < 9``). Once the read is wrapped in ``db._locked()`` and the
+        write in ``db.transaction()``, every iteration yields exactly 9 results
+        with no lock error.
+
+        Each iteration uses a fresh ``RecoveryManager`` and a fresh ``results``
+        list so iterations are independent and a dropped thread cannot be masked
+        by accumulated state. Worker-thread exceptions are captured into a shared
+        ``errors`` list because threads do not propagate exceptions to the main
+        thread by default.
+        """
+        import threading
+
+        # N is sized so the timing-dependent shared-cache table lock is tripped
+        # on essentially every pre-fix run (the race does not fire every iteration,
+        # so a generous repeat count is needed to make the guard a reliable
+        # reproducer). Each iteration is a sub-millisecond 3x3 stress run, so this
+        # stays fast post-fix.
+        N = 200
+
+        for _ in range(N):
+            manager = RecoveryManager(test_db, test_config)
+            results = []
+            errors = []
+
+            def handle_failures(task_prefix):
+                try:
+                    for i in range(3):
+                        task_id = f"{task_prefix}-{i}"
+                        result = manager.handle_task_failure(
+                            task_id, TaskType.CONTENT, "Concurrent error", "sonnet-4"
+                        )
+                        results.append((task_id, result))
+                except Exception as exc:  # capture so the test (not a dead thread) fails
+                    errors.append(exc)
+
+            threads = []
+            for i in range(3):
+                thread = threading.Thread(target=handle_failures, args=(f"thread{i}",))
+                threads.append(thread)
+                thread.start()
+
+            for thread in threads:
+                thread.join()
+
+            # No worker thread may have raised (e.g. the read-path lock error).
+            assert errors == [], f"worker thread(s) raised: {errors!r}"
+            # The lock error must never surface even via a captured/logged message.
+            for exc in errors:
+                assert "database table is locked" not in str(exc)
+            # No write may be silently lost: 3 threads x 3 tasks = 9 results.
+            assert len(results) == 9, (
+                f"expected 9 results, got {len(results)} "
+                f"(lost write / dead thread under circuit_breaker_state contention)"
+            )
