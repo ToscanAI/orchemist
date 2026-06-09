@@ -27,6 +27,7 @@ import yaml
 
 from orchestration_engine.db import default_db_path, parse_json_list
 from orchestration_engine.env_utils import env_int
+from orchestration_engine.issue_automation import generate_pipeline_input
 
 logger = logging.getLogger(__name__)
 
@@ -1575,18 +1576,25 @@ def create_api_app(
 
         # 4b. Extended validation — returns (errors, warnings) tuple.
         # ``raw`` is the parsed YAML dict captured above (not discarded as before).
-        # For PUT (update), extended validation errors are treated as warnings
-        # (non-blocking) — a user template update with advisory issues is still
-        # accepted. Only structural errors from validate_template() block the update.
+        # Extended-validation errors (e.g. missing required documentation fields)
+        # are blocking and return 422 — mirroring create_template (POST) so the two
+        # endpoints share one contract. Advisory warnings are non-blocking and are
+        # surfaced on the 200 success response below.
         ext_errors: List[str] = []
         warnings: List[str] = []
         try:
             ext_errors, warnings = engine.validate_template_extended(template, raw)
         except Exception as exc:
-            warnings = [f"Extended validation warning: {exc}"]
+            ext_errors = [f"Extended validation error: {exc}"]
 
-        # Treat extended errors as additional warnings for PUT (non-blocking).
-        warnings = ext_errors + warnings
+        if ext_errors:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Template extended validation failed",
+                    "errors": ext_errors,
+                },
+            )
 
         # 5. Overwrite existing file
         existing_path.write_text(req.content, encoding="utf-8")
@@ -3940,7 +3948,6 @@ def create_api_app(
             - **400** when the request body is invalid.
         """
         from orchestration_engine.issue_automation import (
-            generate_pipeline_input,
             post_github_comment,
             remove_github_label,
         )

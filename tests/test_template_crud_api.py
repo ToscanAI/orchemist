@@ -60,6 +60,23 @@ phases:
       Process updated input: {input}
 """
 
+# Structurally valid (passes validate_template) and id matches the seeded
+# template, but OMITS the required documentation fields (description, author,
+# version). validate_template_extended returns these as blocking errors, so a
+# PUT with this content must return 422 (Issue #642 — regression from PR #634
+# that previously downgraded these errors to non-blocking warnings → 200).
+DOC_INCOMPLETE_TEMPLATE = """\
+id: test-crud-template
+name: "Doc-Incomplete Template"
+phases:
+  - id: phase-one
+    name: "Phase One"
+    model_tier: haiku
+    task_type: generate
+    prompt: |
+      Process the input: {input}
+"""
+
 INVALID_YAML = "this: is: not: valid: yaml: [unclosed"
 
 INVALID_TEMPLATE = """\
@@ -542,6 +559,63 @@ class TestUpdateTemplate:
             json={"content": invalid_with_matching_id},
         )
         assert dest.read_text(encoding="utf-8") == original_content
+
+    # -- Extended-validation regression coverage (Issue #642) --------------
+    # PR #634 made PUT fold extended-validation errors (missing required doc
+    # fields) into advisory warnings and return 200. The fix mirrors POST
+    # create_template: extended errors are blocking and return 422. These tests
+    # pin that contract so the regression cannot silently return.
+
+    def test_update_doc_incomplete_returns_422(self, crud_client):
+        """PUT content missing required doc fields must return 422, not 200 (#642)."""
+        client, user_dir = crud_client
+        self._write_user_template(user_dir)
+        res = client.put(
+            "/api/v1/templates/test-crud-template",
+            json={"content": DOC_INCOMPLETE_TEMPLATE},
+        )
+        assert res.status_code == 422
+
+    def test_update_doc_incomplete_detail_has_errors_list(self, crud_client):
+        """The 422 detail mirrors create_template: {message, errors:[...]} (#642)."""
+        client, user_dir = crud_client
+        self._write_user_template(user_dir)
+        detail = client.put(
+            "/api/v1/templates/test-crud-template",
+            json={"content": DOC_INCOMPLETE_TEMPLATE},
+        ).json()["detail"]
+        assert isinstance(detail, dict)
+        assert detail["message"] == "Template extended validation failed"
+        assert isinstance(detail["errors"], list)
+        assert len(detail["errors"]) > 0
+
+    def test_update_doc_incomplete_does_not_overwrite_file(self, crud_client):
+        """A 422 from extended validation must not overwrite the existing file (#642)."""
+        client, user_dir = crud_client
+        dest = self._write_user_template(user_dir)
+        original_content = dest.read_text(encoding="utf-8")
+        client.put(
+            "/api/v1/templates/test-crud-template",
+            json={"content": DOC_INCOMPLETE_TEMPLATE},
+        )
+        assert dest.read_text(encoding="utf-8") == original_content
+
+    def test_update_warnings_only_still_returns_200(self, crud_client):
+        """Advisory warnings (unknown model_tier) must NOT block the update (#642)."""
+        client, user_dir = crud_client
+        self._write_user_template(user_dir)
+        # Doc-complete but uses an unknown model_tier → advisory warning only.
+        warnings_only = UPDATED_TEMPLATE.replace(
+            "model_tier: haiku", "model_tier: unknown-tier-xyz"
+        )
+        res = client.put(
+            "/api/v1/templates/test-crud-template",
+            json={"content": warnings_only},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert isinstance(body["warnings"], list)
+        assert len(body["warnings"]) > 0
 
 
 # ---------------------------------------------------------------------------
