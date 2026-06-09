@@ -1347,8 +1347,15 @@ class Database:
                 failure_reason,
                 task_row['retry_count'],
                 task_row['payload'],
-                json.dumps([]),  # TODO: Analyze error patterns
-                json.dumps([])   # TODO: Generate suggested fixes
+                # Intentionally empty: move_to_dead_letter() has only a free-text
+                # failure_reason and performs no analysis. The namesake error_patterns
+                # table (recovery.py) is a separate frequency store and is not joined
+                # here, so no per-row source exists (#932).
+                json.dumps([]),
+                # Intentionally empty: suggested_fixes has no producer anywhere in the
+                # codebase. Populating it would be net-new analysis/suggestion work,
+                # out of scope (#932).
+                json.dumps([])
             ))
             
             # Update original task status
@@ -1418,7 +1425,11 @@ class Database:
             'type_breakdown': type_counts,
             'avg_execution_time_seconds': avg_execution_time,
             'dead_letter_count': dead_letter_count,
-            'active_workers': 0,  # TODO: Track active workers
+            # Always 0 here: live worker count is runtime/process state with no DB
+            # source. The sole consumer (queue.QueueManager.get_queue_stats) overrides
+            # this with a heartbeat-based count, so this value is never surfaced to
+            # users (#932).
+            'active_workers': 0,
             'max_workers': 8,
         }
     

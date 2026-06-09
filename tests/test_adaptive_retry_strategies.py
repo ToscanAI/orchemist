@@ -374,15 +374,37 @@ class TestBuildRetryInput:
             engine.build_retry_input(plan, run, diagnosis=None)
 
     # ------------------------------------------------------------------
-    # Strategy dispatch: SPLIT_TASK (deferred)
+    # Strategy dispatch: unknown/out-of-enum strategy is rejected loudly (#932)
     # ------------------------------------------------------------------
 
-    def test_split_task_falls_back_to_unchanged(self, engine):
-        plan = _plan(RetryStrategy.SPLIT_TASK)
+    def test_unknown_strategy_raises(self, engine):
+        # #932: the dead SPLIT_TASK silent-fallback was replaced by a loud guard.
+        # A RetryPlan carrying an out-of-enum strategy must now raise rather than
+        # silently degrade to RETRY_UNCHANGED. (SPLIT_TASK no longer exists, so we
+        # fabricate an unknown strategy value here.)
+        class _UnknownStrategy:
+            value = "split_task"
+
+        plan = _plan(RetryStrategy.RETRY_UNCHANGED)
+        plan.strategy = _UnknownStrategy()  # bypass the enum to simulate an unknown value
         run = _run({"issue_title": "Fix"})
-        result = engine.build_retry_input(plan, run)
-        # Must return a valid dict without raising
-        assert result == {"issue_title": "Fix"}
+        with pytest.raises(ValueError, match="Unsupported retry strategy"):
+            engine.build_retry_input(plan, run)
+
+    def test_every_remaining_strategy_dispatches_without_raising(self, engine):
+        # #932: with SPLIT_TASK gone, every RetryStrategy the planner can emit has
+        # an explicit dispatch branch — none falls into the loud else-guard.
+        run = _run({"issue_title": "Fix"})
+        diagnosis = _diagnosis()
+        for strategy in RetryStrategy:
+            plan = _plan(
+                strategy,
+                model_override="claude-sonnet-4-6",
+                extra_context="more context",
+                timeout_multiplier=2.0,
+            )
+            result = engine.build_retry_input(plan, run, diagnosis=diagnosis)
+            assert isinstance(result, dict)
 
     # ------------------------------------------------------------------
     # Isolation: original_run is not mutated

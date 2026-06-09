@@ -75,18 +75,28 @@ def engine() -> AdaptiveRetryEngine:
 
 
 class TestRetryStrategyEnum:
-    def test_all_six_values_exist(self):
-        assert len(RetryStrategy) == 6
+    def test_all_five_values_exist(self):
+        # SPLIT_TASK was removed (#932): it was unreachable in production and
+        # only silently degraded to RETRY_UNCHANGED.
+        assert len(RetryStrategy) == 5
 
     def test_is_str_subclass(self):
         assert isinstance(RetryStrategy.ESCALATE_MODEL, str)
 
     def test_individual_values(self):
         expected = {
-            "escalate_model", "add_context", "split_task",
+            "escalate_model", "add_context",
             "rephrase_prompt", "retry_unchanged", "increase_timeout",
         }
         assert {s.value for s in RetryStrategy} == expected
+
+    def test_split_task_removed(self):
+        # Regression guard (#932): the dead RetryStrategy.SPLIT_TASK footgun must
+        # not come back. (Remediation.SPLIT_TASK is a separate, kept advisory enum.)
+        assert not hasattr(RetryStrategy, "SPLIT_TASK")
+        assert "split_task" not in {s.value for s in RetryStrategy}
+        with pytest.raises(ValueError):
+            RetryStrategy("split_task")
 
     def test_from_string_roundtrip(self):
         assert RetryStrategy("escalate_model") is RetryStrategy.ESCALATE_MODEL
