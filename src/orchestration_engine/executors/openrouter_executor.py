@@ -27,7 +27,6 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -35,6 +34,7 @@ from typing import Any, Dict, List, Optional
 from ..command_security import check_shell_command
 from ..config import _DEFAULT_OR_TIMEOUT
 from ..model_registry import prefixed_id
+from ..timestamps import now_utc
 from ..schemas import (
     ModelTier,
     TaskError,
@@ -527,8 +527,8 @@ class OpenRouterExecutor(BaseExecutor):
             execution_time_seconds=duration,
             tokens_consumed=total_tokens,
             cost_usd=total_cost,
-            started_at=datetime.now(),
-            completed_at=datetime.now(),
+            started_at=now_utc(),
+            completed_at=now_utc(),
             metadata={
                 "worker_id": worker_id,
                 "prompt_tokens": total_prompt_tokens,
@@ -684,7 +684,7 @@ class OpenRouterExecutor(BaseExecutor):
                 confidence=0.0,
                 result={"output": security_message}, model_used="local-subprocess",
                 execution_time_seconds=duration, tokens_consumed=0, cost_usd=Decimal("0"),
-                started_at=datetime.now(), completed_at=datetime.now(),
+                started_at=now_utc(), completed_at=now_utc(),
                 errors=[TaskError(
                     code=error_code,
                     message=security_message,
@@ -738,7 +738,7 @@ class OpenRouterExecutor(BaseExecutor):
             confidence=1.0 if state == TaskState.SUCCESS else 0.0,
             result={"output": output_text}, model_used="local-subprocess",
             execution_time_seconds=duration, tokens_consumed=0, cost_usd=Decimal("0"),
-            started_at=datetime.now(), completed_at=datetime.now(),
+            started_at=now_utc(), completed_at=now_utc(),
             errors=errors if errors else [],
             metadata={
                 "worker_id": worker_id, "exit_code": exit_code,
@@ -901,8 +901,8 @@ class OpenRouterExecutor(BaseExecutor):
             execution_time_seconds=duration,
             tokens_consumed=total_tokens,
             cost_usd=Decimal(str(total_cost)),
-            started_at=datetime.now(),
-            completed_at=datetime.now(),
+            started_at=now_utc(),
+            completed_at=now_utc(),
             metadata={
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,

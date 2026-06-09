@@ -45,6 +45,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .review_parser import _ISSUE_RE, parse_review_output
+from .timestamps import now_utc
 
 __all__ = [
     "AuditIssue",
@@ -170,7 +171,7 @@ class AuditResult:
 
     def __post_init__(self) -> None:
         if self.created_at is None:
-            self.created_at = datetime.utcnow().isoformat()
+            self.created_at = now_utc().isoformat()
         # Clamp accuracy score to [0, 1]
         self.reviewer_accuracy_score = max(
             0.0, min(1.0, float(self.reviewer_accuracy_score))

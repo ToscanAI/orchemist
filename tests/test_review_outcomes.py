@@ -71,7 +71,7 @@ def _outcome_data(run_id: str, phase_id: str = "review", **kwargs) -> Dict[str, 
         "verdict": "APPROVE",
         "issues_found": [],
         "fix_verified": False,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     base.update(kwargs)
     return base

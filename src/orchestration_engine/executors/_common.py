@@ -31,6 +31,7 @@ from uuid import uuid4
 from ..cost_tracker import PricingTable
 from ..runner import TaskExecutor
 from ..schemas import TaskSpec
+from ..timestamps import now_utc
 
 __all__ = ["BaseExecutor", "_PRICING"]
 
@@ -78,4 +79,4 @@ class BaseExecutor(TaskExecutor):
         Centralising this makes the ``started_at``-at-entry semantics testable
         (see the Gemini ``started_at`` fix, spec §1.6).
         """
-        return datetime.now()
+        return now_utc()

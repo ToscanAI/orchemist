@@ -395,8 +395,8 @@ class TestCircuitBreakerEscalation:
         cb = _open_cb_for(sonnet_model)
         cfg = ExecutorRetryConfig()
         # Backdate opened_at by reset_minutes + 1 so is_open() now reports False.
-        from datetime import datetime, timedelta
-        cb.opened_at = datetime.now() - timedelta(
+        from datetime import datetime, timedelta, timezone
+        cb.opened_at = datetime.now(timezone.utc) - timedelta(
             minutes=(cfg.circuit_breaker_reset_seconds // 60) + 1
         )
 

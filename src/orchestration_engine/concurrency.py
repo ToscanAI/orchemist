@@ -16,6 +16,7 @@ from enum import Enum
 from .db import Database
 from .config import EngineConfig
 from .schemas import TaskSpec, TaskState
+from .timestamps import now_utc
 
 
 logger = logging.getLogger(__name__)
@@ -43,9 +44,9 @@ class WorkerInfo:
     
     def __post_init__(self):
         if self.created_at is None:
-            self.created_at = datetime.now()
+            self.created_at = now_utc()
         if self.last_heartbeat is None:
-            self.last_heartbeat = datetime.now()
+            self.last_heartbeat = now_utc()
 
 
 class ResourceLimits:
@@ -56,7 +57,7 @@ class ResourceLimits:
         self._lock = threading.Lock()
         self._current_sessions = 0
         self._daily_cost_usd = 0.0
-        self._last_reset = datetime.now().date()
+        self._last_reset = now_utc().date()
     
     def check_session_limit(self) -> bool:
         """Check if we can create a new session."""
@@ -84,7 +85,7 @@ class ResourceLimits:
         """Check if task would exceed daily budget."""
         with self._lock:
             # Reset daily counter if new day
-            today = datetime.now().date()
+            today = now_utc().date()
             if today != self._last_reset:
                 self._daily_cost_usd = 0.0
                 self._last_reset = today
@@ -306,7 +307,7 @@ class WorkerPool:
             worker.state = WorkerState.RUNNING
             worker.session_id = session_id
             worker.last_activity = f"Started executing task {worker.assigned_task_id}"
-            worker.last_heartbeat = datetime.now()
+            worker.last_heartbeat = now_utc()
             
             # Acquire session resource
             if session_id:
@@ -353,7 +354,7 @@ class WorkerPool:
             worker.assigned_task_id = None
             worker.session_id = None
             worker.last_activity = f"Completed task {task_id} ({'success' if success else 'failed'})"
-            worker.last_heartbeat = datetime.now()
+            worker.last_heartbeat = now_utc()
             
             # Remove task assignment
             if task_id and task_id in self._task_assignments:
@@ -384,7 +385,7 @@ class WorkerPool:
             if not worker or worker.state == WorkerState.TERMINATED:
                 return False
             
-            worker.last_heartbeat = datetime.now()
+            worker.last_heartbeat = now_utc()
             if activity:
                 worker.last_activity = activity
             
@@ -426,7 +427,7 @@ class WorkerPool:
             # Mark as terminated
             worker.state = WorkerState.TERMINATED
             worker.last_activity = f"Terminated: {reason or 'Manual termination'}"
-            worker.last_heartbeat = datetime.now()
+            worker.last_heartbeat = now_utc()
             
             # Update database
             self.db.execute("""
@@ -462,7 +463,7 @@ class WorkerPool:
                     "created_at": worker.created_at.isoformat(),
                     "last_heartbeat": worker.last_heartbeat.isoformat(),
                     "last_activity": worker.last_activity,
-                    "heartbeat_age_seconds": (datetime.now() - worker.last_heartbeat).total_seconds()
+                    "heartbeat_age_seconds": (now_utc() - worker.last_heartbeat).total_seconds()
                 }
             else:
                 # Return summary of all workers
@@ -475,7 +476,7 @@ class WorkerPool:
                         "worker_id": worker.worker_id,
                         "assigned_task_id": worker.assigned_task_id,
                         "session_id": worker.session_id,
-                        "heartbeat_age_seconds": (datetime.now() - worker.last_heartbeat).total_seconds()
+                        "heartbeat_age_seconds": (now_utc() - worker.last_heartbeat).total_seconds()
                     })
                 
                 return {
@@ -503,7 +504,7 @@ class WorkerPool:
         
         while self._running:
             try:
-                now = datetime.now()
+                now = now_utc()
                 stale_workers = []
                 
                 with self._lock:
@@ -558,7 +559,7 @@ class WorkerPool:
         
         while self._running:
             try:
-                cutoff = datetime.now() - cleanup_age
+                cutoff = now_utc() - cleanup_age
                 
                 with self._lock:
                     to_remove = [

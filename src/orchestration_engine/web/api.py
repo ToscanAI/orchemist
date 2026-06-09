@@ -124,7 +124,7 @@ def _check_rate_limit(trigger_id: str, rate_limit: int, db: Any) -> bool:
     """
     if rate_limit == 0:
         return False  # Unlimited
-    since = datetime.now() - timedelta(seconds=60)
+    since = datetime.now(timezone.utc) - timedelta(seconds=60)
     count = db.count_webhook_invocations_since(trigger_id, since)
     return count >= rate_limit
 
@@ -408,6 +408,7 @@ def create_api_app(
     from orchestration_engine.timestamps import (
         normalize_row as _normalize_row,
         normalize_ts as _normalize_ts,
+        now_utc as _now_utc,
     )
     from orchestration_engine.webhooks import InputMapper, TriggerMatcher
 
@@ -972,7 +973,7 @@ def create_api_app(
             output_dir = Path(output_dir_override)
         else:
             _safe_id = re.sub(r'[^\w\-]', '_', template.id)
-            _ts = datetime.now().strftime('%Y%m%d-%H%M%S')
+            _ts = _now_utc().strftime('%Y%m%d-%H%M%S')
             output_dir = Path(f"./output/{_safe_id}-{_ts}-{run_id}")
         output_dir.mkdir(parents=True, exist_ok=True)
 

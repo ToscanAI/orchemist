@@ -33,6 +33,7 @@ from .output_parser import extract_and_write, parse_output
 from .review_parser import parse_review_output, ReviewOutcome
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
+from .timestamps import now_utc
 from .transitions import PhaseOutcome, determine_outcome, extract_verdict, _VERDICT_KEYWORDS
 
 logger = logging.getLogger(__name__)
@@ -969,7 +970,7 @@ class PhaseSequencer:
                 verdict=parsed.verdict,
                 issues_found=issues_list,
                 fix_verified=False,
-                created_at=datetime.utcnow().isoformat(),
+                created_at=now_utc().isoformat(),
             )
 
             self.db.insert_review_outcome({

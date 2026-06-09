@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional
 
 from .command_security import DANGEROUS_PATTERNS
 from .schemas import TaskResult, TaskSpec, TaskState, TaskType
+from .timestamps import now_utc
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ class CommandExecutor:
         Raises:
             ValueError: When no command can be resolved from the payload.
         """
-        started_at = datetime.now()
+        started_at = now_utc()
         payload: Dict[str, Any] = task.payload or {}
 
         # ── 1. Resolve command string ──────────────────────────────────
@@ -360,5 +361,5 @@ class CommandExecutor:
                 "exit_code": exit_code,
             },
             started_at=started_at,
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
         )

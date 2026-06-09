@@ -46,6 +46,7 @@ from typing import Optional, Union
 
 from .errors import OrchestratorError
 from .file_guard import compute_hash
+from .timestamps import now_utc
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -238,7 +239,7 @@ class TestStore:
             # Build and serialise the manifest
             manifest = TestManifest(
                 run_id=run_id,
-                sealed_at=datetime.utcnow().isoformat() + "Z",
+                sealed_at=now_utc().isoformat().replace("+00:00", "Z"),
                 test_file_hash=test_hash,
                 spec_hash=spec_hash,
                 manifest_version=_CURRENT_MANIFEST_VERSION,

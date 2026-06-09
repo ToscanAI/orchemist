@@ -9,11 +9,11 @@ modules (``openclaw_executor``, ``executors/anthropic_executor``, etc.).
 import logging
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime
 from typing import Dict, Any, Optional, List
 from uuid import uuid4
 
 from .schemas import TaskSpec, TaskResult, TaskState, TaskType
+from .timestamps import now_utc
 
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ class DryRunExecutor(TaskExecutor):
         """Execute task with mock behavior."""
         import random
         
-        start_time = datetime.now()
+        start_time = now_utc()
         
         # Simulate processing time
         time.sleep(self.delay_seconds)
@@ -124,9 +124,9 @@ class DryRunExecutor(TaskExecutor):
                     "severity": "error"
                 }],
                 started_at=start_time,
-                completed_at=datetime.now(),
+                completed_at=now_utc(),
                 model_used=model_tier or "dry-run",
-                execution_time_seconds=(datetime.now() - start_time).total_seconds()
+                execution_time_seconds=(now_utc() - start_time).total_seconds()
             )
         
         # Success case
@@ -144,10 +144,10 @@ class DryRunExecutor(TaskExecutor):
                 "dry_run": True,
             },
             started_at=start_time,
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             model_used=model_tier or "dry-run",
             tokens_consumed=random.randint(100, 1000),
-            execution_time_seconds=(datetime.now() - start_time).total_seconds(),
+            execution_time_seconds=(now_utc() - start_time).total_seconds(),
             cost_usd=random.uniform(0.01, 0.10)
         )
     

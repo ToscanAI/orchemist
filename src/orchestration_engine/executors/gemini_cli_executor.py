@@ -31,6 +31,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from ..schemas import TaskError, TaskResult, TaskSpec, TaskState, TaskType
+from ..timestamps import now_utc
 from ._common import BaseExecutor
 
 logger = logging.getLogger(__name__)
@@ -147,7 +148,7 @@ class GeminiCliExecutor(BaseExecutor):
             # arithmetic (was `time.time() - start_time`, a float-minus-datetime
             # TypeError after the fix). elapsed is unused here but the subtraction
             # still executes before the raise below.
-            elapsed = (datetime.now() - start_time).total_seconds()
+            elapsed = (now_utc() - start_time).total_seconds()
             stdout_partial = (exc.stdout or "") if isinstance(exc.stdout, str) else (
                 exc.stdout.decode("utf-8", errors="replace") if exc.stdout else ""
             )
@@ -179,7 +180,7 @@ class GeminiCliExecutor(BaseExecutor):
                 message=f"failed to launch gemini CLI: {exc}",
             )
 
-        elapsed = (datetime.now() - start_time).total_seconds()  # #927: datetime arithmetic
+        elapsed = (now_utc() - start_time).total_seconds()  # #927: datetime arithmetic
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
         exit_code = proc.returncode
@@ -207,7 +208,7 @@ class GeminiCliExecutor(BaseExecutor):
             tokens_consumed=0,  # Gemini CLI does not report token counts
             cost_usd=Decimal("0"),
             started_at=start_time,  # #927: entry datetime, not subprocess-exit time
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             metadata={
                 "worker_id": worker_id,
                 "exit_code": exit_code,
@@ -261,7 +262,7 @@ class GeminiCliExecutor(BaseExecutor):
         ``started_at`` is set to it, and ``elapsed`` is derived via datetime
         arithmetic (was ``time.time() - float_start``).
         """
-        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed = (now_utc() - start_time).total_seconds()
         return TaskResult(
             task_id=task.id,
             task_type=task.type,
@@ -270,7 +271,7 @@ class GeminiCliExecutor(BaseExecutor):
             result={},
             errors=[TaskError(code=code, message=message, severity="error")],
             started_at=start_time,  # #927: entry datetime, not construction time
-            completed_at=datetime.now(),
+            completed_at=now_utc(),
             execution_time_seconds=elapsed,
             metadata={"worker_id": worker_id},
         )

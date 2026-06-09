@@ -17,7 +17,7 @@ import sys
 import time
 import tempfile
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch, call
@@ -2447,7 +2447,7 @@ class TestDaemonSigtermHandling:
         in_memory_db.update_pipeline_run(
             sample_run["run_id"],
             status="cancelled",
-            completed_at=datetime.now().isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
             error_message="Cancelled by SIGTERM",
         )
 

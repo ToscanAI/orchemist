@@ -42,6 +42,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from .timestamps import now_utc
 from .verdict_parser import extract_verdict as _canonical_extract_verdict
 
 __all__ = [
@@ -161,7 +162,7 @@ class ReviewOutcome:
 
     def __post_init__(self) -> None:
         if self.created_at is None:
-            self.created_at = datetime.utcnow().isoformat()
+            self.created_at = now_utc().isoformat()
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise the outcome to a plain dict suitable for DB insertion.

@@ -14,7 +14,7 @@ import hashlib
 import hmac
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
@@ -399,7 +399,7 @@ class TestSuccessfulLaunch:
                 json={"event": "push"},
             )
         db = Database(Path(db_path))
-        since = datetime.now() - timedelta(seconds=10)
+        since = datetime.now(timezone.utc) - timedelta(seconds=10)
         count = db.count_webhook_invocations_since(_TRIGGER_ID, since)
         assert count == 1
 

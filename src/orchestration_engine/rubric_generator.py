@@ -14,6 +14,8 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 
+from .timestamps import now_utc
+
 # ---------------------------------------------------------------------------
 # Pre-compiled patterns
 # ---------------------------------------------------------------------------
@@ -511,7 +513,7 @@ def generate_yaml(data: SkillData) -> str:
     doc = {
         "name":           data.skill_name,
         "generated_from": data.source_file,
-        "generated_at":   datetime.now().isoformat(timespec="seconds"),
+        "generated_at":   now_utc().isoformat(timespec="seconds"),
         "rubric":         rubric_text,
         "criteria":       _build_criteria_list(data),
     }

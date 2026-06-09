@@ -24,9 +24,22 @@ Z-suffix rationale:
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict
 
-__all__ = ["normalize_ts", "normalize_row"]
+__all__ = ["normalize_ts", "normalize_row", "now_utc"]
+
+
+def now_utc() -> datetime:
+    """Current time as a timezone-aware UTC datetime.
+
+    Canonical replacement for naive ``datetime.now()`` and deprecated
+    ``datetime.utcnow()``. The aware ``+00:00`` form round-trips through
+    ``datetime.fromisoformat`` and SQLite ``julianday()`` (verified), and
+    ``normalize_ts`` passes an already-``+00:00`` isoformat through unchanged,
+    so the public ISO-string output contract is preserved.
+    """
+    return datetime.now(timezone.utc)
 
 
 _NAIVE_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$")

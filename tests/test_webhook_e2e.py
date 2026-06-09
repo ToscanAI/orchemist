@@ -22,7 +22,7 @@ import hashlib
 import hmac
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from unittest.mock import MagicMock, patch
@@ -232,7 +232,7 @@ class TestE2EIssueOpenedHappyPath:
         with patch("subprocess.Popen", side_effect=_fake_popen):
             _post_github(client, "trig-e2e0issues01", GITHUB_ISSUE_OPENED_BUG)
         db = Database(Path(db_path))
-        since = datetime.now() - timedelta(seconds=30)
+        since = datetime.now(timezone.utc) - timedelta(seconds=30)
         assert db.count_webhook_invocations_since("trig-e2e0issues01", since) == 1
 
     def test_push_to_main_launches_pipeline(self, tmp_path):
@@ -461,7 +461,7 @@ class TestE2EMultipleTriggers:
             _post_github(client, "trig-e2e0mul00022", GITHUB_PUSH_TO_MAIN)
 
         db = Database(Path(db_path))
-        since = datetime.now() - timedelta(seconds=30)
+        since = datetime.now(timezone.utc) - timedelta(seconds=30)
         assert db.count_webhook_invocations_since("trig-e2e0mul00021", since) == 2
         assert db.count_webhook_invocations_since("trig-e2e0mul00022", since) == 1
 
@@ -673,7 +673,7 @@ class TestE2EAllGuards:
         assert res.json()["reason"] == "filter_mismatch"
         # No invocation should be recorded for a skipped payload
         db = Database(Path(db_path))
-        since = datetime.now() - timedelta(seconds=30)
+        since = datetime.now(timezone.utc) - timedelta(seconds=30)
         assert db.count_webhook_invocations_since("trig-e2e0grd00034", since) == 0
 
     def test_unknown_trigger_returns_404_with_real_payload(self, tmp_path):
@@ -688,7 +688,7 @@ class TestE2EAllGuards:
         _insert_trigger(db_path, trigger_id="trig-e2e0grd00035", enabled=False)
         _post_github(client, "trig-e2e0grd00035", GITHUB_ISSUE_OPENED_BUG)
         db = Database(Path(db_path))
-        since = datetime.now() - timedelta(seconds=30)
+        since = datetime.now(timezone.utc) - timedelta(seconds=30)
         assert db.count_webhook_invocations_since("trig-e2e0grd00035", since) == 0
 
 
@@ -720,7 +720,7 @@ class TestE2EDbPostConditions:
         client, db_path = _make_app_and_db(tmp_path)
         _insert_trigger(db_path, trigger_id="trig-e2e0db000037")
         db = Database(Path(db_path))
-        since = datetime.now() - timedelta(seconds=30)
+        since = datetime.now(timezone.utc) - timedelta(seconds=30)
 
         with patch("subprocess.Popen", side_effect=_fake_popen):
             _post_github(client, "trig-e2e0db000037", GITHUB_PUSH_TO_MAIN)
@@ -797,6 +797,6 @@ class TestE2EParametrized:
         with patch("subprocess.Popen", side_effect=_fake_popen):
             _post_github(client, trigger_id, payload)
         db = Database(Path(db_path))
-        since = datetime.now() - timedelta(seconds=30)
+        since = datetime.now(timezone.utc) - timedelta(seconds=30)
         count = db.count_webhook_invocations_since(trigger_id, since)
         assert count == 1, f"Expected 1 invocation for {desc}, got {count}"

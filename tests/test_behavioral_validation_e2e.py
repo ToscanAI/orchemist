@@ -513,9 +513,9 @@ class TestAcceptanceFailureRetryLoop:
         )
 
         with patch("orchestration_engine.test_runner.run_pytest", return_value=failing_result):
-            from datetime import datetime
+            from datetime import datetime, timezone
             task_result = executor._execute_acceptance_run_task(
-                task, datetime.now(), str(task.id)
+                task, datetime.now(timezone.utc), str(task.id)
             )
 
         assert task_result.state == TaskState.FAILED, (
