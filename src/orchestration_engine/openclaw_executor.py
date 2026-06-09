@@ -20,6 +20,7 @@ import math
 import os
 import re
 import shlex
+import socket
 import subprocess
 import threading
 import time
@@ -34,6 +35,8 @@ from .errors import (
     GatewayHTTPError,
     GatewayUnavailableError,
     RateLimitError,
+    SpawnNoPromptDelivered,
+    SpawnTransportTimeout,
     classify_http_error,
 )
 from .executors._common import BaseExecutor, _PRICING
@@ -139,6 +142,20 @@ _CIRCUIT_BREAKERS: Dict[str, CircuitBreakerState] = {}
 _CIRCUIT_BREAKERS_LOCK = threading.Lock()
 
 
+def _is_transport_timeout(reason: Any) -> bool:
+    """Return True when *reason* (a ``urllib.error.URLError.reason``) is a
+    socket-level timeout.
+
+    A urllib socket timeout surfaces either as a bare ``TimeoutError`` /
+    ``socket.timeout`` or, on some paths, wrapped as
+    ``urllib.error.URLError`` whose ``.reason`` is one of those. This helper
+    recognises the wrapped form so the transport-timeout seam in
+    :meth:`OpenClawExecutor._http_post` / :meth:`_http_get` can convert it to
+    :class:`~.errors.SpawnTransportTimeout` (issue #732).
+    """
+    return isinstance(reason, (TimeoutError, socket.timeout))
+
+
 # Instruction appended to every sub-agent prompt so it returns its full output
 # as text instead of writing it to workspace files.  The orchestrator reads the
 # final assistant message text — anything written to files is invisible to it.
@@ -212,6 +229,15 @@ class OpenClawExecutor(BaseExecutor):
         # Tracks the session key of the currently running sub-agent session.
         # Set immediately after spawn; cleared on completion or error.
         self._active_session_key: Optional[str] = None
+
+        # ── Per-spawn HTTP socket timeout override (issue #732) ──────────────
+        # Set transiently by _run_session around the sessions_spawn call so the
+        # per-retry 30→60→120 socket-timeout ladder applies ONLY to the spawn
+        # HTTP request (polling keeps the default 30s). None → default 30s.
+        # Threaded via an attribute (not a _http_post/_invoke_tool parameter) so
+        # that test doubles patching _http_post with a (url, body) signature
+        # continue to work unchanged.
+        self._spawn_socket_timeout: Optional[float] = None
 
         # Event set by request_shutdown() to interrupt the polling loop.
         # The SIGTERM handler in daemon.py calls request_shutdown() to propagate
@@ -533,6 +559,19 @@ class OpenClawExecutor(BaseExecutor):
         # Set to True when the inner loop breaks due to a PERMANENT error —
         # permanent errors must NOT trigger model escalation.
         permanent_failure: bool = False
+        # Set to True when the LAST attempt failed with a transport-class error
+        # (HTTP socket timeout during spawn, or a spawned session that never
+        # delivered a first message). Such failures must NOT escalate the model
+        # — they are gateway/transport symptoms, not task-level agent failures
+        # (issue #732). Reset per attempt so a later real failure clears it.
+        transport_timeout_failure: bool = False
+        # Set to True when the attempt failed because a spawned session never
+        # delivered a first message (SpawnNoPromptDelivered). This fails the
+        # task fast — retrying the SAME prompt on the SAME model is futile and
+        # only risks more orphan sessions — so the inner retry loop breaks
+        # immediately (issue #732, Bug B). Escalation is still suppressed via
+        # transport_timeout_failure.
+        no_prompt_failure: bool = False
 
         while True:  # outer loop over model chain (issue #347)
             # Ensure a circuit-breaker entry exists for the current model tier.
@@ -576,6 +615,47 @@ class OpenClawExecutor(BaseExecutor):
             # ── 4b-inner. Per-model retry loop (unchanged from #346) ─────────
             for attempt in range(retry_cfg.max_attempts):
                 if attempt > 0:
+                    # ── Orphan WARNING + best-effort cancel on retry (#732) ──
+                    # When the PREVIOUS attempt failed with a transport-class
+                    # error (spawn socket timeout, or a spawned-but-promptless
+                    # session), the gateway may have left an orphan session whose
+                    # key we either captured (spawn-succeeded-then-grace-failed)
+                    # or never received (spawn timed out). Emit a WARNING naming
+                    # the previous attempt and the potential orphan key, and
+                    # best-effort cancel it via the existing sessions_stop path.
+                    if transport_timeout_failure:
+                        orphan_key = self._active_session_key
+                        logger.warning(
+                            "Task %s: retry %d/%d after spawn transport failure — "
+                            "previous attempt may have left an orphan session "
+                            "(key=%s). Attempting best-effort cancel.",
+                            task_id,
+                            attempt,
+                            retry_cfg.max_attempts - 1,
+                            orphan_key or "unknown",
+                        )
+                        if orphan_key:
+                            try:
+                                self._invoke_tool(
+                                    "sessions_stop", {"sessionKey": orphan_key}
+                                )
+                                logger.info(
+                                    "Best-effort sessions_stop succeeded for "
+                                    "orphan session %s",
+                                    orphan_key,
+                                )
+                            except Exception as stop_exc:
+                                # Tolerate "unsupported"/any failure — non-fatal.
+                                logger.warning(
+                                    "sessions_stop not supported or failed for "
+                                    "orphan session %s (non-fatal): %s",
+                                    orphan_key,
+                                    stop_exc,
+                                )
+                            finally:
+                                # Abandon the orphan key — we will not adopt it.
+                                self._active_session_key = None
+
                     # Exponential backoff: backoff_base * backoff_multiplier^(retry_index)
                     # where retry_index = attempt - 1 (0-based retry counter).
                     retry_index = attempt - 1
@@ -593,6 +673,22 @@ class OpenClawExecutor(BaseExecutor):
                     )
                     time.sleep(wait_seconds)
 
+                # Reset the per-attempt transport-failure flags so they reflect
+                # ONLY this attempt's outcome (a later real failure must clear
+                # them and resume normal escalation semantics — issue #732).
+                transport_timeout_failure = False
+                no_prompt_failure = False
+
+                # ── Per-attempt escalating spawn socket timeout (#732) ───────
+                # 30 → 60 → 120 (capped) with default config, so the spawn HTTP
+                # call gets a longer socket budget on each retry under degraded
+                # API conditions. Polling keeps its own fixed default timeout.
+                socket_timeout = min(
+                    retry_cfg.socket_timeout_initial
+                    * (retry_cfg.socket_timeout_multiplier ** attempt),
+                    retry_cfg.socket_timeout_max,
+                )
+
                 try:
                     # Thread #735 RC-2 kwargs through from the task payload.
                     # When both are provided AND a gateway-GC event happens
@@ -603,6 +699,8 @@ class OpenClawExecutor(BaseExecutor):
                         prompt, model, thinking, timeout=effective_timeout,
                         output_dir=task.payload.get("output_dir"),
                         output_artifact=task.payload.get("output_artifact"),
+                        socket_timeout=socket_timeout,
+                        startup_grace_seconds=retry_cfg.spawn_startup_grace_seconds,
                     )
                     # ── Success path ─────────────────────────────────────────
                     with _CIRCUIT_BREAKERS_LOCK:
@@ -614,18 +712,48 @@ class OpenClawExecutor(BaseExecutor):
                     last_exc = exc
                     error_type = classify_exception_error_type(exc)
 
-                    # Record failure in the shared circuit breaker.
-                    with _CIRCUIT_BREAKERS_LOCK:
-                        _CIRCUIT_BREAKERS[model].record_failure(
-                            retry_cfg.circuit_breaker_threshold
-                        )
+                    # Record failure in the shared circuit breaker — EXCEPT for
+                    # transport-class errors (HTTP socket timeout during spawn,
+                    # or a spawned-but-promptless session). Those are gateway /
+                    # transport symptoms, not task-level agent failures, so they
+                    # must NOT open the circuit breaker (issue #732, Bug A).
+                    if error_type != ErrorType.TRANSPORT_TIMEOUT:
+                        with _CIRCUIT_BREAKERS_LOCK:
+                            _CIRCUIT_BREAKERS[model].record_failure(
+                                retry_cfg.circuit_breaker_threshold
+                            )
 
                     # Preserve partial output if the sub-agent produced any before failing.
                     partial_output = getattr(exc, "partial_output", "") or ""
                     partial_tokens = getattr(exc, "partial_tokens", 0) or 0
 
                     # Determine error code and emit a log at the appropriate level.
-                    if isinstance(exc, TimeoutError):
+                    # NOTE: SpawnTransportTimeout subclasses TimeoutError, so its
+                    # branch MUST precede the generic TimeoutError branch below,
+                    # else a transport timeout would be mislabelled "timeout".
+                    if isinstance(exc, SpawnTransportTimeout):
+                        last_error_code = "spawn_transport_timeout"
+                        last_error_msg = str(exc)
+                        transport_timeout_failure = True
+                        logger.warning(
+                            "Spawn transport timeout for task %s (attempt %d) — "
+                            "not counting against the circuit breaker; will retry "
+                            "with a longer socket timeout: %s",
+                            task_id, attempt + 1, exc,
+                        )
+                    elif isinstance(exc, SpawnNoPromptDelivered):
+                        last_error_code = "spawn_no_prompt_delivered"
+                        last_error_msg = str(exc)
+                        transport_timeout_failure = True
+                        no_prompt_failure = True
+                        logger.warning(
+                            "Spawned session for task %s (attempt %d) delivered no "
+                            "first message within the startup grace period — not "
+                            "counting against the circuit breaker; will not retry "
+                            "or escalate the model: %s",
+                            task_id, attempt + 1, exc,
+                        )
+                    elif isinstance(exc, TimeoutError):
                         last_error_code = "timeout"
                         last_error_msg = str(exc)
                         logger.error(
@@ -660,6 +788,11 @@ class OpenClawExecutor(BaseExecutor):
                         permanent_failure = True
                         break
 
+                    # A promptless-spawn failure fails the task fast — retrying
+                    # the same prompt on the same model is futile (#732, Bug B).
+                    if no_prompt_failure:
+                        break
+
                     # If the circuit breaker has just opened, stop retrying early.
                     with _CIRCUIT_BREAKERS_LOCK:
                         cb_now_open = _CIRCUIT_BREAKERS[model].is_open(
@@ -683,6 +816,18 @@ class OpenClawExecutor(BaseExecutor):
             if permanent_failure:
                 # Permanent errors (auth, bad-request) must not be retried on
                 # a different model — escalation would also fail.
+                break
+
+            if transport_timeout_failure:
+                # Issue #732 (Bug A): a tier whose retries were exhausted purely
+                # by transport-class failures (spawn socket timeouts / promptless
+                # spawns) must NOT escalate to another model — degraded API
+                # transport is not a model-quality problem, and escalating risks
+                # repeating a gateway delivery fault. Fall through to the failure
+                # path carrying last_error_code (spawn_transport_timeout or
+                # spawn_no_prompt_delivered). A MIX of transport + a real task
+                # failure clears this flag (per-attempt reset), so normal
+                # escalation resumes when the last failure was task-level.
                 break
 
             if chain.has_next():
@@ -1162,8 +1307,46 @@ class OpenClawExecutor(BaseExecutor):
             headers["Authorization"] = f"Bearer {self.gateway_token}"
         return headers
 
-    def _http_post(self, url: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        """POST JSON *body* to *url* and return the decoded response dict."""
+    def _resolve_http_timeout(self, timeout: Optional[float]) -> float:
+        """Resolve the effective HTTP socket timeout (seconds) for a request.
+
+        Precedence (issue #732):
+          1. An explicit ``timeout`` argument, when provided.
+          2. :attr:`_spawn_socket_timeout` — set transiently by
+             :meth:`_run_session` around the ``sessions_spawn`` call so the
+             per-retry 30→60→120 ladder lengthens ONLY the spawn socket budget.
+          3. The historical default of 30s (used by polling / ``sessions_list``
+             / ``sessions_stop`` and the first spawn attempt).
+        """
+        if timeout is not None:
+            return float(timeout)
+        override = getattr(self, "_spawn_socket_timeout", None)
+        if override is not None:
+            return float(override)
+        return 30.0
+
+    def _http_post(
+        self, url: str, body: Dict[str, Any], timeout: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """POST JSON *body* to *url* and return the decoded response dict.
+
+        Args:
+            url:     The endpoint to POST to.
+            body:    The JSON-serialisable request body.
+            timeout: HTTP socket timeout in seconds. ``None`` (the default)
+                     resolves via :meth:`_resolve_http_timeout` — the spawn
+                     ladder (when active) or the historical 30s. ``None`` is the
+                     default so that test doubles patching this method with a
+                     ``(url, body)`` signature keep working (issue #732).
+
+        Raises:
+            SpawnTransportTimeout: when the socket times out *before* any HTTP
+                response arrives (distinguished from a 4xx/5xx response and from
+                the task-deadline ``TimeoutError`` so the circuit breaker is not
+                tripped — issue #732, Bug A).
+            GatewayHTTPError: when a 4xx/5xx response *is* received.
+        """
+        effective_timeout = self._resolve_http_timeout(timeout)
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             url,
@@ -1171,22 +1354,45 @@ class OpenClawExecutor(BaseExecutor):
             headers=self._build_headers(),
             method="POST",
         )
+        # HTTPError (a response DID arrive) must be caught FIRST — it is a
+        # subclass of URLError. Only a genuine socket timeout (no response) is
+        # converted to SpawnTransportTimeout.
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             raise classify_http_error(exc.code, error_body, exc.headers) from exc
+        except urllib.error.URLError as exc:
+            # urllib may wrap the socket timeout as URLError(reason=timeout).
+            if _is_transport_timeout(exc.reason):
+                raise SpawnTransportTimeout(str(exc)) from exc
+            raise
+        except (TimeoutError, socket.timeout) as exc:
+            # Bare socket timeout (Py3.12: socket.timeout IS TimeoutError).
+            raise SpawnTransportTimeout(str(exc)) from exc
 
-    def _http_get(self, url: str) -> Dict[str, Any]:
-        """GET *url* and return the decoded response dict."""
+    def _http_get(self, url: str, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """GET *url* and return the decoded response dict.
+
+        Mirrors :meth:`_http_post` — including ``timeout`` resolution and the
+        socket-timeout → :class:`SpawnTransportTimeout` seam re-raise (#732) —
+        for symmetry/correctness.
+        """
+        effective_timeout = self._resolve_http_timeout(timeout)
         req = urllib.request.Request(url, headers=self._build_headers(), method="GET")
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             raise classify_http_error(exc.code, error_body, exc.headers) from exc
+        except urllib.error.URLError as exc:
+            if _is_transport_timeout(exc.reason):
+                raise SpawnTransportTimeout(str(exc)) from exc
+            raise
+        except (TimeoutError, socket.timeout) as exc:
+            raise SpawnTransportTimeout(str(exc)) from exc
 
     def _emit_stall_event(
         self,
@@ -1228,6 +1434,14 @@ class OpenClawExecutor(BaseExecutor):
         """Invoke an OpenClaw tool via the gateway's /tools/invoke endpoint.
 
         Returns the parsed response dict. Raises RuntimeError on failure.
+
+        The HTTP socket timeout is taken from :attr:`_spawn_socket_timeout` when
+        set (the spawn path threads the per-retry 30→60→120 ladder via that
+        attribute, see :meth:`_run_session`); otherwise :meth:`_http_post`
+        applies its default 30s. The timeout is intentionally NOT a parameter of
+        this method or of ``_http_post``'s call here, so that test doubles which
+        patch ``_http_post`` with a ``(url, body)`` signature keep working
+        unchanged (issue #732).
         """
         url = f"{self.gateway_url}/tools/invoke"
         body = {"tool": tool_name, "args": args}
@@ -1257,6 +1471,8 @@ class OpenClawExecutor(BaseExecutor):
         timeout: Optional[int] = None,
         output_dir: Optional[str] = None,
         output_artifact: Optional[str] = None,
+        socket_timeout: Optional[float] = None,
+        startup_grace_seconds: Optional[float] = None,
     ) -> Tuple[str, int]:
         """Spawn a sub-agent session and poll until completion.
 
@@ -1268,6 +1484,18 @@ class OpenClawExecutor(BaseExecutor):
             model:           Full model string (e.g. "anthropic/claude-sonnet-4-6").
             thinking:        Thinking level string or None.
             timeout:         Timeout in seconds (overrides self.timeout_seconds).
+            socket_timeout:  (#732) Optional HTTP socket timeout (seconds) applied
+                             ONLY to the ``sessions_spawn`` call, so that the
+                             per-retry 30→60→120 ladder lengthens the spawn
+                             socket budget under degraded API conditions. The
+                             ``sessions_history`` polling keeps its own fixed
+                             (default 30s) timeout. ``None`` → spawn uses the
+                             default 30s.
+            startup_grace_seconds: (#732, Bug B) Optional grace window (seconds)
+                             within which the spawned session must produce its
+                             first message; otherwise the session fails fast with
+                             :class:`~.errors.SpawnNoPromptDelivered`. ``None`` →
+                             default of 60s.
             output_dir:      (#735 RC-2) Optional filesystem path to the agent's
                              working directory. When provided alongside
                              ``output_artifact``, enables git-output recovery
@@ -1283,8 +1511,16 @@ class OpenClawExecutor(BaseExecutor):
 
         Raises:
             TimeoutError: If the session does not complete within timeout.
+            SpawnTransportTimeout: If the ``sessions_spawn`` HTTP call times out
+                at the socket layer before any response arrives (#732, Bug A).
+            SpawnNoPromptDelivered: If the spawn succeeds but no first message
+                appears within ``startup_grace_seconds`` (#732, Bug B).
             RuntimeError: On HTTP errors or unexpected responses.
         """
+        # Resolve the startup-grace window (#732, Bug B). Default 60s.
+        effective_startup_grace: float = (
+            float(startup_grace_seconds) if startup_grace_seconds is not None else 60.0
+        )
         # ── 1. Spawn via /tools/invoke → sessions_spawn ──────────────
         spawn_args: Dict[str, Any] = {
             "task": prompt,
@@ -1327,7 +1563,15 @@ class OpenClawExecutor(BaseExecutor):
             f"Spawning session via /tools/invoke → sessions_spawn "
             f"(timeout={effective_timeout}s)"
         )
-        spawn_result = self._invoke_tool("sessions_spawn", spawn_args)
+        # Thread the per-retry escalating socket timeout into the spawn call
+        # ONLY (#732). The override is read by _http_post and reset immediately
+        # after, so the subsequent sessions_history polling keeps the default
+        # 30s socket timeout.
+        self._spawn_socket_timeout = socket_timeout
+        try:
+            spawn_result = self._invoke_tool("sessions_spawn", spawn_args)
+        finally:
+            self._spawn_socket_timeout = None
 
         # Extract session key from details or parse from text
         details = spawn_result.get("details", {})
@@ -1359,6 +1603,15 @@ class OpenClawExecutor(BaseExecutor):
         # Total window in seconds — stored separately so it remains immutable
         # across loop iterations (deadline is derived from it once).
         total_timeout: float = effective_timeout
+
+        # ── Startup-grace deadline (#732, Bug B) ─────────────────────────
+        # Derived from loop_start (NO extra time.monotonic() call, preserving
+        # existing tests' monotonic sequences). While the session has produced
+        # NO message yet, exceeding this deadline fails the task fast with
+        # SpawnNoPromptDelivered rather than polling until the full task
+        # timeout. Once a first message is seen (had_messages), this no longer
+        # applies and the normal task-deadline / 80%-warning logic governs.
+        startup_grace_deadline: float = loop_start + effective_startup_grace
 
         # 80% warning state — fired at most once per session (#240 AC-4).
         warning_fired: bool = False
@@ -1426,8 +1679,12 @@ class OpenClawExecutor(BaseExecutor):
                     "sessionKey": session_key,
                     "limit": SESSIONS_HISTORY_LIMIT,
                 })
-            except (RuntimeError, GatewayHTTPError) as exc:
-                # Session may not be ready yet; includes transient HTTP errors
+            except (RuntimeError, GatewayHTTPError, TimeoutError) as exc:
+                # Session may not be ready yet; includes transient HTTP errors.
+                # TimeoutError covers SpawnTransportTimeout (#732): now that
+                # _http_post wraps socket timeouts as SpawnTransportTimeout, a
+                # transient socket timeout during polling must keep polling
+                # rather than aborting the session (edge-case contract C12).
                 logger.debug(f"Poll error (may be transient): {exc}")
                 continue
 
@@ -1480,6 +1737,32 @@ class OpenClawExecutor(BaseExecutor):
                         f"Session {session_key} was garbage-collected: "
                         f"history previously contained messages but is now empty. "
                         f"The gateway may have evicted the session."
+                    )
+                # ── Startup-grace first-message check (#732, Bug B) ──────────
+                # The session was spawned (key returned) but this poll still
+                # shows NO message. If the startup-grace window has elapsed,
+                # fail fast: the gateway accepted the spawn but never delivered
+                # the prompt (the observed "Opus idle 24 min" symptom) — rather
+                # than polling uselessly until the full task timeout. Checked
+                # here (in the empty-history branch, after an actual poll) so a
+                # session whose FIRST poll already carries a message is never
+                # mislabelled, and so a genuine task-deadline timeout (which can
+                # only occur once work has started) is classified as a timeout,
+                # not a no-prompt failure (contract C13).
+                if now >= startup_grace_deadline:
+                    logger.error(
+                        "Session %s produced no first message within %.0fs "
+                        "startup grace — failing fast (no prompt delivered).",
+                        session_key,
+                        effective_startup_grace,
+                    )
+                    # Best-effort cancel the promptless session we just detected
+                    # so it does not linger on the gateway (also clears
+                    # _active_session_key).
+                    self.cancel_active_session()
+                    raise SpawnNoPromptDelivered(
+                        f"Session {session_key} delivered no message within "
+                        f"{effective_startup_grace:.0f}s startup grace period"
                     )
                 # Session not yet started — treat as "not ready", keep polling.
                 continue

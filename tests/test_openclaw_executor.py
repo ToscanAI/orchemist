@@ -2203,3 +2203,439 @@ class TestOpenClawExecutorShutdown:
 
         assert executor._active_session_key is None
         assert "Pipeline complete output." in output
+
+
+# ---------------------------------------------------------------------------
+# Transport-timeout classification + orphan / prompt-less sessions (issue #732)
+# ---------------------------------------------------------------------------
+#
+# These committed tests mirror the seven observable outcomes from the issue's
+# behavioral contracts. Unlike most tests above they patch ``urllib.request.
+# urlopen`` (not ``_http_post``) so the real transport seam — which converts a
+# socket timeout into ``SpawnTransportTimeout`` and applies the per-retry socket
+# timeout ladder — is exercised end-to-end.
+
+
+from orchestration_engine.openclaw_executor import (
+    _CIRCUIT_BREAKERS,
+    _CIRCUIT_BREAKERS_LOCK,
+)
+from orchestration_engine.recovery import ErrorType, classify_exception_error_type
+from orchestration_engine.errors import (
+    SpawnNoPromptDelivered,
+    SpawnTransportTimeout,
+)
+
+_732_SONNET = MODEL_MAP["sonnet"]
+
+
+def _732_reset_circuit_breakers():
+    with _CIRCUIT_BREAKERS_LOCK:
+        _CIRCUIT_BREAKERS.clear()
+
+
+def _732_cb_failure_count(model: str) -> int:
+    with _CIRCUIT_BREAKERS_LOCK:
+        cb = _CIRCUIT_BREAKERS.get(model)
+    return cb.failure_count if cb is not None else 0
+
+
+def _732_task(timeout_seconds: int = 120) -> TaskSpec:
+    return TaskSpec(
+        type=TaskType.CONTENT,
+        payload={"prompt": "test prompt"},
+        priority=Priority.NORMAL,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _732_mock_urlopen_response(payload: dict):
+    """Build a urlopen context-manager double returning *payload* as JSON."""
+    resp = MagicMock()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.read.return_value = json.dumps(payload).encode("utf-8")
+    return resp
+
+
+def _732_spawn_payload(session_key: str) -> dict:
+    return {
+        "ok": True,
+        "result": {"details": {"childSessionKey": session_key}, "content": []},
+    }
+
+
+def _732_history_payload(messages: list) -> dict:
+    return {
+        "ok": True,
+        "result": {"content": [{"type": "text", "text": json.dumps({"messages": messages})}]},
+    }
+
+
+def _732_completed_messages() -> list:
+    return [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Done."}],
+            "stopReason": "end_turn",
+            "usage": {"totalTokens": 42},
+        }
+    ]
+
+
+@pytest.fixture(autouse=True)
+def _732_reset_cb_fixture():
+    """Reset the shared CB registry around the #732 tests (process-global)."""
+    _732_reset_circuit_breakers()
+    yield
+    _732_reset_circuit_breakers()
+
+
+class TestTransportTimeoutClassification:
+    """#732 outcome 1 + the classifier contract."""
+
+    def test_classify_spawn_transport_timeout(self):
+        assert (
+            classify_exception_error_type(SpawnTransportTimeout("timed out"))
+            == ErrorType.TRANSPORT_TIMEOUT
+        )
+
+    def test_classify_spawn_no_prompt_delivered(self):
+        assert (
+            classify_exception_error_type(SpawnNoPromptDelivered("no prompt"))
+            == ErrorType.TRANSPORT_TIMEOUT
+        )
+
+    def test_classify_plain_timeout_still_timeout(self):
+        # The task-deadline TimeoutError must remain TIMEOUT (not transport).
+        assert classify_exception_error_type(TimeoutError("deadline")) == ErrorType.TIMEOUT
+
+    def test_http_post_wraps_socket_timeout_as_spawn_transport_timeout(self):
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+
+        def _raise_timeout(req, timeout=None):
+            raise TimeoutError("socket timed out")
+
+        with patch("urllib.request.urlopen", side_effect=_raise_timeout):
+            with pytest.raises(SpawnTransportTimeout):
+                executor._http_post("http://localhost:18789/tools/invoke", {"tool": "x"})
+
+    def test_http_post_wraps_urlerror_timeout_reason(self):
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+
+        def _raise_urlerror(req, timeout=None):
+            raise urllib.error.URLError(reason=TimeoutError("timed out"))
+
+        with patch("urllib.request.urlopen", side_effect=_raise_urlerror):
+            with pytest.raises(SpawnTransportTimeout):
+                executor._http_post("http://localhost:18789/tools/invoke", {"tool": "x"})
+
+    def test_http_post_non_timeout_urlerror_propagates(self):
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+
+        def _raise_dns(req, timeout=None):
+            raise urllib.error.URLError(reason=ConnectionRefusedError("refused"))
+
+        with patch("urllib.request.urlopen", side_effect=_raise_dns):
+            with pytest.raises(urllib.error.URLError):
+                executor._http_post("http://localhost:18789/tools/invoke", {"tool": "x"})
+
+    def test_transport_timeout_does_not_increment_cb_and_no_escalation(self):
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+
+        def _raise_timeout(req, timeout=None):
+            raise TimeoutError("socket timed out")
+
+        with patch("urllib.request.urlopen", side_effect=_raise_timeout), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(_732_task(), model_tier="sonnet")
+
+        assert result.state == TaskState.FAILED
+        assert _732_cb_failure_count(_732_SONNET) == 0
+        assert result.model_used == _732_SONNET  # not escalated to opus
+
+
+class TestSpawnSocketTimeoutLadder:
+    """#732 outcome 2: spawn socket timeout grows 30→60→120; polling stays 30."""
+
+    def test_spawn_timeout_ladder_30_60_120(self):
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+        observed = []
+
+        def _raise_timeout(req, timeout=None):
+            observed.append(timeout)
+            raise TimeoutError("socket timed out")
+
+        with patch("urllib.request.urlopen", side_effect=_raise_timeout), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            executor.execute(_732_task(), model_tier="sonnet")
+
+        assert observed[:3] == [30.0, 60.0, 120.0]
+
+    def test_history_poll_timeout_stays_fixed_at_30(self):
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+        session_key = "sess-732-poll"
+        poll_timeouts = []
+
+        def _fake_urlopen(req, timeout=None):
+            body = json.loads(req.data.decode("utf-8"))
+            tool = body.get("tool", "")
+            if tool == "sessions_spawn":
+                return _732_mock_urlopen_response(_732_spawn_payload(session_key))
+            if tool == "sessions_history":
+                poll_timeouts.append(timeout)
+                return _732_mock_urlopen_response(
+                    _732_history_payload(_732_completed_messages())
+                )
+            return _732_mock_urlopen_response(
+                {"ok": True, "result": {"content": [{"type": "text", "text": "[]"}]}}
+            )
+
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             patch("orchestration_engine.openclaw_executor.time.monotonic",
+                   side_effect=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]):
+            executor.execute(_732_task(), model_tier="sonnet")
+
+        assert poll_timeouts, "expected at least one history poll"
+        assert all(t == 30.0 for t in poll_timeouts)
+
+
+class TestSustainedTransportTimeoutCleanFail:
+    """#732 outcome 3: N transport timeouts → spawn_transport_timeout, CB closed."""
+
+    def test_clean_fail_code_and_cb_closed(self):
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+
+        def _raise_timeout(req, timeout=None):
+            raise TimeoutError("socket timed out")
+
+        with patch("urllib.request.urlopen", side_effect=_raise_timeout), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(_732_task(), model_tier="sonnet")
+
+        assert result.state == TaskState.FAILED
+        assert result.errors[0].code == "spawn_transport_timeout"
+        assert _732_cb_failure_count(_732_SONNET) == 0
+        with _CIRCUIT_BREAKERS_LOCK:
+            cb = _CIRCUIT_BREAKERS.get(_732_SONNET)
+        assert cb is None or cb.state == "closed"
+
+
+class TestNoPromptDeliveredFailsFast:
+    """#732 outcome 4: spawn ok but no first message → spawn_no_prompt_delivered."""
+
+    def test_no_prompt_fails_with_code_before_full_timeout(self):
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+        session_key = "sess-732-noprompt"
+
+        def _fake_urlopen(req, timeout=None):
+            body = json.loads(req.data.decode("utf-8"))
+            tool = body.get("tool", "")
+            if tool == "sessions_spawn":
+                return _732_mock_urlopen_response(_732_spawn_payload(session_key))
+            # history always empty → no first message ever delivered
+            return _732_mock_urlopen_response(_732_history_payload([]))
+
+        # Grace=60 by default; monotonic jumps past it on the 2nd poll. Task
+        # timeout is large (600s) so the fast-fail must be the grace boundary.
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             patch("orchestration_engine.openclaw_executor.time.monotonic",
+                   side_effect=iter([0.0, 1.0, 65.0, 66.0, 67.0])):
+            result = executor.execute(_732_task(timeout_seconds=600), model_tier="sonnet")
+
+        assert result.state == TaskState.FAILED
+        assert result.errors[0].code == "spawn_no_prompt_delivered"
+        assert _732_cb_failure_count(_732_SONNET) == 0  # outcome shared with CB gate
+
+    def test_first_message_within_grace_proceeds(self):
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+        session_key = "sess-732-firstmsg"
+
+        def _fake_urlopen(req, timeout=None):
+            body = json.loads(req.data.decode("utf-8"))
+            tool = body.get("tool", "")
+            if tool == "sessions_spawn":
+                return _732_mock_urlopen_response(_732_spawn_payload(session_key))
+            if tool == "sessions_history":
+                return _732_mock_urlopen_response(
+                    _732_history_payload(_732_completed_messages())
+                )
+            return _732_mock_urlopen_response(
+                {"ok": True, "result": {"content": [{"type": "text", "text": "[]"}]}}
+            )
+
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             patch("orchestration_engine.openclaw_executor.time.monotonic",
+                   side_effect=[0.0, 10.0, 11.0, 12.0, 13.0]):
+            result = executor.execute(_732_task(timeout_seconds=600), model_tier="sonnet")
+
+        codes = [e.code for e in result.errors]
+        assert "spawn_no_prompt_delivered" not in codes
+
+
+class TestHttpErrorStillIncrementsCB:
+    """#732 outcome 5: a real HTTP 5xx/4xx (response received) is a task failure."""
+
+    def test_http_500_increments_cb(self):
+        import io
+        from http.client import HTTPMessage
+
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+
+        def _raise_500(req, timeout=None):
+            raise urllib.error.HTTPError(
+                url="http://localhost:18789/tools/invoke",
+                code=500,
+                msg="Internal Server Error",
+                hdrs=HTTPMessage(),
+                fp=io.BytesIO(b"boom"),
+            )
+
+        with patch("urllib.request.urlopen", side_effect=_raise_500), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"):
+            result = executor.execute(_732_task(), model_tier="sonnet")
+
+        assert result.state == TaskState.FAILED
+        assert _732_cb_failure_count(_732_SONNET) >= 1
+        # And the classifier must NOT treat a 5xx as a transport timeout.
+        from orchestration_engine.errors import classify_http_error
+
+        assert (
+            classify_exception_error_type(classify_http_error(500, "boom"))
+            != ErrorType.TRANSPORT_TIMEOUT
+        )
+
+
+class TestRetryOrphanWarningAndStop:
+    """#732 outcome 6: retry after transport timeout warns; promptless spawn
+    cleans up the prior session via best-effort sessions_stop."""
+
+    def test_retry_after_transport_timeout_logs_orphan_warning(self, caplog):
+        import logging
+
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+
+        def _raise_timeout(req, timeout=None):
+            raise TimeoutError("socket timed out")
+
+        with patch("urllib.request.urlopen", side_effect=_raise_timeout), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             caplog.at_level(logging.WARNING,
+                             logger="orchestration_engine.openclaw_executor"):
+            executor.execute(_732_task(), model_tier="sonnet")
+
+        text = " ".join(r.getMessage().lower() for r in caplog.records)
+        assert any(kw in text for kw in ("orphan", "retry", "transport"))
+
+    def test_promptless_spawn_issues_sessions_stop(self):
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+        session_key = "sess-732-stopme"
+        stop_keys = []
+
+        def _fake_urlopen(req, timeout=None):
+            body = json.loads(req.data.decode("utf-8"))
+            tool = body.get("tool", "")
+            if tool == "sessions_stop":
+                stop_keys.append(body.get("args", {}).get("sessionKey"))
+                return _732_mock_urlopen_response({"ok": True, "result": {}})
+            if tool == "sessions_spawn":
+                return _732_mock_urlopen_response(_732_spawn_payload(session_key))
+            return _732_mock_urlopen_response(_732_history_payload([]))
+
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             patch("orchestration_engine.openclaw_executor.time.monotonic",
+                   side_effect=iter([0.0, 65.0, 66.0, 67.0, 68.0])):
+            result = executor.execute(_732_task(timeout_seconds=600), model_tier="sonnet")
+
+        assert result.state == TaskState.FAILED
+        assert session_key in stop_keys
+
+    def test_sessions_stop_failure_is_non_fatal(self):
+        """A failing best-effort sessions_stop must not crash the run."""
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+        session_key = "sess-732-stopfail"
+
+        def _fake_urlopen(req, timeout=None):
+            body = json.loads(req.data.decode("utf-8"))
+            tool = body.get("tool", "")
+            if tool == "sessions_stop":
+                raise RuntimeError("sessions_stop unsupported")
+            if tool == "sessions_spawn":
+                return _732_mock_urlopen_response(_732_spawn_payload(session_key))
+            return _732_mock_urlopen_response(_732_history_payload([]))
+
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             patch("orchestration_engine.openclaw_executor.time.monotonic",
+                   side_effect=iter([0.0, 65.0, 66.0, 67.0, 68.0])):
+            result = executor.execute(_732_task(timeout_seconds=600), model_tier="sonnet")
+
+        # No exception escaped; the task failed cleanly with the no-prompt code.
+        assert result.state == TaskState.FAILED
+        assert result.errors[0].code == "spawn_no_prompt_delivered"
+
+
+class TestHistoryPollTransientTimeoutNoRegress:
+    """#732 outcome 7: a transient socket timeout during polling keeps polling."""
+
+    def test_single_poll_timeout_then_completes(self):
+        executor = OpenClawExecutor(
+            gateway_url="http://localhost:18789", gateway_token="t"
+        )
+        session_key = "sess-732-pollblip"
+        hist_calls = [0]
+
+        def _fake_urlopen(req, timeout=None):
+            body = json.loads(req.data.decode("utf-8"))
+            tool = body.get("tool", "")
+            if tool == "sessions_spawn":
+                return _732_mock_urlopen_response(_732_spawn_payload(session_key))
+            if tool == "sessions_history":
+                hist_calls[0] += 1
+                if hist_calls[0] == 1:
+                    raise TimeoutError("poll socket timed out")
+                return _732_mock_urlopen_response(
+                    _732_history_payload(_732_completed_messages())
+                )
+            return _732_mock_urlopen_response(
+                {"ok": True, "result": {"content": [{"type": "text", "text": "[]"}]}}
+            )
+
+        with patch("urllib.request.urlopen", side_effect=_fake_urlopen), \
+             patch("orchestration_engine.openclaw_executor.time.sleep"), \
+             patch("orchestration_engine.openclaw_executor.time.monotonic",
+                   side_effect=[float(i) for i in range(30)]):
+            result = executor.execute(_732_task(timeout_seconds=600), model_tier="sonnet")
+
+        assert result.state == TaskState.SUCCESS
+        assert _732_cb_failure_count(_732_SONNET) == 0
