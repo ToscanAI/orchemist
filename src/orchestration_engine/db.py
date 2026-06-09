@@ -10,6 +10,7 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from contextlib import contextmanager
@@ -41,6 +42,16 @@ TERMINAL_STATUSES: frozenset = frozenset({
     "rejected",
     "escalated",   # Issue #396: retry was escalated — original run is terminal
 })
+
+
+# ---------------------------------------------------------------------------
+# Issue #932 (item 1) — staleness threshold for queue-health reporting.
+# A task that has been in 'running' state strictly longer than this many
+# minutes is considered stale. Single source of truth: matches the
+# QueueStats docstring ("True if tasks stuck > 30min", schemas.py). queue.py
+# consumes this via has_stale_running_tasks() rather than redefining it.
+# ---------------------------------------------------------------------------
+STALE_TASK_THRESHOLD_MINUTES = 30
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +376,8 @@ class Database:
                 tokens_used INTEGER DEFAULT 0,
                 cost_usd DECIMAL(10,4),
                 peak_memory_mb INTEGER,
-                
-                FOREIGN KEY(task_id) REFERENCES tasks(id),
-                UNIQUE(task_id, attempt_number)
+
+                FOREIGN KEY(task_id) REFERENCES tasks(id)
             )
         """)
         
@@ -1146,7 +1156,105 @@ class Database:
                 values
             )
             return cursor.rowcount > 0
-    
+
+    # Task Run Aggregation Readers (Issue #932 item 1)
+    #
+    # These roll up the EXISTING task_runs rows (and, for staleness, the tasks
+    # table) for the queue-health surface in queue.py. They author the SQL the
+    # data layer previously lacked (task_runs had writers but no aggregation
+    # readers). Every aggregate column is aliased so _row_to_dict keys it
+    # addressably; every SUM is COALESCE-guarded so empty/all-NULL data yields
+    # a clean zero instead of NULL/raise.
+
+    def get_total_tokens_consumed(self) -> int:
+        """Total tokens used across all task_runs rows (all time).
+
+        Sums task_runs.tokens_used over every attempt record. Returns 0 when
+        there are no rows or all values are NULL (COALESCE guard).
+        """
+        row = self.fetch_one(
+            "SELECT COALESCE(SUM(tokens_used), 0) AS total FROM task_runs"
+        )
+        return int(row["total"]) if row else 0
+
+    def get_task_tokens_consumed(self, task_id: str) -> int:
+        """Total tokens used across all attempts (task_runs) for one task.
+
+        Sums task_runs.tokens_used WHERE task_id = ?. Returns 0 for an unknown
+        task id or when all matching values are NULL.
+        """
+        row = self.fetch_one(
+            "SELECT COALESCE(SUM(tokens_used), 0) AS total "
+            "FROM task_runs WHERE task_id = ?",
+            (task_id,),
+        )
+        return int(row["total"]) if row else 0
+
+    def get_total_cost_today(self) -> Decimal:
+        """Sum of task_runs.cost_usd for runs completed today (UTC).
+
+        Cost is realized at attempt completion, so only rows with a non-NULL
+        completed_at on today's UTC calendar date contribute. Returns
+        Decimal('0.00') when no matching rows exist.
+        """
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return self.get_total_cost_for_date(today_str)
+
+    def get_total_cost_for_date(self, date_str: str) -> Decimal:
+        """Sum of task_runs.cost_usd for runs whose completed_at date == date_str (UTC).
+
+        SQLite DATE() extracts the calendar date regardless of whether
+        completed_at was stored space-separated (CURRENT_TIMESTAMP) or
+        T-separated (datetime.isoformat()), so the comparison is format-robust.
+
+        The summation is performed in Decimal space rather than via SQL SUM():
+        SQLite's DECIMAL(10,4) column has NUMERIC affinity backed by IEEE-754
+        floats, so an in-engine SUM(cost_usd) drifts (0.10 + 0.20 ->
+        0.30000000000000004). Pulling each value and folding it through
+        Decimal(str(value)) yields the exact, drift-free total the Decimal
+        contract requires.
+
+        Args:
+            date_str: 'YYYY-MM-DD' (UTC).
+
+        Returns:
+            Decimal sum of matching cost_usd, or Decimal('0.00') if none.
+        """
+        rows = self.fetch_all(
+            "SELECT cost_usd FROM task_runs "
+            "WHERE DATE(completed_at) = ? AND cost_usd IS NOT NULL",
+            (date_str,),
+        )
+        total = Decimal('0')
+        for row in rows:
+            # str() first, never Decimal(float): str(0.1) is '0.1', whereas
+            # Decimal(0.1) would be 0.1000000000000000055...
+            total += Decimal(str(row["cost_usd"]))
+        return total
+
+    def has_stale_running_tasks(
+        self, threshold_minutes: int = STALE_TASK_THRESHOLD_MINUTES
+    ) -> bool:
+        """True iff any task has been in 'running' state longer than threshold_minutes.
+
+        Uses julianday() on BOTH sides so the comparison is correct regardless
+        of whether tasks.started_at was written as SQLite CURRENT_TIMESTAMP
+        (UTC, space-separated) or as a Python datetime.now().isoformat()
+        (T-separated) — a raw string '<' is wrong because 'T' (0x54) sorts above
+        ' ' (0x20), silently missing T-form stale rows. Compares against
+        SQLite's own clock ('now', UTC), matching CURRENT_TIMESTAMP. Strict '<'
+        on started_at means a task running exactly threshold_minutes is NOT
+        stale; one running threshold_minutes + a moment IS.
+        """
+        row = self.fetch_one(
+            "SELECT COUNT(*) AS n FROM tasks "
+            "WHERE status = 'running' "
+            "AND started_at IS NOT NULL "
+            "AND julianday(started_at) < julianday('now', ?)",
+            (f'-{int(threshold_minutes)} minutes',),
+        )
+        return bool(row["n"]) if row else False
+
     # Orchestra Operations
     
     def insert_orchestra(self, orchestra_data: Dict[str, Any]) -> str:

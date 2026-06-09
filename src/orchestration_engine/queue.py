@@ -96,23 +96,37 @@ class TaskQueue:
         task_data = self.db.get_task(task_id)
         if not task_data:
             return None
-        
+
+        started_at = (datetime.fromisoformat(task_data['started_at'])
+                      if task_data['started_at'] else None)
+        completed_at = (datetime.fromisoformat(task_data['completed_at'])
+                        if task_data['completed_at'] else None)
+
+        # Issue #932 item 1: wall-clock seconds for this task. Both endpoints
+        # are required for a nonzero value; a still-running or never-started
+        # task (either timestamp missing) reports 0.0.
+        execution_time_seconds = (
+            (completed_at - started_at).total_seconds()
+            if started_at and completed_at else 0.0
+        )
+
         return TaskStatus(
             task_id=task_data['id'],
             task_type=TaskType(task_data['type']),
             state=TaskState(task_data['status']),
             priority=Priority(task_data['priority']),
             created_at=datetime.fromisoformat(task_data['created_at']),
-            started_at=datetime.fromisoformat(task_data['started_at']) if task_data['started_at'] else None,
-            completed_at=datetime.fromisoformat(task_data['completed_at']) if task_data['completed_at'] else None,
+            started_at=started_at,
+            completed_at=completed_at,
             next_retry_at=datetime.fromisoformat(task_data['next_retry_at']) if task_data['next_retry_at'] else None,
             retry_count=task_data['retry_count'],
             max_retries=task_data['max_retries'],
             orchestra_id=task_data['orchestra_id'],
             orchestra_phase=task_data['orchestra_phase'],
-            tokens_consumed=0,  # TODO: Aggregate from task_runs
+            # Issue #932 item 1: real per-task token roll-up across all attempts.
+            tokens_consumed=self.db.get_task_tokens_consumed(task_data['id']),
             cost_usd=Decimal(str(task_data.get('cost_limit_usd') or 0)),
-            execution_time_seconds=0.0  # TODO: Calculate from timing
+            execution_time_seconds=execution_time_seconds
         )
     
     def list_tasks(self, filters: Optional[TaskFilters] = None) -> List[TaskSummary]:
@@ -299,21 +313,33 @@ class TaskQueue:
         
         return success
     
+    def _resolve_task_model(self, task_data: Dict[str, Any]) -> str:
+        """Resolve the model string to record for a task attempt.
+
+        Falls back to the task's stored preferred_model, then to the 'unknown'
+        floor (task_runs.model is NOT NULL, so a value is always required).
+        Issue #932 item 1.
+        """
+        return task_data.get('preferred_model') or 'unknown'
+
     def fail_task(
         self,
         task_id: str,
         error_message: str,
         error_type: str = 'permanent',
-        worker_id: Optional[str] = None
+        worker_id: Optional[str] = None,
+        model: Optional[str] = None
     ) -> bool:
         """Mark a task as failed.
-        
+
         Args:
             task_id: Unique task identifier
             error_message: Human-readable error description
             error_type: Type of error ('transient', 'permanent', 'quality')
             worker_id: Worker that was processing the task
-            
+            model: Model that was attempted. Optional; when omitted, falls back
+                to the task's preferred_model, then 'unknown'. (Issue #932 item 1)
+
         Returns:
             bool: True if task was marked as failed
         """
@@ -321,16 +347,22 @@ class TaskQueue:
         if not task_data:
             logger.error(f"Task {task_id} not found for failure")
             return False
-        
+
         # Create task run record
         run_id = str(uuid4())
         attempt_number = task_data['retry_count'] + 1
-        
+
+        # Issue #932 item 1: record the real model for the failed attempt.
+        # update_task_run's whitelist excludes 'model', so it must be set at
+        # INSERT time. Explicit arg wins, else the task's preferred_model,
+        # else the 'unknown' floor.
+        run_model = model or self._resolve_task_model(task_data)
+
         self.db.insert_task_run({
             'id': run_id,
             'task_id': task_id,
             'attempt_number': attempt_number,
-            'model': 'unknown',  # TODO: Track model being used
+            'model': run_model,
             'worker_id': worker_id,
             'status': TaskState.FAILED.value,
             'error_message': error_message,
@@ -382,8 +414,9 @@ class TaskQueue:
         
         # Check for warnings
         queue_depth_warning = stats_data['queued'] > 50
-        stale_tasks_warning = False  # TODO: Check for tasks stuck in running state
-        
+        # Issue #932 item 1: real staleness check over running tasks (format-robust).
+        stale_tasks_warning = self.db.has_stale_running_tasks()
+
         return QueueStats(
             timestamp=stats_data['timestamp'],
             queued=stats_data['queued'],
@@ -400,8 +433,9 @@ class TaskQueue:
             max_workers=stats_data['max_workers'],
             queue_depth_warning=queue_depth_warning,
             stale_tasks_warning=stale_tasks_warning,
-            total_cost_today_usd=Decimal('0.00'),  # TODO: Calculate from task_runs
-            total_tokens_consumed=0  # TODO: Sum from task_runs
+            # Issue #932 item 1: real roll-ups over task_runs.
+            total_cost_today_usd=self.db.get_total_cost_today(),
+            total_tokens_consumed=self.db.get_total_tokens_consumed()
         )
     
     def cleanup_stale_workers(self) -> int:
