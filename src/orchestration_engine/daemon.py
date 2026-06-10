@@ -544,10 +544,11 @@ def run_daemon(run_id: str, db_path: str) -> None:
                           extra_metadata=start_metadata)
 
         # Persist the running phase so `orch status` reflects it immediately
-        # (#516). Mirrors the current_phase write in _on_phase_complete
-        # (daemon.py:606-611) but touches ONLY current_phase — completed_phases
-        # and phase_outputs are unchanged at phase START.
-        db.update_pipeline_run(run_id, current_phase=phase_id)
+        # (#516). Mirrors the current_phase write in _on_phase_complete but
+        # touches ONLY current_phase — completed_phases and phase_outputs are
+        # unchanged at phase START. Extracted to _persist_phase_start so the
+        # #516 write is execution-path testable (#954).
+        _persist_phase_start(db, run_id, phase_id)
 
     def _on_phase_complete(phase_id: str, phase_result: dict) -> None:
         """Update DB after each phase completes."""
@@ -609,12 +610,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
             logger.warning("Failed to write phase output to disk: %s", exc)
 
         # Persist progress to DB
-        db.update_pipeline_run(
-            run_id,
-            current_phase=phase_id,
-            completed_phases=json.dumps(completed_phases),
-            phase_outputs=json.dumps(phase_outputs, default=str),
-        )
+        _persist_phase_complete(db, run_id, phase_id, completed_phases, phase_outputs)
 
         # Emit phase_completed event for SSE streaming (Issue #258, enriched #747)
         tokens = phase_result.get('tokens_consumed')
@@ -1208,6 +1204,40 @@ def _write_phase_event(
             "Could not write phase event (run=%s phase=%s type=%s): %s",
             run_id, phase_id, event_type, exc,
         )
+
+
+def _persist_phase_start(db: Any, run_id: str, phase_id: str) -> None:
+    """Persist the running phase so ``orch status`` reflects it immediately (#516).
+
+    Touches ONLY ``current_phase`` — ``completed_phases`` and ``phase_outputs``
+    are unchanged at phase START. Extracted from the ``_on_phase_start`` closure
+    (was ``daemon.py:550``) so the #516 write is execution-path testable.
+    """
+    db.update_pipeline_run(run_id, current_phase=phase_id)
+
+
+def _persist_phase_complete(
+    db: Any,
+    run_id: str,
+    phase_id: str,
+    completed_phases: List[str],
+    phase_outputs: Dict[str, Any],
+) -> None:
+    """Atomic progress write after a phase completes — mirrors the former
+    ``_on_phase_complete`` write (was ``daemon.py:611-617``).
+
+    Sets all three columns in a single ``update_pipeline_run`` call. Receives the
+    already-mutated ``completed_phases`` / ``phase_outputs`` from the caller and
+    only SERIALIZES them — it does NOT append or mutate. The append
+    (``completed_phases.append(phase_id)``) and assignment
+    (``phase_outputs[phase_id] = ...``) remain in the caller, BEFORE this call.
+    """
+    db.update_pipeline_run(
+        run_id,
+        current_phase=phase_id,
+        completed_phases=json.dumps(completed_phases),
+        phase_outputs=json.dumps(phase_outputs, default=str),
+    )
 
 
 def _do_auto_merge(

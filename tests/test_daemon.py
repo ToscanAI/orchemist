@@ -2934,6 +2934,45 @@ class TestDaemonStatusLagIssue516:
         # Inherited parent environment is preserved (not a bare one-key dict).
         assert "PATH" in _env
 
+    def test_oa8_persist_phase_start_helper_sets_current_phase(self, in_memory_db, sample_run):
+        """OA-8 (deletion-guard): the real _persist_phase_start helper writes
+        current_phase. Importing the live symbol means deleting the write inside
+        the helper turns this red. Seeding a stale 'A' defeats a false-pass from
+        an empty initial state."""
+        from orchestration_engine.daemon import _persist_phase_start
+
+        in_memory_db.insert_pipeline_run(sample_run)
+        run_id = sample_run["run_id"]
+        # Seed a stale current_phase so a no-op helper would leave "A" behind.
+        in_memory_db.update_pipeline_run(run_id, current_phase="A")
+
+        _persist_phase_start(in_memory_db, run_id, "phaseB")
+
+        run = in_memory_db.get_pipeline_run(run_id)
+        assert run["current_phase"] == "phaseB"
+        # start must NOT touch completed_phases (NULL → [] here).
+        assert json.loads(run.get("completed_phases") or "[]") == []
+
+    def test_oa8b_persist_phase_complete_helper_writes_all_three_columns(self, in_memory_db, sample_run):
+        """OA-8 companion: _persist_phase_complete persists current_phase +
+        completed_phases + phase_outputs in one atomic write, serializing the
+        already-mutated objects it is handed (it does NOT append)."""
+        from orchestration_engine.daemon import _persist_phase_complete
+
+        in_memory_db.insert_pipeline_run(sample_run)
+        run_id = sample_run["run_id"]
+        # Stale seed so a no-op helper would leave "stale" behind.
+        in_memory_db.update_pipeline_run(run_id, current_phase="stale")
+
+        completed_phases = ["A", "B"]            # caller already appended
+        phase_outputs = {"A": {}, "B": {}}       # caller already assigned
+        _persist_phase_complete(in_memory_db, run_id, "B", completed_phases, phase_outputs)
+
+        run = in_memory_db.get_pipeline_run(run_id)
+        assert run["current_phase"] == "B"
+        assert json.loads(run.get("completed_phases") or "[]") == ["A", "B"]
+        assert json.loads(run.get("phase_outputs") or "{}") == {"A": {}, "B": {}}
+
 
 # ===========================================================================
 # Tests for Issue #624: docs-pipeline PR title (Part B) — hook argument wiring
