@@ -303,3 +303,72 @@ jobs:
           if [ -f /tmp/next-dev.pid ]; then
             kill "$(cat /tmp/next-dev.pid)" 2>/dev/null || true
           fi
+
+  # ----------------------------------------------------------------------
+  # Issue #962 — Lint gate (Part B of #713).
+  #
+  # Part A-1 (#961, merge 577fa17) made src/ black --check + ruff check clean
+  # against the pyproject rule set (1757→0). This job is the CI gate that
+  # keeps it clean: ruff + black run against src/ on every substantive PR.
+  # Config comes entirely from pyproject.toml ([tool.ruff]/[tool.ruff.lint]
+  # + [tool.black]) — no CLI flags. needs:-free so it runs in parallel.
+  #
+  # The docs-only paths-filter gate (same as the sibling jobs) makes
+  # docs-only PRs report SUCCESS without running ruff/black.
+  # ----------------------------------------------------------------------
+  lint:
+    name: Lint (ruff + black)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # FIX 2026-06-10 (#958): the original `docs_only` filter listed the doc
+      # patterns directly, but dorny/paths-filter outputs true when ANY
+      # changed file matches — so a mixed code+docs PR (e.g. pyproject.toml +
+      # CHANGELOG.md) was misclassified docs_only=true and skipped this job's
+      # substantive steps while still reporting SUCCESS. Inverted detection:
+      # with `predicate-quantifier: every`, a file matches `non_docs` only if
+      # it matches EVERY negated pattern (i.e. it is not a doc file), so
+      # non_docs=true ⇔ at least one substantive file changed. Substantive
+      # steps run iff non_docs == 'true'; pure docs PRs still short-circuit
+      # to SUCCESS (not SKIPPED) so required checks stay satisfied.
+      - name: Detect substantive (non-docs) changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
+          predicate-quantifier: 'every'
+          filters: |
+            non_docs:
+              - '!**.md'
+              - '!docs/**'
+              - '!LICENSE'
+              - '!.github/ISSUE_TEMPLATE/**'
+
+      - name: Set up Python 3.12
+        if: steps.changes.outputs.non_docs == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Pin the lint tools at the JOB level (not via pyproject's dev extra):
+      # pyproject locks the *config* (rule selection, line length, target),
+      # but only a version pin freezes ruff's rule set / black's stable style.
+      # An unpinned `pip install black` would eventually pull a future
+      # calendar-major whose restyle reds today's clean src/ on an untouched
+      # main. ruff is 0.x (style/rule drift lands in MINOR bumps), black is
+      # calendar-versioned (style keyed to the year-major). Pin to the
+      # current lines; bump these deliberately when adopting a newer tool.
+      - name: Install lint tools
+        if: steps.changes.outputs.non_docs == 'true'
+        run: pip install "ruff==0.15.*" "black==26.*"
+
+      - name: Ruff (src/)
+        if: steps.changes.outputs.non_docs == 'true'
+        run: ruff check src/
+
+      - name: Black check (src/)
+        if: steps.changes.outputs.non_docs == 'true'
+        run: black --check src/
