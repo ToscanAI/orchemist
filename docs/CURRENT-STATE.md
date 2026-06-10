@@ -36,14 +36,16 @@ Code skills pack (separate repo). Alpha-grade (`Development Status :: 3 - Alpha`
 | Executor | Mode | Maturity | Notes |
 |---|---|---|---|
 | AnthropicExecutor | standalone | **Production** | stdlib `urllib`; primary BYO-key path |
-| OpenRouterExecutor | openrouter | **Production** | primary path; 6-tool tool-calling (#794 shipped) |
+| OpenRouterExecutor | openrouter | **Production** | primary path; 6-tool tool-calling (#794 shipped); local OpenAI-compatible endpoints (Ollama / LM Studio / vLLM) via `--base-url` (#968 shipped) |
 | ClaudeCodeExecutor | (MCP session) | **Limited** | uses the user's Claude Code subscription; only inside an MCP tool handler |
 | GeminiCliExecutor | (dialogue phase) | **Experimental** | dialogue-phase prototype (#677); no tool-calling/streaming/retry |
 | OpenClawExecutor | openclaw | **Deprecated** | gateway no longer active; kept for historical runs |
 | DryRunExecutor | dry-run | **Stable** | mock results |
 
-Broadening the provider matrix (Ollama, more families, polish) is tracked in
-[#101](https://github.com/ToscanAI/orchemist/issues/101).
+Local OpenAI-compatible endpoints (Ollama / LM Studio / vLLM) ship via
+`--base-url` ([#968](https://github.com/ToscanAI/orchemist/issues/968)); broadening
+the provider matrix further (more families, per-phase providers, polish) is tracked
+in [#101](https://github.com/ToscanAI/orchemist/issues/101).
 
 ## Web harness
 

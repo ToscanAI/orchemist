@@ -187,12 +187,24 @@ class PipelineRunner:
         from .executors.openrouter_executor import OpenRouterExecutor  # noqa: PLC0415
 
         resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
-        if not resolved_key:
+        # A custom (non-default) base_url targets a self-hosted / local OpenAI-compatible
+        # server (Ollama, LM Studio, vLLM) that needs no OpenRouter key. Normalize with the
+        # same .rstrip("/") the executor applies (openrouter_executor.py:153) before comparing.
+        _is_custom_endpoint = bool(base_url) and (
+            base_url.rstrip("/") != OpenRouterExecutor.DEFAULT_BASE_URL
+        )
+        if not resolved_key and not _is_custom_endpoint:
+            # Cloud OpenRouter (default base_url) still requires a key — guard UNWEAKENED.
             raise ValueError(
                 "OpenRouter API key required.\n"
                 "  Option 1: orch run --api-key sk-or-...\n"
                 "  Option 2: export OPENROUTER_API_KEY=sk-or-..."
             )
+        if not resolved_key:
+            # Keyless local endpoint: supply a harmless placeholder bearer so the
+            # Authorization header is well-formed (openrouter_executor.py:901). Local
+            # servers ignore the token; a real proxy that validates returns a clear 401.
+            resolved_key = "ollama"
 
         executor = OpenRouterExecutor(
             api_key=resolved_key,
