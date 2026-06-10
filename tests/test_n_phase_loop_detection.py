@@ -28,10 +28,21 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from orchestration_engine.adversary_parser import AdversaryConfig
 from orchestration_engine.schemas import TaskError, TaskResult, TaskState, TaskType
 from orchestration_engine.sequencer import StateMachineSequencer
 from orchestration_engine.templates import PhaseDefinition, PipelineTemplate
 from orchestration_engine.transitions import PhaseOutcome
+
+# #703: bare ``spec_adversary`` phases now raise at dispatch (the legacy shim was
+# removed). The loop-detection tests build ``spec_adversary`` loop phases; attach a
+# minimal generic-path AdversaryConfig (reward_enabled defaults to False → no reward
+# file) so ``execute()`` stays runnable without changing any loop/history assertion.
+_SPEC_ADVERSARY_TEST_CONFIG = AdversaryConfig(
+    valid_categories=["vague", "trivial", "missing_edge_case", "leakage", "divergence"],
+    fallback_category="vague",
+    verdict_scan="last",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +65,7 @@ def _make_phase(
         transitions=transitions or {},
         depends_on=depends_on or [],
         max_iterations=max_iterations,
+        adversary_config=(_SPEC_ADVERSARY_TEST_CONFIG if phase_id == "spec_adversary" else None),
     )
 
 

@@ -12,6 +12,8 @@ import json
 import logging
 from unittest import mock
 
+import pytest
+
 from orchestration_engine.adversary_parser import AdversaryConfig
 from orchestration_engine.schemas import TaskResult, TaskState
 from orchestration_engine.sequencer import PhaseSequencer, StateMachineSequencer
@@ -64,7 +66,8 @@ def _result(text):
 
 def test_generic_dispatch_uses_adversary_parser_not_spec_adversary(tmp_path):
     """A phase with adversary_config (reward_enabled=True) writes its config-named reward
-    file via the generic parser; the legacy spec_adversary module is not consulted."""
+    file via the generic parser. The legacy spec_adversary module was deleted in #703,
+    so "legacy not consulted" is now structurally guaranteed (no module exists to patch)."""
     config = AdversaryConfig(
         valid_categories=["custom_cat"],
         reward_enabled=True,
@@ -78,19 +81,18 @@ def test_generic_dispatch_uses_adversary_parser_not_spec_adversary(tmp_path):
         output_dir=str(tmp_path),
     )
 
-    with mock.patch("orchestration_engine.spec_adversary.parse_adversary_output") as legacy_mock:
-        seq._record_adversary_outcome(phase, _result("VERDICT: REQUEST_CHANGES\n[custom_cat] a"))
+    seq._record_adversary_outcome(phase, _result("VERDICT: REQUEST_CHANGES\n[custom_cat] a"))
 
-    legacy_mock.assert_not_called()
     assert (tmp_path / "custom_reward.json").exists()
     payload = json.loads((tmp_path / "custom_reward.json").read_text())
     assert payload["verdict"] == "REQUEST_CHANGES"
     assert isinstance(payload["reward_score"], float)
 
 
-def test_legacy_fallback_dispatch_uses_spec_adversary_module(tmp_path):
-    """A phase with adversary_config=None and id='spec_adversary' uses the legacy module
-    (writes adversary_reward.json) and does NOT invoke the generic compute_reward."""
+def test_bare_spec_adversary_phase_raises_value_error(tmp_path):
+    """#703 clear-error contract: a bare spec_adversary phase (no adversary_config) reaching
+    dispatch raises a surfacing ValueError naming the actionable fix (adversary_config),
+    replacing the removed legacy-fallback shim."""
     phase = PhaseDefinition(id="spec_adversary", name="adv")
     assert phase.adversary_config is None
     runner = _make_runner_stub("")
@@ -100,13 +102,14 @@ def test_legacy_fallback_dispatch_uses_spec_adversary_module(tmp_path):
         output_dir=str(tmp_path),
     )
 
-    with mock.patch("orchestration_engine.adversary_parser.compute_reward") as generic_mock:
-        seq._record_adversary_outcome(phase, _result("VERDICT: REQUEST_CHANGES\n[trivial] a"))
+    with pytest.raises(ValueError) as excinfo:
+        seq._record_adversary_outcome(phase, _result("VERDICT: APPROVE"))
 
-    generic_mock.assert_not_called()
-    assert (tmp_path / "adversary_reward.json").exists()
-    payload = json.loads((tmp_path / "adversary_reward.json").read_text())
-    assert isinstance(payload["reward_score"], int)
+    msg = str(excinfo.value)
+    assert "spec_adversary" in msg
+    assert "adversary_config" in msg
+    # The clear-error path must NOT silently write a reward artifact.
+    assert not (tmp_path / "adversary_reward.json").exists()
 
 
 def test_reward_enabled_false_skips_persist(tmp_path):
@@ -179,13 +182,18 @@ def test_reward_enabled_true_unwritable_output_dir_no_crash(tmp_path, caplog):
 
 def test_escalation_fires_via_escalation_partner(tmp_path):
     """An exhausted reviewed phase naming an adversary via escalation_partner, with the
-    partner's REQUEST_CHANGES output seeded in phase_outputs, sets escalation_required."""
+    partner's REQUEST_CHANGES output seeded in phase_outputs, sets escalation_required.
+
+    #703: escalation parsing now requires adversary_config (the legacy spec_adversary
+    escalation parser was removed), so the reviewed phase carries an AdversaryConfig whose
+    valid_categories cover the seeded findings."""
     reviewed = PhaseDefinition(
         id="review_phase",
         name="review_phase",
         max_iterations=2,
         transitions={"success": "review_phase"},
         escalation_partner="my_adversary",
+        adversary_config=AdversaryConfig(valid_categories=["trivial", "vague"]),
     )
     template = PipelineTemplate(id="t", name="T", phases=[reviewed])
     runner = _make_runner_stub("phase work output")

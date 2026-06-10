@@ -884,15 +884,21 @@ class PhaseSequencer:
     def _record_adversary_outcome(self, phase: PhaseDefinition, result: dict) -> None:
         """Parse adversary verdict and persist reward when output_dir is available.
 
-        Dispatch (Issue #702): a phase carrying ``adversary_config`` uses the
-        generic ``adversary_parser`` path; a legacy ``spec_adversary`` phase with
-        no ``adversary_config`` falls back to the old ``spec_adversary`` module.
-        All errors are swallowed so a reward-persist failure never crashes the
-        pipeline.
+        Dispatch (Issue #702/#703): a phase carrying ``adversary_config`` uses the
+        generic ``adversary_parser`` path; reward-persist errors there are swallowed
+        so a reward-persist failure never crashes the pipeline. The legacy hardcoded
+        ``spec_adversary`` dispatch was removed in #703 — a bare ``spec_adversary``
+        phase with no ``adversary_config`` now raises a surfacing ``ValueError``
+        (it does NOT dispatch to a deleted module). Any other config-less phase is a
+        no-op.
 
         Args:
             phase:  The :class:`~.templates.PhaseDefinition` that just completed.
             result: The phase result dict (as returned by :meth:`_execute_and_wait`).
+
+        Raises:
+            ValueError: When ``phase.id == "spec_adversary"`` and
+                ``phase.adversary_config is None`` (the removed-shim clear error).
         """
         if phase.adversary_config is not None:
             # ── Generic path (Issue #702) ──────────────────────────────────
@@ -930,33 +936,21 @@ class PhaseSequencer:
                 )
             return
 
-        if phase.id != "spec_adversary":
-            return
-        # ── Legacy fallback path (unchanged semantics) ────────────────────
-        if not self.output_dir:
-            logger.warning(
-                "spec_adversary phase completed but output_dir is None " "— skipping reward persist"
+        # ── Removed legacy shim (Issue #703) ──────────────────────────────
+        # A bare ``spec_adversary`` phase (no ``adversary_config``) used to fall
+        # back to the deleted ``spec_adversary`` module. That hardcoded dispatch
+        # is gone; surface a clear, actionable error instead of silently doing
+        # nothing. This ``raise`` sits at the method's top level, OUTSIDE any
+        # try/except, so it propagates to the caller (it is not swallowed).
+        if phase.id == "spec_adversary":
+            raise ValueError(
+                f"Pipeline {self.template.id}: phase 'spec_adversary' has no "
+                f"adversary_config. The legacy hardcoded spec_adversary dispatch "
+                f"was removed in #703 — add an adversary_config block (valid_categories, "
+                f"fallback_category, verdict_scan) to this phase to use the generic "
+                f"adversary path."
             )
-            return
-        try:
-            from .spec_adversary import (  # noqa: PLC0415
-                compute_reward,
-                parse_adversary_output,
-                persist_reward,
-            )
-
-            raw_text = _extract_phase_text(result)
-            verdict = parse_adversary_output(raw_text)
-            reward = compute_reward(verdict)
-            persist_reward(str(self.output_dir), verdict, reward)
-            logger.info(
-                f"Pipeline {self.template.id}: spec_adversary verdict={verdict.verdict} "
-                f"reward={reward} findings={len(verdict.findings)}"
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                f"Pipeline {self.template.id}: spec_adversary reward persist failed: {exc}"
-            )
+        return
 
     def _record_review_outcome(self, phase: PhaseDefinition, result: dict) -> None:
         """Persist a review outcome to the DB when ``run_id`` and ``db`` are set.
@@ -4004,23 +3998,28 @@ class StateMachineSequencer(PhaseSequencer):
                                     f"{partner_id!r} for exhausted phase {current_phase_id!r} "  # noqa: E501
                                     f"has no output — skipping escalation detection."  # noqa: E501
                                 )
+                            elif phase.adversary_config is None:
+                                # Issue #703: the legacy spec_adversary escalation
+                                # parser was removed. Escalation detection now
+                                # REQUIRES adversary_config; without it, skip with a
+                                # warning (graceful degradation — a raise here would
+                                # be swallowed by the enclosing escalation try/except).
+                                logger.warning(
+                                    f"Pipeline {self.template.id}: exhausted phase "  # noqa: E501
+                                    f"{current_phase_id!r} names escalation_partner "  # noqa: E501
+                                    f"{partner_id!r} but has no adversary_config — "  # noqa: E501
+                                    f"skipping escalation detection."  # noqa: E501
+                                )
                             else:
                                 try:
                                     adv_raw = _extract_phase_text(self.phase_outputs[partner_id])
-                                    if phase.adversary_config is not None:
-                                        from .adversary_parser import (  # noqa: PLC0415
-                                            parse_adversary_output,
-                                        )
+                                    from .adversary_parser import (  # noqa: PLC0415
+                                        parse_adversary_output,
+                                    )
 
-                                        adv_verdict = parse_adversary_output(
-                                            adv_raw, phase.adversary_config
-                                        )
-                                    else:
-                                        from .spec_adversary import (  # noqa: PLC0415
-                                            parse_adversary_output,
-                                        )
-
-                                        adv_verdict = parse_adversary_output(adv_raw)
+                                    adv_verdict = parse_adversary_output(
+                                        adv_raw, phase.adversary_config
+                                    )
                                     if adv_verdict.verdict == "REQUEST_CHANGES":
                                         abort_result["escalation_required"] = True
                                         abort_result["escalation_reason"] = (

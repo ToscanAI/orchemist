@@ -1996,6 +1996,17 @@ class TemplateEngine:
                 hint = f"; did you mean '{suggestion[0]}'?" if suggestion else ""
                 warnings.append(f"Phase '{phase.id}' has unknown thinking_level='{level}'{hint}")
 
+            # ---- deprecated spec_adversary hardcoded-dispatch check (#703) ----
+            # A bare ``spec_adversary`` phase (no ``adversary_config``) relied on
+            # the legacy hardcoded dispatch removed in #703. Advisory only — this
+            # is template-content guidance, NOT dispatch routing: it never selects
+            # a parser or computes a reward; it just appends a warning string.
+            if phase.id == "spec_adversary" and phase.adversary_config is None:
+                warnings.append(
+                    "Phase 'spec_adversary' uses deprecated hardcoded dispatch — "
+                    "add adversary_config to use the generic path"
+                )
+
         # ---- config_schema check -------------------------------------
         schema = template.config_schema
         if schema:
