@@ -5,6 +5,8 @@
 > **Interactive docs:** `http://localhost:8375/api/v1/docs` (Swagger UI)
 > **OpenAPI spec:** `http://localhost:8375/api/v1/openapi.json`
 
+> **⚠️ Status (2026-06-10):** This reference is hand-maintained and may lag the implementation. The authoritative, always-current API surface is the running server: start `orch api-server` and open the Swagger UI at `http://localhost:8375/api/v1/docs`, or read the source in [`web/api.py`](../src/orchestration_engine/web/api.py). Full regeneration of this document from the live OpenAPI spec is tracked as a known limitation (see [docs/CURRENT-STATE.md](CURRENT-STATE.md#known-limitations)).
+
 The versioned REST API is separate from the browser UI API (`/api/`). It is designed for programmatic consumers: CI/CD pipelines, webhooks, external scripts, and the OpenClaw gateway.
 
 **Authentication:** None by default (local use). Webhook endpoints support HMAC-SHA256 signature verification when a `secret` is configured.
@@ -680,7 +682,7 @@ List all trust profiles.
   "items": [
     {
       "id": 1,
-      "repo": "ToscanAI/orchestration-engine",
+      "repo": "ToscanAI/orchemist",
       "template_id": "coding-pipeline-v1",
       "task_type": "code",
       "trust_score": 0.85,

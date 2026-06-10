@@ -9,12 +9,14 @@
 
 1. [Quick Reference](#1-quick-reference)
 2. [Full Field Reference](#2-full-field-reference)
+- [Composition (`extends:` / `exclude_phases:`)](#composition)
 3. [Annotated Example](#3-annotated-example)
 4. [config_schema Reference](#4-config_schema-reference)
 5. [Variable Interpolation Guide](#5-variable-interpolation-guide)
 6. [Cookbook Patterns](#6-cookbook-patterns)
 7. [Testing Your Template](#7-testing-your-template)
 8. [Troubleshooting](#8-troubleshooting)
+- [Pitfalls & Pre-PR Checklist](#pitfalls--pre-pr-checklist)
 
 ---
 
@@ -300,6 +302,56 @@ phases:
 | `opus` | Complex reasoning: architecture review, adversarial analysis, synthesis | Most expensive | Slowest |
 
 **Auto-escalation on retry:** If a phase fails or doesn't meet `min_confidence`, the engine retries with a higher tier automatically (e.g. `haiku → sonnet → opus` for `content` tasks).
+
+---
+
+## Composition
+
+*(`extends:` / `exclude_phases:`)*
+
+> This guide also covers template composition (this section) and common authoring pitfalls (the [Pitfalls & Pre-PR Checklist](#pitfalls--pre-pr-checklist) section near the end).
+
+A template can build on another instead of repeating its phases. Set `extends: <other-template-id>` to inherit that template's phases plus its top-level `config_schema`, `auto_merge`, `routing_config`, and `example_input`. You then tailor the inherited pipeline by:
+
+1. **Trimming** inherited phases with `exclude_phases: [...]`.
+2. **Appending** new phases under `phases:`.
+3. **Field-level overriding** an inherited phase by re-declaring it under `phases:` with the same `id` (only the fields you set change; the rest are inherited).
+
+Inherited phases you neither exclude nor override are pulled in verbatim.
+
+### Worked example: `coding-pipeline-skip-spec`
+
+`coding-pipeline-skip-spec` is built entirely by composition (issue #704). Its header declares:
+
+```yaml
+extends: coding-pipeline-standard
+exclude_phases:
+  - existing_symbols_inventory
+  - spec
+  - behavioral
+  - spec_adversary
+  - postmortem_spec
+```
+
+What this does, exactly:
+
+1. **Inherit** the shared phases and top-level config from `coding-pipeline-standard`.
+2. **`exclude_phases:`** removes the five spec-loop phases listed above.
+3. **Append** the skip-spec-only phases `acceptance_test_adversary` and `verify_tests_integrity` under `phases:`.
+4. **Field-level override** the five shared phases that differ (`acceptance_test`, `implement`, `acceptance_run`, `review`, `fix`) by re-declaring them; `postmortem_review` and `test` are inherited verbatim (drift-locked).
+
+Net result: the standard pipeline's 12 phases become skip-spec's 9.
+
+### Verifying a composed template
+
+After composition, confirm the resolved phase set with:
+
+```bash
+orch validate coding-pipeline-skip-spec
+orch list-phases coding-pipeline-skip-spec
+```
+
+`orch list-phases` prints the fully-resolved order (inherited + appended − excluded), so you can check the composition produced exactly the phases you expect.
 
 ---
 
@@ -622,7 +674,7 @@ Prompts use Python `str.format()`-style placeholders (`{variable}` or `{variable
 
 > **⚠️ `{phase_id.output}` vs `{previous_output[phase_id]}`:** These are NOT equivalent. `{research.output}` gives you **clean text only** (extracted from the result). `{previous_output[research]}` gives the **full TaskResult dict** including state, confidence, metadata, and tokens. **Prefer `{phase_id.output}` or `{phase_id}` for prompt chaining** — it's cleaner and what downstream agents actually need.
 
-> **Missing key behaviour:** If a referenced key does not exist, the engine substitutes `<MISSING:key>` rather than raising an error. Watch for these in your output during dry runs.
+> **Missing-key behaviour (fail-fast):** In real runs (`standalone` / `openrouter` / `openclaw` / `claudecode`), if a referenced `{config[...]}`, `{input[...]}`, or `{previous_output[...]}` key is missing, the engine **rejects the phase before dispatch** (terminal `permanently_failed`) and names every `<MISSING:...>` marker (issues #535/#676). **Dry-run is the exception** — it logs the markers and proceeds so you can smoke-test structure (issue #659). So `<MISSING:...>` is a dry-run-only diagnostic; a real run never silently dispatches one.
 
 ### 5.2 Common Patterns
 
@@ -1270,7 +1322,7 @@ orch run my-pipeline.yaml --mode dry-run --input '{"topic": "AI safety", "tone":
 ```
 
 The dry-run executor:
-- Resolves all variable interpolations and reports `<MISSING:key>` placeholders
+- Resolves all variable interpolations and **reports** any `<MISSING:key>` placeholders (dry-run tolerates them so you can test structure; a real run would instead fail the phase — see §5.1)
 - Executes all phases with mock outputs
 - Validates output schemas if defined
 - Reports the final execution graph and any warnings
@@ -1423,9 +1475,7 @@ id: my-pipeline
 ### 8.2 Variable Interpolation Issues
 
 **`<MISSING:topic>` appears in model output**
-- The prompt uses `{input[topic]}` but `topic` wasn't passed at runtime.
-- Fix: add `topic` to `config_schema.required` so users are prompted for it.
-- Or provide a `default` in `config_schema.properties.topic`.
+- **Cause:** a referenced key (`{input[...]}`, `{config[...]}`, or `{previous_output[...]}`) wasn't provided. **In a real run this no longer reaches the model** — the engine fails the phase before dispatch and names the marker (#535/#676). If you see `<MISSING:topic>` it means you ran in **dry-run**, which tolerates it. **Fix:** supply the key via `--input` / `--input-file` / `config_schema` default, or correct the reference.
 
 **`{previous_output[phase-id]}` returns empty or `{}`**
 - The referenced phase ran but produced no parseable output.
@@ -1487,6 +1537,22 @@ These are non-blocking but indicate best-practice issues:
 
 ---
 
+## Pitfalls & Pre-PR Checklist
+
+The mistakes that most often bounce a template PR — and the authoring hygiene that prevents them.
+
+**Run `orch validate` before opening a PR.** Unvalidated templates are the most common reason a PR is sent back. `orch validate <template>` (and `orch validate <template> --fix` for simple auto-corrections, see §7.1) catches missing required fields, bad `depends_on` references, and structural errors before review.
+
+**`config_schema` defaults vs `command` phases.** A `config_schema` default is *not* injected into a `command`-type phase's `command` / `working_dir` interpolation the way runtime input is. Make sure every `{config[...]}` / `{input[...]}` a command phase references is actually populated at run time — otherwise the missing-key guard fails the phase before dispatch (see the [Missing-key behaviour](#51-available-variables) note in §5.1).
+
+**`max_iterations` on `request_changes` / review loops.** Any loop where a reviewer can send work back — `review ↔ fix`, `spec ↔ spec_adversary`, supervisor loops — needs a bounded `max_iterations` (the loop's max rounds). Without it, a non-converging verdict loops until the budget is exhausted. `max_iterations` is a real phase/transition field (documented in §2.2 and §6.9); set it deliberately. (`coding-pipeline-skip-spec`, for example, caps its loops at 5 / 6 / 3 rounds.)
+
+**Current `<MISSING:>` fail-fast.** In real runs the engine rejects a phase before dispatch when a referenced key is missing and names each `<MISSING:...>` marker (#535/#676); only dry-run tolerates them. See §5.1 — do not rely on the old silent-substitution behavior.
+
+**Bare `#N` autolinking.** A bare `#123` written into a prompt, description, or PR body is auto-linked to issue 123 wherever GitHub renders it. If you mean a literal hash-number (e.g. "phase #3"), rephrase or escape it to avoid an accidental cross-link. This is authoring hygiene, not an engine behavior.
+
+---
+
 ## Appendix: Template Checklist
 
 Use this checklist before publishing or sharing a template:
@@ -1538,6 +1604,6 @@ Testing
   [ ] orch validate passes (0 errors)
   [ ] orch validate passes or warnings are understood
   [ ] orch list-phases shows expected execution waves
-  [ ] orch run --mode dry-run completes without <MISSING:*> placeholders
+  [ ] orch run --mode dry-run reports no <MISSING:*> placeholders (any that appear would fail the phase in a real run — #535/#676)
   [ ] At least one live run tested with real input
 ```

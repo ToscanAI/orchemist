@@ -18,7 +18,7 @@ AI agents hallucinate, drift off-topic across long chains, and produce work that
 - **Adversarial quality gates.** Spec adversary, acceptance-test adversary, and code review phases catch weaknesses BEFORE they become implementation bugs.
 - **Acceptance-test-driven development.** Tests are written before implementation by a separate agent. The implementing agent must pass them — it cannot modify or bypass them.
 
-300+ internal pipeline runs (dogfood + integration testing) across content, coding, research, and compliance workflows have stress-tested this approach.
+Dogfooded across content, coding, research, and compliance workflows — these architectural choices come from real pipeline runs, not theory.
 
 ---
 
@@ -27,8 +27,8 @@ AI agents hallucinate, drift off-topic across long chains, and produce work that
 **Orchemist** is a platform with four components:
 
 1. **Orchestration Engine** (this repo) — a Python engine that sequences multi-phase AI pipelines from YAML templates. Handles phase transitions, retries, tool execution, cost tracking, and adversarial review loops.
-2. **Pipeline Templates** (`templates/`) — YAML definitions for coding, content, research, and compliance pipelines. The coding pipeline (`coding-pipeline-standard`) runs 11 phases: spec, behavioral contracts, adversary review, acceptance tests, implementation, test execution, code review, fixes, and final verification.
-3. **Skills Pack** ([ToscanAI/orchemist-skills](https://github.com/ToscanAI/orchemist-skills)) — the coding pipeline repackaged as Claude Code `.claude/skills/` and `.claude/agents/`. Pure markdown, no Python runtime. Drop it into Claude Code and `/orchemist:run` walks the same 11-phase loop. Best on-ramp if you already use Claude Code.
+2. **Pipeline Templates** (`templates/`) — YAML definitions for coding, content, research, and compliance pipelines. The coding pipeline (`coding-pipeline-standard`) runs 12 phases: spec, behavioral contracts, adversary review, acceptance tests, implementation, test execution, code review, fixes, and final verification.
+3. **Skills Pack** ([ToscanAI/orchemist-skills](https://github.com/ToscanAI/orchemist-skills)) — the coding pipeline repackaged as Claude Code `.claude/skills/` and `.claude/agents/`. Pure markdown, no Python runtime. Drop it into Claude Code and `/orchemist:run` walks the same 12-phase loop. Best on-ramp if you already use Claude Code.
 4. **Harness** (`frontend/` in this repo) — the operator web surface. Six cross-linked screens covering fleet status, run cockpit, the cross-model adversary dialogue visualizer, trust & gates, admin / activation, and skills-pack mode. Ships with the engine; launches via `orch serve`. See **[The Harness](#the-harness)** below for screenshots.
 
 > The legacy [ToscanAI/orchemist-ide](https://github.com/ToscanAI/orchemist-ide) VS Code fork is being sunset in favour of the harness. See issue [#814](https://github.com/ToscanAI/orchemist/issues/814) for the deprecation plan.
@@ -142,21 +142,22 @@ Mirror of the local Claude Code Skills Pack installation. Shows phase skills, pi
 
 ![Skills Pack Mode](docs/harness-redesign-2026-05-24/screenshots/06-skills-pack-mode.png)
 
-> **Try it.** `pip install orchemist[web] && orch serve` opens the harness at <http://127.0.0.1:8374>. With the engine running, every screen consumes real `/api/v1/*` data; without it, the same screens still render with demo data and a clear "engine offline" banner so the UI is reviewable end-to-end. A Playwright e2e suite (`frontend/tests-e2e/`) keeps both the offline-mock screenshots and the live-engine screenshots in sync with the SVG canon on every PR.
+> **Try it.** `pip install orchemist[web] && orch serve` opens the harness at <http://127.0.0.1:8374>. With the engine running, every screen consumes real `/api/v1/*` data; without a reachable engine, each screen shows the `EngineOfflineGuard` "engine unreachable" error UI (retry button + docs link) — there is no demo-data fallback (see #888). A Playwright e2e suite (`frontend/tests-e2e/`) keeps both the offline-error and live-engine screenshots in sync with the SVG canon on every PR.
 
 ---
 
 ## Use Cases
 
-| Use Case | What it does |
+| Template | What it does |
 |----------|-------------|
-| **Content Pipeline** | Research → Draft → Edit → SEO → Publish-ready output |
-| **Code Review** | Static analysis → Security scan → Architecture review → Summary report |
-| **Coding Pipeline** | Feature development → Unit tests → Integration tests → Deployment |
-| **Research Assistant** | Query expansion → Source gathering → Synthesis → Citation check |
-| **Translation Pipeline** | Translate → Back-translate → Consistency check → Final polish |
-| **Customer Support** | Intent classification → KB lookup → Response draft → Quality gate |
-| **Financial Analysis** | Data extraction → Trend analysis → Risk assessment → Executive summary |
+| `content-pipeline` | Research → draft → edit content workflow |
+| `coding-pipeline-standard` | 12-phase spec → implement → review coding pipeline |
+| `coding-pipeline-skip-spec` | Coding pipeline with the spec loop pre-supplied |
+| `research-competitive` | Competitive / landscape research |
+| `docs-pipeline-v1` | Documentation generation / refresh |
+| Editorial Rewrite (`editorial_rewrite`) | Rework existing copy for tone and clarity |
+| `greenfield-project-v1` | Greenfield project scaffolding |
+| `sprint-runner-v1` | Multi-issue sprint runner |
 
 Each use case is a template. Browse them with `orch templates list` or search with `orch templates search <topic>`.
 
@@ -168,11 +169,11 @@ Each use case is a template. Browse them with `orch templates list` or search wi
 - ✅ **Phase sequencing with dependency graphs** — topological sort, parallel wave execution
 - ✅ **Model tier selection per phase** — haiku / sonnet / opus, set per phase or pipeline-wide
 - ✅ **`skill_refs` injection** — pass tool contexts into prompts declaratively
-- ✅ **Fallback executors** — Gemini fallback when Anthropic is unavailable
+- ✅ **Multiple execution backends** — Anthropic (standalone), OpenRouter (any model, primary path), plus experimental Gemini-CLI and Claude-Code executors. See [maturity tiers](docs/CURRENT-STATE.md#executor-maturity) for what's production-ready vs experimental.
 - ✅ **Template index & search** — community index, install by GitHub shorthand `user/repo`
 - ✅ **Scenario-based grading** — YAML acceptance criteria, LLM judges, assertion graders
 - ✅ **Human-in-the-loop** — pause phases for review, inject feedback, resume
-- ✅ **OpenClaw integration** — run phases as sub-agents with full tool access
+- ✅ **OpenClaw integration** *(deprecated — gateway no longer active; kept for historical runs)* — run phases as sub-agents with full tool access
 - ✅ **Local web UI** — browse templates, start runs, and watch live progress in your browser (`orch serve`)
 
 ---
@@ -185,9 +186,10 @@ Each use case is a template. Browse them with `orch templates list` or search wi
 | Visual builder | 🔜 | ⚠️ | ❌ | ❌ | ✅ |
 | Template library | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Testing / grading | ✅ | ❌ | ⚠️ | ❌ | ❌ |
-| Raspberry Pi support | ✅ | ⚠️ | ⚠️ | ⚠️ | ❌ |
 
 > ✅ full support · ⚠️ partial/unofficial · ❌ not supported · 🔜 planned
+>
+> Comparison reflects our reading of each tool's defaults as of 2026-06; frameworks evolve — verify against their current docs.
 
 ---
 
@@ -205,7 +207,7 @@ flowchart TD
 
     subgraph Runner["Pipeline Runner"]
         TE["Template Engine\n(YAML parse, var interp)"] --> PS["Phase Sequencer\n(topo sort, output forward,\nretry logic)"]
-        PS --> EX["Executors\n(Anthropic · OpenClaw\nGemini · Dry-Run)"]
+        PS --> EX["Executors\n(Anthropic · OpenRouter\nGemini · ClaudeCode · Dry-Run)"]
     end
 
     Runner --> SR
@@ -215,15 +217,7 @@ flowchart TD
     end
 ```
 
-**Three execution modes:**
-
-| Mode | How it runs | API key? | Start here? |
-|------|-------------|----------|-------------|
-| `standalone` | Direct Anthropic API (zero framework deps) | Yes — `ANTHROPIC_API_KEY` | ✅ Yes — simplest setup |
-| `dry-run` | Mock executor for testing / CI | No | ✅ Yes — no credentials needed |
-| `openclaw` | Sub-agent spawning via OpenClaw gateway | No (uses gateway token) | Requires separate [OpenClaw](https://github.com/openclaw/openclaw) setup |
-
-> **New here?** Start with `--mode standalone` (bring your own API key) or `--mode dry-run` (no credentials). OpenClaw mode is for production deployments with the OpenClaw gateway.
+Execution modes are listed in [Execution modes](#execution-modes) above; standalone (`ANTHROPIC_API_KEY`) and dry-run (no credentials) are the simplest places to start.
 
 ---
 
@@ -242,7 +236,7 @@ orch new --from content-pipeline
 # Interactive wizard (config_schema-driven)
 orch start
 
-# Copy a starter pipeline to your project in one command
+# Run the bundled hello-pipeline in dry-run — a working pipeline in 30 seconds, zero config
 orch quickstart
 
 # Execute a pipeline
@@ -302,7 +296,7 @@ Trades off: no web UI, no queue, no daemon, no multi-provider model selection. U
 ```bash
 pip install orchemist
 orch --help
-orch serve                   # local web UI at http://localhost:8000
+orch serve                   # local web UI at http://127.0.0.1:8374
 ```
 
 ### Path C — From Source (development, ~10 minutes)
@@ -325,7 +319,7 @@ orch --help
 | **Orchemist** | Pipeline templates, phase sequencing, quality gates | Application Framework |
 | **Scenario Runner** | Outcome-based testing, LLM judges, grading | Test Framework |
 
-The engine works **standalone** (direct API) or **with OpenClaw** (sub-agent spawning). No vendor lock-in on the model provider side.
+The engine runs **standalone** (direct Anthropic API) or via **OpenRouter** for multi-provider model choice; the deprecated OpenClaw gateway path also remains. Provider coverage is tiered — see [maturity tiers](docs/CURRENT-STATE.md#executor-maturity) — and broadening it (Ollama, more providers) is tracked in [#101](https://github.com/ToscanAI/orchemist/issues/101).
 
 ---
 
@@ -353,10 +347,10 @@ Orchemist is in **active development (alpha)**. What works, what doesn't:
 | Area | Status |
 |---|---|
 | Coding pipeline (openrouter mode) | Primary path — first successful end-to-end run 2026-04-17, 32/32 acceptance tests passing |
-| Coding pipeline (openclaw mode) | Deprecated — 300+ internal dogfood runs before gateway sunset; kept for historical reference |
-| Pipeline templates | `coding-pipeline-standard` (11 phases) and `coding-pipeline-skip-spec` stable; content and research templates available |
+| Coding pipeline (openclaw mode) | Deprecated — used internally before the gateway was sunset; kept for historical reference |
+| Pipeline templates | `coding-pipeline-standard` (12 phases) and `coding-pipeline-skip-spec` (9 phases) stable; content, research, and docs templates available |
 | Web UI | Functional for template browsing, run monitoring, and pipeline launching |
-| Orchemist IDE | Phases 2-5 complete (shell scaffold, pipeline explorer, live log streaming, template editor); schema-driven launch form in progress |
+| Orchemist IDE | Sunset in favor of the harness (#814); see Harness above |
 | OpenRouter tool calling | Shipped 2026-04-16 (PR #795) — 6 tools with path sandbox, retry, JSONL logging |
 | Cost optimization | In progress — command/acceptance_run phases being routed away from LLM (#798) |
 | Documentation | Partial — OpenRouter setup guide, getting started, template authoring available; end-to-end tutorial pending |
@@ -393,8 +387,8 @@ pytest
 
 | Issue type | Template | Pipeline |
 |------------|----------|----------|
-| Bug | Bug Report | `coding-pipeline-v1` |
-| Feature / code change | Feature Request | `coding-pipeline-v1` |
+| Bug | Bug Report | `coding-pipeline-standard` |
+| Feature / code change | Feature Request | `coding-pipeline-standard` |
 | Documentation | Documentation Request | `docs-pipeline-v1` |
 | Article / blog post | Content Request | `content-pipeline` |
 | Research / analysis | Research Request | `research-competitive` |
@@ -407,6 +401,7 @@ Please read CONTRIBUTING.md for code style and PR guidelines.
 
 - [Getting Started](docs/GETTING_STARTED.md) — detailed setup guide
 - [Architecture](docs/ARCHITECTURE.md) — system design
+- [Current State & Limitations](docs/CURRENT-STATE.md) — what works today, executor maturity tiers, known limitations, and what's planned
 - [API Reference](docs/api-reference.md) — CLI commands + Python classes
 - [Web UI](docs/web-ui.md) — browser interface (`orch serve`)
 - [Harness redesign pack](docs/harness-redesign-2026-05-24/) — vision, duplicate audit, frontend audit, autonomy posture, SVG canon, live screenshots
@@ -423,4 +418,4 @@ See [LICENSE](LICENSE) for the full text.
 
 ---
 
-**Orchemist — Tests passing. 3 execution modes. Git-native pipeline handoff.**
+**Orchemist — Tests passing. 4 execution modes. Git-native pipeline handoff.**

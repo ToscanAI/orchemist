@@ -1,4 +1,4 @@
-# Contributing to Orchestration Engine
+# Contributing to Orchemist
 
 Welcome! We're glad you're here. 🎉
 
@@ -14,25 +14,25 @@ The fastest path to contribution is cloning an existing example, tweaking it, an
 
 ```bash
 # 1. Fork and clone the repo
-git clone https://github.com/<your-username>/orchestration-engine.git
-cd orchestration-engine
+git clone https://github.com/<your-username>/orchemist.git
+cd orchemist
 
 # 2. Install the engine so you can test locally
 pip install -e .
 
 # 3. Copy a starter template
-cp examples/hello-pipeline.yaml examples/my-pipeline.yaml
+cp templates/hello-pipeline.yaml templates/my-pipeline.yaml
 
 # 4. Edit it to do something useful (see Template Structure below)
 #    Name your file descriptively: summarize-podcast.yaml, code-review-pr.yaml, etc.
 
 # 5. Validate and do a dry run
-orch validate examples/my-pipeline.yaml
-orch run examples/my-pipeline.yaml --mode dry-run --input '{"topic": "test"}'
+orch validate templates/my-pipeline.yaml
+orch run templates/my-pipeline.yaml --mode dry-run --input '{"topic": "test"}'
 
 # 6. Commit and open a PR
 git checkout -b template/my-pipeline
-git add examples/my-pipeline.yaml
+git add templates/my-pipeline.yaml
 git commit -m "feat(templates): add my-pipeline for X use case"
 git push origin template/my-pipeline
 ```
@@ -153,16 +153,16 @@ Always test locally before opening a PR. Three commands cover everything:
 
 **Step 1 — Validate structure**
 ```bash
-orch validate examples/my-pipeline.yaml
+orch validate templates/my-pipeline.yaml
 ```
 Catches YAML syntax errors, missing required fields, and invalid `depends_on` references. Use `--fix` to auto-correct simple issues:
 ```bash
-orch validate examples/my-pipeline.yaml --fix
+orch validate templates/my-pipeline.yaml --fix
 ```
 
 **Step 2 — Dry run (no API key needed)**
 ```bash
-orch run examples/my-pipeline.yaml \
+orch run templates/my-pipeline.yaml \
   --mode dry-run \
   --input '{"topic": "quantum computing", "tone": "professional"}'
 ```
@@ -171,7 +171,7 @@ The dry-run executor returns mock results immediately. This tests your YAML stru
 **Step 3 — Real run (requires API key)**
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-orch run examples/my-pipeline.yaml \
+orch run templates/my-pipeline.yaml \
   --mode standalone \
   --input '{"topic": "quantum computing", "tone": "professional"}'
 ```
@@ -179,7 +179,7 @@ Run your pipeline end-to-end against Claude at least once before submitting. Mak
 
 **Preview the execution plan**
 ```bash
-orch list-phases examples/my-pipeline.yaml
+orch list-phases templates/my-pipeline.yaml
 ```
 Shows phase order, model tiers, and which phases run in parallel. Handy for debugging dependency graphs.
 
@@ -191,20 +191,20 @@ Once you're happy with local testing, publish it:
 
 ```bash
 # Push your template to your fork, then publish to the community index:
-## Publishing is done by opening a PR — add your template to `examples/` and submit.
+## Publishing is done by opening a PR — add your template to `templates/` and submit.
 ```
 
 This registers your template in the community index so others can install it with:
 ```bash
-orch templates install your-github-username/orchestration-engine
+orch templates install your-github-username/orchemist
 ```
 
 Or from a specific path:
 ```bash
-orch templates install ./examples/my-pipeline.yaml --name my-pipeline
+orch templates install ./templates/my-pipeline.yaml --name my-pipeline
 ```
 
-For inclusion in the **official** template library (bundled with the engine), open a PR to `templates/` in this repo. PRs to `examples/` are also welcome — those become the reference examples shown in docs and quickstart.
+For inclusion in the **official** template library (bundled with the engine), open a PR to `templates/` in this repo.
 
 ---
 
@@ -213,8 +213,8 @@ For inclusion in the **official** template library (bundled with the engine), op
 If you want to work on the engine itself (executors, CLI, scenario runner, etc.), here's how to set up a full dev environment:
 
 ```bash
-git clone https://github.com/<your-username>/orchestration-engine.git
-cd orchestration-engine
+git clone https://github.com/<your-username>/orchemist.git
+cd orchemist
 python3 -m venv .venv && source .venv/bin/activate
 
 # Install with all dev and web extras
@@ -239,6 +239,8 @@ All tests must pass before you open a PR. The CI checks this automatically.
 5. Open a PR with a clear description: what it does, why it's useful, any trade-offs
 
 For larger changes (new executors, architecture changes), open an issue first to discuss the approach before writing code. Saves everyone time.
+
+**Maintainers cutting a release:** follow [docs/RELEASE-SOP.md](docs/RELEASE-SOP.md) (CODEOWNERS review on `pyproject.toml`, signed release tags).
 
 ---
 
@@ -313,7 +315,7 @@ Open an issue with the `enhancement` label. Describe the use case, not the imple
 
 ## 8. License
 
-Orchestration Engine is released under the **MIT License**.
+Orchemist is released under the **MIT License**.
 
 By contributing — whether a template, code fix, or documentation improvement — you agree that your contribution is submitted under the same MIT license. You retain copyright on your work; you're just granting everyone (including the project) the right to use, modify, and distribute it under MIT terms.
 
