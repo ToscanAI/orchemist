@@ -41,10 +41,13 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from .review_parser import Severity, _ISSUE_RE, parse_review_output
+from .review_parser import (  # noqa: F401 — _ISSUE_RE re-export
+    _ISSUE_RE,
+    Severity,
+    parse_review_output,
+)
 from .timestamps import now_utc
 
 __all__ = [

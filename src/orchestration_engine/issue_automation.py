@@ -40,7 +40,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from orchestration_engine.notifications import NotificationDispatcher
 
@@ -805,7 +805,6 @@ def post_github_comment(repo: str, issue_number: int, body: str) -> Optional[str
 
 
 from .text_utils import slugify_branch  # noqa: F401 — re-export for backward compat
-
 
 # ---------------------------------------------------------------------------
 # generate_pipeline_input — build coding-pipeline-v1 input dict (Issue #511)

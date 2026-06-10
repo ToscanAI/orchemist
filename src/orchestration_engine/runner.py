@@ -9,19 +9,17 @@ modules (``openclaw_executor``, ``executors/anthropic_executor``, etc.).
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List
 from uuid import uuid4
 
-from .schemas import TaskSpec, TaskResult, TaskState, TaskType
+from .schemas import TaskResult, TaskSpec, TaskState, TaskType
 from .timestamps import now_utc
-
 
 logger = logging.getLogger(__name__)
 
 
 class TaskExecutor(ABC):
     """Abstract base class for task executors."""
-    
+
     @abstractmethod
     def execute(self, task: TaskSpec, worker_id: str, model_tier: str = None,
                 thinking_level: str = None) -> TaskResult:
@@ -37,12 +35,12 @@ class TaskExecutor(ABC):
             TaskResult with execution outcome
         """
         pass
-    
+
     @abstractmethod
     def can_handle(self, task_type: TaskType) -> bool:
         """Check if this executor can handle the given task type."""
         pass
-    
+
     @abstractmethod
     def estimate_cost(self, task: TaskSpec) -> float:
         """Estimate the cost of executing this task in USD."""
@@ -89,7 +87,7 @@ def _dry_run_synthetic_text(task_type: "TaskType") -> str:
 
 class DryRunExecutor(TaskExecutor):
     """Dry run executor for testing - returns mock results."""
-    
+
     def __init__(self, delay_seconds: float = 2.0, failure_rate: float = 0.1):
         """Initialize dry run executor.
         
@@ -99,17 +97,17 @@ class DryRunExecutor(TaskExecutor):
         """
         self.delay_seconds = delay_seconds
         self.failure_rate = failure_rate
-    
+
     def execute(self, task: TaskSpec, worker_id: str, model_tier: str = None,
                 thinking_level: str = None) -> TaskResult:
         """Execute task with mock behavior."""
         import random
-        
+
         start_time = now_utc()
-        
+
         # Simulate processing time
         time.sleep(self.delay_seconds)
-        
+
         # Simulate occasional failures
         if random.random() < self.failure_rate:
             return TaskResult(
@@ -128,7 +126,7 @@ class DryRunExecutor(TaskExecutor):
                 model_used=model_tier or "dry-run",
                 execution_time_seconds=(now_utc() - start_time).total_seconds()
             )
-        
+
         # Success case
         return TaskResult(
             task_id=task.id if hasattr(task, 'id') else str(uuid4()),
@@ -150,11 +148,11 @@ class DryRunExecutor(TaskExecutor):
             execution_time_seconds=(now_utc() - start_time).total_seconds(),
             cost_usd=random.uniform(0.01, 0.10)
         )
-    
+
     def can_handle(self, task_type: TaskType) -> bool:
         """Dry run executor can handle all task types."""
         return True
-    
+
     def estimate_cost(self, task: TaskSpec) -> float:
         """Estimate mock cost."""
         return 0.05  # Mock cost estimate

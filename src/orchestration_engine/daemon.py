@@ -19,19 +19,20 @@ import re
 import signal
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .confidence import ConfidenceCalculator
 from .db import default_db_path
-from .timestamps import now_utc
 from .output_utils import (
     extract_output_text as _extract_output_text,
+)
+from .output_utils import (
     safe_write_phase_output as _safe_write_phase_output,
 )
-from .routing import RoutingEngine, DEFAULT_ROUTING_CONFIG
+from .routing import DEFAULT_ROUTING_CONFIG, RoutingEngine
+from .timestamps import now_utc
 
 # ---------------------------------------------------------------------------
 # Logging bootstrap — daemon writes to output_dir/.orch-daemon.log
@@ -368,8 +369,9 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # --- Build PipelineRunner ---
     mode = run['mode']
     try:
-        from .pipeline_runner import PipelineRunner
         import os as _os
+
+        from .pipeline_runner import PipelineRunner
 
         if mode == 'standalone':
             api_key = _os.environ.get('ANTHROPIC_API_KEY')
@@ -908,6 +910,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
     if not skip_scoring and template.scenario:
         try:
             from rich.console import Console
+
             from .scoring import run_scoring as _run_scoring
             console = Console(highlight=False, force_terminal=False, no_color=True)
             # Forward the pipeline executor so LLM judge criteria route
@@ -1383,7 +1386,7 @@ class _PromptExecutorAdapter:
         extracts and returns the text content from the resulting
         :class:`~schemas.TaskResult`.
         """
-        from .schemas import TaskSpec, TaskType, ModelTier  # noqa: PLC0415
+        from .schemas import ModelTier, TaskSpec, TaskType  # noqa: PLC0415
         task = TaskSpec(
             type=TaskType.REVIEW,
             payload={"prompt": prompt},
@@ -1762,8 +1765,8 @@ def _dispatch_routing_action(
                 run_id, decision.tier, decision.score,
             )
             try:
-                from .notifications import NotificationDispatcher
                 from .git_integration import GitContext as _GitContextHR
+                from .notifications import NotificationDispatcher
 
                 # Enrich notification with issue context from the gate file
                 _gate_data = _GitContextHR.load_gate(run_id) or {}
@@ -2060,9 +2063,9 @@ def _trigger_sprint_chain_next(
         )
         return
     try:
-        from .sprint_chain import SprintChainManager  # noqa: PLC0415
-        from .db import Database  # noqa: PLC0415
         from .cost_tracker import CostTracker  # noqa: PLC0415
+        from .db import Database  # noqa: PLC0415
+        from .sprint_chain import SprintChainManager  # noqa: PLC0415
 
         db = Database(Path(db_path))
         tracker = CostTracker(db)
@@ -2295,7 +2298,7 @@ def dispatch_regression_fix_safely(
         The ``run_id`` string of the spawned fix pipeline, or ``None`` when
         the SafetyGuard blocked the attempt or when the pipeline launch failed.
     """
-    from .regression import SafetyGuard, RegressionStatus  # noqa: PLC0415
+    from .regression import RegressionStatus, SafetyGuard  # noqa: PLC0415
 
     guard = SafetyGuard()
     allowed, reason = guard.should_attempt_fix(regression, db)
@@ -2382,10 +2385,10 @@ def _post_github_result_hook(
     """
     try:
         from .issue_automation import (
-            create_pr_for_issue,
             create_content_pr,
-            post_pipeline_result_comment,
+            create_pr_for_issue,
             post_failure_summary_comment,
+            post_pipeline_result_comment,
         )
 
         # --- Non-code category dispatch (Issue #578) ---

@@ -34,8 +34,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from orchestration_engine.errors import OrchestratorError
 from orchestration_engine.ipc import (
@@ -43,10 +42,12 @@ from orchestration_engine.ipc import (
     HealthResult,
     IPCError,
     IPCProtocolError,
-    ValidationRequest as IPCValidationRequest,
     ValidationResult,
     deserialize_response,
     serialize_request,
+)
+from orchestration_engine.ipc import (
+    ValidationRequest as IPCValidationRequest,
 )
 
 __all__ = [

@@ -11,16 +11,15 @@ Usage:
 import json
 import logging
 import os
-import time
-import urllib.request
 import urllib.error
+import urllib.request
 from typing import Any, Dict, Optional
 
 from ..model_registry import bare_id
 from ..schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from ..timestamps import now_utc
-from ._common import BaseExecutor, _PRICING
-from ._thinking import THINKING_BUDGET, DEFAULT_THINKING_BUDGET
+from ._common import _PRICING, BaseExecutor
+from ._thinking import DEFAULT_THINKING_BUDGET, THINKING_BUDGET
 
 logger = logging.getLogger(__name__)
 

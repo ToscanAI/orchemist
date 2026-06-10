@@ -31,18 +31,21 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .errors import (
-    AuthenticationError,
     GatewayHTTPError,
-    GatewayUnavailableError,
     RateLimitError,
     SpawnNoPromptDelivered,
     SpawnTransportTimeout,
     classify_http_error,
 )
-from .executors._common import BaseExecutor, _PRICING
+from .executors._common import _PRICING, BaseExecutor
 from .model_fallback import ModelFallbackChain
 from .model_registry import prefixed_id
-from .recovery import CircuitBreakerState, ErrorType, ExecutorRetryConfig, classify_exception_error_type
+from .recovery import (
+    CircuitBreakerState,
+    ErrorType,
+    ExecutorRetryConfig,
+    classify_exception_error_type,
+)
 from .schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .timestamps import now_utc
 

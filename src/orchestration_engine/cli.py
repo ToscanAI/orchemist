@@ -13,28 +13,26 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-import yaml
+from decimal import Decimal
 
 import click
-from decimal import Decimal
+import yaml
 
 from .daemon import apply_config_schema_defaults
 from .db import Database, default_db_path
-from .timestamps import now_utc
 from .output_utils import (
     extract_output_text as _extract_output_text,
+)
+from .output_utils import (
     safe_write_phase_output as _safe_write_phase_output,
 )
 from .queue import TaskQueue
-from .schemas import (
-    TaskSpec, TaskType, Priority, TaskState, TaskFilters,
-    generate_task_id
-)
-
+from .schemas import Priority, TaskFilters, TaskSpec, TaskState, TaskType
+from .timestamps import now_utc
 
 # Global queue instance (initialized per command)
 queue: Optional[TaskQueue] = None
@@ -59,7 +57,7 @@ def format_duration(seconds: Optional[float]) -> str:
     """Format duration in seconds to human readable format."""
     if seconds is None or seconds == 0:
         return "N/A"
-    
+
     if seconds < 60:
         return f"{seconds:.1f}s"
     elif seconds < 3600:
@@ -73,21 +71,21 @@ def print_table(headers: List[str], rows: List[List[str]]) -> None:
     if not rows:
         click.echo("No data to display")
         return
-    
+
     # Calculate column widths
     col_widths = [len(h) for h in headers]
     for row in rows:
         for i, cell in enumerate(row):
             if i < len(col_widths):
                 col_widths[i] = max(col_widths[i], len(str(cell)))
-    
+
     # Print header
     header_line = " | ".join(
         h.ljust(col_widths[i]) for i, h in enumerate(headers)
     )
     click.echo(header_line)
     click.echo("-" * len(header_line))
-    
+
     # Print rows
     for row in rows:
         row_line = " | ".join(
@@ -104,11 +102,11 @@ def print_table(headers: List[str], rows: List[List[str]]) -> None:
 def main(db_path: Optional[Path], verbose: bool) -> None:
     """Orchestration Engine CLI - AI Agent Task Coordination."""
     global queue
-    
+
     if verbose:
         import logging
         logging.basicConfig(level=logging.INFO)
-    
+
     # Initialize queue with custom db path if provided
     if db_path:
         from .db import Database
@@ -150,7 +148,7 @@ def submit(
         except json.JSONDecodeError as e:
             click.echo(f"Error: Invalid JSON payload: {e}", err=True)
             sys.exit(1)
-        
+
         # Create task specification
         task_spec = TaskSpec(
             type=TaskType(task_type),
@@ -165,16 +163,16 @@ def submit(
             tags=list(tag),
             created_by=created_by
         )
-        
+
         # Submit task
         task_queue = get_queue()
         task_id = task_queue.submit_task(task_spec)
-        
-        click.echo(f"✓ Task submitted successfully")
+
+        click.echo("✓ Task submitted successfully")
         click.echo(f"Task ID: {task_id}")
         click.echo(f"Type: {task_type}")
         click.echo(f"Priority: {priority}")
-        
+
     except Exception as e:
         click.echo(f"Error submitting task: {e}", err=True)
         sys.exit(1)
@@ -266,7 +264,6 @@ def status(run_or_task_id: Optional[str]) -> None:
 
 def _print_run_summary_line(run: Dict[str, Any]) -> None:
     """Print a single-line summary of a pipeline run."""
-    import os as _os
     run_id = run['run_id']
     status = run['status']
     template_id = run.get('template_id', '?')[:20]
@@ -307,7 +304,6 @@ def _print_run_summary_line(run: Dict[str, Any]) -> None:
 def _print_run_detail(run: Dict[str, Any]) -> None:
     """Print detailed status for a single pipeline run, checking PID liveness."""
     import json as _json
-    import os as _os
 
     run_id = run['run_id']
     status = run['status']
@@ -448,11 +444,11 @@ def list(
             limit=limit,
             offset=offset
         )
-        
+
         # Get tasks
         task_queue = get_queue()
         tasks = task_queue.list_tasks(filters)
-        
+
         if output_format == 'json':
             # JSON output
             tasks_data = []
@@ -470,18 +466,18 @@ def list(
                     'tags': task.tags
                 })
             click.echo(json.dumps(tasks_data, indent=2))
-        
+
         else:
             # Table output
             if not tasks:
                 click.echo("No tasks found matching the criteria")
                 return
-            
+
             headers = [
-                "Task ID", "Type", "State", "Priority", 
+                "Task ID", "Type", "State", "Priority",
                 "Created", "Retries", "Orchestra", "Title"
             ]
-            
+
             rows = []
             for task in tasks:
                 rows.append([
@@ -494,12 +490,12 @@ def list(
                     task.orchestra_id[:8] + "..." if task.orchestra_id else "-",
                     task.title[:30] + "..." if task.title and len(task.title) > 30 else task.title or "-"
                 ])
-            
+
             print_table(headers, rows)
-            
+
             if len(tasks) == limit:
                 click.echo(f"\nShowing {limit} tasks (use --offset to see more)")
-    
+
     except Exception as e:
         click.echo(f"Error listing tasks: {e}", err=True)
         sys.exit(1)
@@ -512,32 +508,32 @@ def cancel(task_id: str, force: bool) -> None:
     """Cancel a queued or running task."""
     try:
         task_queue = get_queue()
-        
+
         # Check if task exists first
         task_status = task_queue.get_task_status(task_id)
         if not task_status:
             click.echo(f"Task {task_id} not found", err=True)
             sys.exit(1)
-        
+
         # Confirm cancellation unless forced
         if not force:
             click.echo(f"Task: {task_id}")
             click.echo(f"Type: {task_status.task_type.value}")
             click.echo(f"State: {task_status.state.value}")
-            
+
             if not click.confirm("Are you sure you want to cancel this task?"):
                 click.echo("Cancellation aborted")
                 return
-        
+
         # Cancel task
         success = task_queue.cancel_task(task_id)
-        
+
         if success:
             click.echo(f"✓ Task {task_id} cancelled successfully")
         else:
             click.echo(f"✗ Failed to cancel task {task_id} (may not be in cancellable state)", err=True)
             sys.exit(1)
-    
+
     except Exception as e:
         click.echo(f"Error cancelling task: {e}", err=True)
         sys.exit(1)
@@ -549,26 +545,26 @@ def retry(task_id: str) -> None:
     """Manually retry a failed task."""
     try:
         task_queue = get_queue()
-        
+
         # Check task status first
         task_status = task_queue.get_task_status(task_id)
         if not task_status:
             click.echo(f"Task {task_id} not found", err=True)
             sys.exit(1)
-        
+
         if task_status.state not in [TaskState.FAILED, TaskState.PERMANENTLY_FAILED]:
             click.echo(f"Task {task_id} is not in failed state (current: {task_status.state.value})", err=True)
             sys.exit(1)
-        
+
         # Retry task
         success = task_queue.retry_failed_task(task_id)
-        
+
         if success:
             click.echo(f"✓ Task {task_id} queued for retry")
         else:
             click.echo(f"✗ Failed to retry task {task_id} (may have exceeded max retries)", err=True)
             sys.exit(1)
-    
+
     except Exception as e:
         click.echo(f"Error retrying task: {e}", err=True)
         sys.exit(1)
@@ -581,15 +577,15 @@ def dead_letter(limit: int) -> None:
     try:
         task_queue = get_queue()
         dead_tasks = task_queue.get_dead_letter_tasks(limit)
-        
+
         if not dead_tasks:
             click.echo("No tasks in dead letter queue")
             return
-        
+
         headers = [
             "Original ID", "Type", "Failure Reason", "Attempts", "Failed At"
         ]
-        
+
         rows = []
         for task in dead_tasks:
             rows.append([
@@ -599,12 +595,12 @@ def dead_letter(limit: int) -> None:
                 str(task.failure_count),
                 format_datetime(task.created_at)
             ])
-        
+
         print_table(headers, rows)
-        
+
         if len(dead_tasks) == limit:
             click.echo(f"\nShowing {limit} dead letter tasks")
-    
+
     except Exception as e:
         click.echo(f"Error getting dead letter tasks: {e}", err=True)
         sys.exit(1)
@@ -616,22 +612,22 @@ def health() -> None:
     try:
         task_queue = get_queue()
         stats = task_queue.get_queue_stats()
-        
+
         # Basic health checks
         health_issues = []
-        
+
         # Check queue depth
         if stats.queued > 100:
             health_issues.append(f"High queue depth: {stats.queued} tasks")
-        
+
         # Check dead letter growth
         if stats.dead_letter_count > 50:
             health_issues.append(f"High dead letter count: {stats.dead_letter_count}")
-        
+
         # Check worker utilization
         if stats.active_workers == 0 and stats.queued > 0:
             health_issues.append("No active workers but tasks are queued")
-        
+
         # Display health status
         if health_issues:
             click.echo("⚠️  Health Issues Detected:")
@@ -639,13 +635,13 @@ def health() -> None:
                 click.echo(f"   • {issue}")
         else:
             click.echo("✅ System appears healthy")
-        
+
         # Display configuration
         click.echo("\nConfiguration:")
         click.echo(f"├─ Database: {task_queue.db.db_path}")
         click.echo(f"├─ Max Workers: {stats.max_workers}")
         click.echo(f"└─ Active Workers: {stats.active_workers}")
-    
+
     except Exception as e:
         click.echo(f"Error checking health: {e}", err=True)
         sys.exit(1)
@@ -668,7 +664,6 @@ def watch(run_id: str, json_mode: bool, refresh: int) -> None:
 
     Also works with legacy task IDs (falls back to old task-queue watch).
     """
-    import json as _json
 
     # ── Try pipeline run first ──────────────────────────────────────
     try:
@@ -728,7 +723,7 @@ def watch(run_id: str, json_mode: bool, refresh: int) -> None:
                 click.echo("\n✅ Task completed")
             except KeyboardInterrupt:
                 click.echo("\n👋 Stopped")
-    except Exception as e:
+    except Exception:
         click.echo(f"Error: '{run_id}' not found in pipeline runs or task queue.", err=True)
         sys.exit(1)
 
@@ -860,41 +855,41 @@ def workers(detailed: bool) -> None:
         from .concurrency import WorkerPool
         from .config import get_global_config
         from .db import Database
-        
+
         config = get_global_config()
         db = Database()
         worker_pool = WorkerPool(db, config)
-        
+
         status = worker_pool.get_worker_status()
-        
+
         if not status:
             click.echo("No worker status available")
             return
-        
+
         # Summary
-        click.echo(f"👥 Worker Pool Status")
+        click.echo("👥 Worker Pool Status")
         click.echo("=" * 40)
         click.echo(f"Total Workers: {status['total_workers']}")
         click.echo(f"Max Workers: {status['max_workers']}")
-        
+
         # Resource status
         if 'resource_status' in status:
             resources = status['resource_status']
-            click.echo(f"\n💻 Resource Usage:")
+            click.echo("\n💻 Resource Usage:")
             click.echo(f"  Sessions: {resources['current_sessions']}/{resources['max_sessions']} "
                       f"({resources['session_utilization']:.1f}%)")
-            
+
             if resources.get('daily_budget_usd'):
                 click.echo(f"  Budget: ${resources['daily_cost_usd']:.2f}/"
                           f"${resources['daily_budget_usd']:.2f} "
                           f"({resources['budget_utilization']:.1f}%)")
             else:
                 click.echo(f"  Daily Cost: ${resources['daily_cost_usd']:.2f}")
-        
+
         # Workers by state
         if 'workers_by_state' in status and status['workers_by_state']:
-            click.echo(f"\n📊 Workers by State:")
-            
+            click.echo("\n📊 Workers by State:")
+
             for state, workers in status['workers_by_state'].items():
                 count = len(workers)
                 state_emoji = {
@@ -904,27 +899,27 @@ def workers(detailed: bool) -> None:
                     'stale': '💀',
                     'terminated': '🚫'
                 }
-                
+
                 emoji = state_emoji.get(state, '❓')
                 click.echo(f"  {emoji} {state.capitalize()}: {count}")
-                
+
                 if detailed and workers:
                     for worker in workers[:3]:  # Show first 3 workers
                         worker_id = worker['worker_id'][:12] + "..." if len(worker['worker_id']) > 15 else worker['worker_id']
                         age = worker.get('heartbeat_age_seconds', 0)
-                        
+
                         task_info = ""
                         if worker.get('assigned_task_id'):
                             task_id = worker['assigned_task_id'][:8] + "..."
                             task_info = f" (task: {task_id})"
-                        
+
                         click.echo(f"    • {worker_id} - {age:.0f}s ago{task_info}")
-                    
+
                     if len(workers) > 3:
                         click.echo(f"    ... and {len(workers) - 3} more")
         else:
             click.echo("No active workers")
-    
+
     except Exception as e:
         click.echo(f"Error getting worker status: {e}", err=True)
         sys.exit(1)
@@ -1088,15 +1083,15 @@ def run_template(
         click.echo("Error: --model-map is only valid with --mode openrouter", err=True)
         sys.exit(1)
 
+    import sys as _sys
+
     from rich.console import Console
     from rich.table import Table
 
-    from .templates import TemplateEngine
+    from .heartbeat import ProgressHeartbeat
     from .pipeline_runner import PipelineRunner
     from .sequencer import PhaseSequencer, StateMachineSequencer
-    from .heartbeat import ProgressHeartbeat
-
-    import sys as _sys
+    from .templates import TemplateEngine
     # Force plain text output in non-TTY environments (background, nohup, pipes)
     console = Console(
         highlight=False,
@@ -1143,12 +1138,13 @@ def run_template(
                 err=True,
             )
             sys.exit(1)
-        from .scoring import run_scoring as _run_scoring
         # Build an executor for the LLM judge grader so that scoring uses the
         # same authentication path as the mode specified by the caller.
         # In openclaw mode this routes judge calls through the gateway token
         # instead of a raw ANTHROPIC_API_KEY.  Issue #272.
         import os as _os_so
+
+        from .scoring import run_scoring as _run_scoring
         _so_executor = None
         if mode == "openclaw":
             try:
@@ -1626,8 +1622,8 @@ def run_template(
 
     # --- Auto-scoring (Issue #172) ------------------------------------
     if not skip_scoring and template.scenario:
-        from .scoring import run_scoring as _run_scoring_auto
         from .git_integration import GitContext as _GitContext
+        from .scoring import run_scoring as _run_scoring_auto
         # Forward the pipeline executor so that LLM judge criteria are routed
         # through the same authentication path as the pipeline itself (e.g. the
         # OpenClaw subscription token in openclaw mode).  Issue #272.
@@ -2009,11 +2005,11 @@ def pipeline_launch(
 
     db.update_pipeline_run(run_id, pid=proc.pid)
 
-    click.echo(f"✓ Pipeline launched in background")
+    click.echo("✓ Pipeline launched in background")
     click.echo(f"  Run ID:  {run_id}")
     click.echo(f"  PID:     {proc.pid}")
     click.echo(f"  Output:  {output_dir}/")
-    click.echo(f"")
+    click.echo("")
     click.echo(f"  Status:  orch status {run_id}")
     click.echo(f"  Logs:    orch logs {run_id}")
     click.echo(f"  Wait:    orch wait {run_id}")
@@ -2130,8 +2126,8 @@ def pipeline_chain(
       orch chain --active          # List all currently running chains
       orch chain a3f8c2d1 --db-path /tmp/custom.db
     """  # Issue #508: chain monitoring CLI
-    from orchestration_engine.db import Database
     from orchestration_engine import chain_monitor
+    from orchestration_engine.db import Database
 
     # Validate: exactly one of run_id or --active must be provided
     if not run_id and not active:
@@ -2329,25 +2325,25 @@ def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:
     _gate_score = gate.get("scoring_score")
     if _gate_scoring == "failed" and not force:
         _score_pct = f"{_gate_score * 100:.1f}" if _gate_score is not None else "n/a"
-        click.echo(f"✗ Score gate FAILED — approval blocked.", err=True)
+        click.echo("✗ Score gate FAILED — approval blocked.", err=True)
         click.echo(f"  Score: {_score_pct} / 100  (threshold: see scenario config)", err=True)
         click.echo(
-            f"  Pipeline scoring failed. Fix the issues and re-run, "
-            f"or use --force to override.",
+            "  Pipeline scoring failed. Fix the issues and re-run, "
+            "or use --force to override.",
             err=True,
         )
         sys.exit(1)
     elif _gate_scoring == "failed" and force:
         click.echo(
-            f"⚠ Score gate FAILED — approving anyway because --force was specified."
+            "⚠ Score gate FAILED — approving anyway because --force was specified."
         )
     elif _gate_scoring == "error":
         click.echo(
-            f"⚠ Scoring encountered an error for this run — proceeding without score gate enforcement."
+            "⚠ Scoring encountered an error for this run — proceeding without score gate enforcement."
         )
     elif _gate_scoring is None:
         click.echo(
-            f"⚠ No scoring data for this run — proceeding without score gate."
+            "⚠ No scoring data for this run — proceeding without score gate."
         )
     # scoring_status == "passed" → allow silently (happy path)
 
@@ -2368,7 +2364,8 @@ def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:
 
     # Optionally create PR if template configured create_pr: true
     if updated.get("create_pr"):
-        from .git_integration import GitConfig, GitContext as _GC
+        from .git_integration import GitConfig
+        from .git_integration import GitContext as _GC
 
         _cfg = GitConfig(create_pr=True)
         _tmp_ctx = _GC(config=_cfg, pipeline_id=updated.get("pipeline_id", ""),
@@ -2414,7 +2411,6 @@ def gate_reject(run_id: str, message: Optional[str]) -> None:
 @click.argument("run_id")
 def gate_info(run_id: str) -> None:
     """Show details about a merge gate."""
-    import json as _json
     from .git_integration import GitContext
 
     gate = GitContext.load_gate(run_id)
@@ -2452,7 +2448,7 @@ def gate_info(run_id: str) -> None:
         )
         click.echo(f"├─ Scoring:  {_score_emoji} {_scoring_status}{_score_pct}")
     else:
-        click.echo(f"├─ Scoring:  ⏳ pending (not yet scored)")
+        click.echo("├─ Scoring:  ⏳ pending (not yet scored)")
 
     click.echo(f"├─ Created:  {(gate.get('created_at') or '?')[:19]}")
     if gate.get("updated_at"):
@@ -2468,7 +2464,7 @@ def gate_info(run_id: str) -> None:
         for c in commits:
             click.echo(f"   • {c.get('sha', '?')[:8]}  {c.get('message', '?')}")
     else:
-        click.echo(f"└─ Commits:  none")
+        click.echo("└─ Commits:  none")
 
 
 def _check_yaml_syntax(template_file: Path) -> Optional[str]:
@@ -2548,7 +2544,7 @@ def validate_template(template_name_or_file: str, fix: bool) -> None:
     WRN = click.style("⚠", fg="yellow")
 
     try:
-        from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
+        from .templates import PipelineTemplate, TemplateEngine  # noqa: F401
 
         template_file = _resolve_template_arg(template_name_or_file)
 
@@ -2647,7 +2643,7 @@ def list_phases(template_name_or_file: str) -> None:
     ORCH_TEMPLATES_PATH → ./templates/ → ~/.orch/templates/ → bundled.
     """
     try:
-        from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
+        from .templates import PipelineTemplate, TemplateEngine  # noqa: F401
 
         template_file = _resolve_template_arg(template_name_or_file)
         engine = TemplateEngine()
@@ -2960,6 +2956,7 @@ def _resolve_template_arg(name_or_path: str, launch_fmt: bool = False) -> Path:
     Exits with an error message on failure.
     """
     import os as _os
+
     from .templates import TemplateEngine, TemplateNotFoundError
 
     # Already a Path — accept directly
@@ -3101,6 +3098,7 @@ def templates_info(name_or_path: str) -> None:
     """Show detailed info about a template (by name, ID, or file path)."""
     from rich.console import Console
     from rich.table import Table
+
     from .templates import TemplateEngine
 
     console = Console(highlight=False)
@@ -3333,8 +3331,9 @@ def templates_install(source: str, force: bool, name: Optional[str]) -> None:
       orch templates install https://github.com/user/my-pipeline
       orch templates install ./my-template.yaml --name my-pipeline
     """
-    from rich.console import Console
     import shutil
+
+    from rich.console import Console
 
     console = Console(highlight=False)
 
@@ -3352,7 +3351,7 @@ def templates_install(source: str, force: bool, name: Optional[str]) -> None:
     elif is_shorthand:
         # GitHub shorthand → https://github.com/user/repo
         url = f"https://github.com/{source}.git"
-        install_name = name or source.split("/")[-1]
+        install_name = name or source.rsplit("/", maxsplit=1)[-1]
         console.print(f"[bold]Installing from GitHub:[/bold] {source}")
         dest = _install_from_git(url, install_name, force)
 
@@ -3664,14 +3663,13 @@ def templates_test(verbose: bool, fail_fast: bool) -> None:
       orch templates test --fail-fast
     """
     import glob as _glob
-    import json as _json
     import traceback as _tb
 
     import yaml as _yaml
 
-    from .templates import TemplateEngine
     from .pipeline_runner import PipelineRunner
     from .sequencer import PhaseSequencer, StateMachineSequencer
+    from .templates import TemplateEngine
 
     OK_MARK = click.style("✓", fg="green")
     FAIL_MARK = click.style("✗", fg="red")
@@ -3828,6 +3826,7 @@ def _find_template(name_or_path: str):
     Raises SystemExit on failure.
     """
     import os as _os
+
     from .templates import TemplateEngine, TemplateNotFoundError
 
     engine = TemplateEngine()
@@ -4013,6 +4012,7 @@ def pipeline_start(
       orch start ./my-template.yaml --mode dry-run
     """
     import json as _json
+
     from rich.console import Console
 
     console = Console(highlight=False)
@@ -4505,8 +4505,10 @@ def import_plugin_command(
       orch import plugin-command campaign-plan.md --validate
     """
     from .importers.plugin_command import (
-        import_plugin_command as _do_import,
         GENERATED_AUTHOR,
+    )
+    from .importers.plugin_command import (
+        import_plugin_command as _do_import,
     )
 
     OK  = click.style("✓", fg="green")
@@ -4573,7 +4575,7 @@ def import_plugin_command(
         ERR_v = click.style("✗", fg="red")
         WRN_v = click.style("⚠", fg="yellow")
         try:
-            from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
+            from .templates import PipelineTemplate, TemplateEngine  # noqa: F401
 
             # 5a. YAML syntax
             yaml_error = _check_yaml_syntax(output)
@@ -4639,7 +4641,7 @@ def import_plugin_command(
             click.echo(f"Error during validation: {_exc}", err=True)
             sys.exit(1)
     else:
-        click.echo(f"\nNext steps:")
+        click.echo("\nNext steps:")
         click.echo(f"  orch validate {output}           # Check the template")
         click.echo(f"  orch run {output} --mode dry-run  # Test it")
 
@@ -4673,6 +4675,7 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
     """
     try:
         import uvicorn
+
         from .web.api import create_api_app
     except ImportError:
         click.echo("Web UI requires extra dependencies. Install with:", err=True)
@@ -4747,10 +4750,10 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
         import webbrowser
         threading.Timer(1.5, lambda: webbrowser.open(f"http://{host}:{port}")).start()
 
-    click.echo(f"Orchestration Engine (unified)")
+    click.echo("Orchestration Engine (unified)")
     click.echo(f"  UI:  http://{host}:{port}")
     click.echo(f"  API: http://{host}:{port}/api/v1/docs")
-    click.echo(f"  Press Ctrl+C to stop.")
+    click.echo("  Press Ctrl+C to stop.")
 
     uvicorn.run(app, host=host, port=port, reload=reload)
 
@@ -4810,10 +4813,10 @@ def ui(port: int, host: str, no_open: bool) -> None:
     if not no_open:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
 
-    click.echo(f"✓ Orchestration Engine frontend (static)")
+    click.echo("✓ Orchestration Engine frontend (static)")
     click.echo(f"  Serving:  {frontend_out}")
     click.echo(f"  URL:      {url}")
-    click.echo(f"  Press Ctrl+C to stop.")
+    click.echo("  Press Ctrl+C to stop.")
 
     try:
         httpd.serve_forever()
@@ -4868,6 +4871,7 @@ def api_server(port: int, host: str, reload: bool, db_path: Optional[str]) -> No
     """
     try:
         import uvicorn
+
         from .web.api import create_api_app
     except ImportError:
         click.echo("REST API server requires extra dependencies. Install with:", err=True)
@@ -4877,11 +4881,11 @@ def api_server(port: int, host: str, reload: bool, db_path: Optional[str]) -> No
     effective_db_path = db_path or _get_persistent_db_path()
     app = create_api_app(db_path=effective_db_path)
 
-    click.echo(f"✓ Orchestration Engine REST API server")
+    click.echo("✓ Orchestration Engine REST API server")
     click.echo(f"  Listening on http://{host}:{port}")
     click.echo(f"  Docs:      http://{host}:{port}/api/v1/docs")
     click.echo(f"  DB:        {effective_db_path}")
-    click.echo(f"  Press Ctrl+C to stop.")
+    click.echo("  Press Ctrl+C to stop.")
 
     uvicorn.run(app, host=host, port=port, reload=reload)
 
@@ -5050,15 +5054,13 @@ def scenario_run(
         # Live run with explicit API key:
         orch scenario run e2e-autonomous --api-key sk-ant-...
     """
-    import json as _json
     import os as _os
 
     from rich.console import Console
-    from rich.table import Table
 
-    from .templates import TemplateEngine
     from .pipeline_runner import PipelineRunner
     from .sequencer import PhaseSequencer, StateMachineSequencer
+    from .templates import TemplateEngine
 
     # Import ScenarioRunner from the scenario_runner package.
     # Try both importable forms (installed package and source layout).

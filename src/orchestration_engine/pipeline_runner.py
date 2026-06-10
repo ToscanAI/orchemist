@@ -7,8 +7,8 @@ starting background threads or requiring a persistent database.
 Used exclusively by the `orch run` CLI command.
 """
 
-import tempfile
 import logging
+import tempfile
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -90,6 +90,7 @@ class PipelineRunner:
             ValueError: If no API key is found anywhere.
         """
         import os
+
         from .executors.anthropic_executor import AnthropicExecutor
 
         resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -182,6 +183,7 @@ class PipelineRunner:
             ValueError: If no API key is found anywhere.
         """
         import os
+
         from .executors.openrouter_executor import OpenRouterExecutor
 
         resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")

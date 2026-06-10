@@ -20,7 +20,6 @@ from __future__ import annotations
 import re
 import unicodedata
 
-
 __all__ = ["FINDING_RE", "FINDING_RE_EMPTY_OK", "slugify", "slugify_branch", "snake_case"]
 
 

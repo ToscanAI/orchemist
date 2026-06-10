@@ -68,7 +68,7 @@ def create_app():  # noqa: C901
     from sse_starlette.sse import EventSourceResponse
 
     from orchestration_engine import __version__
-    from orchestration_engine.templates import TemplateEngine, TemplateNotFoundError
+    from orchestration_engine.templates import TemplateEngine
 
     app = FastAPI(
         title="Orchestration Engine Web UI",
@@ -401,9 +401,10 @@ async def _execute_pipeline(
 ) -> None:
     """Execute a pipeline template in the background, pushing SSE events."""
     import json as _json
+
+    from orchestration_engine.daemon import apply_config_schema_defaults
     from orchestration_engine.pipeline_runner import PipelineRunner
     from orchestration_engine.sequencer import PhaseSequencer
-    from orchestration_engine.daemon import apply_config_schema_defaults
 
     run = active_runs[run_id]
     run["status"] = "running"

@@ -34,7 +34,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .command_security import DANGEROUS_PATTERNS
-from .schemas import TaskResult, TaskSpec, TaskState, TaskType
+from .schemas import TaskResult, TaskSpec, TaskState
 from .timestamps import now_utc
 
 logger = logging.getLogger(__name__)

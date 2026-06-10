@@ -60,17 +60,18 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     # Imported only for type checking to avoid circular imports at runtime.
     # ReviewCatchValueCalculator is imported lazily inside compute_confidence.
+    from .audit import AuditResult  # noqa: F401
     from .review_catch_value import ReviewCatchValueCalculator  # noqa: F401
+
     # ReviewerCalibrator and AuditResult are imported lazily inside compute_confidence.
     from .reviewer_calibration import ReviewerCalibrator  # noqa: F401
-    from .audit import AuditResult  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Routing thresholds (authoritative source — referenced by routing.py)

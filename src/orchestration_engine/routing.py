@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import Any, List, Optional
 
 from .confidence import AUTO_MERGE_THRESHOLD, HUMAN_REVIEW_THRESHOLD, ConfidenceLevel
 

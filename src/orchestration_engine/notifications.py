@@ -20,11 +20,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, List, Optional
-import urllib.request
-import urllib.error
 
 from .env_utils import env_int
 
@@ -304,6 +304,7 @@ class TelegramCallbackHandler:
             return {"ok": False, "error": "Empty run_id in callback_data"}
 
         from pathlib import Path
+
         from orchestration_engine.db import Database
 
         db = Database(Path(self.db_path))
@@ -531,7 +532,6 @@ class NotificationDispatcher:
 
     def _dispatch_openclaw(self, event: str, run_id: str, **kwargs: Any) -> None:
         """POST a message to the OpenClaw gateway sessions_send endpoint."""
-        import hmac as _hmac
         gateway_url = self._config.get("openclaw_gateway_url", "").rstrip("/")
         token = self._config.get("openclaw_gateway_token", "")
         session = self._config.get("openclaw_session", "agent:main:main")

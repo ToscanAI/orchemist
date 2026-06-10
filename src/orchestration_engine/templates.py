@@ -4,7 +4,6 @@ import difflib
 import logging
 import os
 import re
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -12,7 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import yaml
 
 from .adversary_parser import AdversaryConfig
-from .dialogue_phase import DialoguePhaseConfig, DialogueParticipant
+from .dialogue_phase import DialogueParticipant, DialoguePhaseConfig
 from .git_integration import GitConfig
 from .routing import RoutingConfig, RoutingEngine, _parse_routing_config
 

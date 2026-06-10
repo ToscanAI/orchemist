@@ -22,19 +22,18 @@ import time
 import uuid
 from collections import defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from .file_guard import compute_hash, compute_directory_hash, FileGuardError
+from .file_guard import compute_directory_hash, compute_hash
 from .output_parser import extract_and_write, parse_output
-from .review_parser import parse_review_output, ReviewOutcome
+from .review_parser import ReviewOutcome, parse_review_output
 from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
 from .timestamps import now_utc
-from .transitions import PhaseOutcome, determine_outcome, extract_verdict, _VERDICT_KEYWORDS
+from .transitions import _VERDICT_KEYWORDS, PhaseOutcome, determine_outcome, extract_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -904,7 +903,7 @@ class PhaseSequencer:
             )
             return
         try:
-            from .spec_adversary import parse_adversary_output, compute_reward, persist_reward
+            from .spec_adversary import compute_reward, parse_adversary_output, persist_reward
             raw_text = _extract_phase_text(result)
             verdict = parse_adversary_output(raw_text)
             reward = compute_reward(verdict)
@@ -3014,7 +3013,6 @@ def _wrap_callable_runner(fn):
 
     The returned dict is used as the phase result directly.
     """
-    import uuid as _uuid
 
     class _FakeQueue:
         def __init__(self):

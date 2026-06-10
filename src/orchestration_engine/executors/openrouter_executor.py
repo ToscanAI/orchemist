@@ -34,7 +34,6 @@ from typing import Any, Dict, List, Optional
 from ..command_security import check_shell_command
 from ..config import _DEFAULT_OR_TIMEOUT
 from ..model_registry import prefixed_id
-from ..timestamps import now_utc
 from ..schemas import (
     ModelTier,
     TaskError,
@@ -43,11 +42,12 @@ from ..schemas import (
     TaskState,
     TaskType,
 )
-from ._common import BaseExecutor, _PRICING
-from ._thinking import THINKING_BUDGET, DEFAULT_THINKING_BUDGET
+from ..timestamps import now_utc
+from ._common import _PRICING, BaseExecutor
+from ._thinking import DEFAULT_THINKING_BUDGET, THINKING_BUDGET
 from .openrouter_tools import (
-    TOOL_SCHEMAS,
     TOOL_DISPATCH,
+    TOOL_SCHEMAS,
     iso_now,
     normalise_sandbox_roots,
     summarise_args,

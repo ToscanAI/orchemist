@@ -46,7 +46,6 @@ Edit the module-level ``META_SECTIONS`` frozenset to extend the skip list.
 from __future__ import annotations
 
 import re  # noqa: F401  — still used by other helpers below
-import textwrap
 from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
@@ -124,7 +123,6 @@ class _ParsedCommand:
 # slugify + snake_case live in the shared text_utils module (see #813 dedup audit
 # Group 3); re-exported here so existing callers keep working unchanged.
 from ..text_utils import slugify, snake_case  # noqa: F401
-
 
 # ---------------------------------------------------------------------------
 # Parsing helpers

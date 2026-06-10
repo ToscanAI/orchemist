@@ -14,6 +14,8 @@ from typing import Any, List, Optional
 
 from .templates import (
     PhaseDefinition as _PhaseDefinition,
+)
+from .templates import (
     PipelineTemplate as _PipelineTemplate,
 )
 

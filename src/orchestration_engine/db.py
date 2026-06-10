@@ -9,11 +9,11 @@ import logging
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-from contextlib import contextmanager
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,6 @@ sqlite3.register_converter(
     "timestamp", lambda val: datetime.fromisoformat(val.decode())
 )
 
-from .schemas import TaskState, OrchestraState, Priority, TaskType
 from .timestamps import normalize_ts, now_utc
 
 # ---------------------------------------------------------------------------
@@ -122,7 +121,7 @@ def parse_json_list(val: Any) -> list:
 
 class Database:
     """SQLite database manager with connection pooling and migrations."""
-    
+
     def __init__(self, db_path: Optional[Path] = None):
         """Initialize database connection.
 
@@ -131,10 +130,10 @@ class Database:
         """
         if db_path is None:
             db_path = default_db_path()
-        
+
         # Thread-local storage for connections
         self._local = threading.local()
-        
+
         # Detect :memory: databases — each raw ":memory:" connection is isolated
         # per connection, so threads would see empty databases.  Instead we use
         # SQLite's shared-cache in-memory URI so every thread-local connection
@@ -163,7 +162,7 @@ class Database:
 
         # Initialize database schema
         self._initialize_database()
-    
+
     @property
     def _conn(self) -> sqlite3.Connection:
         """Alias for :meth:`get_connection` for test helper compatibility.
@@ -197,9 +196,9 @@ class Database:
                     detect_types=sqlite3.PARSE_DECLTYPES,
                 )
             self._configure_connection(self._local.connection)
-        
+
         return self._local.connection
-    
+
     @contextmanager
     def _locked(self):
         """Acquire the write lock (if any) for shared-cache in-memory DBs.
@@ -241,19 +240,19 @@ class Database:
             except Exception:
                 conn.rollback()
                 raise
-    
+
     def _configure_connection(self, conn: sqlite3.Connection) -> None:
         """Configure SQLite connection with optimal settings."""
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA synchronous = NORMAL") 
+        conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA cache_size = 10000")
         conn.execute("PRAGMA temp_store = memory")
         conn.execute("PRAGMA foreign_keys = ON")
-        
+
         # Set row factory for dict-like access
         conn.row_factory = sqlite3.Row
-    
+
     def _initialize_database(self) -> None:
         """Initialize database schema with all tables and indexes."""
         with self.transaction() as conn:
@@ -273,10 +272,10 @@ class Database:
             self._create_table_sprint_chain_state(conn)    # Issue #514
             self._create_table_admin_audit_log(conn)       # Issue #838
             self._create_indexes(conn)
-            
+
             # Run any pending migrations
             self._run_migrations(conn)
-    
+
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """Create all database tables."""
 
@@ -347,7 +346,7 @@ class Database:
                 FOREIGN KEY(orchestra_id) REFERENCES orchestras(id)
             )
         """)
-        
+
         # Individual execution attempts
         conn.execute("""
             CREATE TABLE IF NOT EXISTS task_runs (
@@ -381,7 +380,7 @@ class Database:
                 UNIQUE(task_id, attempt_number)
             )
         """)
-        
+
         # Multi-task workflows (orchestras)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS orchestras (
@@ -413,7 +412,7 @@ class Database:
                 current_phase TEXT
             )
         """)
-        
+
         # Dead letter queue for permanently failed tasks
         conn.execute("""
             CREATE TABLE IF NOT EXISTS dead_letter_queue (
@@ -683,51 +682,51 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_tasks_status_priority 
             ON tasks(status, priority DESC)
         """)
-        
+
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tasks_orchestra 
             ON tasks(orchestra_id, orchestra_phase)
         """)
-        
+
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tasks_retry 
             ON tasks(status, next_retry_at) 
             WHERE status = 'retry'
         """)
-        
+
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tasks_created_at 
             ON tasks(created_at)
         """)
-        
+
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tasks_type_status 
             ON tasks(type, status)
         """)
-        
+
         # Task runs indexes
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_task_runs_task 
             ON task_runs(task_id, attempt_number)
         """)
-        
+
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_task_runs_model_metrics 
             ON task_runs(model, status, completed_at)
         """)
-        
+
         # Orchestra indexes
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_orchestras_status 
             ON orchestras(status, created_at)
         """)
-        
+
         # Analytics indexes
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_tasks_cost_tracking 
             ON tasks(type, created_at, cost_limit_usd)
         """)
-        
+
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_dead_letter_analysis
             ON dead_letter_queue(task_type, created_at)
@@ -749,7 +748,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_webhook_invocations_trigger_time
             ON webhook_invocations(trigger_id, invoked_at)
         """)
-    
+
     def _run_migrations(self, conn: sqlite3.Connection) -> None:
         """Run any pending database migrations."""
         # Create migrations table if it doesn't exist
@@ -760,11 +759,11 @@ class Database:
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
         # Get applied migrations
         cursor = conn.execute("SELECT name FROM migrations")
         applied_migrations = {row[0] for row in cursor.fetchall()}
-        
+
         # Define migrations
         migrations = [
             ("001_add_scoring_status", self._migration_001_add_scoring_status),
@@ -788,13 +787,13 @@ class Database:
             ("019_add_parent_run_id_index", self._migration_019_add_parent_run_id_index),             # Issue #508
             ("020_add_sprint_chain_state_table", self._migration_020_add_sprint_chain_state_table),  # Issue #514
         ]
-        
+
         # Apply pending migrations
         for name, migration_func in migrations:
             if name not in applied_migrations:
                 migration_func(conn)
                 conn.execute("INSERT INTO migrations (name) VALUES (?)", (name,))
-    
+
     def _migration_001_add_scoring_status(self, conn: sqlite3.Connection) -> None:
         """Add scoring_status and scoring_score columns to pipeline_runs (Issue #287).
 
@@ -949,7 +948,7 @@ class Database:
         """)
 
     # Task Operations
-    
+
     def insert_task(self, task_data: Dict[str, Any]) -> str:
         """Insert a new task into the database."""
         with self.transaction() as conn:
@@ -978,32 +977,32 @@ class Database:
                 json.dumps(task_data.get('tags', [])),
                 json.dumps(task_data.get('metadata', {}))
             ))
-        
+
         return task_data['id']
-    
+
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         """Get a task by ID."""
         with self._locked():
             conn = self.get_connection()
             cursor = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
             row = cursor.fetchone()
-        
+
         if row is None:
             return None
-        
+
         return self._row_to_dict(row)
-    
+
     def update_task_status(self, task_id: str, status: str, **kwargs) -> bool:
         """Update task status and related fields."""
         updates = ['status = ?']
         values = [status]
-        
+
         # Handle status-specific updates
         if status == 'running' and 'started_at' not in kwargs:
             kwargs['started_at'] = now_utc()
         elif status in ['success', 'failed', 'permanently_failed'] and 'completed_at' not in kwargs:
             kwargs['completed_at'] = now_utc()
-        
+
         # Add additional updates
         for key, value in kwargs.items():
             if key in ['started_at', 'completed_at', 'next_retry_at']:
@@ -1014,16 +1013,16 @@ class Database:
             elif key == 'metadata':
                 updates.append("metadata = ?")
                 values.append(json.dumps(value, default=str))
-        
+
         values.append(task_id)
-        
+
         with self.transaction() as conn:
             cursor = conn.execute(
                 f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
                 values
             )
             return cursor.rowcount > 0
-    
+
     def get_next_task(self, worker_id: str) -> Optional[Dict[str, Any]]:
         """Get the next available task for execution."""
         with self.transaction() as conn:
@@ -1039,11 +1038,11 @@ class Database:
                     created_at ASC
                 LIMIT 1
             """)
-            
+
             row = cursor.fetchone()
             if row is None:
                 return None
-            
+
             # Mark task as running
             task_id = row['id']
             conn.execute("""
@@ -1051,9 +1050,9 @@ class Database:
                 SET status = 'running', started_at = CURRENT_TIMESTAMP 
                 WHERE id = ?
             """, (task_id,))
-            
+
             return self._row_to_dict(row)
-    
+
     def list_tasks(
         self,
         states: Optional[List[str]] = None,
@@ -1065,29 +1064,29 @@ class Database:
         """List tasks with optional filtering."""
         query = "SELECT * FROM tasks WHERE 1=1"
         params = []
-        
+
         if states:
             placeholders = ','.join('?' * len(states))
             query += f" AND status IN ({placeholders})"
             params.extend(states)
-        
+
         if types:
             placeholders = ','.join('?' * len(types))
             query += f" AND type IN ({placeholders})"
             params.extend(types)
-        
+
         if orchestra_id:
             query += " AND orchestra_id = ?"
             params.append(orchestra_id)
-        
+
         query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
-        
+
         conn = self.get_connection()
         cursor = conn.execute(query, params)
-        
+
         return [self._row_to_dict(row) for row in cursor.fetchall()]
-    
+
     def cancel_task(self, task_id: str) -> bool:
         """Cancel a queued or running task."""
         with self.transaction() as conn:
@@ -1096,11 +1095,11 @@ class Database:
                 SET status = 'cancelled', completed_at = CURRENT_TIMESTAMP 
                 WHERE id = ? AND status IN ('queued', 'running', 'retry')
             """, (task_id,))
-            
+
             return cursor.rowcount > 0
-    
+
     # Task Run Operations
-    
+
     def insert_task_run(self, run_data: Dict[str, Any]) -> str:
         """Insert a new task run record."""
         with self.transaction() as conn:
@@ -1129,28 +1128,28 @@ class Database:
                 run_data.get('cost_usd'),
                 run_data.get('peak_memory_mb')
             ))
-        
+
         return run_data['id']
-    
+
     def update_task_run(self, run_id: str, **kwargs) -> bool:
         """Update task run with completion data."""
         updates = []
         values = []
-        
+
         for key, value in kwargs.items():
             if key == 'result':
                 updates.append("result = ?")
                 values.append(json.dumps(value) if value else None)
-            elif key in ['completed_at', 'status', 'confidence', 'error_message', 'error_type', 
+            elif key in ['completed_at', 'status', 'confidence', 'error_message', 'error_type',
                         'tokens_used', 'cost_usd', 'peak_memory_mb']:
                 updates.append(f"{key} = ?")
                 values.append(value)
-        
+
         if not updates:
             return False
-        
+
         values.append(run_id)
-        
+
         with self.transaction() as conn:
             cursor = conn.execute(
                 f"UPDATE task_runs SET {', '.join(updates)} WHERE id = ?",
@@ -1257,7 +1256,7 @@ class Database:
         return bool(row["n"]) if row else False
 
     # Orchestra Operations
-    
+
     def insert_orchestra(self, orchestra_data: Dict[str, Any]) -> str:
         """Insert a new orchestra workflow."""
         with self.transaction() as conn:
@@ -1280,20 +1279,20 @@ class Database:
                 orchestra_data.get('created_by'),
                 json.dumps(orchestra_data.get('tags', []))
             ))
-        
+
         return orchestra_data['id']
-    
+
     def get_orchestra(self, orchestra_id: str) -> Optional[Dict[str, Any]]:
         """Get orchestra by ID."""
         conn = self.get_connection()
         cursor = conn.execute("SELECT * FROM orchestras WHERE id = ?", (orchestra_id,))
         row = cursor.fetchone()
-        
+
         if row is None:
             return None
-        
+
         return self._row_to_dict(row)
-    
+
     def update_orchestra_stats(self, orchestra_id: str) -> bool:
         """Update orchestra task counts based on current task states."""
         with self.transaction() as conn:
@@ -1317,21 +1316,21 @@ class Database:
                     )
                 WHERE id = ?
             """, (orchestra_id, orchestra_id, orchestra_id, orchestra_id, orchestra_id))
-            
+
             return cursor.rowcount > 0
-    
+
     # Dead Letter Queue Operations
-    
+
     def move_to_dead_letter(self, task_id: str, failure_reason: str) -> bool:
         """Move a permanently failed task to dead letter queue."""
         with self.transaction() as conn:
             # Get task data
             cursor = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
             task_row = cursor.fetchone()
-            
+
             if task_row is None:
                 return False
-            
+
             # Insert into dead letter queue
             conn.execute("""
                 INSERT INTO dead_letter_queue (
@@ -1357,22 +1356,22 @@ class Database:
                 # out of scope (#932).
                 json.dumps([])
             ))
-            
+
             # Update original task status
             conn.execute("""
                 UPDATE tasks 
                 SET status = 'permanently_failed', completed_at = CURRENT_TIMESTAMP 
                 WHERE id = ?
             """, (task_id,))
-            
+
             return True
-    
+
     # Statistics and Analytics
-    
+
     def get_queue_stats(self) -> Dict[str, Any]:
         """Get comprehensive queue statistics."""
         conn = self.get_connection()
-        
+
         # Basic counts by status
         cursor = conn.execute("""
             SELECT status, COUNT(*) as count
@@ -1380,7 +1379,7 @@ class Database:
             GROUP BY status
         """)
         status_counts = {row[0]: row[1] for row in cursor.fetchall()}
-        
+
         # Priority breakdown
         cursor = conn.execute("""
             SELECT priority, COUNT(*) as count
@@ -1389,7 +1388,7 @@ class Database:
             GROUP BY priority
         """)
         priority_counts = {f"priority_{row[0]}": row[1] for row in cursor.fetchall()}
-        
+
         # Type breakdown
         cursor = conn.execute("""
             SELECT type, COUNT(*) as count
@@ -1398,7 +1397,7 @@ class Database:
             GROUP BY type
         """)
         type_counts = {row[0]: row[1] for row in cursor.fetchall()}
-        
+
         # Average execution time
         cursor = conn.execute("""
             SELECT AVG(
@@ -1408,11 +1407,11 @@ class Database:
             WHERE started_at IS NOT NULL AND completed_at IS NOT NULL
         """)
         avg_execution_time = cursor.fetchone()[0]
-        
+
         # Dead letter count
         cursor = conn.execute("SELECT COUNT(*) FROM dead_letter_queue")
         dead_letter_count = cursor.fetchone()[0]
-        
+
         return {
             'timestamp': now_utc(),
             'queued': status_counts.get('queued', 0),
@@ -1432,7 +1431,7 @@ class Database:
             'active_workers': 0,
             'max_workers': 8,
         }
-    
+
     # Generic Query Methods
 
     def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -1463,11 +1462,11 @@ class Database:
         return self._row_to_dict(row) if row else None
 
     # Utility Methods
-    
+
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         """Convert SQLite row to dictionary with JSON parsing."""
         data = dict(row)
-        
+
         # Parse JSON fields
         json_fields = [
             'payload', 'tags', 'metadata', 'config', 'result',
@@ -1495,9 +1494,9 @@ class Database:
         # Cast SQLite INTEGER columns that represent booleans to Python bool
         if "enabled" in data and data["enabled"] is not None:
             data["enabled"] = bool(data["enabled"])
-        
+
         return data
-    
+
     # ------------------------------------------------------------------
     # Pipeline Run Operations (Issue #267 — async daemon)
     # ------------------------------------------------------------------

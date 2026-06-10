@@ -31,7 +31,6 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
-
 __all__ = ["extract_output_text", "safe_write_phase_output"]
 
 

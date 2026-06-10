@@ -5,14 +5,16 @@ Configuration hierarchy: defaults → user config → environment variables.
 """
 
 import os
+
 try:
     import tomllib
 except ImportError:
     import tomli as tomllib  # type: ignore[no-redef]
-from pathlib import Path
-from typing import Dict, Any, Optional, Union
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 from decimal import Decimal
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .model_registry import prefixed_id
 from .schemas import ModelTier
@@ -38,7 +40,7 @@ class ModelsConfig(BaseModel):
     """Model tier and escalation configuration."""
     default_tier: str = Field(default="sonnet-4", description="Default model tier")
     escalation_enabled: bool = Field(default=True, description="Enable model tier escalation on retry")
-    
+
     # Model mappings for OpenClaw — built from the canonical model_registry
     # (#916). Keys remain the VERSIONED ModelTier enum values (#914 normalizes
     # only the lookup boundary, not the enum values); values are the canonical
@@ -48,7 +50,7 @@ class ModelsConfig(BaseModel):
         ModelTier.SONNET.value: prefixed_id(ModelTier.SONNET),
         ModelTier.OPUS.value: prefixed_id(ModelTier.OPUS),
     })
-    
+
     # Thinking levels per tier
     thinking_levels: Dict[str, Optional[str]] = Field(default={
         "haiku-4-5": None,
@@ -62,7 +64,7 @@ class PathsConfig(BaseModel):
     database: str = Field(default="~/.orchestration-engine/engine.db", description="SQLite database path")
     logs: str = Field(default="~/.orchestration-engine/logs/", description="Log directory")
     config_file: str = Field(default="~/.orchestration-engine/config.toml", description="Configuration file path")
-    
+
     @field_validator('database', 'logs', 'config_file')
     @classmethod
     def expand_path(cls, v):
@@ -75,8 +77,8 @@ class ResourceConfig(BaseModel):
     default_timeout_seconds: int = Field(default=3600, ge=60, le=86400, description="Default task timeout")
     max_memory_mb: Optional[int] = Field(default=None, ge=512, description="Maximum memory per task")
     daily_budget_usd: Optional[Decimal] = Field(default=None, ge=0, description="Daily spending limit")
-    
-    # OpenClaw resource limits  
+
+    # OpenClaw resource limits
     max_concurrent_sessions: int = Field(default=8, ge=1, le=32, description="Max OpenClaw sessions")
     session_cleanup_minutes: int = Field(default=30, ge=5, le=180, description="Session cleanup interval")
 
@@ -182,10 +184,10 @@ def load_toml_config(config_path: Optional[Union[str, Path]] = None) -> Dict[str
         config_path = Path("~/.orchestration-engine/config.toml").expanduser()
     else:
         config_path = Path(config_path).expanduser()
-    
+
     if not config_path.exists():
         return {}
-    
+
     try:
         with open(config_path, 'rb') as f:
             return tomllib.load(f)
@@ -206,25 +208,25 @@ def merge_env_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
         Configuration with environment overrides applied
     """
     env_prefix = "ORCH_"
-    
+
     for key, value in os.environ.items():
         if not key.startswith(env_prefix):
             continue
-            
+
         # Parse ORCH_QUEUE_MAX_WORKERS -> queue.max_workers
         env_key = key[len(env_prefix):].lower()
         parts = env_key.split('_')
-        
+
         if len(parts) < 2:
             continue
-            
+
         section = parts[0]
         field = '_'.join(parts[1:])
-        
+
         # Initialize section if not exists
         if section not in config_dict:
             config_dict[section] = {}
-            
+
         # Convert value to appropriate type
         if value.lower() in ('true', 'false'):
             config_dict[section][field] = value.lower() == 'true'
@@ -237,7 +239,7 @@ def merge_env_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
                 config_dict[section][field] = value
         else:
             config_dict[section][field] = value
-    
+
     return config_dict
 
 
@@ -252,10 +254,10 @@ def get_config(config_path: Optional[Union[str, Path]] = None) -> EngineConfig:
     """
     # Load TOML file
     config_dict = load_toml_config(config_path)
-    
+
     # Apply environment overrides
     config_dict = merge_env_overrides(config_dict)
-    
+
     # Validate with Pydantic
     try:
         return EngineConfig(**config_dict)
@@ -276,10 +278,10 @@ def create_default_config(config_path: Optional[Union[str, Path]] = None) -> Pat
         config_path = Path("~/.orchestration-engine/config.toml").expanduser()
     else:
         config_path = Path(config_path).expanduser()
-    
+
     # Create directory if it doesn't exist
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Default configuration template
     default_config = """# Orchestration Engine Configuration
 # Edit this file to customize settings
@@ -337,10 +339,10 @@ dry_run = false
 # webhook_secret = ""   # set via ORCH_GITHUB_APP_WEBHOOK_SECRET env var
 # installation_id = 67890
 """
-    
+
     with open(config_path, 'w') as f:
         f.write(default_config)
-    
+
     return config_path
 
 

@@ -7,13 +7,12 @@ type safety, validation, and consistent interfaces across all task types.
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum, IntEnum
-from typing import Any, Dict, List, Optional, Union, Literal
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from .timestamps import now_utc
-
 
 # Core Enums
 
@@ -128,19 +127,19 @@ class TaskResult(BaseModel):
     task_id: str
     task_type: TaskType
     state: TaskState
-    
+
     # Quality metrics
     confidence: float = Field(ge=0.0, le=1.0, description="Overall quality score")
     confidence_level: ConfidenceLevel = ConfidenceLevel.MEDIUM  # Will be auto-calculated
-    
+
     # Core result data
     result: Dict[str, Any]  # Task-specific payload
-    
+
     # Metadata and tracking
     metadata: Dict[str, Any] = {}
     errors: List[TaskError] = []
     warnings: List[str] = []
-    
+
     # Execution details
     created_at: datetime = Field(default_factory=now_utc)
     started_at: Optional[datetime] = None
@@ -151,16 +150,16 @@ class TaskResult(BaseModel):
     output_tokens: int = 0
     execution_time_seconds: float = 0.0
     cost_usd: Optional[Decimal] = None
-    
+
     # Quality gate results
     quality_checks_passed: Dict[str, bool] = {}
     quality_check_details: Dict[str, Any] = {}
-    
+
     @model_validator(mode='after')
     def set_confidence_level(self):
         """Auto-set confidence level based on numeric confidence."""
         conf = self.confidence
-        
+
         if conf <= 0.2:
             self.confidence_level = ConfidenceLevel.VERY_LOW
         elif conf <= 0.4:
@@ -171,7 +170,7 @@ class TaskResult(BaseModel):
             self.confidence_level = ConfidenceLevel.HIGH
         else:
             self.confidence_level = ConfidenceLevel.VERY_HIGH
-            
+
         return self
 
 
@@ -181,25 +180,25 @@ class TaskStatus(BaseModel):
     task_type: TaskType
     state: TaskState
     priority: Priority
-    
+
     # Timestamps
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     next_retry_at: Optional[datetime] = None
-    
+
     # Retry tracking
     retry_count: int = 0
     max_retries: int = 3
-    
+
     # Orchestra integration
     orchestra_id: Optional[str] = None
     orchestra_phase: Optional[str] = None
-    
+
     # Progress indicators
     progress_message: Optional[str] = None
     progress_percentage: Optional[float] = Field(None, ge=0.0, le=100.0)
-    
+
     # Resource usage
     tokens_consumed: int = 0
     cost_usd: Optional[Decimal] = None
@@ -213,12 +212,12 @@ class TaskSummary(BaseModel):
     state: TaskState
     priority: Priority
     created_at: datetime
-    
+
     # Quick status info
     retry_count: int = 0
     orchestra_id: Optional[str] = None
     progress_percentage: Optional[float] = None
-    
+
     # Brief description
     title: Optional[str] = None
     description: Optional[str] = None
@@ -252,26 +251,26 @@ class OrchestraStatus(BaseModel):
     name: Optional[str] = None
     state: OrchestraState
     priority: Priority
-    
+
     # Timestamps
     created_at: datetime
     completed_at: Optional[datetime] = None
-    
+
     # Progress tracking
     total_tasks: int = 0
     completed_tasks: int = 0
     failed_tasks: int = 0
     cancelled_tasks: int = 0
-    
+
     # Resource usage
     cost_budget_usd: Optional[Decimal] = None
     cost_spent_usd: Decimal = Decimal('0.00')
     time_budget_hours: Optional[int] = None
-    
+
     # Current phase info
     current_phase: Optional[str] = None
     phase_progress: Optional[float] = Field(None, ge=0.0, le=100.0)
-    
+
     @property
     def progress_percentage(self) -> float:
         """Calculate overall progress percentage."""
@@ -293,7 +292,7 @@ class TaskStats(BaseModel):
 class QueueStats(BaseModel):
     """Overall queue statistics and health metrics."""
     timestamp: datetime = Field(default_factory=now_utc)
-    
+
     # Task counts by state
     queued: int = 0
     running: int = 0
@@ -301,42 +300,42 @@ class QueueStats(BaseModel):
     failed: int = 0
     retrying: int = 0
     cancelled: int = 0
-    
+
     # Priority breakdown
     priority_breakdown: Dict[str, int] = {}  # Priority name -> count
-    
+
     # Type breakdown
     type_breakdown: Dict[str, int] = {}  # Task type -> count
-    
+
     # Performance metrics
     avg_queue_wait_seconds: Optional[float] = None
     avg_execution_time_seconds: Optional[float] = None
     throughput_tasks_per_hour: Optional[float] = None
-    
+
     # Resource usage
     total_cost_today_usd: Decimal = Decimal('0.00')
     total_tokens_consumed: int = 0
-    
+
     # Worker status
     active_workers: int = 0
     max_workers: int = 8
-    
+
     # Health indicators
     queue_depth_warning: bool = False  # True if queued tasks > 50
     stale_tasks_warning: bool = False  # True if tasks stuck > 30min
     dead_letter_count: int = 0
-    
+
     @property
     def worker_utilization(self) -> float:
         """Calculate worker utilization percentage."""
         if self.max_workers == 0:
             return 0.0
         return (self.active_workers / self.max_workers) * 100.0
-    
+
     @property
     def total_tasks(self) -> int:
         """Total tasks across all states."""
-        return (self.queued + self.running + self.completed + 
+        return (self.queued + self.running + self.completed +
                 self.failed + self.retrying + self.cancelled)
 
 
@@ -362,24 +361,24 @@ class TaskRunResult(BaseModel):
     run_id: str = Field(default_factory=lambda: str(uuid4()))
     task_id: str
     attempt_number: int
-    
+
     # Execution context
     model: str
     thinking_level: Optional[str] = None
     session_id: Optional[str] = None
     worker_id: Optional[str] = None
-    
+
     # Timing
     started_at: datetime = Field(default_factory=now_utc)
     completed_at: Optional[datetime] = None
-    
+
     # Results
     state: TaskState
     result: Optional[Dict[str, Any]] = None
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     error_message: Optional[str] = None
     error_type: Optional[Literal["transient", "permanent", "quality"]] = None
-    
+
     # Resource usage
     tokens_used: int = 0
     cost_usd: Optional[Decimal] = None
@@ -397,7 +396,7 @@ class DeadLetterTask(BaseModel):
     failure_count: int
     payload: Dict[str, Any]  # Original task payload
     created_at: datetime = Field(default_factory=now_utc)
-    
+
     # Analysis metadata
     error_patterns: List[str] = []
     suggested_fixes: List[str] = []
@@ -419,7 +418,7 @@ def calculate_retry_delay(attempt_number: int) -> int:
     """Calculate exponential backoff delay in seconds."""
     base_delay = 1  # 1 second base
     max_delay = 60  # 1 minute maximum
-    
+
     delay = min(base_delay * (2 ** (attempt_number - 1)), max_delay)
     return delay
 
@@ -441,7 +440,7 @@ def select_model_tier(task_type: TaskType, attempt_number: int) -> ModelTier:
         TaskType.SUPPORT: [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS],
         TaskType.COMMAND: [ModelTier.HAIKU, ModelTier.HAIKU, ModelTier.HAIKU],
     }
-    
+
     path = escalation_paths.get(task_type, [ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS])
     index = min(attempt_number - 1, len(path) - 1)
     return path[index]
@@ -477,12 +476,12 @@ class WorkerStatus(BaseModel):
     last_heartbeat: datetime
     last_activity: Optional[str] = None
     heartbeat_age_seconds: float = 0.0
-    
+
     @property
     def is_active(self) -> bool:
         """Check if worker is actively processing."""
         return self.state in ["assigned", "running"]
-    
+
     @property
     def is_stale(self) -> bool:
         """Check if worker appears stale."""
@@ -494,24 +493,24 @@ class ProgressEvent(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     task_id: str
     event_type: Literal[
-        "queued", "started", "progress_update", "model_selected", 
-        "session_created", "session_ended", "retry_scheduled", 
+        "queued", "started", "progress_update", "model_selected",
+        "session_created", "session_ended", "retry_scheduled",
         "escalated", "completed", "failed", "cancelled", "timeout",
         "resource_limit", "circuit_breaker"
     ]
     timestamp: datetime = Field(default_factory=now_utc)
-    
+
     # Event-specific data
     message: Optional[str] = None
     progress_percentage: Optional[float] = Field(None, ge=0.0, le=100.0)
     details: Dict[str, Any] = Field(default_factory=dict)
-    
+
     # Context information
     worker_id: Optional[str] = None
     session_id: Optional[str] = None
     model_tier: Optional[str] = None
     attempt_number: int = 1
-    
+
     # Resource metrics
     tokens_used: Optional[int] = None
     cost_usd: Optional[str] = None  # Decimal as string for JSON serialization
@@ -525,7 +524,7 @@ class CircuitBreakerState(BaseModel):
     last_failure: Optional[datetime] = None # Last failure timestamp
     opened_at: Optional[datetime] = None   # When circuit was opened
     state: Literal["closed", "open", "half_open"] = "closed"
-    
+
     def is_open(self, threshold: int = 5, reset_timeout_minutes: int = 30) -> bool:
         """Check if circuit breaker is open."""
         if self.state == "open" and self.opened_at:
@@ -535,9 +534,9 @@ class CircuitBreakerState(BaseModel):
             if now_utc() >= reset_time:
                 return False  # Allow half-open state
             return True
-        
+
         return self.failure_count >= threshold
-    
+
     @property
     def can_execute(self) -> bool:
         """Check if circuit allows execution."""
@@ -559,21 +558,21 @@ class WorkerPoolStatus(BaseModel):
     idle_workers: int
     stale_workers: int
     max_workers: int
-    
+
     # Resource utilization
     worker_utilization: float = Field(ge=0.0, le=100.0)  # Percentage
     session_utilization: float = Field(ge=0.0, le=100.0)  # Percentage
-    
+
     # Resource limits
     current_sessions: int
     max_sessions: int
     daily_cost_usd: float
     daily_budget_usd: Optional[float] = None
     budget_utilization: float = Field(default=0.0, ge=0.0, le=100.0)
-    
+
     # Worker details by state
     workers_by_state: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict)
-    
+
     @property
     def available_capacity(self) -> int:
         """Number of tasks that can be assigned immediately."""
@@ -587,40 +586,40 @@ class RunnerStatus(BaseModel):
     """Comprehensive task runner status."""
     running: bool
     uptime_seconds: Optional[float] = None
-    
+
     # Component status
     worker_pool_status: WorkerPoolStatus
     queue_depth: int
     active_tasks: int
     pending_retries: int
-    
+
     # Performance metrics
     tasks_completed_today: int = 0
     tasks_failed_today: int = 0
     avg_execution_time_seconds: Optional[float] = None
     throughput_tasks_per_hour: Optional[float] = None
-    
+
     # Error recovery status
     circuit_breakers_open: int = 0
     total_retries_today: int = 0
     retry_success_rate: Optional[float] = None
-    
+
     # Resource usage
     total_cost_today_usd: float = 0.0
     total_tokens_consumed_today: int = 0
-    
+
     @property
     def health_status(self) -> Literal["healthy", "degraded", "unhealthy"]:
         """Overall health assessment."""
         if not self.running:
             return "unhealthy"
-        
+
         # Check various health indicators
-        if (self.circuit_breakers_open > 3 or 
+        if (self.circuit_breakers_open > 3 or
             self.worker_pool_status.worker_utilization > 90 or
             (self.retry_success_rate and self.retry_success_rate < 0.5)):
             return "degraded"
-        
+
         return "healthy"
 
 

@@ -8,7 +8,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Dict, Any, List, Optional, Iterator
+from typing import Any, Dict, Iterator, List, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,14 +17,13 @@ from .db import Database
 from .schemas import TaskState
 from .timestamps import now_utc
 
-
 logger = logging.getLogger(__name__)
 
 
 class ProgressEventType(str, Enum):
     """Types of progress events."""
     QUEUED = "queued"                    # Task added to queue
-    STARTED = "started"                  # Task execution begun  
+    STARTED = "started"                  # Task execution begun
     PROGRESS_UPDATE = "progress_update"  # Intermediate progress
     MODEL_SELECTED = "model_selected"    # Model tier chosen
     SESSION_CREATED = "session_created"  # OpenClaw session started
@@ -45,23 +44,23 @@ class ProgressEvent(BaseModel):
     task_id: str
     event_type: ProgressEventType
     timestamp: datetime = Field(default_factory=now_utc)
-    
+
     # Event-specific data
     message: Optional[str] = None
     progress_percentage: Optional[float] = Field(None, ge=0.0, le=100.0)
     details: Dict[str, Any] = Field(default_factory=dict)
-    
+
     # Context information
     worker_id: Optional[str] = None
     session_id: Optional[str] = None
     model_tier: Optional[str] = None
     attempt_number: int = 1
-    
+
     # Resource metrics
     tokens_used: Optional[int] = None
     cost_usd: Optional[str] = None  # Decimal as string for JSON serialization
     memory_mb: Optional[int] = None
-    
+
     model_config = ConfigDict(
         json_encoders={datetime: lambda v: v.isoformat()}
     )
@@ -72,30 +71,30 @@ class TaskProgress(BaseModel):
     task_id: str
     current_state: TaskState
     progress_percentage: float = 0.0
-    
+
     # Timing information
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     last_update: datetime = Field(default_factory=now_utc)
-    
+
     # Current status
     current_message: Optional[str] = None
     current_model: Optional[str] = None
     attempt_number: int = 1
-    
+
     # Aggregate metrics
     total_tokens: int = 0
     total_cost_usd: str = "0.00"  # Decimal as string
     peak_memory_mb: int = 0
-    
+
     # Event counts
     retry_count: int = 0
     escalation_count: int = 0
-    
+
     # Execution timeline
     events: List[ProgressEvent] = Field(default_factory=list)
-    
+
     @property
     def execution_time_seconds(self) -> Optional[float]:
         """Calculate current execution time."""
@@ -107,18 +106,18 @@ class TaskProgress(BaseModel):
         if end_time.tzinfo is None:
             end_time = end_time.replace(tzinfo=timezone.utc)
         return (end_time - started).total_seconds()
-    
+
     @property
     def is_active(self) -> bool:
         """Check if task is currently active (running or retrying)."""
         return self.current_state in [TaskState.RUNNING, TaskState.RETRY]
-    
+
     @property
     def is_terminal(self) -> bool:
         """Check if task is in a terminal state."""
         return self.current_state in [
-            TaskState.SUCCESS, 
-            TaskState.FAILED, 
+            TaskState.SUCCESS,
+            TaskState.FAILED,
             TaskState.PERMANENTLY_FAILED,
             TaskState.CANCELLED
         ]
@@ -126,7 +125,7 @@ class TaskProgress(BaseModel):
 
 class ProgressTracker:
     """Real-time progress tracking and streaming system."""
-    
+
     def __init__(self, database: Database):
         """Initialize the progress tracker.
         
@@ -135,7 +134,7 @@ class ProgressTracker:
         """
         self.db = database
         self._init_tables()
-    
+
     def _init_tables(self) -> None:
         """Initialize progress tracking tables."""
         self.db.execute("""
@@ -163,7 +162,7 @@ class ProgressTracker:
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_progress_type ON progress_events(event_type, timestamp)"
         )
-        
+
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS task_progress_summary (
                 task_id TEXT PRIMARY KEY,
@@ -184,7 +183,7 @@ class ProgressTracker:
                 FOREIGN KEY(task_id) REFERENCES tasks(id)
             )
         """)
-    
+
     def record_event(self, event: ProgressEvent) -> None:
         """Record a progress event.
         
@@ -205,15 +204,15 @@ class ProgressTracker:
                 event.worker_id, event.session_id, event.model_tier, event.attempt_number,
                 event.tokens_used, event.cost_usd, event.memory_mb
             ])
-            
+
             # Update task progress summary
             self._update_task_summary(event)
-            
+
             logger.debug(f"Recorded progress event {event.event_type} for task {event.task_id}")
-            
+
         except Exception as e:
             logger.error(f"Failed to record progress event: {e}")
-    
+
     def _update_task_summary(self, event: ProgressEvent) -> None:
         """Update the task progress summary based on new event."""
         # Map event types to task states
@@ -233,9 +232,9 @@ class ProgressTracker:
             ProgressEventType.RESOURCE_LIMIT: TaskState.FAILED,
             ProgressEventType.CIRCUIT_BREAKER: TaskState.PERMANENTLY_FAILED,
         }
-        
+
         new_state = state_mapping.get(event.event_type, TaskState.QUEUED)
-        
+
         # Upsert progress summary
         self.db.execute("""
             INSERT INTO task_progress_summary (
@@ -262,11 +261,11 @@ class ProgressTracker:
         """, [
             event.task_id, new_state.value, event.progress_percentage, event.timestamp,
             event.timestamp, event.message, event.model_tier, event.attempt_number,
-            event.tokens_used or 0, event.cost_usd or "0.00", event.memory_mb or 0, 
+            event.tokens_used or 0, event.cost_usd or "0.00", event.memory_mb or 0,
             0, 0,  # retry_count and escalation_count are calculated in the UPDATE
             event.event_type.value  # for escalation count check
         ])
-    
+
     def get_task_progress(self, task_id: str, include_events: bool = True) -> Optional[TaskProgress]:
         """Get current progress for a task.
         
@@ -281,10 +280,10 @@ class ProgressTracker:
         summary = self.db.fetch_one("""
             SELECT * FROM task_progress_summary WHERE task_id = ?
         """, [task_id])
-        
+
         if not summary:
             return None
-        
+
         # Build TaskProgress object
         progress = TaskProgress(
             task_id=summary['task_id'],
@@ -303,7 +302,7 @@ class ProgressTracker:
             retry_count=summary['retry_count'],
             escalation_count=summary['escalation_count']
         )
-        
+
         # Add events if requested
         if include_events:
             events = self.db.fetch_all("""
@@ -311,7 +310,7 @@ class ProgressTracker:
                 WHERE task_id = ? 
                 ORDER BY timestamp ASC
             """, [task_id])
-            
+
             progress.events = [
                 ProgressEvent(
                     id=event['id'],
@@ -331,9 +330,9 @@ class ProgressTracker:
                 )
                 for event in events
             ]
-        
+
         return progress
-    
+
     def get_active_tasks(self) -> List[str]:
         """Get list of currently active task IDs."""
         results = self.db.fetch_all("""
@@ -341,9 +340,9 @@ class ProgressTracker:
             WHERE current_state IN ('running', 'retry')
             ORDER BY last_update DESC
         """)
-        
+
         return [row['task_id'] for row in results]
-    
+
     def stream_task_events(self, task_id: str, since: Optional[datetime] = None) -> Iterator[ProgressEvent]:
         """Stream progress events for a task.
         
@@ -356,15 +355,15 @@ class ProgressTracker:
         """
         query = "SELECT * FROM progress_events WHERE task_id = ?"
         params = [task_id]
-        
+
         if since:
             query += " AND timestamp > ?"
             params.append(since)
-        
+
         query += " ORDER BY timestamp ASC"
-        
+
         events = self.db.fetch_all(query, params)
-        
+
         for event_row in events:
             yield ProgressEvent(
                 id=event_row['id'],
@@ -382,7 +381,7 @@ class ProgressTracker:
                 cost_usd=event_row['cost_usd'],
                 memory_mb=event_row['memory_mb']
             )
-    
+
     def cleanup_old_events(self, older_than_days: int = 7) -> int:
         """Clean up old progress events to prevent database bloat.
         
@@ -393,7 +392,7 @@ class ProgressTracker:
             Number of events removed
         """
         cutoff = now_utc() - timedelta(days=older_than_days)
-        
+
         result = self.db.execute("""
             DELETE FROM progress_events 
             WHERE timestamp < ? 
@@ -402,14 +401,14 @@ class ProgressTracker:
                 WHERE current_state IN ('running', 'retry')
             )
         """, [cutoff])
-        
+
         deleted_count = result.rowcount if hasattr(result, 'rowcount') else 0
         logger.info(f"Cleaned up {deleted_count} old progress events")
-        
+
         return deleted_count
-    
+
     # Convenience methods for common events
-    
+
     def task_queued(self, task_id: str, message: str = None) -> None:
         """Record task queued event."""
         self.record_event(ProgressEvent(
@@ -417,7 +416,7 @@ class ProgressTracker:
             event_type=ProgressEventType.QUEUED,
             message=message or "Task queued for execution"
         ))
-    
+
     def task_started(self, task_id: str, worker_id: str, session_id: str = None, message: str = None) -> None:
         """Record task started event."""
         self.record_event(ProgressEvent(
@@ -427,8 +426,8 @@ class ProgressTracker:
             worker_id=worker_id,
             session_id=session_id
         ))
-    
-    def task_progress(self, task_id: str, percentage: float, message: str, 
+
+    def task_progress(self, task_id: str, percentage: float, message: str,
                      worker_id: str = None, details: Dict[str, Any] = None) -> None:
         """Record task progress update."""
         self.record_event(ProgressEvent(
@@ -439,7 +438,7 @@ class ProgressTracker:
             worker_id=worker_id,
             details=details or {}
         ))
-    
+
     def task_completed(self, task_id: str, worker_id: str = None,
                       tokens_used=None, cost_usd: str = None) -> None:
         """Record task completion."""
@@ -460,12 +459,12 @@ class ProgressTracker:
             tokens_used=tokens_int,
             cost_usd=cost_usd
         ))
-    
+
     def task_failed(self, task_id: str, error_message: str, worker_id: str = None,
                    attempt_number: int = 1, is_permanent: bool = False) -> None:
         """Record task failure."""
         event_type = ProgressEventType.CIRCUIT_BREAKER if is_permanent else ProgressEventType.FAILED
-        
+
         self.record_event(ProgressEvent(
             task_id=task_id,
             event_type=event_type,
@@ -473,7 +472,7 @@ class ProgressTracker:
             worker_id=worker_id,
             attempt_number=attempt_number
         ))
-    
+
     def task_retry_scheduled(self, task_id: str, retry_at: datetime, attempt_number: int,
                            reason: str, worker_id: str = None) -> None:
         """Record retry scheduling."""
@@ -485,8 +484,8 @@ class ProgressTracker:
             attempt_number=attempt_number,
             details={"retry_at": retry_at.isoformat(), "reason": reason}
         ))
-    
-    def model_escalated(self, task_id: str, from_tier: str, to_tier: str, 
+
+    def model_escalated(self, task_id: str, from_tier: str, to_tier: str,
                        attempt_number: int, worker_id: str = None) -> None:
         """Record model tier escalation."""
         self.record_event(ProgressEvent(

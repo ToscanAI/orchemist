@@ -24,7 +24,6 @@ import logging
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 # Only import from ipc, test_store, and file_guard — never from validator, sequencer, daemon, or errors

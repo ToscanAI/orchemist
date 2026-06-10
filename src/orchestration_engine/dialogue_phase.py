@@ -32,11 +32,11 @@ import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from .schemas import TaskSpec, TaskResult, TaskState, TaskType
+from .schemas import TaskResult, TaskSpec, TaskState, TaskType
 from .verdict_parser import extract_verdict
 
 logger = logging.getLogger(__name__)

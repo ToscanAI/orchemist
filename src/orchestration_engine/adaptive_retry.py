@@ -23,15 +23,15 @@ Typical usage::
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import logging
 import subprocess
-import dataclasses
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Dict, Optional, Union
 
-from .diagnosis import DiagnosisResult, FailureClass, Remediation
+from .diagnosis import DiagnosisResult, FailureClass
 from .model_registry import bare_id
 from .schemas import ModelTier
 
@@ -594,8 +594,8 @@ class AdaptiveRetryEngine:
                 # separate concern from daemon spawning.
                 orig_path = _Path(original_output_dir)
                 if (orig_path / ".git").exists():
-                    import shlex as _shlex
                     import os as _os
+                    import shlex as _shlex
                     cmd = "git clone {} {}".format(
                         _shlex.quote(str(orig_path)),
                         _shlex.quote(retry_output_dir),

@@ -7,16 +7,26 @@ and worker coordination on top of the SQLite database layer.
 import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from .db import Database
 from .schemas import (
-    TaskSpec, TaskStatus, TaskResult, TaskSummary, QueueStats,
-    TaskState, Priority, TaskType, TaskFilters, TaskRunResult,
+    DEFAULT_MAX_RETRIES,
+    DeadLetterTask,
     OrchestraSpec,
-    generate_task_id, generate_orchestra_id, calculate_retry_delay,
-    select_model_tier, DEFAULT_MAX_RETRIES, DeadLetterTask
+    Priority,
+    QueueStats,
+    TaskFilters,
+    TaskResult,
+    TaskSpec,
+    TaskState,
+    TaskStatus,
+    TaskSummary,
+    TaskType,
+    calculate_retry_delay,
+    generate_orchestra_id,
+    generate_task_id,
 )
 from .timestamps import now_utc
 
@@ -25,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 class TaskQueue:
     """High-level task queue interface with retry logic and state management."""
-    
+
     def __init__(self, database: Optional[Database] = None):
         """Initialize task queue.
         
@@ -34,7 +44,7 @@ class TaskQueue:
         """
         self.db = database or Database()
         self._worker_heartbeats: Dict[str, datetime] = {}
-    
+
     def submit_task(self, task_spec: TaskSpec) -> str:
         """Submit a new task to the queue.
         
@@ -49,12 +59,12 @@ class TaskQueue:
         """
         # Generate unique task ID
         task_id = generate_task_id()
-        
+
         # Set default max retries based on task type if not specified
         max_retries = task_spec.max_retries
         if max_retries == 3:  # Default value, check for task-specific default
             max_retries = DEFAULT_MAX_RETRIES.get(task_spec.type, 3)
-        
+
         # Prepare task data for database
         task_data = {
             'id': task_id,
@@ -73,18 +83,18 @@ class TaskQueue:
             'tags': task_spec.tags,
             'metadata': {}
         }
-        
+
         # Insert into database
         self.db.insert_task(task_data)
-        
+
         # Update orchestra stats if part of an orchestra
         if task_spec.orchestra_id:
             self.db.update_orchestra_stats(task_spec.orchestra_id)
-        
+
         logger.info(f"Submitted task {task_id} (type={task_spec.type.value}, priority={task_spec.priority.value})")
-        
+
         return task_id
-    
+
     def get_task_status(self, task_id: str) -> Optional[TaskStatus]:
         """Get current status of a specific task.
         
@@ -129,7 +139,7 @@ class TaskQueue:
             cost_usd=Decimal(str(task_data.get('cost_limit_usd') or 0)),
             execution_time_seconds=execution_time_seconds
         )
-    
+
     def list_tasks(self, filters: Optional[TaskFilters] = None) -> List[TaskSummary]:
         """List tasks with optional filtering.
         
@@ -141,11 +151,11 @@ class TaskQueue:
         """
         if filters is None:
             filters = TaskFilters()
-        
+
         # Convert enums to strings for database query
         states = [s.value for s in filters.states] if filters.states else None
         types = [t.value for t in filters.types] if filters.types else None
-        
+
         tasks_data = self.db.list_tasks(
             states=states,
             types=types,
@@ -153,7 +163,7 @@ class TaskQueue:
             limit=filters.limit,
             offset=filters.offset
         )
-        
+
         summaries = []
         for task_data in tasks_data:
             summary = TaskSummary(
@@ -166,17 +176,17 @@ class TaskQueue:
                 orchestra_id=task_data['orchestra_id'],
                 tags=task_data.get('tags', [])
             )
-            
+
             # Extract title from payload if available
             payload = task_data.get('payload', {})
             if isinstance(payload, dict):
                 summary.title = payload.get('title') or payload.get('name')
                 summary.description = payload.get('description')
-            
+
             summaries.append(summary)
-        
+
         return summaries
-    
+
     def cancel_task(self, task_id: str) -> bool:
         """Cancel a queued or running task.
         
@@ -187,17 +197,17 @@ class TaskQueue:
             bool: True if task was cancelled, False if not found or not cancellable
         """
         success = self.db.cancel_task(task_id)
-        
+
         if success:
             # Update orchestra stats if part of an orchestra
             task_data = self.db.get_task(task_id)
             if task_data and task_data['orchestra_id']:
                 self.db.update_orchestra_stats(task_data['orchestra_id'])
-            
+
             logger.info(f"Cancelled task {task_id}")
-        
+
         return success
-    
+
     def retry_failed_task(self, task_id: str) -> bool:
         """Manually retry a failed task.
         
@@ -211,15 +221,15 @@ class TaskQueue:
         if not task_data:
             logger.warning(f"Task {task_id} not found for retry")
             return False
-        
+
         if task_data['status'] not in ['failed', 'permanently_failed']:
             logger.warning(f"Task {task_id} is not in failed state (current: {task_data['status']})")
             return False
-        
+
         if task_data['retry_count'] >= task_data['max_retries']:
             logger.warning(f"Task {task_id} has exceeded max retries ({task_data['max_retries']})")
             return False
-        
+
         # Reset task for retry
         success = self.db.update_task_status(
             task_id,
@@ -228,12 +238,12 @@ class TaskQueue:
             completed_at=None,
             next_retry_at=None
         )
-        
+
         if success:
             logger.info(f"Queued task {task_id} for manual retry")
-        
+
         return success
-    
+
     def get_next_task(self, worker_id: str) -> Optional[Dict[str, Any]]:
         """Get the next available task for a worker.
         
@@ -245,15 +255,15 @@ class TaskQueue:
         """
         # Update worker heartbeat
         self._worker_heartbeats[worker_id] = now_utc()
-        
+
         # Get next task from database
         task_data = self.db.get_next_task(worker_id)
-        
+
         if task_data:
             logger.info(f"Assigned task {task_data['id']} to worker {worker_id}")
-        
+
         return task_data
-    
+
     def complete_task(
         self,
         task_id: str,
@@ -272,13 +282,13 @@ class TaskQueue:
         """
         # Determine final state based on result
         final_state = result.state
-        
+
         # Check if confidence meets minimum requirement
         task_data = self.db.get_task(task_id)
         if not task_data:
             logger.error(f"Task {task_id} not found for completion")
             return False
-        
+
         min_confidence = task_data.get('min_confidence', 0.7)
         if result.confidence < min_confidence and final_state == TaskState.SUCCESS:
             logger.warning(f"Task {task_id} confidence {result.confidence} below minimum {min_confidence}")
@@ -289,7 +299,7 @@ class TaskQueue:
                 'message': f'Result confidence {result.confidence} below required {min_confidence}',
                 'severity': 'error'
             })
-        
+
         # Update task status
         success = self.db.update_task_status(
             task_id,
@@ -301,19 +311,19 @@ class TaskQueue:
                 'completion_timestamp': now_utc().isoformat()
             }
         )
-        
+
         # Handle retry logic for failed tasks
         if final_state == TaskState.FAILED:
             self._handle_task_failure(task_id, result, task_data)
-        
+
         # Update orchestra stats if part of an orchestra
         if task_data.get('orchestra_id'):
             self.db.update_orchestra_stats(task_data['orchestra_id'])
-        
+
         logger.info(f"Completed task {task_id} with state {final_state.value}")
-        
+
         return success
-    
+
     def _resolve_task_model(self, task_data: Dict[str, Any]) -> str:
         """Resolve the model string to record for a task attempt.
 
@@ -369,14 +379,14 @@ class TaskQueue:
             'error_message': error_message,
             'error_type': error_type
         })
-        
+
         # Update completion timestamp
         self.db.update_task_run(
             run_id,
             completed_at=now_utc(),
             status=TaskState.FAILED.value
         )
-        
+
         # Handle retry logic
         if error_type == 'transient' and task_data['retry_count'] < task_data['max_retries']:
             self._schedule_retry(task_id, task_data)
@@ -387,18 +397,18 @@ class TaskQueue:
                 TaskState.PERMANENTLY_FAILED.value,
                 completed_at=now_utc()
             )
-            
+
             if success:
                 self.db.move_to_dead_letter(task_id, error_message)
-        
+
         # Update orchestra stats if part of an orchestra
         if task_data.get('orchestra_id'):
             self.db.update_orchestra_stats(task_data['orchestra_id'])
-        
+
         logger.info(f"Failed task {task_id}: {error_message}")
-        
+
         return True
-    
+
     def get_queue_stats(self) -> QueueStats:
         """Get comprehensive queue statistics.
         
@@ -406,13 +416,13 @@ class TaskQueue:
             QueueStats object with current queue metrics
         """
         stats_data = self.db.get_queue_stats()
-        
+
         # Calculate additional metrics
         active_workers = len([
             worker_id for worker_id, last_seen in self._worker_heartbeats.items()
             if now_utc() - last_seen < timedelta(minutes=5)
         ])
-        
+
         # Check for warnings
         queue_depth_warning = stats_data['queued'] > 50
         # Issue #932 item 1: real staleness check over running tasks (format-robust).
@@ -438,7 +448,7 @@ class TaskQueue:
             total_cost_today_usd=self.db.get_total_cost_today(),
             total_tokens_consumed=self.db.get_total_tokens_consumed()
         )
-    
+
     def cleanup_stale_workers(self) -> int:
         """Clean up workers that haven't sent heartbeat recently.
         
@@ -450,13 +460,13 @@ class TaskQueue:
             worker_id for worker_id, last_seen in self._worker_heartbeats.items()
             if last_seen < cutoff
         ]
-        
+
         for worker_id in stale_workers:
             del self._worker_heartbeats[worker_id]
             logger.info(f"Cleaned up stale worker {worker_id}")
-        
+
         return len(stale_workers)
-    
+
     def get_dead_letter_tasks(self, limit: int = 100) -> List[DeadLetterTask]:
         """Get tasks from dead letter queue.
         
@@ -472,7 +482,7 @@ class TaskQueue:
             ORDER BY created_at DESC 
             LIMIT ?
         """, (limit,))
-        
+
         tasks = []
         for row in cursor.fetchall():
             task_data = self.db._row_to_dict(row)
@@ -487,11 +497,11 @@ class TaskQueue:
                 error_patterns=task_data.get('error_patterns', []),
                 suggested_fixes=task_data.get('suggested_fixes', [])
             ))
-        
+
         return tasks
-    
+
     # Private Methods
-    
+
     def _handle_task_failure(
         self,
         task_id: str,
@@ -507,13 +517,13 @@ class TaskQueue:
         """
         current_retry_count = task_data['retry_count']
         max_retries = task_data['max_retries']
-        
+
         # Determine if this is a retryable failure
         retryable = any(
-            error.get('severity') in ['warning', 'error'] 
+            error.get('severity') in ['warning', 'error']
             for error in result.errors
         )
-        
+
         if retryable and current_retry_count < max_retries:
             self._schedule_retry(task_id, task_data)
         else:
@@ -523,15 +533,15 @@ class TaskQueue:
                 TaskState.PERMANENTLY_FAILED.value,
                 completed_at=now_utc()
             )
-            
+
             # Move to dead letter queue
             failure_reason = '; '.join([
-                error.get('message', 'Unknown error') 
+                error.get('message', 'Unknown error')
                 for error in result.errors
             ]) or 'Task failed with low confidence'
-            
+
             self.db.move_to_dead_letter(task_id, failure_reason)
-    
+
     def _schedule_retry(self, task_id: str, task_data: Dict[str, Any]) -> None:
         """Schedule a task for retry with exponential backoff.
         
@@ -542,7 +552,7 @@ class TaskQueue:
         retry_count = task_data['retry_count'] + 1
         delay_seconds = calculate_retry_delay(retry_count)
         next_retry_at = now_utc() + timedelta(seconds=delay_seconds)
-        
+
         self.db.update_task_status(
             task_id,
             TaskState.RETRY.value,
@@ -550,9 +560,9 @@ class TaskQueue:
             next_retry_at=next_retry_at,
             started_at=None  # Reset started time
         )
-        
+
         logger.info(f"Scheduled task {task_id} for retry #{retry_count} in {delay_seconds}s")
-    
+
     # Runner-facing methods
 
     def get_task(self, task_id: str) -> Optional[TaskSpec]:
@@ -634,6 +644,7 @@ class TaskQueue:
     def _task_data_to_spec(self, task_data: Dict[str, Any]) -> TaskSpec:
         """Convert a raw task dict from the database into a TaskSpec."""
         from decimal import Decimal as _Decimal
+
         from .schemas import ModelTier
         preferred = task_data.get('preferred_model')
         return TaskSpec(

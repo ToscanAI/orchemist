@@ -21,15 +21,15 @@ so any exception here is logged as a warning and never propagates.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional
 
 import yaml
 
 if TYPE_CHECKING:
-    from .db import Database
     from .cost_tracker import CostTracker
+    from .db import Database
 
 logger = logging.getLogger(__name__)
 

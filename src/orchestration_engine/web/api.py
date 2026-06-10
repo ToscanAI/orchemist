@@ -404,11 +404,15 @@ def create_api_app(
     from sse_starlette.sse import EventSourceResponse
 
     from orchestration_engine import __version__
-    from orchestration_engine.db import Database, TERMINAL_STATUSES
+    from orchestration_engine.db import TERMINAL_STATUSES, Database
     from orchestration_engine.templates import TemplateEngine, TemplateNotFoundError
     from orchestration_engine.timestamps import (
         normalize_row as _normalize_row,
+    )
+    from orchestration_engine.timestamps import (
         normalize_ts as _normalize_ts,
+    )
+    from orchestration_engine.timestamps import (
         now_utc as _now_utc,
     )
     from orchestration_engine.webhooks import InputMapper, TriggerMatcher
@@ -2778,6 +2782,7 @@ def create_api_app(
         - unknown extra keys (preserved under ``"extra"``)
         """
         import json as _json
+
         from .. import feature_flags as _ff
         admin_path = _ff._admin_json_path()  # honours ORCH_ADMIN_PATH (#840)
         raw_loaded: Any = None
@@ -3759,10 +3764,10 @@ def create_api_app(
               payload fields are missing.
         """
         from orchestration_engine.issue_automation import (
+            InputExtractor,
             IssueAutomation,
             IssueClassifier,
             TemplateSelector,
-            InputExtractor,
             post_github_comment,
         )
         from orchestration_engine.notifications import NotificationDispatcher

@@ -13,16 +13,14 @@ Usage::
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 from urllib import request as urllib_request
 from urllib.error import URLError
 
 import yaml
-
 
 # Default URL for the community template index
 DEFAULT_INDEX_URL = (

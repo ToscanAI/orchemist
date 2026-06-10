@@ -17,7 +17,6 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .timestamps import now_utc

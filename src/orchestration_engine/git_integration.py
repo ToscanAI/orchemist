@@ -1199,7 +1199,7 @@ class GitContext:
             # Permission / auth errors
             if "permission denied" in exc.stderr.lower() or "authentication" in exc.stderr.lower():
                 raise GitError(
-                    f"Push failed — check your git credentials and remote permissions.",
+                    "Push failed — check your git credentials and remote permissions.",
                     command=exc.command,
                     stderr=exc.stderr,
                 ) from exc
