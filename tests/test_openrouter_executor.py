@@ -6,6 +6,7 @@ and PipelineRunner integration.
 """
 
 import json
+import logging
 import sys
 import urllib.error
 from datetime import datetime
@@ -18,11 +19,39 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from orchestration_engine.executors._common import _PRICING
 from orchestration_engine.executors.openrouter_executor import (
     DEFAULT_MODEL_MAP,
     OpenRouterExecutor,
 )
 from orchestration_engine.schemas import TaskSpec, TaskState, TaskType
+
+_EXECUTOR_LOGGER = "orchestration_engine.executors.openrouter_executor"
+_OMISSION_KEYWORDS = ("omit", "omitted", "unsupported", "not confirmed", "not supported")
+_COST_KEYWORDS = ("cost", "estimat", "pricing", "default")
+
+
+def _executor_warnings(caplog):
+    return [
+        r for r in caplog.records if r.levelno == logging.WARNING and r.name == _EXECUTOR_LOGGER
+    ]
+
+
+def _thinking_warnings(caplog):
+    out = []
+    for r in _executor_warnings(caplog):
+        low = r.getMessage().lower()
+        if "thinking" in low and any(k in low for k in _OMISSION_KEYWORDS):
+            out.append(r)
+    return out
+
+
+def _cost_warnings(caplog):
+    return [
+        r
+        for r in _executor_warnings(caplog)
+        if any(k in r.getMessage().lower() for k in _COST_KEYWORDS)
+    ]
 
 
 def _make_task(prompt="Write a hello world", task_type=TaskType.CODE, disable_tools=True):
@@ -216,15 +245,22 @@ class TestThinkingSupport:
             assert sent_body["thinking"]["type"] == "enabled"
             assert sent_body["thinking"]["budget_tokens"] > 0
 
-    def test_thinking_not_included_for_non_anthropic(self):
-        """Given thinking_level='high' but non-Anthropic model, no thinking param."""
+    def test_thinking_not_included_for_non_anthropic(self, caplog):
+        """Given thinking_level='high' but non-Anthropic model, no thinking param.
+
+        Post-#967 the drop is LOUD: a single WARNING fires naming the model and the
+        dropped level (asserted in detail by the dedicated drop tests below); here we
+        just confirm the body omission AND that the omission is no longer silent.
+        """
         executor = OpenRouterExecutor(api_key="sk-or-test")
         task = _make_task()
-        with patch("urllib.request.urlopen") as mock_url:
-            mock_url.return_value = _mock_urlopen(_mock_response())
-            executor.execute(task, model_tier="openai/gpt-4o", thinking_level="high")
-            sent_body = json.loads(mock_url.call_args[0][0].data)
-            assert "thinking" not in sent_body
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.return_value = _mock_urlopen(_mock_response())
+                executor.execute(task, model_tier="openai/gpt-4o", thinking_level="high")
+                sent_body = json.loads(mock_url.call_args[0][0].data)
+        assert "thinking" not in sent_body
+        assert len(_thinking_warnings(caplog)) == 1
 
     def test_thinking_off_excludes_param(self):
         """Given thinking_level='off', no thinking param included."""
@@ -246,15 +282,20 @@ class TestThinkingSupport:
             sent_body = json.loads(mock_url.call_args[0][0].data)
             assert "thinking" not in sent_body
 
-    def test_thinking_silently_ignored_for_passthrough_model(self):
-        """Given an unknown passthrough model, thinking is silently ignored."""
+    def test_thinking_drop_warns_for_passthrough_model(self, caplog):
+        """Given an unknown passthrough model + a requested level, thinking is omitted
+        from the body AND the drop is announced with a single WARNING (#967 — the old
+        name encoded the now-superseded *silent* behaviour). Sentinel id unchanged so
+        the cost-sentinel suite is not perturbed."""
         executor = OpenRouterExecutor(api_key="sk-or-test")
         task = _make_task()
-        with patch("urllib.request.urlopen") as mock_url:
-            mock_url.return_value = _mock_urlopen(_mock_response())
-            executor.execute(task, model_tier="meta-llama/llama-3.3-70b", thinking_level="high")
-            sent_body = json.loads(mock_url.call_args[0][0].data)
-            assert "thinking" not in sent_body
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.return_value = _mock_urlopen(_mock_response())
+                executor.execute(task, model_tier="meta-llama/llama-3.3-70b", thinking_level="high")
+                sent_body = json.loads(mock_url.call_args[0][0].data)
+        assert "thinking" not in sent_body
+        assert len(_thinking_warnings(caplog)) == 1
 
 
 class TestThinkingRetry:
@@ -673,3 +714,244 @@ class TestPipelineRunnerIntegration:
             os.environ.pop("OPENROUTER_API_KEY", None)
             with pytest.raises(ValueError, match="OpenRouter API key required"):
                 PipelineRunner.openrouter()
+
+
+# ---------------------------------------------------------------------------
+# Issue #967 — thinking-drop honesty (warn-once-and-omit) and cost-estimate
+# flagging. Implementer-authored unit tests (distinct from the sealed suite).
+# ---------------------------------------------------------------------------
+
+
+class TestThinkingDropWarning:
+    """#967 §B.1 — non-Anthropic + requested level → warn-once, no thinking body."""
+
+    def test_thinking_drop_warns_once_for_non_anthropic(self, caplog):
+        """openai/gpt-4o + high: body omits thinking; exactly ONE WARNING naming the
+        model + level; a SECOND call on the SAME instance stays silent (warn-once)."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.return_value = _mock_urlopen(_mock_response())
+                result = executor.execute(
+                    _make_task(), model_tier="openai/gpt-4o", thinking_level="high"
+                )
+                sent_body = json.loads(mock_url.call_args[0][0].data)
+
+        assert "thinking" not in sent_body
+        assert result.state == TaskState.SUCCESS
+        warns = _thinking_warnings(caplog)
+        assert len(warns) == 1
+        msg = warns[0].getMessage().lower()
+        assert "openai/gpt-4o" in msg
+        assert "high" in msg
+        assert "thinking" in msg
+        assert any(k in msg for k in _OMISSION_KEYWORDS)
+
+        # Second call, same instance, same model → still exactly one (no new warn).
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.return_value = _mock_urlopen(_mock_response())
+                executor.execute(_make_task(), model_tier="openai/gpt-4o", thinking_level="high")
+        assert len(_thinking_warnings(caplog)) == 1
+
+    def test_thinking_drop_warns_per_distinct_model(self, caplog):
+        """Same instance, two distinct non-Anthropic models → TWO warnings (one per
+        model) — locks the set-keyed decision over a single bool."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            for model in ("openai/gpt-4o", "google/gemini-2.5-pro"):
+                with patch("urllib.request.urlopen") as mock_url:
+                    mock_url.return_value = _mock_urlopen(_mock_response())
+                    executor.execute(_make_task(), model_tier=model, thinking_level="high")
+
+        warns = [r.getMessage().lower() for r in _thinking_warnings(caplog)]
+        assert len(warns) == 2
+        assert sum(1 for m in warns if "openai/gpt-4o" in m) == 1
+        assert sum(1 for m in warns if "google/gemini-2.5-pro" in m) == 1
+
+    @pytest.mark.parametrize("model_tier", ["sonnet", "openai/gpt-4o"])
+    @pytest.mark.parametrize("level", ["off", None])
+    def test_thinking_off_and_none_never_warn(self, caplog, model_tier, level):
+        """off/None is not a dropped capability → no thinking body, zero thinking
+        warnings, for supported AND non-Anthropic models (invariant A.2.2)."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.return_value = _mock_urlopen(_mock_response())
+                executor.execute(_make_task(), model_tier=model_tier, thinking_level=level)
+                sent_body = json.loads(mock_url.call_args[0][0].data)
+        assert "thinking" not in sent_body
+        assert _thinking_warnings(caplog) == []
+
+    def test_thinking_anthropic_body_unchanged_and_silent(self, caplog):
+        """Anthropic fast-path byte-parity: sonnet + high sends the EXACT thinking
+        block and fires ZERO thinking warnings (invariant A.2.1)."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.return_value = _mock_urlopen(_mock_response())
+                executor.execute(_make_task(), model_tier="sonnet", thinking_level="high")
+                sent_body = json.loads(mock_url.call_args[0][0].data)
+        assert sent_body["thinking"] == {"type": "enabled", "budget_tokens": 32768}
+        assert _thinking_warnings(caplog) == []
+
+
+class TestNonAnthropicPricingKeys:
+    """#967 §B.2 — the 5 new keys price at their own rate; sentinel stays key-less."""
+
+    _NEW_IDS = [
+        "openai/gpt-4o",
+        "openai/gpt-4o-mini",
+        "google/gemini-2.5-pro",
+        "deepseek/deepseek-chat",
+        "mistralai/mistral-large",
+    ]
+
+    @pytest.mark.parametrize("model_id", _NEW_IDS)
+    def test_non_anthropic_keys_present_and_priced(self, model_id):
+        """Each new id has its OWN explicit key with positive rates, not default."""
+        assert _PRICING.has_model(model_id) is True
+        pricing = _PRICING.get_pricing(model_id)
+        assert pricing["input_per_million"] > 0
+        assert pricing["output_per_million"] > 0
+        assert _PRICING.compute_cost(model_id, 1_000_000, 0) == pytest.approx(
+            pricing["input_per_million"]
+        )
+        assert _PRICING.compute_cost(model_id, 0, 1_000_000) == pytest.approx(
+            pricing["output_per_million"]
+        )
+
+    def test_sentinel_llama_still_default_priced(self):
+        """The #801 sentinel was deliberately NOT given a key — guards a future
+        accidental add (test_issue_801 stays green by leaving the id key-less)."""
+        assert _PRICING.has_model("meta-llama/llama-3.3-70b") is False
+        assert _PRICING.get_pricing("meta-llama/llama-3.3-70b") == _PRICING.get_pricing("default")
+        assert _PRICING.compute_cost("meta-llama/llama-3.3-70b", 500, 500) == pytest.approx(0.009)
+
+
+class TestCostEstimatedFlag:
+    """#967 §B.3 — metadata['cost_estimated'] set/unset + warn-once on estimate."""
+
+    def test_cost_estimated_flag_set_for_unknown_model(self, caplog):
+        """No key + no total_cost → flag True, model recorded, ONE cost warning,
+        cost still computed off default."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.return_value = _mock_urlopen(
+                    _mock_response(prompt_tokens=500, completion_tokens=500, total_cost=None)
+                )
+                result = executor.execute(
+                    _make_task(), model_tier="meta-llama/llama-3.3-70b", thinking_level="off"
+                )
+
+        assert result.metadata["cost_estimated"] is True
+        assert result.metadata["cost_estimated_model"] == "meta-llama/llama-3.3-70b"
+        assert float(result.cost_usd) == pytest.approx(0.009)
+        warns = _cost_warnings(caplog)
+        assert len(warns) == 1
+        assert "meta-llama/llama-3.3-70b" in warns[0].getMessage().lower()
+
+    def test_cost_estimated_warns_once_per_model(self, caplog):
+        """Repeated unknown-model calls on the same instance warn only ONCE."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            for _ in range(2):
+                with patch("urllib.request.urlopen") as mock_url:
+                    mock_url.return_value = _mock_urlopen(_mock_response(total_cost=None))
+                    executor.execute(
+                        _make_task(), model_tier="meta-llama/llama-3.3-70b", thinking_level="off"
+                    )
+        assert len(_cost_warnings(caplog)) == 1
+
+    def test_cost_estimated_flag_unset_for_known_anthropic_model(self, caplog):
+        """sonnet (keyed) + no total_cost → flag falsy, no cost warning."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.return_value = _mock_urlopen(_mock_response(total_cost=None))
+                result = executor.execute(_make_task(), model_tier="sonnet", thinking_level="off")
+        assert result.metadata.get("cost_estimated") is False
+        assert _cost_warnings(caplog) == []
+
+    def test_cost_estimated_flag_unset_when_total_cost_present(self, caplog):
+        """Unknown model WITH total_cost → flag falsy, no warning (total_cost is the
+        source of truth, invariant A.2.4)."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.return_value = _mock_urlopen(_mock_response(total_cost=0.0042))
+                result = executor.execute(
+                    _make_task(), model_tier="meta-llama/llama-3.3-70b", thinking_level="off"
+                )
+        assert not result.metadata.get("cost_estimated")
+        assert float(result.cost_usd) == pytest.approx(0.0042)
+        assert _cost_warnings(caplog) == []
+
+    def test_cost_estimated_flag_unset_for_newly_priced_model(self, caplog):
+        """A NEW priced id (openai/gpt-4o) + no total_cost → flag falsy (adding the
+        key clears the flag), no cost warning."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.return_value = _mock_urlopen(_mock_response(total_cost=None))
+                result = executor.execute(
+                    _make_task(), model_tier="openai/gpt-4o", thinking_level="off"
+                )
+        assert not result.metadata.get("cost_estimated")
+        assert _cost_warnings(caplog) == []
+
+    def test_cost_estimated_flag_in_tool_loop(self, caplog):
+        """Agentic tool-loop path: unknown model, two round-trips both lacking
+        total_cost → success metadata carries the flag (§B.3 tool-loop site)."""
+        executor = OpenRouterExecutor(api_key="sk-or-test")
+        task = TaskSpec(
+            type=TaskType.CODE,
+            payload={
+                "prompt": "do work",
+                "disable_tools": False,
+                "sandbox_roots": {"tmp_dir": "/tmp"},
+            },
+        )
+        round1 = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "shell_exec",
+                                    "arguments": json.dumps({"command": "echo hi"}),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 500, "completion_tokens": 500},
+        }
+        round2 = {
+            "choices": [{"message": {"content": "done"}}],
+            "usage": {"prompt_tokens": 500, "completion_tokens": 500},
+        }
+        responses = [round1, round2]
+        idx = {"n": 0}
+
+        def _fake_post(body):  # noqa: ARG001  (chokepoint signature; body unused here)
+            i = idx["n"]
+            idx["n"] += 1
+            return responses[i]
+
+        with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+            with patch.object(executor, "_do_post", side_effect=_fake_post):
+                result = executor.execute(
+                    task, model_tier="meta-llama/llama-3.3-70b", thinking_level="off"
+                )
+
+        assert result.state == TaskState.SUCCESS
+        assert result.metadata["cost_estimated"] is True
+        assert result.metadata["cost_estimated_model"] == "meta-llama/llama-3.3-70b"
+        assert len(_cost_warnings(caplog)) == 1

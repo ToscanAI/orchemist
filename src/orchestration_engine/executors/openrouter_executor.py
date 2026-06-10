@@ -161,6 +161,11 @@ class OpenRouterExecutor(BaseExecutor):
         self.tool_result_cap = tool_result_cap
         # Warn-once flag for the "sandbox_roots missing/empty → tmp-only fallback" case.
         self._sandbox_fallback_warned = False
+        # Warn-once SETS keyed by resolved model id (#967). A single bool would
+        # under-report when a multi-model run drops thinking / estimates cost for
+        # several distinct models; the set fires exactly once per (instance, model).
+        self._thinking_drop_warned: set[str] = set()
+        self._cost_estimated_warned: set[str] = set()
 
         if not self.api_key:
             logger.warning(
@@ -206,11 +211,31 @@ class OpenRouterExecutor(BaseExecutor):
             prompt = json.dumps(payload, indent=2)
 
         thinking = thinking_level or "off"
-        use_thinking = (
-            thinking != "off"
-            and thinking is not None
-            and any(model.startswith(p) for p in _THINKING_SUPPORTED_PREFIXES)
-        )
+        # Thinking honesty (#967): keep `use_thinking` truth byte-identical to the
+        # historical gate (the same two predicates ANDed), but when a level was
+        # *requested* against a model we cannot confirm supports extended thinking,
+        # degrade LOUDLY — one WARNING per (executor-instance, resolved-model) — then
+        # proceed with NO `thinking` body. We do NOT send an Anthropic-shaped thinking
+        # block to non-Anthropic models on the speculation that OpenRouter forwards it:
+        # a model that silently accepts it returns 200 and may bill reasoning tokens
+        # with no signal (the exact silent-cost degradation this issue removes). The
+        # 400-with-thinking strip stays the backstop for the Anthropic-supported set.
+        _thinking_requested = thinking != "off" and thinking is not None
+        _thinking_supported = any(model.startswith(p) for p in _THINKING_SUPPORTED_PREFIXES)
+        use_thinking = _thinking_requested and _thinking_supported
+        if (
+            _thinking_requested
+            and not _thinking_supported
+            and model not in self._thinking_drop_warned
+        ):
+            logger.warning(
+                "openrouter executor: thinking_level=%r requested but extended thinking is "
+                "not confirmed-supported for model %r via OpenRouter — omitted; set "
+                "thinking_level to 'off' to silence this warning.",
+                thinking,
+                model,
+            )
+            self._thinking_drop_warned.add(model)
 
         disable_tools = bool(payload.get("disable_tools", False))
         phase_id = payload.get("phase_id") or task_id
@@ -320,6 +345,10 @@ class OpenRouterExecutor(BaseExecutor):
         total_tokens = 0
         total_prompt_tokens = 0
         total_completion_tokens = 0
+        # Cost honesty (#967): True if ANY round-trip fell back to `default` pricing
+        # (no usage.total_cost + no exact key). `model` is loop-invariant, so once
+        # flipped it stays True for the whole loop result.
+        cost_estimated = False
         final_text = ""
         final_captured = False  # True only on a clean break (no-leak, no-tool_calls response)
 
@@ -399,6 +428,7 @@ class OpenRouterExecutor(BaseExecutor):
                 total_completion_tokens += completion_tokens
                 total_tokens += prompt_tokens + completion_tokens
                 call_cost = usage.get("total_cost")
+                cost_estimated = self._cost_is_estimated(model, call_cost) or cost_estimated
                 if call_cost is None:
                     call_cost = _PRICING.compute_cost(model, prompt_tokens, completion_tokens)
                 total_cost += Decimal(str(call_cost))
@@ -560,6 +590,21 @@ class OpenRouterExecutor(BaseExecutor):
                 )
 
         duration = time.time() - start_time
+        success_metadata: Dict[str, Any] = {
+            "worker_id": worker_id,
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "tool_call_count": tool_call_count,
+            "round_trip_count": round_trip_count,
+            "retry_count": retry_count_total,
+            "xml_leak_detected": xml_leak_detected,
+            "xml_leak_content_snippet": xml_leak_snippet or "",
+            "parallel_tool_calls_observed": parallel_tool_calls_observed,
+            "jsonl_write_failed": jsonl_write_failed,
+            "cost_estimated": cost_estimated,
+        }
+        if cost_estimated:
+            success_metadata["cost_estimated_model"] = model
         return TaskResult(
             task_id=task.id,
             task_type=task.type,
@@ -572,18 +617,7 @@ class OpenRouterExecutor(BaseExecutor):
             cost_usd=total_cost,
             started_at=now_utc(),
             completed_at=now_utc(),
-            metadata={
-                "worker_id": worker_id,
-                "prompt_tokens": total_prompt_tokens,
-                "completion_tokens": total_completion_tokens,
-                "tool_call_count": tool_call_count,
-                "round_trip_count": round_trip_count,
-                "retry_count": retry_count_total,
-                "xml_leak_detected": xml_leak_detected,
-                "xml_leak_content_snippet": xml_leak_snippet or "",
-                "parallel_tool_calls_observed": parallel_tool_calls_observed,
-                "jsonl_write_failed": jsonl_write_failed,
-            },
+            metadata=success_metadata,
         )
 
     def _execute_tool(
@@ -894,6 +928,34 @@ class OpenRouterExecutor(BaseExecutor):
             )
         return self._parse_response(resp_data, task, worker_id, model, start_time)
 
+    # ── Cost-estimate flagging (#967) ─────────────────────────────────
+
+    def _cost_is_estimated(self, model: str, api_total_cost: Optional[float]) -> bool:
+        """Cost honesty (#967): True iff this call's cost was computed off the
+        `default` pricing fallback — i.e. OpenRouter returned no ``usage.total_cost``
+        AND the model has no exact ``pricing.yaml`` key.
+
+        Emits ONE ``logger.warning`` per (executor-instance, resolved-model) the first
+        time the flag flips True for a model, upgrading the invisible ``get_pricing``
+        debug log to a visible signal WITHOUT touching the shared ``get_pricing`` (which
+        the Anthropic/ledger paths rely on staying quiet). ``usage.total_cost`` is the
+        source of truth when present and short-circuits estimation even for key-less
+        models.
+        """
+        if api_total_cost is not None:
+            return False
+        if _PRICING.has_model(model):
+            return False
+        if model not in self._cost_estimated_warned:
+            logger.warning(
+                "openrouter executor: no exact pricing key for model %r and OpenRouter "
+                "returned no usage.total_cost — cost computed from the 'default' estimate "
+                "and flagged metadata['cost_estimated']=True.",
+                model,
+            )
+            self._cost_estimated_warned.add(model)
+        return True
+
     # ── Request body ──────────────────────────────────────────────────
 
     def _build_request_body(
@@ -1024,9 +1086,20 @@ class OpenRouterExecutor(BaseExecutor):
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
         total_tokens = prompt_tokens + completion_tokens
-        total_cost = usage.get("total_cost")
+        _api_cost = usage.get("total_cost")
+        cost_estimated = self._cost_is_estimated(model, _api_cost)
+        total_cost = _api_cost
         if total_cost is None:
             total_cost = _PRICING.compute_cost(model, prompt_tokens, completion_tokens)
+
+        metadata: Dict[str, Any] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "worker_id": worker_id,
+            "cost_estimated": cost_estimated,
+        }
+        if cost_estimated:
+            metadata["cost_estimated_model"] = model
 
         return TaskResult(
             task_id=task.id,
@@ -1040,11 +1113,7 @@ class OpenRouterExecutor(BaseExecutor):
             cost_usd=Decimal(str(total_cost)),
             started_at=now_utc(),
             completed_at=now_utc(),
-            metadata={
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "worker_id": worker_id,
-            },
+            metadata=metadata,
         )
 
     def _handle_http_error(
