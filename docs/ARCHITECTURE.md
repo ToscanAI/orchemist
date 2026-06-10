@@ -25,7 +25,7 @@ C4Context
 
     System_Ext(github, "GitHub", "Issues, PRs, branches, CI/CD via GitHub Actions")
     System_Ext(llm_anthropic, "Anthropic API", "Claude models — Haiku, Sonnet, Opus")
-    System_Ext(llm_openai, "OpenAI-Compatible APIs", "Gemini, Ollama, LM Studio, etc.")
+    System_Ext(llm_openai, "OpenRouter", "Any model: Anthropic, OpenAI, Google, etc. via OpenRouter")
     System_Ext(openclaw_gw, "OpenClaw Gateway", "Sub-agent spawning, tool access, session management")
     System_Ext(pypi, "PyPI", "Package registry for distribution")
     System_Ext(git_repos, "Git Repositories", "Source code under test/generation")
@@ -33,7 +33,7 @@ C4Context
     Rel(dev, orchemist, "Defines templates, launches & monitors pipelines", "CLI / REST API")
     Rel(orchemist, github, "Creates branches, opens PRs, reads issues", "gh CLI / API")
     Rel(orchemist, llm_anthropic, "Sends prompts, receives completions", "HTTPS / Messages API")
-    Rel(orchemist, llm_openai, "Sends prompts, receives completions", "HTTPS / Chat Completions API")
+    Rel(orchemist, llm_openai, "Sends prompts, receives completions", "HTTPS / OpenRouter API")
     Rel(orchemist, openclaw_gw, "Spawns sub-agents for phase execution", "CLI / HTTP")
     Rel(orchemist, git_repos, "Clones, checks out branches, commits", "git")
     Rel(github, orchemist, "Triggers pipelines via webhooks", "HTTPS")
@@ -67,7 +67,7 @@ C4Container
         Container(exec_openclaw, "OpenClaw Executor", "Python", "Spawns sub-agents via OpenClaw Gateway CLI or file-based IPC")
         Container(exec_anthropic, "Anthropic Executor", "Python / urllib", "Direct Anthropic Messages API calls, stdlib only")
         Container(exec_claudecode, "Claude Code Executor", "Python", "Invokes Claude Code CLI for coding tasks")
-        Container(exec_openai, "OpenAI-Compatible Executor", "Python", "Calls any /v1/chat/completions endpoint")
+        Container(exec_openai, "OpenRouter Executor", "Python", "Routes to any model via the OpenRouter API; tool-calling parity")
         Container(exec_dryrun, "DryRun Executor", "Python", "Returns mock results for testing and CI")
         Container(exec_command, "Command Executor", "Python", "Runs allow-listed shell commands with shlex sandboxing")
         Container(fallback, "Fallback Handler", "Python", "Wraps primary executor; retries via alternative executor on rate-limit / timeout")
@@ -75,7 +75,7 @@ C4Container
 
     System_Ext(github, "GitHub", "Issues, PRs, branches")
     System_Ext(llm_anthropic, "Anthropic API", "Claude Haiku / Sonnet / Opus")
-    System_Ext(llm_openai, "OpenAI-Compatible APIs", "Gemini, Ollama, etc.")
+    System_Ext(llm_openai, "OpenRouter", "Any model family")
     System_Ext(openclaw_gw, "OpenClaw Gateway", "Sub-agent management")
     System_Ext(sqlite_file, "SQLite File", "~/.orchestration-engine/engine.db")
 
@@ -375,21 +375,22 @@ A **phase** is one unit of work inside a pipeline. Each phase:
 
 The prompt template is a Python format string. You can embed variables like `{input[brief]}` (from your pipeline's initial input) or `{previous_output[research]}` (the output from an earlier phase). This is how data flows: phase outputs become inputs to the next phase's prompt.
 
-If a key is missing — say, you reference `{previous_output[some_phase]}` but that phase hasn't run — you get a `<MISSING:some_phase>` placeholder instead of a crash. The engine is designed to keep running and let you debug rather than dying silently.
+If a referenced key is missing — say you reference `{previous_output[some_phase]}` but that phase hasn't run — the engine **fails the phase before dispatch** (a terminal `permanently_failed`), naming every `<MISSING:...>` marker so you can fix the template or input. This fail-fast guard (issues #535/#676) runs in every real execution mode (standalone / openrouter / openclaw / claudecode). **Dry-run is the one exception** (issue #659): it logs the missing markers and proceeds with placeholder text so you can smoke-test pipeline *structure* without supplying real inputs.
 
 ---
 
 ### Executors — The Workers
 
-An **executor** is the thing that actually *does* the work. There are five built in:
+Executors translate a phase into a real model call. There are five concrete executors plus a dry-run mock; all five concrete ones share a small `BaseExecutor` mixin (`executors/_common.py`, #927):
 
 | Executor | Module | What it does | When it's used |
 |---|---|---|---|
-| **AnthropicExecutor** | `executors/anthropic_executor.py` | Calls the Anthropic Messages API directly via `urllib` | `standalone` mode; no framework dependency |
-| **OpenClawExecutor** | `openclaw_executor.py` | Calls an AI sub-agent via the OpenClaw CLI or file-based IPC | `openclaw` mode; full tool access via sub-agents |
-| **OpenAICompatibleExecutor** | `openai_executor.py` | Calls any OpenAI-compatible `/v1/chat/completions` endpoint | Gemini-via-proxy, Ollama, LM Studio, or other providers |
-| **DryRunExecutor** | `executor.py` | Returns mock results instantly | Testing, development, and CI pipelines |
-| **FallbackHandler** | `fallback.py` | Wraps a primary executor; retries via `OpenAICompatibleExecutor` on retriable errors | Automatic fallback when Anthropic rate-limits or times out |
+| **AnthropicExecutor** | `executors/anthropic_executor.py` | Calls the Anthropic Messages API directly via stdlib `urllib` | `standalone` mode |
+| **OpenRouterExecutor** | `executors/openrouter_executor.py` (+ `openrouter_tools.py`) | Routes to any model via OpenRouter; 6-tool tool-calling parity | `openrouter` mode — the primary production path |
+| **GeminiCliExecutor** | `executors/gemini_cli_executor.py` | Bridges to the `gemini` CLI; no tool-calling/streaming/retry | dialogue-phase prototype (experimental, #677) |
+| **ClaudeCodeExecutor** | `executors/claudecode_executor.py` | Calls Claude via the Claude Code MCP session (uses the user's subscription, no API key) | inside an active MCP tool handler |
+| **OpenClawExecutor** | `openclaw_executor.py` | Spawns sub-agents via the OpenClaw CLI or file IPC | `openclaw` mode *(deprecated — gateway inactive)* |
+| **DryRunExecutor** | `runner.py` | Returns mock results instantly | `dry-run` mode (testing/CI) |
 
 The `AnthropicExecutor` is the primary executor for standalone use. It:
 1. Resolves the model tier (`haiku` / `sonnet` / `opus`) to the exact Anthropic model string
@@ -406,6 +407,16 @@ This file-based handoff is a simple but robust integration contract: the engine 
 **Model escalation on failure:** If a task fails, the engine automatically retries with a more capable model. A content task might start on Haiku, fail, retry on Sonnet, fail again, and finally retry on Opus. This means you get cheap results when things go well and more thorough results when they don't — without manual intervention.
 
 **Phase-level retry logic:** Independently from the executor-level retry, each phase in a template can declare its own `retries` count and `retry_delay_seconds` delay. When a phase fails, the sequencer retries it up to `retries` additional times (default 0 = no retries), waiting `retry_delay_seconds` between attempts. This is coarser-grained than the executor's internal retry but useful for transient network errors or model overload.
+
+**Shared base (#927):** All five concrete executors subclass `BaseExecutor` (`executors/_common.py:47`), which hoists the genuinely-shared boilerplate — task-id resolution, start-time capture, and a single shared pricing table — without changing each executor's own init or call path. `DryRunExecutor` subclasses `TaskExecutor` directly.
+
+**Template composition (#704):** Pipeline templates can compose via `extends:` and `exclude_phases:` (v0.12.0, #704). `templates/coding-pipeline-skip-spec.yaml` extends `coding-pipeline-standard`, excludes the spec-loop phases, and overrides a few — see [Template Authoring → Composition](template-authoring.md#composition).
+
+**Model registry (#916):** Model tiers, ids, and prices live in a registry (`model_registry.py`, `models.py`, `pricing.yaml`, #916) rather than being hardcoded per-executor.
+
+**Dialogue phase:** An experimental cross-model *dialogue* phase exists behind the `dialogue_phase` feature flag (default off, #808/#840); when the flag is off, any `type: dialogue` phase is skipped with a warning.
+
+**Provider maturity:** Provider maturity is tiered (Anthropic and OpenRouter are production paths; Gemini-CLI and Claude-Code are experimental). Broadening the provider matrix — Ollama, more families, polish — is tracked in [#101](https://github.com/ToscanAI/orchemist/issues/101). See [Current State](CURRENT-STATE.md#executor-maturity).
 
 ---
 
@@ -524,8 +535,10 @@ Three tiers are available. The right choice depends on what the task needs:
 | Tier | Model | Speed | Cost | Best For |
 |---|---|---|---|---|
 | **Haiku** | `claude-haiku-4-5` | Fastest | Cheapest | Simple lookups, classification, translation, first attempts |
-| **Sonnet** | `claude-sonnet-4` | Fast | Moderate | Writing, research, most production work |
-| **Opus** | `claude-opus-4-6` | Slowest | Most expensive | Complex reasoning, final-resort retries, creative judgment |
+| **Sonnet** | `claude-sonnet-4-6` | Fast | Moderate | Writing, research, most production work |
+| **Opus** | `claude-opus-4-8` | Slowest | Most expensive | Complex reasoning, final-resort retries, creative judgment |
+
+> Exact model strings come from `config.py` / the model registry (#916) and track the latest releases; tier *names* (haiku/sonnet/opus) are stable.
 
 In your YAML template, you set the tier per phase:
 ```yaml
@@ -549,8 +562,8 @@ User-supplied expressions like `len(output['article']) > 500` are evaluated — 
 ### Path Traversal Protection (OpenClawExecutor)
 When the executor writes task files to `~/.orchestration-engine/tasks/<task_id>/`, the task ID is validated against a strict regex (`^[a-zA-Z0-9_-]+$`). If the ID contains path components like `../../../etc/passwd`, it's replaced with a fresh UUID. After creating the directory, its resolved path is verified to be inside the tasks root — a defense-in-depth check that catches edge cases even if the ID validation passed.
 
-### Input Sanitization (LocalExecutor)
-Shell commands from task payloads are parsed with `shlex.split()` and executed with `shell=False`. This means no shell interpretation: backticks, pipes, redirects, and semicolons are treated as literal characters, not shell operators. Additionally, only an allowlist of executables (`echo`, `ls`, `cat`, `python`, etc.) can be invoked.
+### Input Sanitization (CommandExecutor)
+Shell commands from task payloads are parsed with `shlex.split()` and executed with `shell=False` (`command_executor.py`). This means no shell interpretation: backticks, pipes, redirects, and semicolons are treated as literal characters, not shell operators. Additionally, only an allowlist of executables (`echo`, `ls`, `cat`, `python`, etc.) can be invoked.
 
 ### Rubric File Path Validation (Scenario Runner)
 When a scenario references an external rubric file, the resolved path is checked to be within the scenarios directory. If the path escapes the directory (e.g., via `../../secret`), an error is raised rather than reading an arbitrary file.

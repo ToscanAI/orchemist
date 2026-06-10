@@ -18,9 +18,9 @@ python3 --version
 
 If you're on Python 3.9 or older, install a newer version from [python.org](https://python.org) or use `pyenv`.
 
-**An API key — one of these:**
+**An Anthropic API key**
 
-- **Anthropic API key** — go to [console.anthropic.com](https://console.anthropic.com), create an account, and grab a key. Set it as an environment variable:
+- Go to [console.anthropic.com](https://console.anthropic.com), create an account, and grab a key. Set it as an environment variable:
   ```bash
   export ANTHROPIC_API_KEY="sk-ant-..."
   ```
@@ -32,39 +32,21 @@ If you're on Python 3.9 or older, install a newer version from [python.org](http
   > # Edit .env with your API key
   > ```
 
-- **OpenClaw** — if you're running inside OpenClaw, you're already set. The executor will use OpenClaw's session infrastructure automatically.
-
-  ```bash
-  # Set your gateway token
-  export OPENCLAW_GATEWAY_TOKEN="your-token-here"
-
-  # For short pipelines (< 10 min):
-  orch run my-pipeline.yaml --mode openclaw
-
-  # For long pipelines (5+ phases), use nohup to prevent process timeout:
-  nohup orch run my-pipeline.yaml --mode openclaw > pipeline.log 2>&1 &
-  tail -f pipeline.log
-  ```
-
-  > **Tip:** Always check `pipeline.log` for the output directory path. Long-running
-  > pipelines may take 20-30 minutes for 5 phases.
-
 ---
 
 ## Install
 
-**Option A: Install from PyPI** *(when the package is published)*
+**Option A: Install from PyPI** *(recommended)*
 ```bash
 pip install orchemist
 ```
 
-**Option B: Clone and install locally** *(recommended while the project is in active development)*
+**Option B: Clone and install locally** *(for development / latest source)*
 ```bash
 # Development repo (latest)
-git clone https://github.com/ToscanAI/orchestration-engine.git
-# Or stable releases:
-# git clone https://github.com/connylazo/orchestration-engine.git
-cd orchestration-engine
+git clone https://github.com/ToscanAI/orchemist.git
+# (PyPI is the stable release channel — see Option A)
+cd orchemist
 pip install -e .
 ```
 
@@ -316,8 +298,8 @@ python3 -m venv ~/orch-env
 source ~/orch-env/bin/activate
 
 # Install the engine
-git clone https://github.com/ToscanAI/orchestration-engine.git
-cd orchestration-engine
+git clone https://github.com/ToscanAI/orchemist.git
+cd orchemist
 pip install -e .
 ```
 
@@ -337,7 +319,7 @@ After=network.target
 
 [Service]
 User=pi
-WorkingDirectory=/home/pi/orchestration-engine
+WorkingDirectory=/home/pi/orchemist
 Environment="ANTHROPIC_API_KEY=sk-ant-..."
 ExecStart=/home/pi/orch-env/bin/orch serve --host 0.0.0.0 --port 8080
 Restart=always
@@ -381,3 +363,26 @@ The database lives at `~/.orchestration-engine/engine.db`. If something is badly
 rm ~/.orchestration-engine/engine.db
 ```
 (You'll lose task history but nothing else.)
+
+---
+
+## Advanced: OpenClaw mode
+
+> OpenClaw mode is deprecated — the gateway is no longer active. Documented here for historical/self-hosted use.
+
+- **OpenClaw** — if you're running inside OpenClaw, you're already set. The executor will use OpenClaw's session infrastructure automatically.
+
+  ```bash
+  # Set your gateway token
+  export OPENCLAW_GATEWAY_TOKEN="your-token-here"
+
+  # For short pipelines (< 10 min):
+  orch run my-pipeline.yaml --mode openclaw
+
+  # For long pipelines (5+ phases), use nohup to prevent process timeout:
+  nohup orch run my-pipeline.yaml --mode openclaw > pipeline.log 2>&1 &
+  tail -f pipeline.log
+  ```
+
+  > **Tip:** Always check `pipeline.log` for the output directory path. Long-running
+  > pipelines may take 20-30 minutes for 5 phases.
