@@ -44,18 +44,14 @@ def ensure_branch_pushed(
         )
         # ls-remote prints a line per matching ref; empty output = not on remote
         if ls.returncode == 0 and branch_name in ls.stdout:
-            logger.debug(
-                "ensure_branch_pushed: %s already on remote", branch_name
-            )
+            logger.debug("ensure_branch_pushed: %s already on remote", branch_name)
             return True
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         logger.warning("ensure_branch_pushed: ls-remote failed: %s", exc)
         return False
 
     # Branch not on remote — push it.
-    logger.info(
-        "ensure_branch_pushed: pushing %s to origin", branch_name
-    )
+    logger.info("ensure_branch_pushed: pushing %s to origin", branch_name)
     try:
         push = subprocess.run(
             ["git", "push", "--set-upstream", "origin", branch_name],
@@ -65,9 +61,7 @@ def ensure_branch_pushed(
             cwd=repo_path,
         )
         if push.returncode == 0:
-            logger.info(
-                "ensure_branch_pushed: push succeeded for %s", branch_name
-            )
+            logger.info("ensure_branch_pushed: push succeeded for %s", branch_name)
             return True
         logger.warning(
             "ensure_branch_pushed: push failed (rc=%d): %s",
@@ -83,6 +77,7 @@ def ensure_branch_pushed(
 @dataclass
 class PostflightCheckItem:
     """Result of a single postflight check."""
+
     name: str
     passed: bool
     message: str
@@ -92,6 +87,7 @@ class PostflightCheckItem:
 @dataclass
 class PostflightResult:
     """Aggregated result of all postflight checks."""
+
     passed: bool = True
     checks: List[PostflightCheckItem] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -181,12 +177,12 @@ class PostflightChecker:
         # Check implement output for mentions of test files
         for path in [impl_path, impl_json_path]:
             if path.exists():
-                content = path.read_text(errors='replace')
+                content = path.read_text(errors="replace")
                 # Look for test file creation/modification
-                if re.search(r'test_\w+\.py|tests/|_test\.py|conftest\.py', content):
+                if re.search(r"test_\w+\.py|tests/|_test\.py|conftest\.py", content):
                     has_new_tests = True
                 # Look for code creation
-                if re.search(r'\.py\b', content) and not has_new_tests:
+                if re.search(r"\.py\b", content) and not has_new_tests:
                     has_new_code = True
 
         # Check test phase output for test counts
@@ -194,31 +190,37 @@ class PostflightChecker:
         if test_path.exists():
             try:
                 test_data = json.loads(test_path.read_text())
-                test_result_text = str(test_data.get('result', ''))
+                test_result_text = str(test_data.get("result", ""))
                 # Try to extract test count from output
-                match = re.search(r'(\d+)\s+passed', test_result_text)
+                match = re.search(r"(\d+)\s+passed", test_result_text)
                 if match:
                     test_count = int(match.group(1))
-                    result.add_check(PostflightCheckItem(
-                        name="test_count",
-                        passed=True,
-                        message=f"{test_count} tests passed",
-                    ))
+                    result.add_check(
+                        PostflightCheckItem(
+                            name="test_count",
+                            passed=True,
+                            message=f"{test_count} tests passed",
+                        )
+                    )
             except (json.JSONDecodeError, ValueError):
                 pass
 
         if has_new_code and not has_new_tests:
-            result.add_check(PostflightCheckItem(
-                name="test_regression",
-                passed=False,
-                message="New code detected but no new test files found. Consider adding tests.",
-            ))
+            result.add_check(
+                PostflightCheckItem(
+                    name="test_regression",
+                    passed=False,
+                    message="New code detected but no new test files found. Consider adding tests.",
+                )
+            )
         else:
-            result.add_check(PostflightCheckItem(
-                name="test_regression",
-                passed=True,
-                message="Test coverage looks reasonable",
-            ))
+            result.add_check(
+                PostflightCheckItem(
+                    name="test_regression",
+                    passed=True,
+                    message="Test coverage looks reasonable",
+                )
+            )
 
     def _check_phase_completeness(self, result: PostflightResult) -> None:
         """Verify all expected phases completed.
@@ -237,17 +239,21 @@ class PostflightChecker:
         missing = [p for p in expected_phases if p not in self.completed_phases]
 
         if missing:
-            result.add_check(PostflightCheckItem(
-                name="phase_completeness",
-                passed=False,
-                message=f"Missing phases: {', '.join(missing)}",
-            ))
+            result.add_check(
+                PostflightCheckItem(
+                    name="phase_completeness",
+                    passed=False,
+                    message=f"Missing phases: {', '.join(missing)}",
+                )
+            )
         else:
-            result.add_check(PostflightCheckItem(
-                name="phase_completeness",
-                passed=True,
-                message=f"All {len(expected_phases)} expected phases completed",
-            ))
+            result.add_check(
+                PostflightCheckItem(
+                    name="phase_completeness",
+                    passed=True,
+                    message=f"All {len(expected_phases)} expected phases completed",
+                )
+            )
 
     def _check_branch_pushed(self, result: PostflightResult) -> None:
         """Verify the feature branch exists on the remote; auto-push if missing.
@@ -259,35 +265,41 @@ class PostflightChecker:
 
         Issue #487.
         """
-        repo_path = self.input_data.get('repo_path', '')
-        branch_name = self.input_data.get('branch_name', '')
+        repo_path = self.input_data.get("repo_path", "")
+        branch_name = self.input_data.get("branch_name", "")
 
         if not repo_path or not branch_name:
-            result.add_check(PostflightCheckItem(
-                name="branch_pushed",
-                passed=False,
-                message="Cannot verify remote branch: repo_path or branch_name missing from input",
-            ))
+            result.add_check(
+                PostflightCheckItem(
+                    name="branch_pushed",
+                    passed=False,
+                    message="Cannot verify remote branch: repo_path or branch_name missing from input",
+                )
+            )
             return
 
         pushed = ensure_branch_pushed(repo_path, branch_name)
         if pushed:
-            result.add_check(PostflightCheckItem(
-                name="branch_pushed",
-                passed=True,
-                message=f"Branch '{branch_name}' is on the remote",
-            ))
+            result.add_check(
+                PostflightCheckItem(
+                    name="branch_pushed",
+                    passed=True,
+                    message=f"Branch '{branch_name}' is on the remote",
+                )
+            )
         else:
-            result.add_check(PostflightCheckItem(
-                name="branch_pushed",
-                passed=False,
-                message=f"Branch '{branch_name}' could not be pushed to remote — PR creation may fail",
-            ))
+            result.add_check(
+                PostflightCheckItem(
+                    name="branch_pushed",
+                    passed=False,
+                    message=f"Branch '{branch_name}' could not be pushed to remote — PR creation may fail",
+                )
+            )
 
     def _build_github_comment(self, result: PostflightResult) -> None:
         """Build and optionally post a GitHub comment on the issue."""
-        issue_number = self.input_data.get('issue_number', '')
-        repo_url = self.input_data.get('repo_url', '')
+        issue_number = self.input_data.get("issue_number", "")
+        repo_url = self.input_data.get("repo_url", "")
 
         if not issue_number or not repo_url:
             return
@@ -319,29 +331,45 @@ class PostflightChecker:
 
         # Post to GitHub
         try:
-            parts = repo_url.rstrip('/').split('/')
+            parts = repo_url.rstrip("/").split("/")
             owner_repo = f"{parts[-2]}/{parts[-1]}"
             post = subprocess.run(
-                ['gh', 'issue', 'comment', str(issue_number),
-                 '--repo', owner_repo, '--body', comment],
-                capture_output=True, text=True, timeout=15,
+                [
+                    "gh",
+                    "issue",
+                    "comment",
+                    str(issue_number),
+                    "--repo",
+                    owner_repo,
+                    "--body",
+                    comment,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
             )
             if post.returncode == 0:
-                result.add_check(PostflightCheckItem(
-                    name="github_comment",
-                    passed=True,
-                    message=f"Posted run summary to issue #{issue_number}",
-                ))
+                result.add_check(
+                    PostflightCheckItem(
+                        name="github_comment",
+                        passed=True,
+                        message=f"Posted run summary to issue #{issue_number}",
+                    )
+                )
                 logger.info("Postflight: posted comment to issue #%s", issue_number)
             else:
-                result.add_check(PostflightCheckItem(
+                result.add_check(
+                    PostflightCheckItem(
+                        name="github_comment",
+                        passed=False,
+                        message=f"Failed to post comment: {post.stderr[:200]}",
+                    )
+                )
+        except Exception as exc:
+            result.add_check(
+                PostflightCheckItem(
                     name="github_comment",
                     passed=False,
-                    message=f"Failed to post comment: {post.stderr[:200]}",
-                ))
-        except Exception as exc:
-            result.add_check(PostflightCheckItem(
-                name="github_comment",
-                passed=False,
-                message=f"GitHub comment failed: {exc}",
-            ))
+                    message=f"GitHub comment failed: {exc}",
+                )
+            )

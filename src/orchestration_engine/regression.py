@@ -82,9 +82,7 @@ class Regression:
     fix_run_id: Optional[str] = field(default=None)
     status: RegressionStatus = field(default=RegressionStatus.DETECTED)
     fix_attempt_count: int = field(default=0)
-    created_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise to a plain dict suitable for DB insertion.
@@ -103,7 +101,9 @@ class Regression:
             "affected_files": json.dumps(self.affected_files),
             "diagnosis": self.diagnosis,
             "fix_run_id": self.fix_run_id,
-            "status": self.status.value if isinstance(self.status, RegressionStatus) else self.status,
+            "status": (
+                self.status.value if isinstance(self.status, RegressionStatus) else self.status
+            ),
             "fix_attempt_count": self.fix_attempt_count,
             "created_at": self.created_at.isoformat(),
         }
@@ -182,9 +182,7 @@ class RegressionDetector:
             )
             return None
 
-        best_sha, best_files, best_score = self._find_best_commit(
-            shas, ci_error_log, repo_path
-        )
+        best_sha, best_files, best_score = self._find_best_commit(shas, ci_error_log, repo_path)
 
         regression = Regression(
             commit_sha=best_sha,
@@ -374,10 +372,7 @@ class RegressionWebhookHandler:
         try:
             check_suite = event_payload.get("check_suite", {})
             conclusion = check_suite.get("conclusion")
-            head_sha = (
-                check_suite.get("head_sha")
-                or check_suite.get("head_commit", {}).get("id")
-            )
+            head_sha = check_suite.get("head_sha") or check_suite.get("head_commit", {}).get("id")
             ci_run_url = check_suite.get("url", "")
 
             if conclusion == "success":
@@ -437,6 +432,7 @@ class RegressionWebhookHandler:
             # and logged — a trust update error never blocks regression handling.
             try:
                 from .trust import TrustCalibrator  # noqa: PLC0415
+
                 _calibrator = TrustCalibrator(
                     repo=self._repo_slug,
                     template_id=self._template_id,
@@ -738,9 +734,14 @@ class RegressionWebhookHandler:
             otherwise.
         """
         cmd = [
-            "gh", "pr", "comment", str(pr_number),
-            "--repo", self._repo_slug,
-            "--body", body,
+            "gh",
+            "pr",
+            "comment",
+            str(pr_number),
+            "--repo",
+            self._repo_slug,
+            "--body",
+            body,
         ]
         try:
             result = subprocess.run(
@@ -794,11 +795,17 @@ class RegressionWebhookHandler:
         )
         title = f"[regression] CI failure — culprit commit {regression.commit_sha[:8]}"
         cmd = [
-            "gh", "issue", "create",
-            "--repo", self._repo_slug,
-            "--title", title,
-            "--body", body,
-            "--label", "regression-auto",
+            "gh",
+            "issue",
+            "create",
+            "--repo",
+            self._repo_slug,
+            "--title",
+            title,
+            "--body",
+            body,
+            "--label",
+            "regression-auto",
         ]
         try:
             result = subprocess.run(
@@ -905,8 +912,7 @@ class RegressionFixer:
             return None
 
         logger.info(
-            "RegressionFixer: spawned fix run %s for regression %s "
-            "(attempt #%d)",
+            "RegressionFixer: spawned fix run %s for regression %s " "(attempt #%d)",
             run_id,
             regression.id,
             regression.fix_attempt_count + 1,
@@ -930,13 +936,8 @@ class RegressionFixer:
             Dict suitable for JSON-serialisation and passing to ``orch launch``
             via ``--input-file``.
         """
-        branch = (
-            f"fix/regression-{regression.commit_sha[:8]}-{regression.id[:8]}"
-        )
-        affected = (
-            "\n".join(f"- {f}" for f in regression.affected_files)
-            or "_unknown_"
-        )
+        branch = f"fix/regression-{regression.commit_sha[:8]}-{regression.id[:8]}"
+        affected = "\n".join(f"- {f}" for f in regression.affected_files) or "_unknown_"
         task_description = (
             f"Fix a regression introduced by commit `{regression.commit_sha}`.\n\n"
             f"**Failure type:** {regression.failure_type}\n"
@@ -1030,9 +1031,7 @@ class RegressionFixer:
 
         return self._parse_run_id(result.stdout)
 
-    def handle_fix_completion(
-        self, regression_id: str, fix_run: dict, db: Any
-    ) -> str:
+    def handle_fix_completion(self, regression_id: str, fix_run: dict, db: Any) -> str:
         """Evaluate a completed fix run and auto-merge or flag for review.
 
         Reads ``scoring_score`` and ``scoring_status`` from *fix_run*.  If
@@ -1055,9 +1054,7 @@ class RegressionFixer:
         scoring_status = fix_run.get("scoring_status")
 
         gate_passed = (
-            score is not None
-            and score >= self.CONFIDENCE_THRESHOLD
-            and scoring_status == "passed"
+            score is not None and score >= self.CONFIDENCE_THRESHOLD and scoring_status == "passed"
         )
 
         logger.info(
@@ -1092,9 +1089,7 @@ class RegressionFixer:
                 return RegressionStatus.NEEDS_REVIEW.value
 
             commit_sha = regression_record.get("commit_sha", "")
-            branch = (
-                f"fix/regression-{commit_sha[:8]}-{regression_id[:8]}"
-            )
+            branch = f"fix/regression-{commit_sha[:8]}-{regression_id[:8]}"
             logger.info(
                 "RegressionFixer.handle_fix_completion: attempting PR merge "
                 "for branch %r (regression %s)",
@@ -1111,9 +1106,7 @@ class RegressionFixer:
                 gate_passed = False
 
         new_status = (
-            RegressionStatus.FIXED.value
-            if gate_passed
-            else RegressionStatus.NEEDS_REVIEW.value
+            RegressionStatus.FIXED.value if gate_passed else RegressionStatus.NEEDS_REVIEW.value
         )
         logger.info(
             "RegressionFixer.handle_fix_completion: updating regression %s → %s",
@@ -1180,9 +1173,13 @@ class RegressionFixer:
             ``True`` if the merge command succeeded (rc=0), ``False`` otherwise.
         """
         cmd = [
-            "gh", "pr", "merge", branch,
+            "gh",
+            "pr",
+            "merge",
+            branch,
             "--squash",
-            "--repo", self._repo_slug,
+            "--repo",
+            self._repo_slug,
             "--yes",
         ]
         try:
@@ -1200,14 +1197,10 @@ class RegressionFixer:
                     result.stderr.strip(),
                 )
                 return False
-            logger.info(
-                "RegressionFixer: PR merged for branch %r", branch
-            )
+            logger.info("RegressionFixer: PR merged for branch %r", branch)
             return True
         except subprocess.TimeoutExpired:
-            logger.warning(
-                "RegressionFixer: gh pr merge timed out for branch %r", branch
-            )
+            logger.warning("RegressionFixer: gh pr merge timed out for branch %r", branch)
             return False
         except (FileNotFoundError, OSError) as exc:
             logger.warning(
@@ -1241,19 +1234,42 @@ class SafetyGuard:
     """
 
     MAX_FIX_ATTEMPTS: int = 3
-    EXCLUDED_FAILURE_TYPES: frozenset = frozenset({
-        "dependency_failure", "infra_failure", "infrastructure_failure",
-        "network_timeout", "oom_kill", "out_of_memory",
-        "secret_missing", "env_misconfiguration", "third_party_outage",
-    })
-    FLAKY_KEYWORDS: frozenset = frozenset({
-        "flaky", "flake", "intermittent", "transient", "race condition",
-        "timing", "non-deterministic", "nondeterministic", "randomly fails",
-    })
+    EXCLUDED_FAILURE_TYPES: frozenset = frozenset(
+        {
+            "dependency_failure",
+            "infra_failure",
+            "infrastructure_failure",
+            "network_timeout",
+            "oom_kill",
+            "out_of_memory",
+            "secret_missing",
+            "env_misconfiguration",
+            "third_party_outage",
+        }
+    )
+    FLAKY_KEYWORDS: frozenset = frozenset(
+        {
+            "flaky",
+            "flake",
+            "intermittent",
+            "transient",
+            "race condition",
+            "timing",
+            "non-deterministic",
+            "nondeterministic",
+            "randomly fails",
+        }
+    )
 
-    def __init__(self, max_attempts=MAX_FIX_ATTEMPTS, excluded_failure_types=None, flaky_keywords=None):
+    def __init__(
+        self, max_attempts=MAX_FIX_ATTEMPTS, excluded_failure_types=None, flaky_keywords=None
+    ):
         self._max_attempts = max_attempts
-        self._excluded_types = excluded_failure_types if excluded_failure_types is not None else self.EXCLUDED_FAILURE_TYPES
+        self._excluded_types = (
+            excluded_failure_types
+            if excluded_failure_types is not None
+            else self.EXCLUDED_FAILURE_TYPES
+        )
         self._flaky_keywords = flaky_keywords if flaky_keywords is not None else self.FLAKY_KEYWORDS
 
     def should_attempt_fix(self, regression, db) -> Tuple[bool, str]:
@@ -1294,7 +1310,9 @@ class SafetyGuard:
         Returns:
             ``(True, reason_str)`` if flaky evidence found, else ``(False, "")``.
         """
-        haystack = " ".join(filter(None, [regression.failure_type or "", regression.diagnosis or ""])).lower()
+        haystack = " ".join(
+            filter(None, [regression.failure_type or "", regression.diagnosis or ""])
+        ).lower()
         for kw in self._flaky_keywords:
             if kw.lower() in haystack:
                 return (True, f"flaky test detected (keyword: '{kw}')")
@@ -1303,10 +1321,12 @@ class SafetyGuard:
             try:
                 past = db.list_regressions(limit=50)
                 for rec in past:
-                    if (rec.get("commit_sha") == regression.commit_sha
-                            and rec.get("id") != regression.id
-                            and rec.get("status") == RegressionStatus.FIXED.value
-                            and not rec.get("fix_run_id")):
+                    if (
+                        rec.get("commit_sha") == regression.commit_sha
+                        and rec.get("id") != regression.id
+                        and rec.get("status") == RegressionStatus.FIXED.value
+                        and not rec.get("fix_run_id")
+                    ):
                         return (True, "flaky test detected (commit self-healed previously)")
             except Exception:
                 logger.warning("SafetyGuard._is_flaky: DB query failed", exc_info=True)

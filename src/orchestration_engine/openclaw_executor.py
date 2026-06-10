@@ -211,9 +211,7 @@ class OpenClawExecutor(BaseExecutor):
         self.gateway_token = (
             gateway_token
             if gateway_token is not None
-            else os.environ.get("OPENCLAW_GATEWAY_TOKEN")
-            or self._read_token_from_config()
-            or ""
+            else os.environ.get("OPENCLAW_GATEWAY_TOKEN") or self._read_token_from_config() or ""
         )
         # Timeout resolution chain (#753): explicit positive arg → openclaw.json
         # subagents.runTimeoutSeconds → DEFAULT_TIMEOUT_SECONDS (1200s).
@@ -297,7 +295,8 @@ class OpenClawExecutor(BaseExecutor):
                     return None
                 logger.debug(
                     "Auto-discovered subagent run timeout from %s: %ds",
-                    config_path, value,
+                    config_path,
+                    value,
                 )
                 return value
         except (json.JSONDecodeError, OSError, KeyError) as exc:
@@ -339,11 +338,13 @@ class OpenClawExecutor(BaseExecutor):
             grace_seconds = int(os.environ.get("GC_OUTPUT_GRACE_SECONDS", "60"))
             result = subprocess.run(
                 [
-                    "git", "log",
+                    "git",
+                    "log",
                     f"--since={grace_seconds} seconds ago",
                     "--name-only",
                     "--pretty=format:",
-                    "-n", "1",
+                    "-n",
+                    "1",
                 ],
                 cwd=str(output_dir_path),
                 capture_output=True,
@@ -353,14 +354,18 @@ class OpenClawExecutor(BaseExecutor):
             if result.returncode != 0:
                 logger.debug(
                     "git log probe failed for session %s in %s: rc=%d, stderr=%s",
-                    session_key, output_dir, result.returncode, result.stderr,
+                    session_key,
+                    output_dir,
+                    result.returncode,
+                    result.stderr,
                 )
                 return None
             if not result.stdout.strip():
                 logger.debug(
-                    "No recent commit (within %ds) in %s for session %s; "
-                    "GC fallback declines.",
-                    grace_seconds, output_dir, session_key,
+                    "No recent commit (within %ds) in %s for session %s; " "GC fallback declines.",
+                    grace_seconds,
+                    output_dir,
+                    session_key,
                 )
                 return None
 
@@ -368,13 +373,17 @@ class OpenClawExecutor(BaseExecutor):
             logger.warning(
                 "Session %s garbage-collected by gateway but %s/%s was committed "
                 "within the last %ds — recovering via git-output fallback (#735 RC-2)",
-                session_key, output_dir, output_artifact, grace_seconds,
+                session_key,
+                output_dir,
+                output_artifact,
+                grace_seconds,
             )
             return (output_text, 0)
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             logger.debug(
                 "git-output fallback failed for session %s: %s",
-                session_key, exc,
+                session_key,
+                exc,
             )
             return None
 
@@ -481,11 +490,15 @@ class OpenClawExecutor(BaseExecutor):
             return self._execute_acceptance_run_task(task, start_time, task_id)
 
         # ── 1. Resolve model / thinking ──────────────────────────────────────
-        tier_key = model_tier or (
-            task.preferred_model.value
-            if hasattr(task.preferred_model, "value")
-            else task.preferred_model
-        ) or "sonnet"
+        tier_key = (
+            model_tier
+            or (
+                task.preferred_model.value
+                if hasattr(task.preferred_model, "value")
+                else task.preferred_model
+            )
+            or "sonnet"
+        )
         model = MODEL_MAP.get(tier_key, MODEL_MAP["sonnet"])
 
         thinking_key = (thinking_level or "off").lower()
@@ -599,7 +612,10 @@ class OpenClawExecutor(BaseExecutor):
                     logger.warning(
                         "Task %s: circuit breaker open for model '%s' (tier '%s') — "
                         "skipping and escalating to tier '%s'",
-                        task_id, MODEL_MAP.get(prev, prev), prev, nxt,
+                        task_id,
+                        MODEL_MAP.get(prev, prev),
+                        prev,
+                        nxt,
                     )
                     continue
                 else:
@@ -639,12 +655,9 @@ class OpenClawExecutor(BaseExecutor):
                         )
                         if orphan_key:
                             try:
-                                self._invoke_tool(
-                                    "sessions_stop", {"sessionKey": orphan_key}
-                                )
+                                self._invoke_tool("sessions_stop", {"sessionKey": orphan_key})
                                 logger.info(
-                                    "Best-effort sessions_stop succeeded for "
-                                    "orphan session %s",
+                                    "Best-effort sessions_stop succeeded for " "orphan session %s",
                                     orphan_key,
                                 )
                             except Exception as stop_exc:
@@ -663,7 +676,7 @@ class OpenClawExecutor(BaseExecutor):
                     # where retry_index = attempt - 1 (0-based retry counter).
                     retry_index = attempt - 1
                     wait_seconds = min(
-                        retry_cfg.backoff_base * (retry_cfg.backoff_multiplier ** retry_index),
+                        retry_cfg.backoff_base * (retry_cfg.backoff_multiplier**retry_index),
                         retry_cfg.backoff_max,
                     )
                     logger.info(
@@ -688,7 +701,7 @@ class OpenClawExecutor(BaseExecutor):
                 # API conditions. Polling keeps its own fixed default timeout.
                 socket_timeout = min(
                     retry_cfg.socket_timeout_initial
-                    * (retry_cfg.socket_timeout_multiplier ** attempt),
+                    * (retry_cfg.socket_timeout_multiplier**attempt),
                     retry_cfg.socket_timeout_max,
                 )
 
@@ -699,7 +712,10 @@ class OpenClawExecutor(BaseExecutor):
                     # recovers via _check_git_committed_output rather than
                     # raising RuntimeError.
                     output_text, tokens_consumed = self._run_session(
-                        prompt, model, thinking, timeout=effective_timeout,
+                        prompt,
+                        model,
+                        thinking,
+                        timeout=effective_timeout,
                         output_dir=task.payload.get("output_dir"),
                         output_artifact=task.payload.get("output_artifact"),
                         socket_timeout=socket_timeout,
@@ -742,7 +758,9 @@ class OpenClawExecutor(BaseExecutor):
                             "Spawn transport timeout for task %s (attempt %d) — "
                             "not counting against the circuit breaker; will retry "
                             "with a longer socket timeout: %s",
-                            task_id, attempt + 1, exc,
+                            task_id,
+                            attempt + 1,
+                            exc,
                         )
                     elif isinstance(exc, SpawnNoPromptDelivered):
                         last_error_code = "spawn_no_prompt_delivered"
@@ -754,39 +772,50 @@ class OpenClawExecutor(BaseExecutor):
                             "first message within the startup grace period — not "
                             "counting against the circuit breaker; will not retry "
                             "or escalate the model: %s",
-                            task_id, attempt + 1, exc,
+                            task_id,
+                            attempt + 1,
+                            exc,
                         )
                     elif isinstance(exc, TimeoutError):
                         last_error_code = "timeout"
                         last_error_msg = str(exc)
                         logger.error(
                             "OpenClaw session timed out for task %s (attempt %d): %s",
-                            task_id, attempt + 1, exc,
+                            task_id,
+                            attempt + 1,
+                            exc,
                         )
                     elif isinstance(exc, RateLimitError):
                         last_error_code = "rate_limited"
                         last_error_msg = str(exc)
                         retry_hint = (
                             f" retry after {exc.retry_after}s"
-                            if exc.retry_after is not None else " (no retry-after header)"
+                            if exc.retry_after is not None
+                            else " (no retry-after header)"
                         )
                         logger.warning(
                             "Rate limited (429) —%s for task %s (attempt %d)",
-                            retry_hint, task_id, attempt + 1,
+                            retry_hint,
+                            task_id,
+                            attempt + 1,
                         )
                     else:
                         last_error_code = "execution_error"
                         last_error_msg = str(exc)
                         logger.error(
                             "OpenClaw execution failed for task %s (attempt %d): %s",
-                            task_id, attempt + 1, exc,
+                            task_id,
+                            attempt + 1,
+                            exc,
                         )
 
                     # Permanent errors should not be retried or escalated.
                     if error_type == ErrorType.PERMANENT:
                         logger.info(
                             "Task %s: not retrying after PERMANENT error (%s): %s",
-                            task_id, type(exc).__name__, exc,
+                            task_id,
+                            type(exc).__name__,
+                            exc,
                         )
                         permanent_failure = True
                         break
@@ -805,7 +834,8 @@ class OpenClawExecutor(BaseExecutor):
                         logger.warning(
                             "Circuit breaker opened for model %s after task %s failure — "
                             "aborting retry loop",
-                            model, task_id,
+                            model,
+                            task_id,
                         )
                         break
 
@@ -841,7 +871,11 @@ class OpenClawExecutor(BaseExecutor):
                 logger.warning(
                     "Task %s: all retries exhausted on model '%s' (tier '%s') — "
                     "escalating to tier '%s' (model '%s')",
-                    task_id, model, prev_tier, next_tier, new_model,
+                    task_id,
+                    model,
+                    prev_tier,
+                    next_tier,
+                    new_model,
                 )
                 model = new_model
 
@@ -855,7 +889,9 @@ class OpenClawExecutor(BaseExecutor):
                     logger.warning(
                         "Circuit breaker open for escalated model %s — "
                         "skipping tier '%s' for task %s",
-                        model, next_tier, task_id,
+                        model,
+                        next_tier,
+                        task_id,
                     )
                     # Treat the CB-blocked tier as exhausted and try the next one.
                     continue
@@ -972,7 +1008,9 @@ class OpenClawExecutor(BaseExecutor):
         # ── Validation ────────────────────────────────────────────────
         if not raw_command.strip():
             return self._command_error(
-                task_id, task, start_time,
+                task_id,
+                task,
+                start_time,
                 "command_missing",
                 "No 'command' specified in task payload",
             )
@@ -981,14 +1019,18 @@ class OpenClawExecutor(BaseExecutor):
             cmd_parts = shlex.split(raw_command)
         except ValueError as exc:
             return self._command_error(
-                task_id, task, start_time,
+                task_id,
+                task,
+                start_time,
                 "command_parse_error",
                 f"shlex.split failed: {exc}",
             )
 
         if not cmd_parts:
             return self._command_error(
-                task_id, task, start_time,
+                task_id,
+                task,
+                start_time,
                 "command_empty",
                 "Command is empty after parsing",
             )
@@ -999,14 +1041,18 @@ class OpenClawExecutor(BaseExecutor):
         if allowed_commands:
             if executable not in allowed_commands:
                 return self._command_error(
-                    task_id, task, start_time,
+                    task_id,
+                    task,
+                    start_time,
                     "command_not_allowed",
                     f"Command '{executable}' is not in allowed_commands: {allowed_commands}",
                 )
 
         logger.info(
             "OpenClawExecutor: COMMAND task=%s, executable=%s, cwd=%s",
-            task_id, executable, working_dir or "<inherit>",
+            task_id,
+            executable,
+            working_dir or "<inherit>",
         )
 
         # ── Dry-run shortcut ──────────────────────────────────────────
@@ -1042,19 +1088,25 @@ class OpenClawExecutor(BaseExecutor):
             )
         except subprocess.TimeoutExpired:
             return self._command_error(
-                task_id, task, start_time,
+                task_id,
+                task,
+                start_time,
                 "timeout",
                 f"Command timed out after {timeout_sec}s",
             )
         except FileNotFoundError:
             return self._command_error(
-                task_id, task, start_time,
+                task_id,
+                task,
+                start_time,
                 "executable_not_found",
                 f"Executable not found: {executable}",
             )
         except Exception as exc:
             return self._command_error(
-                task_id, task, start_time,
+                task_id,
+                task,
+                start_time,
                 "execution_error",
                 str(exc),
             )
@@ -1149,7 +1201,9 @@ class OpenClawExecutor(BaseExecutor):
 
         if not output_dir:
             return self._acceptance_run_error(
-                task_id, task, start_time,
+                task_id,
+                task,
+                start_time,
                 "missing_output_dir",
                 "No 'output_dir' in task payload for acceptance_run phase",
             )
@@ -1158,7 +1212,9 @@ class OpenClawExecutor(BaseExecutor):
 
         if not os.path.exists(test_file):
             return self._acceptance_run_error(
-                task_id, task, start_time,
+                task_id,
+                task,
+                start_time,
                 "test_file_not_found",
                 f"acceptance_tests.py not found at: {test_file}",
             )
@@ -1166,7 +1222,10 @@ class OpenClawExecutor(BaseExecutor):
         # ── Dry-run shortcut ──────────────────────────────────────────
         if self.dry_run:
             mock_result = test_runner.TestRunResult(
-                passed=3, failed=0, errors=0, total=3,
+                passed=3,
+                failed=0,
+                errors=0,
+                total=3,
                 pass_rate=1.0,
                 failure_details="",
                 full_output="[dry-run]",
@@ -1198,7 +1257,7 @@ class OpenClawExecutor(BaseExecutor):
         test_runner.write_acceptance_results(result, output_dir)
 
         elapsed = (now_utc() - start_time).total_seconds()
-        all_passed = (result.failed == 0 and result.errors == 0 and result.total > 0)
+        all_passed = result.failed == 0 and result.errors == 0 and result.total > 0
         state = TaskState.SUCCESS if all_passed else TaskState.FAILED
 
         summary = test_runner.format_failure_summary(result)
@@ -1206,8 +1265,12 @@ class OpenClawExecutor(BaseExecutor):
         logger.info(
             "OpenClawExecutor: ACCEPTANCE_RUN task=%s state=%s "
             "passed=%d failed=%d errors=%d total=%d",
-            task_id, state.value,
-            result.passed, result.failed, result.errors, result.total,
+            task_id,
+            state.value,
+            result.passed,
+            result.failed,
+            result.errors,
+            result.total,
         )
 
         return TaskResult(
@@ -1424,9 +1487,7 @@ class OpenClawExecutor(BaseExecutor):
                             "session_key": session_key,
                             "stall_seconds": round(stall_seconds, 1),
                             "last_tokens": last_tokens,
-                            "message": (
-                                f"No token progress for {stall_seconds:.0f}s"
-                            ),
+                            "message": (f"No token progress for {stall_seconds:.0f}s"),
                         },
                     )
                     break
@@ -1649,9 +1710,7 @@ class OpenClawExecutor(BaseExecutor):
                     "(session may still be running on gateway)",
                     session_key,
                 )
-                raise RuntimeError(
-                    f"Session {session_key} polling interrupted by shutdown request"
-                )
+                raise RuntimeError(f"Session {session_key} polling interrupted by shutdown request")
 
             # ── Deadline check (AC-3, AC-5) ──────────────────────────────
             # Evaluated on every iteration, including after successful but
@@ -1678,10 +1737,13 @@ class OpenClawExecutor(BaseExecutor):
             time.sleep(POLL_INTERVAL_SECONDS)
 
             try:
-                hist_result = self._invoke_tool("sessions_history", {
-                    "sessionKey": session_key,
-                    "limit": SESSIONS_HISTORY_LIMIT,
-                })
+                hist_result = self._invoke_tool(
+                    "sessions_history",
+                    {
+                        "sessionKey": session_key,
+                        "limit": SESSIONS_HISTORY_LIMIT,
+                    },
+                )
             except (RuntimeError, GatewayHTTPError, TimeoutError) as exc:
                 # Session may not be ready yet; includes transient HTTP errors.
                 # TimeoutError covers SpawnTransportTimeout (#732): now that
@@ -1780,10 +1842,9 @@ class OpenClawExecutor(BaseExecutor):
             for _msg in reversed(messages):
                 if _msg.get("role") == "assistant":
                     _usage = _msg.get("usage", {})
-                    _current_tokens = (
-                        _usage.get("totalTokens", 0)
-                        or _usage.get("input", 0) + _usage.get("output", 0)
-                    )
+                    _current_tokens = _usage.get("totalTokens", 0) or _usage.get(
+                        "input", 0
+                    ) + _usage.get("output", 0)
                     break
 
             if _current_tokens > _last_token_count:
@@ -1793,7 +1854,8 @@ class OpenClawExecutor(BaseExecutor):
                 if _stall_warned:
                     logger.info(
                         "Session %s: token progress resumed (now %d tokens)",
-                        session_key, _current_tokens,
+                        session_key,
+                        _current_tokens,
                     )
                     _stall_warned = False
             else:
@@ -1802,13 +1864,13 @@ class OpenClawExecutor(BaseExecutor):
                 if stall_seconds >= _STALL_THRESHOLD_SECONDS and not _stall_warned:
                     logger.warning(
                         "Session %s: no token progress for %.0fs (last tokens: %d)",
-                        session_key, stall_seconds, _last_token_count,
+                        session_key,
+                        stall_seconds,
+                        _last_token_count,
                     )
                     _stall_warned = True
                     # Emit stall event for SSE consumers (#413)
-                    self._emit_stall_event(
-                        session_key, stall_seconds, _last_token_count
-                    )
+                    self._emit_stall_event(session_key, stall_seconds, _last_token_count)
 
             # Find the last assistant message
             last_assistant = None
@@ -1916,14 +1978,18 @@ class OpenClawExecutor(BaseExecutor):
             # usage, so we query sessions_list for the session's totalTokens
             total_tokens = 0
             try:
-                list_result = self._invoke_tool("sessions_list", {
-                    "activeMinutes": 60,
-                })
+                list_result = self._invoke_tool(
+                    "sessions_list",
+                    {
+                        "activeMinutes": 60,
+                    },
+                )
                 list_text = self._parse_tool_text(list_result)
                 if list_text:
                     sessions_data = json.loads(list_text)
                     sessions = (
-                        sessions_data if isinstance(sessions_data, list)
+                        sessions_data
+                        if isinstance(sessions_data, list)
                         else sessions_data.get("sessions", [])
                     )
                     for s in sessions:
@@ -1951,8 +2017,7 @@ class OpenClawExecutor(BaseExecutor):
                     total_tokens,
                 )
             logger.info(
-                "Session %s completed: %d chars captured, %d tokens consumed"
-                "%s",
+                "Session %s completed: %d chars captured, %d tokens consumed" "%s",
                 session_key,
                 len(output),
                 total_tokens,

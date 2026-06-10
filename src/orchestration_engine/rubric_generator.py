@@ -3,6 +3,7 @@
 Public API:  parse_skill · generate_rubric_text · generate_yaml · generate_rubric_file
 Constraints: stdlib + yaml + re only.
 """
+
 from __future__ import annotations
 
 import re
@@ -18,28 +19,30 @@ from .timestamps import now_utc
 # ---------------------------------------------------------------------------
 # Pre-compiled patterns
 # ---------------------------------------------------------------------------
-_FM_RE          = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
-_FM_KV_RE       = re.compile(r"^([\w][\w-]*):\s*(.+)$", re.MULTILINE)
-_CODE_RE        = re.compile(r"```.*?```", re.DOTALL)
-_CHECKLIST_RE   = re.compile(r"^\s*-\s+\[[ xX]\]\s+(.+)$")
-_BOLD_RE        = re.compile(r"^\*\*(.+?)\*\*:\s*")
-_HEADING_RE     = re.compile(r"^(#{1,6})\s+(.+)$")
-_BULLET_RE      = re.compile(r"^\s*-\s+(?!\[[ xX\s]\])(.+)$")
-_DO_RE          = re.compile(r"\b(DO|ALWAYS|BEST PRACTICE)\b", re.IGNORECASE)
-_DONT_RE        = re.compile(r"\b(DON'?T|AVOID|NOT|NEVER)\b", re.IGNORECASE)
-_SEP_RE         = re.compile(r"^:?-+:?$")
-_WE_ARE_RE      = re.compile(r"^\s*-\s+\*\*We are\*\*:\s*(.+)$", re.IGNORECASE)
-_WE_ARE_NOT_RE  = re.compile(r"^\s*-\s+\*\*We are not\*\*:\s*(.+)$", re.IGNORECASE)
-_ATTR_HDG_RE    = re.compile(r"^\*\*[^*]+\*\*\s*$")  # **Name** on its own line
+_FM_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
+_FM_KV_RE = re.compile(r"^([\w][\w-]*):\s*(.+)$", re.MULTILINE)
+_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
+_CHECKLIST_RE = re.compile(r"^\s*-\s+\[[ xX]\]\s+(.+)$")
+_BOLD_RE = re.compile(r"^\*\*(.+?)\*\*:\s*")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$")
+_BULLET_RE = re.compile(r"^\s*-\s+(?!\[[ xX\s]\])(.+)$")
+_DO_RE = re.compile(r"\b(DO|ALWAYS|BEST PRACTICE)\b", re.IGNORECASE)
+_DONT_RE = re.compile(r"\b(DON'?T|AVOID|NOT|NEVER)\b", re.IGNORECASE)
+_SEP_RE = re.compile(r"^:?-+:?$")
+_WE_ARE_RE = re.compile(r"^\s*-\s+\*\*We are\*\*:\s*(.+)$", re.IGNORECASE)
+_WE_ARE_NOT_RE = re.compile(r"^\s*-\s+\*\*We are not\*\*:\s*(.+)$", re.IGNORECASE)
+_ATTR_HDG_RE = re.compile(r"^\*\*[^*]+\*\*\s*$")  # **Name** on its own line
 
 
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class CriteriaTable:
     """A parsed markdown criteria table (non-terminology)."""
+
     name: str
     columns: List[str]
     rows: List[List[str]]
@@ -48,21 +51,23 @@ class CriteriaTable:
 @dataclass
 class SkillData:
     """All structured data extracted from a SKILL.md file."""
+
     skill_name: str
     description: str
     source_file: str
     # AC-5: checklist items with section tagging
-    checklist_items: List[Dict[str, str]]   = field(default_factory=list)
+    checklist_items: List[Dict[str, str]] = field(default_factory=list)
     # AC-6/AC-7: DO/DON'T pairs from terminology tables and attribute blocks
-    do_dont_pairs: List[Dict[str, str]]     = field(default_factory=list)
+    do_dont_pairs: List[Dict[str, str]] = field(default_factory=list)
     # AC-8: regular (non-terminology) criteria tables
-    criteria_tables: List[CriteriaTable]    = field(default_factory=list)
-    warnings: List[str]                     = field(default_factory=list)
+    criteria_tables: List[CriteriaTable] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
 # Low-level text helpers
 # ---------------------------------------------------------------------------
+
 
 def _parse_frontmatter(text: str) -> Tuple[Dict[str, str], str]:
     """Return (fields, body).  Safe on malformed or absent frontmatter."""
@@ -70,7 +75,7 @@ def _parse_frontmatter(text: str) -> Tuple[Dict[str, str], str]:
     if not m:
         return {}, text
     fields = {km.group(1): km.group(2).strip() for km in _FM_KV_RE.finditer(m.group(1))}
-    return fields, text[m.end():]
+    return fields, text[m.end() :]
 
 
 def _strip_code_blocks(text: str) -> str:
@@ -83,7 +88,7 @@ def _clean_bold(raw: str) -> str:
     m = _BOLD_RE.match(raw)
     if not m:
         return raw
-    rest = raw[m.end():].strip()
+    rest = raw[m.end() :].strip()
     return f"{m.group(1)}: {rest}" if rest else raw
 
 
@@ -115,6 +120,7 @@ def _is_sep(cells: List[str]) -> bool:
 # Extraction functions (public so tests can import them)
 # ---------------------------------------------------------------------------
 
+
 def _extract_checklist_items(text: str) -> List[Dict[str, str]]:
     """Return all ``- [ ]`` / ``- [x]`` items as ``{"text", "section"}`` dicts.
 
@@ -132,10 +138,12 @@ def _extract_checklist_items(text: str) -> List[Dict[str, str]]:
             continue
         m = _CHECKLIST_RE.match(line)
         if m:
-            items.append({
-                "text": _clean_bold(m.group(1).strip()),
-                "section": current_section,
-            })
+            items.append(
+                {
+                    "text": _clean_bold(m.group(1).strip()),
+                    "section": current_section,
+                }
+            )
     return items
 
 
@@ -183,11 +191,13 @@ def _extract_we_are_blocks(text: str) -> List[Dict[str, str]]:
 
         m_dont = _WE_ARE_NOT_RE.match(line)
         if m_dont and pending_we_are is not None:
-            pairs.append({
-                "do":     pending_we_are,
-                "dont":   m_dont.group(1).strip(),
-                "source": "attribute_block",
-            })
+            pairs.append(
+                {
+                    "do": pending_we_are,
+                    "dont": m_dont.group(1).strip(),
+                    "source": "attribute_block",
+                }
+            )
             pending_we_are = None
 
     return pairs
@@ -256,23 +266,21 @@ def _extract_tables(
 
             # --- Detect terminology table ("Use This" / "Not This") ---
             normalized_cols = [c.strip().lower() for c in header_cells]
-            use_this_idx = next(
-                (j for j, c in enumerate(normalized_cols) if c == "use this"), None
-            )
-            not_this_idx = next(
-                (j for j, c in enumerate(normalized_cols) if c == "not this"), None
-            )
+            use_this_idx = next((j for j, c in enumerate(normalized_cols) if c == "use this"), None)
+            not_this_idx = next((j for j, c in enumerate(normalized_cols) if c == "not this"), None)
 
             if use_this_idx is not None and not_this_idx is not None:
                 for row in data_rows:
                     do_val = row[use_this_idx] if use_this_idx < len(row) else ""
                     dont_val = row[not_this_idx] if not_this_idx < len(row) else ""
                     if do_val or dont_val:
-                        terminology_pairs.append({
-                            "do":     do_val,
-                            "dont":   dont_val,
-                            "source": "terminology_table",
-                        })
+                        terminology_pairs.append(
+                            {
+                                "do": do_val,
+                                "dont": dont_val,
+                                "source": "terminology_table",
+                            }
+                        )
                 continue  # terminology table → not added to criteria_tables
 
             # --- Regular criteria table ---
@@ -280,14 +288,10 @@ def _extract_tables(
             cnt = name_counts.get(base, 0) + 1
             name_counts[base] = cnt
             name = base if cnt == 1 else f"{base} ({cnt})"
-            criteria_tables.append(
-                CriteriaTable(name=name, columns=header_cells, rows=data_rows)
-            )
+            criteria_tables.append(CriteriaTable(name=name, columns=header_cells, rows=data_rows))
 
         except Exception as exc:  # pragma: no cover
-            warnings_out.append(
-                f"Skipping malformed table near '{current_heading}': {exc}"
-            )
+            warnings_out.append(f"Skipping malformed table near '{current_heading}': {exc}")
 
     return criteria_tables, terminology_pairs
 
@@ -295,6 +299,7 @@ def _extract_tables(
 # ---------------------------------------------------------------------------
 # build_criteria_list — AC-10 helper (public for tests)
 # ---------------------------------------------------------------------------
+
 
 def _build_criteria_list(data: SkillData) -> List[Dict]:
     """Merge all extracted checks into a single unified ``criteria`` list.
@@ -307,27 +312,33 @@ def _build_criteria_list(data: SkillData) -> List[Dict]:
     criteria: List[Dict] = []
 
     for item in data.checklist_items:
-        criteria.append({
-            "type":    "checklist",
-            "text":    item["text"],
-            "section": item.get("section", ""),
-        })
+        criteria.append(
+            {
+                "type": "checklist",
+                "text": item["text"],
+                "section": item.get("section", ""),
+            }
+        )
 
     for pair in data.do_dont_pairs:
-        criteria.append({
-            "type":   "do_dont",
-            "do":     pair.get("do", ""),
-            "dont":   pair.get("dont", ""),
-            "source": pair.get("source", ""),
-        })
+        criteria.append(
+            {
+                "type": "do_dont",
+                "do": pair.get("do", ""),
+                "dont": pair.get("dont", ""),
+                "source": pair.get("source", ""),
+            }
+        )
 
     for tbl in data.criteria_tables:
         for row in tbl.rows:
-            criteria.append({
-                "type":   "table_row",
-                "table":  tbl.name,
-                "values": dict(zip(tbl.columns, row)),
-            })
+            criteria.append(
+                {
+                    "type": "table_row",
+                    "table": tbl.name,
+                    "values": dict(zip(tbl.columns, row)),
+                }
+            )
 
     return criteria
 
@@ -335,6 +346,7 @@ def _build_criteria_list(data: SkillData) -> List[Dict]:
 # ---------------------------------------------------------------------------
 # parse_skill — main entry point
 # ---------------------------------------------------------------------------
+
 
 def parse_skill(source_path: Path) -> SkillData:
     """Parse a skill markdown file and return structured :class:`SkillData`.
@@ -384,6 +396,7 @@ def parse_skill(source_path: Path) -> SkillData:
 # ---------------------------------------------------------------------------
 # Rubric text generation (AC-9)
 # ---------------------------------------------------------------------------
+
 
 def _make_scale(data: SkillData) -> str:
     """Generate 6-band scoring scale text."""
@@ -440,9 +453,7 @@ def generate_rubric_text(data: SkillData) -> str:
             data.description,
         ]
     else:
-        parts.append(
-            f"You are evaluating content quality against the {pretty} skill checklist."
-        )
+        parts.append(f"You are evaluating content quality against the {pretty} skill checklist.")
 
     # --- Scoring Scale ---
     parts += ["", "## Scoring Scale (0.0 to 1.0)", "", _make_scale(data), ""]
@@ -450,9 +461,7 @@ def generate_rubric_text(data: SkillData) -> str:
     # --- Specific Checks ---
     parts += ["## Specific Checks", ""]
 
-    has_checks = (
-        data.checklist_items or data.do_dont_pairs or data.criteria_tables
-    )
+    has_checks = data.checklist_items or data.do_dont_pairs or data.criteria_tables
 
     if data.checklist_items:
         parts += ["### Checklist Items", ""]
@@ -502,6 +511,7 @@ def generate_rubric_text(data: SkillData) -> str:
 # YAML generation (AC-10)
 # ---------------------------------------------------------------------------
 
+
 def generate_yaml(data: SkillData) -> str:
     """Render SkillData as a YAML string with the AC-10 required keys.
 
@@ -510,25 +520,24 @@ def generate_yaml(data: SkillData) -> str:
     """
     rubric_text = generate_rubric_text(data)
     doc = {
-        "name":           data.skill_name,
+        "name": data.skill_name,
         "generated_from": data.source_file,
-        "generated_at":   now_utc().isoformat(timespec="seconds"),
-        "rubric":         rubric_text,
-        "criteria":       _build_criteria_list(data),
+        "generated_at": now_utc().isoformat(timespec="seconds"),
+        "rubric": rubric_text,
+        "criteria": _build_criteria_list(data),
     }
     header = (
         "# Generated by: orch rubric generate\n"
         f"# Source: {data.source_file}\n"
         "# Compatible with: LLMJudgeGrader\n\n"
     )
-    return header + yaml.dump(
-        doc, default_flow_style=False, allow_unicode=True, sort_keys=False
-    )
+    return header + yaml.dump(doc, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 
 # ---------------------------------------------------------------------------
 # File I/O (AC-2/3/4)
 # ---------------------------------------------------------------------------
+
 
 def generate_rubric_file(
     skill_file: Path,
@@ -568,9 +577,7 @@ def generate_rubric_file(
     if out_path.is_dir():
         raise ValueError(f"Output path is a directory: {output}")
     if out_path.exists() and not force:
-        raise ValueError(
-            f"Output already exists: {out_path} (use --force to overwrite)"
-        )
+        raise ValueError(f"Output already exists: {out_path} (use --force to overwrite)")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(generate_yaml(data), encoding="utf-8")

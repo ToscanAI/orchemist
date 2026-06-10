@@ -84,7 +84,10 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Absolute or relative path to the file."},
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or relative path to the file.",
+                    },
                 },
                 "required": ["path"],
             },
@@ -230,9 +233,7 @@ def _sandbox_root_paths(roots: dict[str, str]) -> list[Path]:
     return [Path(p).resolve() for p in roots.values() if p]
 
 
-def _validate_path(
-    raw_path: str, roots: dict[str, str]
-) -> tuple[Path | None, dict | None]:
+def _validate_path(raw_path: str, roots: dict[str, str]) -> tuple[Path | None, dict | None]:
     """Validate a tool-arg path against the sandbox roots.
 
     Returns ``(resolved_path, None)`` on success or ``(None, error_dict)`` on rejection.
@@ -245,7 +246,10 @@ def _validate_path(
 
     root_paths = _sandbox_root_paths(roots)
     if not root_paths:
-        return (None, {"error": "no_sandbox_configured", "message": "no sandbox roots are configured"})
+        return (
+            None,
+            {"error": "no_sandbox_configured", "message": "no sandbox roots are configured"},
+        )
 
     raw = Path(raw_path).expanduser()
     if not raw.is_absolute():
@@ -394,7 +398,11 @@ def handle_edit_file(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
     if old_string == new_string:
         return {"replacements": count}
 
-    new_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
+    new_text = (
+        text.replace(old_string, new_string)
+        if replace_all
+        else text.replace(old_string, new_string, 1)
+    )
     try:
         resolved.write_bytes(new_text.encode("utf-8"))
     except OSError as exc:
@@ -403,7 +411,8 @@ def handle_edit_file(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
 
 
 def handle_bash(
-    args: dict, roots: dict[str, str],
+    args: dict,
+    roots: dict[str, str],
     is_cancelled: Optional[Callable[[], bool]] = None,
     **_kwargs: Any,
 ) -> dict:
@@ -439,7 +448,10 @@ def handle_bash(
             return cwd_err
         assert cwd_resolved is not None
         if not cwd_resolved.exists() or not cwd_resolved.is_dir():
-            return {"error": "invalid_tool_call", "message": f"cwd {cwd_resolved} is not a directory"}
+            return {
+                "error": "invalid_tool_call",
+                "message": f"cwd {cwd_resolved} is not a directory",
+            }
         cwd = str(cwd_resolved)
     else:
         cwd = roots.get("repo_path") or roots.get("tmp_dir") or tempfile.gettempdir()
@@ -448,7 +460,9 @@ def handle_bash(
 
 
 def _run_bash(
-    command: str, cwd: str, timeout_seconds: int,
+    command: str,
+    cwd: str,
+    timeout_seconds: int,
     is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> dict:
     proc = subprocess.Popen(
@@ -582,11 +596,17 @@ def handle_grep(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
     ignore_case = bool(args.get("ignore_case", False))
     output_mode = args.get("output_mode", "content")
     if output_mode not in {"content", "files_with_matches", "count"}:
-        return {"error": "invalid_tool_call", "message": "output_mode must be one of content/files_with_matches/count"}
+        return {
+            "error": "invalid_tool_call",
+            "message": "output_mode must be one of content/files_with_matches/count",
+        }
 
     supplied = args.get("path")
     if supplied is not None and (not isinstance(supplied, str) or supplied == ""):
-        return {"error": "invalid_tool_call", "message": "path must be a non-empty string when provided"}
+        return {
+            "error": "invalid_tool_call",
+            "message": "path must be a non-empty string when provided",
+        }
     path_arg = supplied or roots.get("repo_path") or roots.get("tmp_dir") or tempfile.gettempdir()
     resolved, err = _validate_path(path_arg, roots)
     if err is not None:
@@ -624,11 +644,13 @@ def handle_grep(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
                             if len(matches) >= GREP_MATCH_CAP:
                                 truncated = True
                                 continue
-                            matches.append({
-                                "path": str(file_path),
-                                "line": lineno,
-                                "text": line.rstrip("\n"),
-                            })
+                            matches.append(
+                                {
+                                    "path": str(file_path),
+                                    "line": lineno,
+                                    "text": line.rstrip("\n"),
+                                }
+                            )
         except (OSError, UnicodeError):
             continue
 
@@ -649,7 +671,10 @@ def handle_glob(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
 
     supplied = args.get("path")
     if supplied is not None and (not isinstance(supplied, str) or supplied == ""):
-        return {"error": "invalid_tool_call", "message": "path must be a non-empty string when provided"}
+        return {
+            "error": "invalid_tool_call",
+            "message": "path must be a non-empty string when provided",
+        }
     path_arg = supplied or roots.get("repo_path") or roots.get("tmp_dir") or tempfile.gettempdir()
     resolved, err = _validate_path(path_arg, roots)
     if err is not None:
@@ -687,7 +712,12 @@ def summarise_args(args: dict) -> dict:
     out: dict = {}
     for key, value in args.items():
         if isinstance(value, str):
-            escaped = value.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+            escaped = (
+                value.replace("\\", "\\\\")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t")
+            )
             if len(escaped) > JSONL_ARG_STR_TRUNCATE_CHARS:
                 escaped = escaped[:JSONL_ARG_STR_TRUNCATE_CHARS] + JSONL_ARG_STR_MARKER
             out[key] = escaped

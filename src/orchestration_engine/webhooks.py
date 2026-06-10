@@ -29,7 +29,7 @@ VALID_MODES = frozenset({"sync", "async", "fire_and_forget"})
 
 # Trigger ID format: alphanumeric + hyphens/underscores, 3-64 chars,
 # must start and end with alphanumeric character.
-_ID_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_-]{1,62}[a-zA-Z0-9]$')
+_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{1,62}[a-zA-Z0-9]$")
 
 
 class TriggerValidationError(ValueError):
@@ -116,8 +116,8 @@ class TriggerConfig:
             "mode": self.mode,
             "secret": self.secret,
             "rate_limit": self.rate_limit,
-            "input_map": self.input_map,   # JSON-serialised by DB layer
-            "filters": self.filters,       # JSON-serialised by DB layer
+            "input_map": self.input_map,  # JSON-serialised by DB layer
+            "filters": self.filters,  # JSON-serialised by DB layer
             "created_at": self.created_at or now_utc().isoformat(),
             "enabled": self.enabled,
         }
@@ -196,18 +196,12 @@ class TriggerMatcher:
             # Warn on unknown keys but do not fail the match
             for key in f:
                 if key not in _KNOWN_FILTER_KEYS:
-                    _logger.warning(
-                        "TriggerMatcher: unknown filter key %r — ignoring", key
-                    )
+                    _logger.warning("TriggerMatcher: unknown filter key %r — ignoring", key)
 
             # branch filter: strip refs/heads/ prefix, then exact compare
             if "branch" in f:
                 ref = payload.get("ref", "")
-                branch = (
-                    ref[len("refs/heads/"):]
-                    if ref.startswith("refs/heads/")
-                    else ref
-                )
+                branch = ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
                 if branch != f["branch"]:
                     return False
 

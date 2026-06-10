@@ -53,10 +53,12 @@ def _is_quiet_hours(
     """
     try:
         from zoneinfo import ZoneInfo
+
         local_now = datetime.now(tz=ZoneInfo(tz))
     except ImportError:
         try:
             import pytz  # type: ignore
+
             local_now = datetime.now(tz=pytz.timezone(tz))
         except ImportError:
             # Cannot determine timezone — default to allow notifications
@@ -205,10 +207,7 @@ class TelegramNotifier(BaseNotifier):
             text = "\n".join(lines)
         else:
             extra_lines = "\n".join(f"  {k}: {v}" for k, v in kwargs.items())
-            text = (
-                f"{event_emoji} *Orchestration Engine* — `{event}`\n"
-                f"run\\_id: `{run_id}`"
-            )
+            text = f"{event_emoji} *Orchestration Engine* — `{event}`\n" f"run\\_id: `{run_id}`"
             if extra_lines:
                 text += f"\n{extra_lines}"
 
@@ -339,7 +338,8 @@ class TelegramCallbackHandler:
             logger.warning(
                 "TelegramCallbackHandler: %s run '%s' failed — run may not be in "
                 "pending_review state.",
-                action, run_id,
+                action,
+                run_id,
             )
 
         return {"ok": ok, "action": action, "run_id": run_id, "updated": ok}
@@ -369,7 +369,8 @@ class TelegramCallbackHandler:
             payload_dict["text"] = text[:200]
         payload = json.dumps(payload_dict).encode("utf-8")
         req = urllib.request.Request(
-            url, data=payload,
+            url,
+            data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -377,9 +378,7 @@ class TelegramCallbackHandler:
             with urllib.request.urlopen(req, timeout=self.timeout):
                 pass
         except Exception as exc:
-            logger.warning(
-                "TelegramCallbackHandler: answerCallbackQuery failed: %s", exc
-            )
+            logger.warning("TelegramCallbackHandler: answerCallbackQuery failed: %s", exc)
 
     def _send_telegram_message(self, text: str) -> None:
         """Send a plain text message to the configured Telegram chat."""
@@ -388,7 +387,8 @@ class TelegramCallbackHandler:
             {"chat_id": self.chat_id, "text": text, "parse_mode": "Markdown"}
         ).encode("utf-8")
         req = urllib.request.Request(
-            url, data=payload,
+            url,
+            data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -537,13 +537,10 @@ class NotificationDispatcher:
         session = self._config.get("openclaw_session", "agent:main:main")
 
         extra = "  ".join(f"{k}={v}" for k, v in kwargs.items())
-        text = (
-            f"🔔 **Review Required** — event=`{event}` run_id=`{run_id}`"
-            + (f"\n{extra}" if extra else "")
+        text = f"🔔 **Review Required** — event=`{event}` run_id=`{run_id}`" + (
+            f"\n{extra}" if extra else ""
         )
-        payload = json.dumps(
-            {"session": session, "message": text}
-        ).encode("utf-8")
+        payload = json.dumps({"session": session, "message": text}).encode("utf-8")
 
         url = f"{gateway_url}/api/v1/sessions/send"
         headers = {"Content-Type": "application/json"}
@@ -589,9 +586,7 @@ class NotificationDispatcher:
         bot_token = self._config.get("telegram_bot_token", "")
         chat_id = self._config.get("telegram_chat_id", "")
         if not bot_token or not chat_id:
-            logger.warning(
-                "Telegram notification skipped: missing bot_token or chat_id."
-            )
+            logger.warning("Telegram notification skipped: missing bot_token or chat_id.")
             return
 
         # Quiet-hours gate
@@ -603,7 +598,10 @@ class NotificationDispatcher:
                 logger.warning(
                     "Telegram HITL notification suppressed for run '%s': quiet hours "
                     "(%02d:00–%02d:00 %s).",
-                    run_id, q_start, q_end, tz,
+                    run_id,
+                    q_start,
+                    q_end,
+                    tz,
                 )
                 return
 
@@ -704,8 +702,6 @@ class NotificationDispatcher:
             "quiet_hours_end": _int(os.environ.get("NOTIFY_QUIET_HOURS_END"), 8),
             "quiet_hours_tz": os.environ.get("NOTIFY_QUIET_HOURS_TZ", "Europe/Vienna"),
             # Telegram callback DB path (Issue #429.5)
-            "telegram_callback_db_path": os.environ.get(
-                "NOTIFY_TELEGRAM_CALLBACK_DB_PATH", ""
-            ),
+            "telegram_callback_db_path": os.environ.get("NOTIFY_TELEGRAM_CALLBACK_DB_PATH", ""),
         }
         return cls(config)

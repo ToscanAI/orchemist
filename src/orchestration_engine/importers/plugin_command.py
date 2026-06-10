@@ -312,9 +312,7 @@ def _parse_inputs_section(body: str) -> Dict[str, Any]:
         # matched line (name, parenthetical, or description).
         # Uses \( ... \) to require the closing paren, avoiding false positives
         # on open tokens like "(optional_extra)".  Case-insensitive.
-        is_optional = bool(
-            re.search(r"\(\s*optional\s*\)", full_match, re.IGNORECASE)
-        )
+        is_optional = bool(re.search(r"\(\s*optional\s*\)", full_match, re.IGNORECASE))
 
         properties[key] = {"type": "string", "description": desc_clean}
 
@@ -323,7 +321,11 @@ def _parse_inputs_section(body: str) -> Dict[str, Any]:
 
     schema: Dict[str, Any] = {
         "type": "object",
-        "properties": properties if properties else {"input": {"type": "string", "description": "Primary input"}},
+        "properties": (
+            properties
+            if properties
+            else {"input": {"type": "string", "description": "Primary input"}}
+        ),
     }
     if required:
         schema["required"] = required
@@ -433,6 +435,7 @@ def _extract_skill_refs(text: str, base_dir: Optional[Path] = None) -> List[str]
 # Phase helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_unique_id(base_id: str, seen: Dict[str, int]) -> str:
     """Return a collision-free phase ID derived from *base_id*.
 
@@ -499,8 +502,7 @@ def _build_phase_prompt(heading: str, body: str) -> str:
         "{input}\n\n"
         "## Context from previous steps\n\n"
         "{previous_output}\n\n"
-        "## Instructions\n\n"
-        + instructions
+        "## Instructions\n\n" + instructions
     )
 
 
@@ -633,9 +635,7 @@ def _build_template_dict(
 
         # Determine which skill refs belong to this section
         # (skill_refs_all already contains resolved absolute paths)
-        section_skill_refs = _skill_refs_for_section(
-            section.body, parsed.skill_refs_all
-        )
+        section_skill_refs = _skill_refs_for_section(section.body, parsed.skill_refs_all)
 
         content_phase: Dict[str, Any] = {
             "id": phase_id,
@@ -767,6 +767,7 @@ def _dump_template_yaml(template_dict: Dict[str, Any]) -> str:
     as YAML literal blocks (``|``), which are far more readable than quoted
     inline strings.
     """
+
     # Register a literal-block representer for long strings
     class _LiteralStr(str):
         pass

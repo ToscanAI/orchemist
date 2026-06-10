@@ -20,9 +20,7 @@ logger = logging.getLogger(__name__)
 # Explicit datetime adapters — required for Python 3.12+ which deprecated
 # the built-in sqlite3 datetime adapter/converter.
 sqlite3.register_adapter(datetime, lambda val: val.isoformat())
-sqlite3.register_converter(
-    "timestamp", lambda val: datetime.fromisoformat(val.decode())
-)
+sqlite3.register_converter("timestamp", lambda val: datetime.fromisoformat(val.decode()))
 
 from .timestamps import normalize_ts, now_utc
 
@@ -31,16 +29,18 @@ from .timestamps import normalize_ts, now_utc
 # any other module that needs to distinguish "run is done" from "run is live".
 # Add new terminal statuses here; they propagate automatically everywhere.
 # ---------------------------------------------------------------------------
-TERMINAL_STATUSES: frozenset = frozenset({
-    "success",
-    "failed",
-    "cancelled",
-    "crashed",
-    "scoring_failed",
-    "pending_review",
-    "rejected",
-    "escalated",   # Issue #396: retry was escalated — original run is terminal
-})
+TERMINAL_STATUSES: frozenset = frozenset(
+    {
+        "success",
+        "failed",
+        "cancelled",
+        "crashed",
+        "scoring_failed",
+        "pending_review",
+        "rejected",
+        "escalated",  # Issue #396: retry was escalated — original run is terminal
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -175,11 +175,11 @@ class Database:
 
     def get_connection(self) -> sqlite3.Connection:
         """Get a thread-local database connection.
-        
+
         For :memory: databases we use a shared-cache URI so every thread sees
         the same data while keeping its own connection object.
         """
-        if not hasattr(self._local, 'connection'):
+        if not hasattr(self._local, "connection"):
             if self._db_uri is not None:
                 self._local.connection = sqlite3.connect(
                     self._db_uri,
@@ -261,16 +261,16 @@ class Database:
             self._create_tables_pipeline_run_events(conn)
             self._create_table_routing_decisions(conn)
             self._create_table_failure_patterns(conn)
-            self._create_table_regressions(conn)      # Issue #3.3a.1
-            self._create_table_ci_green_shas(conn)    # Issue #3.3a.3
+            self._create_table_regressions(conn)  # Issue #3.3a.1
+            self._create_table_ci_green_shas(conn)  # Issue #3.3a.3
             self._create_table_review_outcomes(conn)  # Issue #4.1.2
             self._create_table_reviewer_calibration(conn)  # Issue #4.1.5
-            self._create_table_trust_profiles(conn)        # Issue #4.2.1
-            self._create_table_trust_adjustments(conn)     # Issue #4.2.1
-            self._create_table_issue_pipeline_map(conn)    # Issue #5.1.1
-            self._create_table_cost_tracking(conn)         # Issue #5.2.1
-            self._create_table_sprint_chain_state(conn)    # Issue #514
-            self._create_table_admin_audit_log(conn)       # Issue #838
+            self._create_table_trust_profiles(conn)  # Issue #4.2.1
+            self._create_table_trust_adjustments(conn)  # Issue #4.2.1
+            self._create_table_issue_pipeline_map(conn)  # Issue #5.1.1
+            self._create_table_cost_tracking(conn)  # Issue #5.2.1
+            self._create_table_sprint_chain_state(conn)  # Issue #514
+            self._create_table_admin_audit_log(conn)  # Issue #838
             self._create_indexes(conn)
 
             # Run any pending migrations
@@ -768,24 +768,57 @@ class Database:
         migrations = [
             ("001_add_scoring_status", self._migration_001_add_scoring_status),
             ("002_add_pipeline_run_events", self._migration_002_add_pipeline_run_events),
-            ("003_add_triggers_table", self._migration_003_add_triggers_table),   # Issue #329.1
-            ("004_add_webhook_invocations", self._migration_004_add_webhook_invocations),   # Issue #329.2
-            ("005_add_trigger_enabled", self._migration_005_add_trigger_enabled),           # Issue #329.2
-            ("006_add_chain_columns", self._migration_006_add_chain_columns),               # Issue #330.1
-            ("007_add_routing_decisions", self._migration_007_add_routing_decisions),       # Issue #331.3
-            ("008_add_review_columns", self._migration_008_add_review_columns),             # Issue #331.4
-            ("009_add_diagnosis_tables", self._migration_009_add_diagnosis_tables),         # Issue #3.1.1
-            ("010_add_failure_patterns_table", self._migration_010_add_failure_patterns_table),  # Issue #3.1.3
-            ("011_add_retry_columns", self._migration_011_add_retry_columns),               # Issue #3.2.1
-            ("012_add_regressions_table", self._migration_012_add_regressions_table),      # Issue #3.3a.1
-            ("013_add_ci_green_shas_table", self._migration_013_add_ci_green_shas_table),  # Issue #3.3a.3
-            ("014_add_review_outcomes_table", self._migration_014_add_review_outcomes_table),  # Issue #4.1.2
-            ("015_add_reviewer_calibration_table", self._migration_015_add_reviewer_calibration_table),  # Issue #4.1.5
-            ("016_add_trust_tables", self._migration_016_add_trust_tables),                              # Issue #4.2.1
-            ("017_add_issue_pipeline_map", self._migration_017_add_issue_pipeline_map),               # Issue #5.1.1
-            ("018_add_cost_tracking_table", self._migration_018_add_cost_tracking_table),             # Issue #5.2.1
-            ("019_add_parent_run_id_index", self._migration_019_add_parent_run_id_index),             # Issue #508
-            ("020_add_sprint_chain_state_table", self._migration_020_add_sprint_chain_state_table),  # Issue #514
+            ("003_add_triggers_table", self._migration_003_add_triggers_table),  # Issue #329.1
+            (
+                "004_add_webhook_invocations",
+                self._migration_004_add_webhook_invocations,
+            ),  # Issue #329.2
+            ("005_add_trigger_enabled", self._migration_005_add_trigger_enabled),  # Issue #329.2
+            ("006_add_chain_columns", self._migration_006_add_chain_columns),  # Issue #330.1
+            (
+                "007_add_routing_decisions",
+                self._migration_007_add_routing_decisions,
+            ),  # Issue #331.3
+            ("008_add_review_columns", self._migration_008_add_review_columns),  # Issue #331.4
+            ("009_add_diagnosis_tables", self._migration_009_add_diagnosis_tables),  # Issue #3.1.1
+            (
+                "010_add_failure_patterns_table",
+                self._migration_010_add_failure_patterns_table,
+            ),  # Issue #3.1.3
+            ("011_add_retry_columns", self._migration_011_add_retry_columns),  # Issue #3.2.1
+            (
+                "012_add_regressions_table",
+                self._migration_012_add_regressions_table,
+            ),  # Issue #3.3a.1
+            (
+                "013_add_ci_green_shas_table",
+                self._migration_013_add_ci_green_shas_table,
+            ),  # Issue #3.3a.3
+            (
+                "014_add_review_outcomes_table",
+                self._migration_014_add_review_outcomes_table,
+            ),  # Issue #4.1.2
+            (
+                "015_add_reviewer_calibration_table",
+                self._migration_015_add_reviewer_calibration_table,
+            ),  # Issue #4.1.5
+            ("016_add_trust_tables", self._migration_016_add_trust_tables),  # Issue #4.2.1
+            (
+                "017_add_issue_pipeline_map",
+                self._migration_017_add_issue_pipeline_map,
+            ),  # Issue #5.1.1
+            (
+                "018_add_cost_tracking_table",
+                self._migration_018_add_cost_tracking_table,
+            ),  # Issue #5.2.1
+            (
+                "019_add_parent_run_id_index",
+                self._migration_019_add_parent_run_id_index,
+            ),  # Issue #508
+            (
+                "020_add_sprint_chain_state_table",
+                self._migration_020_add_sprint_chain_state_table,
+            ),  # Issue #514
         ]
 
         # Apply pending migrations
@@ -801,16 +834,12 @@ class Database:
         exist (e.g. fresh databases created with the updated DDL).
         """
         try:
-            conn.execute(
-                "ALTER TABLE pipeline_runs ADD COLUMN scoring_status TEXT DEFAULT NULL"
-            )
+            conn.execute("ALTER TABLE pipeline_runs ADD COLUMN scoring_status TEXT DEFAULT NULL")
         except sqlite3.OperationalError:
             pass  # column already exists
 
         try:
-            conn.execute(
-                "ALTER TABLE pipeline_runs ADD COLUMN scoring_score REAL DEFAULT NULL"
-            )
+            conn.execute("ALTER TABLE pipeline_runs ADD COLUMN scoring_score REAL DEFAULT NULL")
         except sqlite3.OperationalError:
             pass  # column already exists
 
@@ -893,9 +922,7 @@ class Database:
         exists (e.g. fresh databases created with the updated DDL).
         """
         try:
-            conn.execute(
-                "ALTER TABLE triggers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"
-            )
+            conn.execute("ALTER TABLE triggers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
         except sqlite3.OperationalError:
             pass  # column already exists
 
@@ -910,16 +937,12 @@ class Database:
         exist (e.g. fresh databases created with the updated DDL).
         """
         try:
-            conn.execute(
-                "ALTER TABLE pipeline_runs ADD COLUMN parent_run_id TEXT DEFAULT NULL"
-            )
+            conn.execute("ALTER TABLE pipeline_runs ADD COLUMN parent_run_id TEXT DEFAULT NULL")
         except sqlite3.OperationalError:
             pass  # column already exists
 
         try:
-            conn.execute(
-                "ALTER TABLE pipeline_runs ADD COLUMN chain_depth INTEGER DEFAULT 0"
-            )
+            conn.execute("ALTER TABLE pipeline_runs ADD COLUMN chain_depth INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass  # column already exists
 
@@ -952,7 +975,8 @@ class Database:
     def insert_task(self, task_data: Dict[str, Any]) -> str:
         """Insert a new task into the database."""
         with self.transaction() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO tasks (
                     id, type, priority, status, payload, max_retries,
                     orchestra_id, orchestra_phase, min_confidence, preferred_model,
@@ -960,25 +984,27 @@ class Database:
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
-            """, (
-                task_data['id'],
-                task_data['type'],
-                task_data.get('priority', 3),
-                task_data.get('status', 'queued'),
-                json.dumps(task_data['payload']),
-                task_data.get('max_retries', 3),
-                task_data.get('orchestra_id'),
-                task_data.get('orchestra_phase'),
-                task_data.get('min_confidence', 0.7),
-                task_data.get('preferred_model'),
-                task_data.get('timeout_seconds', 3600),
-                task_data.get('cost_limit_usd'),
-                task_data.get('created_by'),
-                json.dumps(task_data.get('tags', [])),
-                json.dumps(task_data.get('metadata', {}))
-            ))
+            """,
+                (
+                    task_data["id"],
+                    task_data["type"],
+                    task_data.get("priority", 3),
+                    task_data.get("status", "queued"),
+                    json.dumps(task_data["payload"]),
+                    task_data.get("max_retries", 3),
+                    task_data.get("orchestra_id"),
+                    task_data.get("orchestra_phase"),
+                    task_data.get("min_confidence", 0.7),
+                    task_data.get("preferred_model"),
+                    task_data.get("timeout_seconds", 3600),
+                    task_data.get("cost_limit_usd"),
+                    task_data.get("created_by"),
+                    json.dumps(task_data.get("tags", [])),
+                    json.dumps(task_data.get("metadata", {})),
+                ),
+            )
 
-        return task_data['id']
+        return task_data["id"]
 
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         """Get a task by ID."""
@@ -994,33 +1020,30 @@ class Database:
 
     def update_task_status(self, task_id: str, status: str, **kwargs) -> bool:
         """Update task status and related fields."""
-        updates = ['status = ?']
+        updates = ["status = ?"]
         values = [status]
 
         # Handle status-specific updates
-        if status == 'running' and 'started_at' not in kwargs:
-            kwargs['started_at'] = now_utc()
-        elif status in ['success', 'failed', 'permanently_failed'] and 'completed_at' not in kwargs:
-            kwargs['completed_at'] = now_utc()
+        if status == "running" and "started_at" not in kwargs:
+            kwargs["started_at"] = now_utc()
+        elif status in ["success", "failed", "permanently_failed"] and "completed_at" not in kwargs:
+            kwargs["completed_at"] = now_utc()
 
         # Add additional updates
         for key, value in kwargs.items():
-            if key in ['started_at', 'completed_at', 'next_retry_at']:
+            if key in ["started_at", "completed_at", "next_retry_at"]:
                 updates.append(f"{key} = ?")
                 values.append(value)
-            elif key == 'retry_count':
+            elif key == "retry_count":
                 updates.append("retry_count = retry_count + 1")
-            elif key == 'metadata':
+            elif key == "metadata":
                 updates.append("metadata = ?")
                 values.append(json.dumps(value, default=str))
 
         values.append(task_id)
 
         with self.transaction() as conn:
-            cursor = conn.execute(
-                f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
-                values
-            )
+            cursor = conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", values)
             return cursor.rowcount > 0
 
     def get_next_task(self, worker_id: str) -> Optional[Dict[str, Any]]:
@@ -1044,12 +1067,15 @@ class Database:
                 return None
 
             # Mark task as running
-            task_id = row['id']
-            conn.execute("""
+            task_id = row["id"]
+            conn.execute(
+                """
                 UPDATE tasks 
                 SET status = 'running', started_at = CURRENT_TIMESTAMP 
                 WHERE id = ?
-            """, (task_id,))
+            """,
+                (task_id,),
+            )
 
             return self._row_to_dict(row)
 
@@ -1059,19 +1085,19 @@ class Database:
         types: Optional[List[str]] = None,
         orchestra_id: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         """List tasks with optional filtering."""
         query = "SELECT * FROM tasks WHERE 1=1"
         params = []
 
         if states:
-            placeholders = ','.join('?' * len(states))
+            placeholders = ",".join("?" * len(states))
             query += f" AND status IN ({placeholders})"
             params.extend(states)
 
         if types:
-            placeholders = ','.join('?' * len(types))
+            placeholders = ",".join("?" * len(types))
             query += f" AND type IN ({placeholders})"
             params.extend(types)
 
@@ -1090,11 +1116,14 @@ class Database:
     def cancel_task(self, task_id: str) -> bool:
         """Cancel a queued or running task."""
         with self.transaction() as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 UPDATE tasks 
                 SET status = 'cancelled', completed_at = CURRENT_TIMESTAMP 
                 WHERE id = ? AND status IN ('queued', 'running', 'retry')
-            """, (task_id,))
+            """,
+                (task_id,),
+            )
 
             return cursor.rowcount > 0
 
@@ -1103,7 +1132,8 @@ class Database:
     def insert_task_run(self, run_data: Dict[str, Any]) -> str:
         """Insert a new task run record."""
         with self.transaction() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO task_runs (
                     id, task_id, attempt_number, model, thinking_level,
                     session_id, worker_id, status, result, confidence,
@@ -1111,25 +1141,27 @@ class Database:
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
-            """, (
-                run_data['id'],
-                run_data['task_id'],
-                run_data['attempt_number'],
-                run_data['model'],
-                run_data.get('thinking_level'),
-                run_data.get('session_id'),
-                run_data.get('worker_id'),
-                run_data['status'],
-                json.dumps(run_data.get('result')) if run_data.get('result') else None,
-                run_data.get('confidence'),
-                run_data.get('error_message'),
-                run_data.get('error_type'),
-                run_data.get('tokens_used', 0),
-                run_data.get('cost_usd'),
-                run_data.get('peak_memory_mb')
-            ))
+            """,
+                (
+                    run_data["id"],
+                    run_data["task_id"],
+                    run_data["attempt_number"],
+                    run_data["model"],
+                    run_data.get("thinking_level"),
+                    run_data.get("session_id"),
+                    run_data.get("worker_id"),
+                    run_data["status"],
+                    json.dumps(run_data.get("result")) if run_data.get("result") else None,
+                    run_data.get("confidence"),
+                    run_data.get("error_message"),
+                    run_data.get("error_type"),
+                    run_data.get("tokens_used", 0),
+                    run_data.get("cost_usd"),
+                    run_data.get("peak_memory_mb"),
+                ),
+            )
 
-        return run_data['id']
+        return run_data["id"]
 
     def update_task_run(self, run_id: str, **kwargs) -> bool:
         """Update task run with completion data."""
@@ -1137,11 +1169,19 @@ class Database:
         values = []
 
         for key, value in kwargs.items():
-            if key == 'result':
+            if key == "result":
                 updates.append("result = ?")
                 values.append(json.dumps(value) if value else None)
-            elif key in ['completed_at', 'status', 'confidence', 'error_message', 'error_type',
-                        'tokens_used', 'cost_usd', 'peak_memory_mb']:
+            elif key in [
+                "completed_at",
+                "status",
+                "confidence",
+                "error_message",
+                "error_type",
+                "tokens_used",
+                "cost_usd",
+                "peak_memory_mb",
+            ]:
                 updates.append(f"{key} = ?")
                 values.append(value)
 
@@ -1151,10 +1191,7 @@ class Database:
         values.append(run_id)
 
         with self.transaction() as conn:
-            cursor = conn.execute(
-                f"UPDATE task_runs SET {', '.join(updates)} WHERE id = ?",
-                values
-            )
+            cursor = conn.execute(f"UPDATE task_runs SET {', '.join(updates)} WHERE id = ?", values)
             return cursor.rowcount > 0
 
     # Task Run Aggregation Readers (Issue #932 item 1)
@@ -1172,9 +1209,7 @@ class Database:
         Sums task_runs.tokens_used over every attempt record. Returns 0 when
         there are no rows or all values are NULL (COALESCE guard).
         """
-        row = self.fetch_one(
-            "SELECT COALESCE(SUM(tokens_used), 0) AS total FROM task_runs"
-        )
+        row = self.fetch_one("SELECT COALESCE(SUM(tokens_used), 0) AS total FROM task_runs")
         return int(row["total"]) if row else 0
 
     def get_task_tokens_consumed(self, task_id: str) -> int:
@@ -1184,8 +1219,7 @@ class Database:
         task id or when all matching values are NULL.
         """
         row = self.fetch_one(
-            "SELECT COALESCE(SUM(tokens_used), 0) AS total "
-            "FROM task_runs WHERE task_id = ?",
+            "SELECT COALESCE(SUM(tokens_used), 0) AS total " "FROM task_runs WHERE task_id = ?",
             (task_id,),
         )
         return int(row["total"]) if row else 0
@@ -1225,7 +1259,7 @@ class Database:
             "WHERE DATE(completed_at) = ? AND cost_usd IS NOT NULL",
             (date_str,),
         )
-        total = Decimal('0')
+        total = Decimal("0")
         for row in rows:
             # str() first, never Decimal(float): str(0.1) is '0.1', whereas
             # Decimal(0.1) would be 0.1000000000000000055...
@@ -1251,7 +1285,7 @@ class Database:
             "WHERE status = 'running' "
             "AND started_at IS NOT NULL "
             "AND julianday(started_at) < julianday('now', ?)",
-            (f'-{int(threshold_minutes)} minutes',),
+            (f"-{int(threshold_minutes)} minutes",),
         )
         return bool(row["n"]) if row else False
 
@@ -1260,27 +1294,30 @@ class Database:
     def insert_orchestra(self, orchestra_data: Dict[str, Any]) -> str:
         """Insert a new orchestra workflow."""
         with self.transaction() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO orchestras (
                     id, template, name, status, config, priority,
                     cost_budget_usd, time_budget_hours, created_by, tags
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
-            """, (
-                orchestra_data['id'],
-                orchestra_data['template'],
-                orchestra_data.get('name'),
-                orchestra_data.get('status', 'running'),
-                json.dumps(orchestra_data['config']),
-                orchestra_data.get('priority', 3),
-                orchestra_data.get('cost_budget_usd'),
-                orchestra_data.get('time_budget_hours'),
-                orchestra_data.get('created_by'),
-                json.dumps(orchestra_data.get('tags', []))
-            ))
+            """,
+                (
+                    orchestra_data["id"],
+                    orchestra_data["template"],
+                    orchestra_data.get("name"),
+                    orchestra_data.get("status", "running"),
+                    json.dumps(orchestra_data["config"]),
+                    orchestra_data.get("priority", 3),
+                    orchestra_data.get("cost_budget_usd"),
+                    orchestra_data.get("time_budget_hours"),
+                    orchestra_data.get("created_by"),
+                    json.dumps(orchestra_data.get("tags", [])),
+                ),
+            )
 
-        return orchestra_data['id']
+        return orchestra_data["id"]
 
     def get_orchestra(self, orchestra_id: str) -> Optional[Dict[str, Any]]:
         """Get orchestra by ID."""
@@ -1296,7 +1333,8 @@ class Database:
     def update_orchestra_stats(self, orchestra_id: str) -> bool:
         """Update orchestra task counts based on current task states."""
         with self.transaction() as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 UPDATE orchestras 
                 SET 
                     total_tasks = (
@@ -1315,7 +1353,9 @@ class Database:
                         WHERE orchestra_id = ? AND status = 'cancelled'
                     )
                 WHERE id = ?
-            """, (orchestra_id, orchestra_id, orchestra_id, orchestra_id, orchestra_id))
+            """,
+                (orchestra_id, orchestra_id, orchestra_id, orchestra_id, orchestra_id),
+            )
 
             return cursor.rowcount > 0
 
@@ -1332,37 +1372,43 @@ class Database:
                 return False
 
             # Insert into dead letter queue
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO dead_letter_queue (
                     id, original_task_id, task_type, failure_reason,
                     failure_count, payload, error_patterns, suggested_fixes
                 ) VALUES (
                     ?, ?, ?, ?, ?, ?, ?, ?
                 )
-            """, (
-                f"dl_{task_id}",
-                task_id,
-                task_row['type'],
-                failure_reason,
-                task_row['retry_count'],
-                task_row['payload'],
-                # Intentionally empty: move_to_dead_letter() has only a free-text
-                # failure_reason and performs no analysis. The namesake error_patterns
-                # table (recovery.py) is a separate frequency store and is not joined
-                # here, so no per-row source exists (#932).
-                json.dumps([]),
-                # Intentionally empty: suggested_fixes has no producer anywhere in the
-                # codebase. Populating it would be net-new analysis/suggestion work,
-                # out of scope (#932).
-                json.dumps([])
-            ))
+            """,
+                (
+                    f"dl_{task_id}",
+                    task_id,
+                    task_row["type"],
+                    failure_reason,
+                    task_row["retry_count"],
+                    task_row["payload"],
+                    # Intentionally empty: move_to_dead_letter() has only a free-text
+                    # failure_reason and performs no analysis. The namesake error_patterns
+                    # table (recovery.py) is a separate frequency store and is not joined
+                    # here, so no per-row source exists (#932).
+                    json.dumps([]),
+                    # Intentionally empty: suggested_fixes has no producer anywhere in the
+                    # codebase. Populating it would be net-new analysis/suggestion work,
+                    # out of scope (#932).
+                    json.dumps([]),
+                ),
+            )
 
             # Update original task status
-            conn.execute("""
+            conn.execute(
+                """
                 UPDATE tasks 
                 SET status = 'permanently_failed', completed_at = CURRENT_TIMESTAMP 
                 WHERE id = ?
-            """, (task_id,))
+            """,
+                (task_id,),
+            )
 
             return True
 
@@ -1413,23 +1459,23 @@ class Database:
         dead_letter_count = cursor.fetchone()[0]
 
         return {
-            'timestamp': now_utc(),
-            'queued': status_counts.get('queued', 0),
-            'running': status_counts.get('running', 0),
-            'completed': status_counts.get('success', 0),
-            'failed': status_counts.get('failed', 0),
-            'retrying': status_counts.get('retry', 0),
-            'cancelled': status_counts.get('cancelled', 0),
-            'priority_breakdown': priority_counts,
-            'type_breakdown': type_counts,
-            'avg_execution_time_seconds': avg_execution_time,
-            'dead_letter_count': dead_letter_count,
+            "timestamp": now_utc(),
+            "queued": status_counts.get("queued", 0),
+            "running": status_counts.get("running", 0),
+            "completed": status_counts.get("success", 0),
+            "failed": status_counts.get("failed", 0),
+            "retrying": status_counts.get("retry", 0),
+            "cancelled": status_counts.get("cancelled", 0),
+            "priority_breakdown": priority_counts,
+            "type_breakdown": type_counts,
+            "avg_execution_time_seconds": avg_execution_time,
+            "dead_letter_count": dead_letter_count,
             # Always 0 here: live worker count is runtime/process state with no DB
             # source. The sole consumer (queue.QueueManager.get_queue_stats) overrides
             # this with a heartbeat-based count, so this value is never surfaced to
             # users (#932).
-            'active_workers': 0,
-            'max_workers': 8,
+            "active_workers": 0,
+            "max_workers": 8,
         }
 
     # Generic Query Methods
@@ -1469,12 +1515,18 @@ class Database:
 
         # Parse JSON fields
         json_fields = [
-            'payload', 'tags', 'metadata', 'config', 'result',
-            'error_patterns', 'suggested_fixes',
-            'input_map', 'filters',   # trigger fields (Issue #329.1)
-            'signals_json',           # routing_decisions (Issue #331.3)
-            'affected_files',         # regressions (Issue #3.3a.1)
-            'issues_found',           # review_outcomes (Issue #4.1.2)
+            "payload",
+            "tags",
+            "metadata",
+            "config",
+            "result",
+            "error_patterns",
+            "suggested_fixes",
+            "input_map",
+            "filters",  # trigger fields (Issue #329.1)
+            "signals_json",  # routing_decisions (Issue #331.3)
+            "affected_files",  # regressions (Issue #3.3a.1)
+            "issues_found",  # review_outcomes (Issue #4.1.2)
         ]
         for field in json_fields:
             if field in data and data[field] is not None:
@@ -1504,39 +1556,52 @@ class Database:
     def insert_pipeline_run(self, run_data: Dict[str, Any]) -> str:
         """Insert a new async pipeline run record."""
         with self.transaction() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO pipeline_runs (
                     run_id, template_path, template_id, input_json, mode,
                     output_dir, status, gateway_url, skip_scoring,
                     parent_run_id, chain_depth,
                     retry_of_run_id, retry_strategy
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                run_data['run_id'],
-                run_data['template_path'],
-                run_data['template_id'],
-                run_data['input_json'],
-                run_data['mode'],
-                run_data['output_dir'],
-                run_data.get('status', 'pending'),
-                run_data.get('gateway_url'),
-                int(run_data.get('skip_scoring', 0)),
-                run_data.get('parent_run_id'),         # Issue #330.1: chaining parent
-                int(run_data.get('chain_depth', 0)),   # Issue #330.1: chaining depth
-                run_data.get('retry_of_run_id'),       # Issue #3.2.1: retry linkage
-                run_data.get('retry_strategy'),        # Issue #3.2.1: retry strategy applied
-            ))
-        return run_data['run_id']
+            """,
+                (
+                    run_data["run_id"],
+                    run_data["template_path"],
+                    run_data["template_id"],
+                    run_data["input_json"],
+                    run_data["mode"],
+                    run_data["output_dir"],
+                    run_data.get("status", "pending"),
+                    run_data.get("gateway_url"),
+                    int(run_data.get("skip_scoring", 0)),
+                    run_data.get("parent_run_id"),  # Issue #330.1: chaining parent
+                    int(run_data.get("chain_depth", 0)),  # Issue #330.1: chaining depth
+                    run_data.get("retry_of_run_id"),  # Issue #3.2.1: retry linkage
+                    run_data.get("retry_strategy"),  # Issue #3.2.1: retry strategy applied
+                ),
+            )
+        return run_data["run_id"]
 
     def update_pipeline_run(self, run_id: str, **kwargs) -> bool:
         """Update fields on a pipeline_runs row."""
         if not kwargs:
             return False
         allowed = {
-            'status', 'current_phase', 'completed_phases', 'phase_outputs',
-            'pid', 'started_at', 'completed_at', 'error_message', 'gateway_url',
-            'skip_scoring', 'scoring_status', 'scoring_score',
-            'retry_of_run_id', 'retry_strategy',       # Issue #3.2.1: retry linkage
+            "status",
+            "current_phase",
+            "completed_phases",
+            "phase_outputs",
+            "pid",
+            "started_at",
+            "completed_at",
+            "error_message",
+            "gateway_url",
+            "skip_scoring",
+            "scoring_status",
+            "scoring_score",
+            "retry_of_run_id",
+            "retry_strategy",  # Issue #3.2.1: retry linkage
         }
         updates = []
         values = []
@@ -1559,9 +1624,7 @@ class Database:
         """Return a pipeline_runs row as a dict, or None."""
         with self._locked():
             conn = self.get_connection()
-            cursor = conn.execute(
-                "SELECT * FROM pipeline_runs WHERE run_id = ?", (run_id,)
-            )
+            cursor = conn.execute("SELECT * FROM pipeline_runs WHERE run_id = ?", (run_id,))
             row = cursor.fetchone()
         if row is None:
             return None
@@ -1691,14 +1754,18 @@ class Database:
                         text = ""
 
                     if not text:
-                        no_pid_reason = "no PID recorded (pid column NULL and PID file missing/empty)"
+                        no_pid_reason = (
+                            "no PID recorded (pid column NULL and PID file missing/empty)"
+                        )
                     else:
                         try:
                             parsed = int(text)
                             if parsed > 0:
                                 effective_pid = parsed
                             else:
-                                no_pid_reason = "no PID recorded (PID file contains non-positive value)"
+                                no_pid_reason = (
+                                    "no PID recorded (PID file contains non-positive value)"
+                                )
                         except ValueError:
                             no_pid_reason = "no PID recorded (PID file contains non-numeric value)"
 
@@ -1706,8 +1773,7 @@ class Database:
                 if no_pid_reason is not None:
                     # No usable PID anywhere — sweep with explicit reason.
                     error_message = (
-                        "daemon process exited without updating status: "
-                        + no_pid_reason
+                        "daemon process exited without updating status: " + no_pid_reason
                     )
                     self._mark_crashed(run_id, error_message, now)
                     swept += 1
@@ -1719,19 +1785,17 @@ class Database:
 
                 # Dead PID — sweep.
                 error_message = (
-                    f"daemon process exited without updating status "
-                    f"(pid {effective_pid})"
+                    f"daemon process exited without updating status " f"(pid {effective_pid})"
                 )
                 if self._mark_crashed(run_id, error_message, now):
                     swept += 1
             except Exception as exc:
                 # Per-row containment — log and move on.
-                run_id_str = (
-                    row["run_id"] if hasattr(row, "__getitem__") else "<unknown>"
-                )
+                run_id_str = row["run_id"] if hasattr(row, "__getitem__") else "<unknown>"
                 logger.warning(
                     "sweep_zombie_runs: per-row error on run_id=%s: %s",
-                    run_id_str, exc,
+                    run_id_str,
+                    exc,
                 )
                 continue
 
@@ -1764,7 +1828,8 @@ class Database:
         except sqlite3.OperationalError as exc:
             logger.warning(
                 "_mark_crashed: UPDATE failed for run_id=%s: %s",
-                run_id, exc,
+                run_id,
+                exc,
             )
             return False
 
@@ -1797,7 +1862,8 @@ class Database:
             self.sweep_zombie_runs()
         except Exception as exc:  # pragma: no cover — sweep is defensive
             logger.warning(
-                "count_active_pipeline_runs: sweep raised unexpectedly: %s", exc,
+                "count_active_pipeline_runs: sweep raised unexpectedly: %s",
+                exc,
             )
 
         try:
@@ -2040,8 +2106,7 @@ class Database:
                      cost_usd, state, metadata_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, event_type, phase_id, tokens_consumed,
-                 cost_usd, state, metadata_json),
+                (run_id, event_type, phase_id, tokens_consumed, cost_usd, state, metadata_json),
             )
             return cursor.lastrowid  # type: ignore[return-value]
 
@@ -2103,20 +2168,23 @@ class Database:
             The auto-incremented ``id`` of the inserted row.
         """
         with self.transaction() as conn:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 INSERT INTO diagnosis_results
                     (run_id, failure_class, remediation, confidence,
                      explanation, model_used, tokens_consumed)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                diagnosis_data["run_id"],
-                diagnosis_data["failure_class"],
-                diagnosis_data["remediation"],
-                diagnosis_data["confidence"],
-                diagnosis_data.get("explanation"),
-                diagnosis_data.get("model_used"),
-                diagnosis_data.get("tokens_consumed", 0),
-            ))
+            """,
+                (
+                    diagnosis_data["run_id"],
+                    diagnosis_data["failure_class"],
+                    diagnosis_data["remediation"],
+                    diagnosis_data["confidence"],
+                    diagnosis_data.get("explanation"),
+                    diagnosis_data.get("model_used"),
+                    diagnosis_data.get("tokens_consumed", 0),
+                ),
+            )
             return cursor.lastrowid
 
     def get_diagnosis_by_run_id(self, run_id: str) -> Optional[Dict[str, Any]]:
@@ -2127,12 +2195,15 @@ class Database:
         """
         with self._locked():
             conn = self.get_connection()
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT * FROM diagnosis_results
                 WHERE run_id = ?
                 ORDER BY id DESC
                 LIMIT 1
-            """, (run_id,))
+            """,
+                (run_id,),
+            )
             row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
 
@@ -2194,21 +2265,24 @@ class Database:
                 exists.
         """
         with self.transaction() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO triggers
                     (id, template_id, mode, secret, rate_limit, input_map, filters, created_at, enabled)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                trigger_data["id"],
-                trigger_data["template_id"],
-                trigger_data.get("mode", "async"),
-                trigger_data.get("secret"),
-                trigger_data.get("rate_limit", 0),
-                json.dumps(trigger_data.get("input_map") or {}),
-                json.dumps(trigger_data.get("filters") or []),
-                trigger_data.get("created_at") or now_utc().isoformat(),
-                int(trigger_data.get("enabled", True)),
-            ))
+            """,
+                (
+                    trigger_data["id"],
+                    trigger_data["template_id"],
+                    trigger_data.get("mode", "async"),
+                    trigger_data.get("secret"),
+                    trigger_data.get("rate_limit", 0),
+                    json.dumps(trigger_data.get("input_map") or {}),
+                    json.dumps(trigger_data.get("filters") or []),
+                    trigger_data.get("created_at") or now_utc().isoformat(),
+                    int(trigger_data.get("enabled", True)),
+                ),
+            )
         return trigger_data["id"]
 
     def get_trigger(self, trigger_id: str) -> Optional[Dict[str, Any]]:
@@ -2223,9 +2297,7 @@ class Database:
         """
         with self._locked():
             conn = self.get_connection()
-            cursor = conn.execute(
-                "SELECT * FROM triggers WHERE id = ?", (trigger_id,)
-            )
+            cursor = conn.execute("SELECT * FROM triggers WHERE id = ?", (trigger_id,))
             row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
 
@@ -2338,9 +2410,7 @@ class Database:
             was found.
         """
         with self.transaction() as conn:
-            cursor = conn.execute(
-                "DELETE FROM triggers WHERE id = ?", (trigger_id,)
-            )
+            cursor = conn.execute("DELETE FROM triggers WHERE id = ?", (trigger_id,))
             return cursor.rowcount > 0
 
     def record_webhook_invocation(self, trigger_id: str) -> None:
@@ -2496,17 +2566,12 @@ class Database:
         # SQLite does not support IF NOT EXISTS for ALTER TABLE ADD COLUMN.
         # We guard each column addition by checking PRAGMA table_info first.
         existing_cols = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(pipeline_runs)").fetchall()
+            row[1] for row in conn.execute("PRAGMA table_info(pipeline_runs)").fetchall()
         }
         if "retry_of_run_id" not in existing_cols:
-            conn.execute(
-                "ALTER TABLE pipeline_runs ADD COLUMN retry_of_run_id TEXT DEFAULT NULL"
-            )
+            conn.execute("ALTER TABLE pipeline_runs ADD COLUMN retry_of_run_id TEXT DEFAULT NULL")
         if "retry_strategy" not in existing_cols:
-            conn.execute(
-                "ALTER TABLE pipeline_runs ADD COLUMN retry_strategy TEXT DEFAULT NULL"
-            )
+            conn.execute("ALTER TABLE pipeline_runs ADD COLUMN retry_strategy TEXT DEFAULT NULL")
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_pipeline_runs_retry_of
             ON pipeline_runs (retry_of_run_id)
@@ -2838,9 +2903,7 @@ class Database:
             ON sprint_chain_state(repo, processed_at)
         """)
 
-    def _migration_020_add_sprint_chain_state_table(
-        self, conn: sqlite3.Connection
-    ) -> None:
+    def _migration_020_add_sprint_chain_state_table(self, conn: sqlite3.Connection) -> None:
         """Add sprint_chain_state table for post-merge chain automation (Issue #514).
 
         Idempotent: uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS.
@@ -2901,6 +2964,7 @@ class Database:
         """
         import json as _json
         import os as _os
+
         pid = source_pid if source_pid is not None else _os.getpid()
         with self.transaction() as conn:
             cur = conn.execute(
@@ -2919,15 +2983,14 @@ class Database:
             )
             return int(cur.lastrowid or 0)
 
-    def list_admin_audit(
-        self, limit: int = 100, offset: int = 0
-    ) -> List[Dict[str, Any]]:
+    def list_admin_audit(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
         """Return up to ``limit`` recent admin audit rows, newest first.
 
         Each row is a dict with the columns of ``admin_audit_log``;
         ``before_json``/``after_json`` are parsed back into dicts (or None).
         """
         import json as _json
+
         with self.transaction() as conn:
             cur = conn.execute(
                 """
@@ -2950,15 +3013,17 @@ class Database:
                 # Z-suffixes naive UTC strings so JS clients don't
                 # misinterpret them as local time. (#876)
                 created_str = normalize_ts(r["created_at"])
-                rows.append({
-                    "id": r["id"],
-                    "action": r["action"],
-                    "target": r["target"],
-                    "before": before,
-                    "after": after,
-                    "source_pid": r["source_pid"],
-                    "created_at": created_str,
-                })
+                rows.append(
+                    {
+                        "id": r["id"],
+                        "action": r["action"],
+                        "target": r["target"],
+                        "before": before,
+                        "after": after,
+                        "source_pid": r["source_pid"],
+                        "created_at": created_str,
+                    }
+                )
             return rows
 
     def upsert_sprint_chain_state(
@@ -2997,9 +3062,7 @@ class Database:
                 (repo, issue_number, status, run_id, score),
             )
 
-    def get_sprint_chain_state(
-        self, repo: str, issue_number: int
-    ) -> Optional[Dict[str, Any]]:
+    def get_sprint_chain_state(self, repo: str, issue_number: int) -> Optional[Dict[str, Any]]:
         """Return the sprint_chain_state row for ``(repo, issue_number)``, or ``None``.
 
         Args:
@@ -3191,10 +3254,7 @@ class Database:
             select_col = "pr.template_id"
             group_col = "pr.template_id"
             order_sql = "ORDER BY total_cost DESC"
-            from_join = (
-                "FROM cost_tracking ct "
-                "JOIN pipeline_runs pr ON ct.run_id = pr.run_id"
-            )
+            from_join = "FROM cost_tracking ct " "JOIN pipeline_runs pr ON ct.run_id = pr.run_id"
         else:  # group_by == "model"
             select_col = "ct.model"
             group_col = "ct.model"
@@ -3258,10 +3318,7 @@ class Database:
             from_join = "FROM cost_tracking ct"
         elif group_by == "template":
             group_col = "pr.template_id"
-            from_join = (
-                "FROM cost_tracking ct "
-                "JOIN pipeline_runs pr ON ct.run_id = pr.run_id"
-            )
+            from_join = "FROM cost_tracking ct " "JOIN pipeline_runs pr ON ct.run_id = pr.run_id"
         else:  # group_by == "model"
             group_col = "ct.model"
             from_join = "FROM cost_tracking ct"
@@ -3576,8 +3633,13 @@ class Database:
                     END
                 """,
                 (
-                    pattern_hash, template_id, failure_class, now_iso, now_iso,
-                    systemic_threshold, systemic_window_days,
+                    pattern_hash,
+                    template_id,
+                    failure_class,
+                    now_iso,
+                    now_iso,
+                    systemic_threshold,
+                    systemic_window_days,
                 ),
             )
             cursor = conn.execute(
@@ -3817,6 +3879,7 @@ class Database:
             The ``id`` of the inserted row.
         """
         import json as _json
+
         # Normalise affected_files: accept both list and pre-serialised string.
         af = regression_data.get("affected_files", [])
         if isinstance(af, str):
@@ -3859,9 +3922,7 @@ class Database:
         """
         with self._locked():
             conn = self.get_connection()
-            cursor = conn.execute(
-                "SELECT * FROM regressions WHERE id = ?", (regression_id,)
-            )
+            cursor = conn.execute("SELECT * FROM regressions WHERE id = ?", (regression_id,))
             row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
 
@@ -4359,9 +4420,7 @@ class Database:
         """
         with self._locked():
             conn = self.get_connection()
-            cursor = conn.execute(
-                "SELECT * FROM trust_profiles ORDER BY id ASC"
-            )
+            cursor = conn.execute("SELECT * FROM trust_profiles ORDER BY id ASC")
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 
@@ -4386,6 +4445,6 @@ class Database:
 
     def close(self) -> None:
         """Close database connections."""
-        if hasattr(self._local, 'connection'):
+        if hasattr(self._local, "connection"):
             self._local.connection.close()
-            delattr(self._local, 'connection')
+            delattr(self._local, "connection")

@@ -159,9 +159,7 @@ class CommandExecutor:
         # ── 4. Security check ─────────────────────────────────────────
         security_error = self._check_security(command, allowed_commands)
         if security_error:
-            logger.warning(
-                f"CommandExecutor: SECURITY — command blocked: {command!r}"
-            )
+            logger.warning(f"CommandExecutor: SECURITY — command blocked: {command!r}")
             return self._make_result(
                 task=task,
                 text=f"[SECURITY] {security_error}",
@@ -210,9 +208,7 @@ class CommandExecutor:
                 started_at=started_at,
             )
         except Exception as exc:
-            logger.error(
-                f"CommandExecutor: unexpected error running {args!r}: {exc}"
-            )
+            logger.error(f"CommandExecutor: unexpected error running {args!r}: {exc}")
             return self._make_result(
                 task=task,
                 text=f"[ERROR] {exc}",
@@ -232,8 +228,7 @@ class CommandExecutor:
 
         state = TaskState.SUCCESS if proc.returncode == 0 else TaskState.FAILED
         logger.info(
-            f"CommandExecutor: command exited {proc.returncode} "
-            f"({len(output)} chars output)"
+            f"CommandExecutor: command exited {proc.returncode} " f"({len(output)} chars output)"
         )
 
         return self._make_result(
@@ -264,7 +259,7 @@ class CommandExecutor:
         prompt: str = payload.get("prompt", "") or ""
         stripped = prompt.strip()
         if stripped.upper().startswith("COMMAND:"):
-            return stripped[len("COMMAND:"):].strip()
+            return stripped[len("COMMAND:") :].strip()
 
         raise ValueError(
             "CommandExecutor: no command found in payload. "
@@ -290,8 +285,7 @@ class CommandExecutor:
         * ``{phase_id}``
         """
         quoted: Dict[str, Any] = {
-            k: shlex.quote(str(v)) if isinstance(v, str) else v
-            for k, v in payload.items()
+            k: shlex.quote(str(v)) if isinstance(v, str) else v for k, v in payload.items()
         }
         safe = _SafeDict(quoted)
         return command.format_map(safe)

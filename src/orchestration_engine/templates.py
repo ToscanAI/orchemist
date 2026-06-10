@@ -46,14 +46,19 @@ def _parse_git_config(raw: Any) -> Optional[GitConfig]:
         return None
 
     known_fields = {
-        "enabled", "branch_pattern", "auto_commit", "commit_phases",
-        "working_dir", "push", "merge_gate", "create_pr", "base_branch",
+        "enabled",
+        "branch_pattern",
+        "auto_commit",
+        "commit_phases",
+        "working_dir",
+        "push",
+        "merge_gate",
+        "create_pr",
+        "base_branch",
     }
     unknown = set(raw.keys()) - known_fields
     if unknown:
-        logger.warning(
-            f"Template git config has unknown fields (ignored): {sorted(unknown)}"
-        )
+        logger.warning(f"Template git config has unknown fields (ignored): {sorted(unknown)}")
 
     return GitConfig(
         enabled=bool(raw.get("enabled", False)),
@@ -208,14 +213,10 @@ def _parse_on_complete_config(raw: Any) -> Optional["OnCompleteConfig"]:
         entries = []
         for item in raw_list:
             if not isinstance(item, dict):
-                logger.warning(
-                    "on_complete entry is not a dict (ignored): %r", item
-                )
+                logger.warning("on_complete entry is not a dict (ignored): %r", item)
                 continue
             if "template" not in item:
-                raise ValueError(
-                    "Each on_complete entry must have a 'template' key"
-                )
+                raise ValueError("Each on_complete entry must have a 'template' key")
             entries.append(
                 OnCompleteEntry(
                     template=str(item["template"]),
@@ -259,24 +260,22 @@ class BudgetConfig:
         future implementation pass.
     """
 
-    max_cost_per_run: Optional[float] = None   # USD — abort if exceeded
-    max_cost_per_day: Optional[float] = None   # USD — reject new launches
-    warn_at_percentage: float = 80.0           # % of per-run cap to warn at
+    max_cost_per_run: Optional[float] = None  # USD — abort if exceeded
+    max_cost_per_day: Optional[float] = None  # USD — reject new launches
+    warn_at_percentage: float = 80.0  # % of per-run cap to warn at
 
     def __post_init__(self) -> None:
         if self.max_cost_per_run is not None:
             self.max_cost_per_run = float(self.max_cost_per_run)
             if self.max_cost_per_run < 0:
                 raise ValueError(
-                    f"BudgetConfig.max_cost_per_run must be >= 0, "
-                    f"got {self.max_cost_per_run}"
+                    f"BudgetConfig.max_cost_per_run must be >= 0, " f"got {self.max_cost_per_run}"
                 )
         if self.max_cost_per_day is not None:
             self.max_cost_per_day = float(self.max_cost_per_day)
             if self.max_cost_per_day < 0:
                 raise ValueError(
-                    f"BudgetConfig.max_cost_per_day must be >= 0, "
-                    f"got {self.max_cost_per_day}"
+                    f"BudgetConfig.max_cost_per_day must be >= 0, " f"got {self.max_cost_per_day}"
                 )
         self.warn_at_percentage = float(self.warn_at_percentage)
         if not (0.0 <= self.warn_at_percentage <= 100.0):
@@ -372,8 +371,11 @@ def _parse_adversary_config(raw: Any) -> Optional["AdversaryConfig"]:
         return None
 
     known_fields = {
-        "valid_categories", "fallback_category", "verdict_scan",
-        "reward_enabled", "reward_filename",
+        "valid_categories",
+        "fallback_category",
+        "verdict_scan",
+        "reward_enabled",
+        "reward_filename",
     }
     unknown = set(raw.keys()) - known_fields
     if unknown:
@@ -385,9 +387,7 @@ def _parse_adversary_config(raw: Any) -> Optional["AdversaryConfig"]:
     # --- valid_categories: required, must be non-empty, deduplicate preserving order ---
     raw_cats = raw.get("valid_categories")
     if not isinstance(raw_cats, list) or len(raw_cats) == 0:
-        raise ValueError(
-            "adversary_config.valid_categories must be a non-empty list"
-        )
+        raise ValueError("adversary_config.valid_categories must be a non-empty list")
     # Deduplicate preserving order (first occurrence wins)
     seen: set = set()
     valid_categories: list = []
@@ -411,8 +411,7 @@ def _parse_adversary_config(raw: Any) -> Optional["AdversaryConfig"]:
     verdict_scan: str = str(raw.get("verdict_scan", "last"))
     if verdict_scan not in ("first", "last"):
         raise ValueError(
-            f"adversary_config.verdict_scan must be 'first' or 'last', "
-            f"got {verdict_scan!r}"
+            f"adversary_config.verdict_scan must be 'first' or 'last', " f"got {verdict_scan!r}"
         )
 
     return AdversaryConfig(
@@ -487,33 +486,35 @@ class PhaseDefinition:
     id: str
     name: str
     description: str = ""
-    task_type: str = "content"      # content, research, review, code, translation
-    model_tier: str = "sonnet"      # haiku, sonnet, opus
-    thinking_level: str = "low"     # off, low, medium, high
+    task_type: str = "content"  # content, research, review, code, translation
+    model_tier: str = "sonnet"  # haiku, sonnet, opus
+    thinking_level: str = "low"  # off, low, medium, high
     depends_on: List[str] = field(default_factory=list)
     timeout_minutes: int = 30
     human_review: bool = False
-    prompt_template: str = ""       # Python str.format()-style with {input}, {previous_output}
+    prompt_template: str = ""  # Python str.format()-style with {input}, {previous_output}
     output_schema: Dict[str, Any] = field(default_factory=dict)
     skill_refs: List[str] = field(default_factory=list)  # paths to external skill files
     context_files: List[str] = field(default_factory=list)  # local files to inline into prompt
-    retries: int = 0                # number of retry attempts after initial failure (0 = no retry)
-    retry_delay_seconds: int = 30   # seconds to wait between retry attempts
-    write_files: bool = False       # parse output FILE blocks and write to working_dir
-    working_dir: str = "."          # directory where extracted files are written
-    base_dir: str = ""              # safety root; refuse writes outside this dir (empty = working_dir)
+    retries: int = 0  # number of retry attempts after initial failure (0 = no retry)
+    retry_delay_seconds: int = 30  # seconds to wait between retry attempts
+    write_files: bool = False  # parse output FILE blocks and write to working_dir
+    working_dir: str = "."  # directory where extracted files are written
+    base_dir: str = ""  # safety root; refuse writes outside this dir (empty = working_dir)
     transitions: Dict[str, str] = field(default_factory=dict)  # outcome → phase_id
-    max_iterations: int = 0         # 0 = use pipeline default
+    max_iterations: int = 0  # 0 = use pipeline default
     # Command execution fields (#190)
-    command: Optional[str] = None          # shell command to run (used when task_type=command)
-    allowed_commands: List[str] = field(default_factory=list)  # security allowlist of command prefixes
+    command: Optional[str] = None  # shell command to run (used when task_type=command)
+    allowed_commands: List[str] = field(
+        default_factory=list
+    )  # security allowlist of command prefixes
 
     # Supervisor hook fields (Issue #194)
-    supervisor: bool = False                    # enable supervisor evaluation after this phase
-    supervisor_prompt: Optional[str] = None     # custom evaluation prompt (uses default if None)
-    supervisor_model: Optional[str] = None      # model tier override (defaults to opus)
-    supervisor_rubric: Optional[str] = None     # quality criteria / rubric text
-    supervisor_max_retries: int = 2             # max REVISE cycles before aborting
+    supervisor: bool = False  # enable supervisor evaluation after this phase
+    supervisor_prompt: Optional[str] = None  # custom evaluation prompt (uses default if None)
+    supervisor_model: Optional[str] = None  # model tier override (defaults to opus)
+    supervisor_rubric: Optional[str] = None  # quality criteria / rubric text
+    supervisor_max_retries: int = 2  # max REVISE cycles before aborting
 
     # Model fallback chain fields (Issue #347)
     model_chain: List[str] = field(default_factory=list)
@@ -785,9 +786,7 @@ class TemplateNotFoundError(FileNotFoundError):
         self.name = name
         self.searched = searched or []
         paths_str = ", ".join(str(p) for p in self.searched)
-        super().__init__(
-            f"Template '{name}' not found. Searched: [{paths_str}]"
-        )
+        super().__init__(f"Template '{name}' not found. Searched: [{paths_str}]")
 
 
 class TemplateEngine:
@@ -819,14 +818,10 @@ class TemplateEngine:
             # Existing callers that pass templates_dir= still work.
             self._project_dir: Path = templates_dir
         else:
-            self._project_dir = (
-                project_dir if project_dir is not None
-                else Path.cwd() / "templates"
-            )
+            self._project_dir = project_dir if project_dir is not None else Path.cwd() / "templates"
 
         self._user_dir: Path = (
-            user_dir if user_dir is not None
-            else Path.home() / ".orch" / "templates"
+            user_dir if user_dir is not None else Path.home() / ".orch" / "templates"
         )
 
         # Package-bundled templates live two levels up from this file:
@@ -894,9 +889,7 @@ class TemplateEngine:
         """
         # Security: reject path traversal attempts before touching the filesystem
         if os.sep in name or "/" in name or "\\" in name or ".." in name:
-            raise ValueError(
-                f"Template name must not contain path separators or '..': {name!r}"
-            )
+            raise ValueError(f"Template name must not contain path separators or '..': {name!r}")
 
         # Strip extension so callers can pass "foo.yaml" or just "foo"
         stem = Path(name).stem if name.endswith((".yaml", ".yml")) else name
@@ -917,9 +910,7 @@ class TemplateEngine:
         for directory, _label in self.get_search_paths():
             if not directory.exists():
                 continue
-            for filepath in sorted(directory.glob("*.yaml")) + sorted(
-                directory.glob("*.yml")
-            ):
+            for filepath in sorted(directory.glob("*.yaml")) + sorted(directory.glob("*.yml")):
                 try:
                     tpl = self.load_template(filepath)
                     if tpl.id == stem:
@@ -970,9 +961,7 @@ class TemplateEngine:
         for directory, source_label in self.get_search_paths():
             if not directory.exists():
                 continue
-            for filepath in sorted(directory.glob("*.yaml")) + sorted(
-                directory.glob("*.yml")
-            ):
+            for filepath in sorted(directory.glob("*.yaml")) + sorted(directory.glob("*.yml")):
                 try:
                     template = self.load_template(filepath)
                 except Exception as exc:
@@ -1062,9 +1051,7 @@ class TemplateEngine:
 
         if extends_id in _chain:
             cycle_path = " -> ".join(_chain + [extends_id])
-            raise ValueError(
-                f"Circular extends chain detected: {cycle_path}"
-            )
+            raise ValueError(f"Circular extends chain detected: {cycle_path}")
         _chain.append(extends_id)
 
         # Resolve parent path (raises TemplateNotFoundError with context).
@@ -1080,8 +1067,7 @@ class TemplateEngine:
             parent_data = yaml.safe_load(fh)
         if parent_data is None:
             raise ValueError(
-                f"Parent template referenced by 'extends: {extends_id}' is empty: "
-                f"{parent_path}"
+                f"Parent template referenced by 'extends: {extends_id}' is empty: " f"{parent_path}"
             )
 
         # Recurse on the parent's own extends (multi-level inheritance).
@@ -1152,12 +1138,12 @@ class TemplateEngine:
         # Build merged phases list — parent (post-exclude) first, then walk child
         # phases. For each child phase: if id matches a remaining parent phase,
         # field-level merge in place; else append.
-        merged_phases: List[Dict[str, Any]] = [
-            dict(parent_phase_map[pid]) for pid in parent_order
-        ]
+        merged_phases: List[Dict[str, Any]] = [dict(parent_phase_map[pid]) for pid in parent_order]
         # Index of merged_phases by id for in-place override lookup.
         merged_index: Dict[str, int] = {
-            entry["id"]: i for i, entry in enumerate(merged_phases) if isinstance(entry.get("id"), str)
+            entry["id"]: i
+            for i, entry in enumerate(merged_phases)
+            if isinstance(entry.get("id"), str)
         }
 
         child_phases_raw = child_data.get("phases") or []
@@ -1260,8 +1246,7 @@ class TemplateEngine:
         elif exclude_phases_raw:
             # exclude_phases without extends is meaningless — warn and ignore.
             logger.warning(
-                "Template %s: 'exclude_phases' declared without 'extends' — "
-                "ignored.",
+                "Template %s: 'exclude_phases' declared without 'extends' — " "ignored.",
                 template_path,
             )
 
@@ -1295,9 +1280,17 @@ class TemplateEngine:
 
             # Filter to only known PhaseDefinition fields to avoid TypeError
             known_fields = {
-                "id", "name", "description", "task_type", "model_tier",
-                "thinking_level", "depends_on", "timeout_minutes",
-                "human_review", "prompt_template", "output_schema",
+                "id",
+                "name",
+                "description",
+                "task_type",
+                "model_tier",
+                "thinking_level",
+                "depends_on",
+                "timeout_minutes",
+                "human_review",
+                "prompt_template",
+                "output_schema",
                 "skill_refs",
                 "context_files",
                 "retries",
@@ -1342,8 +1335,7 @@ class TemplateEngine:
             unknown = set(phase_data.keys()) - known_fields
             if unknown:
                 logger.warning(
-                    f"Phase '{phase_data.get('id', '?')}': "
-                    f"unknown fields dropped: {unknown}"
+                    f"Phase '{phase_data.get('id', '?')}': " f"unknown fields dropped: {unknown}"
                 )
 
             # Parse adversary_config separately (needs special handling)
@@ -1362,10 +1354,14 @@ class TemplateEngine:
         git_config: Optional[GitConfig] = _parse_git_config(data.get("git"))
 
         # Parse optional auto_merge: section (Issue #350)
-        auto_merge_config: Optional[AutoMergeConfig] = _parse_auto_merge_config(data.get("auto_merge"))
+        auto_merge_config: Optional[AutoMergeConfig] = _parse_auto_merge_config(
+            data.get("auto_merge")
+        )
 
         # Parse optional on_complete: section (Issue #330.1)
-        on_complete_config: Optional[OnCompleteConfig] = _parse_on_complete_config(data.get("on_complete"))
+        on_complete_config: Optional[OnCompleteConfig] = _parse_on_complete_config(
+            data.get("on_complete")
+        )
 
         # --- Parse parallel-execution control fields (Issue #102) ---
         # Use explicit sentinel check so that `parallel: false` (which is falsy)
@@ -1391,9 +1387,7 @@ class TemplateEngine:
         # --- Parse phase transition fields (Issue #231) ---
         raw_default_transitions = data.get("default_transitions", None)
         default_transitions: Dict[str, str] = (
-            dict(raw_default_transitions)
-            if isinstance(raw_default_transitions, dict)
-            else {}
+            dict(raw_default_transitions) if isinstance(raw_default_transitions, dict) else {}
         )
 
         raw_pipeline_max_iterations = data.get("max_iterations", None)
@@ -1408,9 +1402,7 @@ class TemplateEngine:
         )
 
         # Parse optional budget: section (Issue #5.2.2)
-        budget_config_parsed: Optional[BudgetConfig] = _parse_budget_config(
-            data.get("budget")
-        )
+        budget_config_parsed: Optional[BudgetConfig] = _parse_budget_config(data.get("budget"))
 
         return PipelineTemplate(
             id=data["id"],
@@ -1433,11 +1425,11 @@ class TemplateEngine:
             default_transitions=default_transitions,
             max_iterations=pipeline_max_iterations,
             scenario=data.get("scenario") or None,  # Issue #172: post-pipeline auto-scoring
-            auto_merge=auto_merge_config,            # Issue #350: per-repo auto-merge config
-            on_complete=on_complete_config,          # Issue #330.1: pipeline chaining config
-            routing_config=routing_config_parsed,    # Issue #331.2: confidence-based routing
-            budget=budget_config_parsed,              # Issue #5.2.2: budget enforcement
-            extends=source_extends,                   # Issue #704: composition metadata
+            auto_merge=auto_merge_config,  # Issue #350: per-repo auto-merge config
+            on_complete=on_complete_config,  # Issue #330.1: pipeline chaining config
+            routing_config=routing_config_parsed,  # Issue #331.2: confidence-based routing
+            budget=budget_config_parsed,  # Issue #5.2.2: budget enforcement
+            extends=source_extends,  # Issue #704: composition metadata
             excluded_phase_ids=list(removed_phase_ids),  # Issue #704: composition metadata
         )
 
@@ -1471,9 +1463,7 @@ class TemplateEngine:
                 # Unknown deps are silently ignored here; validate_template() catches them
 
         # Start with phases that have no unsatisfied dependencies
-        current_wave = sorted(
-            pid for pid, deg in in_degree.items() if deg == 0
-        )
+        current_wave = sorted(pid for pid, deg in in_degree.items() if deg == 0)
         waves: List[List[str]] = []
 
         while current_wave:
@@ -1596,9 +1586,7 @@ class TemplateEngine:
         for phase in template.phases:
             for dep in phase.depends_on:
                 if dep not in all_ids:
-                    errors.append(
-                        f"Phase '{phase.id}' depends on unknown phase '{dep}'"
-                    )
+                    errors.append(f"Phase '{phase.id}' depends on unknown phase '{dep}'")
 
         # Check for cycles only when there are no missing-dep errors
         # (missing deps can make the cycle detector give false positives)
@@ -1612,8 +1600,7 @@ class TemplateEngine:
             missing_from_order = all_ids - ordered_ids
             if missing_from_order:
                 errors.append(
-                    f"Cycle detected involving phase(s): "
-                    f"{sorted(missing_from_order)}"
+                    f"Cycle detected involving phase(s): " f"{sorted(missing_from_order)}"
                 )
 
         # --- Transition graph validation (Issue #232) -----------------
@@ -1673,14 +1660,10 @@ class TemplateEngine:
         # all phases share wave 0 and routing is handled via transitions, not
         # parallel wave execution.  Applying the parallel-wave constraint to
         # such templates would produce false positives (Issue #301).
-        is_pure_state_machine = all(
-            not phase.depends_on for phase in template.phases
-        )
+        is_pure_state_machine = all(not phase.depends_on for phase in template.phases)
         if not dep_errors and execution_order and not is_pure_state_machine:
             for wave_index, wave in enumerate(execution_order):
-                transition_phases_in_wave = [
-                    pid for pid in wave if pid in phases_with_transitions
-                ]
+                transition_phases_in_wave = [pid for pid in wave if pid in phases_with_transitions]
                 if len(transition_phases_in_wave) > 1:
                     errors.append(
                         f"Wave {wave_index} contains multiple transition phases "
@@ -1712,11 +1695,7 @@ class TemplateEngine:
                 )
 
         # Check that all skill_ref files exist (with path traversal protection)
-        template_dir = (
-            template.template_path.parent
-            if template.template_path is not None
-            else None
-        )
+        template_dir = template.template_path.parent if template.template_path is not None else None
         global_skills_dir = (Path.home() / ".orch" / "skills").resolve()
         for phase in template.phases:
             for skill_ref in phase.skill_refs:
@@ -1769,15 +1748,11 @@ class TemplateEngine:
         if template.on_complete is not None:
             oc = template.on_complete
             if not isinstance(oc, OnCompleteConfig):
-                errors.append(
-                    "on_complete must be an OnCompleteConfig instance"
-                )
+                errors.append("on_complete must be an OnCompleteConfig instance")
             else:
                 for list_name, entry_list in (("success", oc.success), ("failed", oc.failed)):
                     if not isinstance(entry_list, list):
-                        errors.append(
-                            f"on_complete.{list_name} must be a list"
-                        )
+                        errors.append(f"on_complete.{list_name} must be a list")
                         continue
                     for idx, entry in enumerate(entry_list):
                         if not isinstance(entry, OnCompleteEntry):
@@ -1921,9 +1896,7 @@ class TemplateEngine:
                 dfs(node, [])
 
         for cycle in cycles_found:
-            errors.append(
-                f"Cycle detected in chain DAG: {' → '.join(cycle)}"
-            )
+            errors.append(f"Cycle detected in chain DAG: {' → '.join(cycle)}")
 
         return errors
 
@@ -1972,7 +1945,9 @@ class TemplateEngine:
             prompt = phase.prompt_template or ""
             # Match {some_identifier.output} or {some_identifier.something}
             # but NOT built-ins {input}, {previous_output}, {input[key]}
-            for match in re.finditer(r"\{([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\}", prompt):
+            for match in re.finditer(
+                r"\{([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\}", prompt
+            ):
                 ref_phase = match.group(1)
                 if ref_phase not in phase_ids:
                     warnings.append(
@@ -1987,9 +1962,7 @@ class TemplateEngine:
                     tier, self.KNOWN_MODEL_TIERS, n=1, cutoff=0.4
                 )
                 hint = f"; did you mean '{suggestion[0]}'?" if suggestion else ""
-                warnings.append(
-                    f"Phase '{phase.id}' has unknown model_tier='{tier}'{hint}"
-                )
+                warnings.append(f"Phase '{phase.id}' has unknown model_tier='{tier}'{hint}")
 
             # ---- model_chain check (#347) ----------------------------
             for i, chain_tier in enumerate(phase.model_chain or []):
@@ -1999,8 +1972,7 @@ class TemplateEngine:
                     )
                     hint = f"; did you mean '{suggestion[0]}'?" if suggestion else ""
                     warnings.append(
-                        f"Phase '{phase.id}' has unknown model_chain[{i}]="
-                        f"'{chain_tier}'{hint}"
+                        f"Phase '{phase.id}' has unknown model_chain[{i}]=" f"'{chain_tier}'{hint}"
                     )
 
             # ---- thinking_level check --------------------------------
@@ -2010,21 +1982,15 @@ class TemplateEngine:
                     level, self.KNOWN_THINKING_LEVELS, n=1, cutoff=0.4
                 )
                 hint = f"; did you mean '{suggestion[0]}'?" if suggestion else ""
-                warnings.append(
-                    f"Phase '{phase.id}' has unknown thinking_level='{level}'{hint}"
-                )
+                warnings.append(f"Phase '{phase.id}' has unknown thinking_level='{level}'{hint}")
 
         # ---- config_schema check -------------------------------------
         schema = template.config_schema
         if schema:
             if "type" not in schema:
-                errors.append(
-                    "config_schema is missing required 'type' field"
-                )
+                errors.append("config_schema is missing required 'type' field")
             elif schema["type"] == "object" and "properties" not in schema:
-                warnings.append(
-                    "config_schema has type='object' but is missing 'properties'"
-                )
+                warnings.append("config_schema has type='object' but is missing 'properties'")
 
         # ---- config_schema defaults validation (#145) -----------------
         if schema and schema.get("type") == "object":
@@ -2034,8 +2000,12 @@ class TemplateEngine:
                     default_val = prop_def["default"]
                     expected_type = prop_def["type"]
                     type_map = {
-                        "string": str, "integer": int, "number": (int, float),
-                        "boolean": bool, "array": list, "object": dict,
+                        "string": str,
+                        "integer": int,
+                        "number": (int, float),
+                        "boolean": bool,
+                        "array": list,
+                        "object": dict,
                     }
                     py_type = type_map.get(expected_type)
                     if py_type and default_val is not None and not isinstance(default_val, py_type):
@@ -2053,7 +2023,7 @@ class TemplateEngine:
             errors.append("Missing required documentation field: 'author'")
         if "version" not in raw_data or not (raw_data.get("version") or "").strip():
             errors.append("Missing required documentation field: 'version'")
-        elif not re.match(r'^\d+\.\d+\.\d+$', str(raw_data["version"]).strip()):
+        elif not re.match(r"^\d+\.\d+\.\d+$", str(raw_data["version"]).strip()):
             warnings.append(
                 f"Field 'version' value {raw_data['version']!r} does not match "
                 "semver pattern (expected X.Y.Z, e.g. '1.0.0')"
@@ -2072,9 +2042,7 @@ class TemplateEngine:
         # Rule 3: Detect cycles in the transition graph (warn, not error —
         # cycles are valid when max_iterations > 0, but should be flagged as
         # advisory so authors can confirm they are intentional).
-        transition_cycles = self._detect_transition_cycles(
-            effective_transitions_ext, phase_ids
-        )
+        transition_cycles = self._detect_transition_cycles(effective_transitions_ext, phase_ids)
         for cycle in transition_cycles:
             warnings.append(
                 f"Transition cycle detected: {' → '.join(cycle)} "
@@ -2099,7 +2067,6 @@ class TemplateEngine:
                 )
 
         return errors, warnings
-
 
 
 def load_template(template_path: str) -> "PipelineTemplate":

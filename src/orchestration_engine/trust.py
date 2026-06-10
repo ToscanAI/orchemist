@@ -92,12 +92,8 @@ class TrustProfile:
 
     # DB-managed fields
     id: Optional[int] = None
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    updated_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -111,20 +107,20 @@ class TrustProfile:
             unsaved instances).
         """
         return {
-            "id":                     self.id,
-            "repo":                   self.repo,
-            "template_id":            self.template_id,
-            "task_type":              self.task_type,
-            "auto_merge_threshold":   self.auto_merge_threshold,
+            "id": self.id,
+            "repo": self.repo,
+            "template_id": self.template_id,
+            "task_type": self.task_type,
+            "auto_merge_threshold": self.auto_merge_threshold,
             "human_review_threshold": self.human_review_threshold,
-            "trust_score":            self.trust_score,
-            "total_runs":             self.total_runs,
-            "successful_merges":      self.successful_merges,
-            "regressions":            self.regressions,
-            "reverted_prs":           self.reverted_prs,
-            "last_run_at":            self.last_run_at,
-            "created_at":             self.created_at,
-            "updated_at":             self.updated_at,
+            "trust_score": self.trust_score,
+            "total_runs": self.total_runs,
+            "successful_merges": self.successful_merges,
+            "regressions": self.regressions,
+            "reverted_prs": self.reverted_prs,
+            "last_run_at": self.last_run_at,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
         }
 
 
@@ -175,14 +171,14 @@ class TrustConfig:
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain-dict representation of the config."""
         return {
-            "success_delta":                   self.success_delta,
-            "regression_penalty":              self.regression_penalty,
-            "revert_penalty":                  self.revert_penalty,
-            "min_score":                       self.min_score,
-            "max_score":                       self.max_score,
-            "initial_score":                   self.initial_score,
-            "initial_auto_merge_threshold":    self.initial_auto_merge_threshold,
-            "initial_human_review_threshold":  self.initial_human_review_threshold,
+            "success_delta": self.success_delta,
+            "regression_penalty": self.regression_penalty,
+            "revert_penalty": self.revert_penalty,
+            "min_score": self.min_score,
+            "max_score": self.max_score,
+            "initial_score": self.initial_score,
+            "initial_auto_merge_threshold": self.initial_auto_merge_threshold,
+            "initial_human_review_threshold": self.initial_human_review_threshold,
         }
 
 
@@ -191,9 +187,9 @@ class TrustConfig:
 # ---------------------------------------------------------------------------
 
 OUTCOME_SCORES: Dict[str, float] = {
-    "run_success":           1.0,
-    "regression":           -3.0,
-    "revert":               -2.0,
+    "run_success": 1.0,
+    "regression": -3.0,
+    "revert": -2.0,
     "human_override_reject": -1.0,
 }
 
@@ -264,9 +260,7 @@ class TrustCalibrator:
     ) -> None:
         # Validate parameters
         if not (0.0 < alpha <= 1.0):
-            raise ValueError(
-                f"alpha must be in (0, 1], got {alpha!r}"
-            )
+            raise ValueError(f"alpha must be in (0, 1], got {alpha!r}")
         if not (0.0 <= aggressive < conservative <= 1.0):
             raise ValueError(
                 f"aggressive and conservative must satisfy "
@@ -274,9 +268,7 @@ class TrustCalibrator:
                 f"got aggressive={aggressive!r}, conservative={conservative!r}"
             )
         if bootstrap_threshold < 0:
-            raise ValueError(
-                f"bootstrap_threshold must be >= 0, got {bootstrap_threshold!r}"
-            )
+            raise ValueError(f"bootstrap_threshold must be >= 0, got {bootstrap_threshold!r}")
 
         self.repo = repo
         self.template_id = template_id
@@ -372,8 +364,7 @@ class TrustCalibrator:
         """
         if outcome not in VALID_OUTCOMES:
             raise ValueError(
-                f"Unknown outcome {outcome!r}. "
-                f"Valid outcomes: {sorted(VALID_OUTCOMES)}"
+                f"Unknown outcome {outcome!r}. " f"Valid outcomes: {sorted(VALID_OUTCOMES)}"
             )
 
         # ------------------------------------------------------------------
@@ -393,11 +384,11 @@ class TrustCalibrator:
         else:
             profile_id = profile["id"]
 
-        old_score:        float = float(profile["trust_score"])
-        total_runs:       int   = int(profile["total_runs"])
-        successful_merges: int  = int(profile["successful_merges"])
-        regressions:      int   = int(profile["regressions"])
-        reverted_prs:     int   = int(profile["reverted_prs"])
+        old_score: float = float(profile["trust_score"])
+        total_runs: int = int(profile["total_runs"])
+        successful_merges: int = int(profile["successful_merges"])
+        regressions: int = int(profile["regressions"])
+        reverted_prs: int = int(profile["reverted_prs"])
 
         # ------------------------------------------------------------------
         # EMA update
@@ -429,34 +420,36 @@ class TrustCalibrator:
         # ------------------------------------------------------------------
         now = datetime.now(timezone.utc).isoformat()
         updated_profile: Dict[str, Any] = {
-            "repo":                   self.repo,
-            "template_id":            self.template_id,
-            "task_type":              self.task_type,
-            "auto_merge_threshold":   new_threshold,
+            "repo": self.repo,
+            "template_id": self.template_id,
+            "task_type": self.task_type,
+            "auto_merge_threshold": new_threshold,
             "human_review_threshold": float(profile["human_review_threshold"]),
-            "trust_score":            new_score,
-            "total_runs":             total_runs,
-            "successful_merges":      successful_merges,
-            "regressions":            regressions,
-            "reverted_prs":           reverted_prs,
-            "last_run_at":            now,
-            "created_at":             profile["created_at"],
-            "updated_at":             now,
+            "trust_score": new_score,
+            "total_runs": total_runs,
+            "successful_merges": successful_merges,
+            "regressions": regressions,
+            "reverted_prs": reverted_prs,
+            "last_run_at": now,
+            "created_at": profile["created_at"],
+            "updated_at": now,
         }
         db.upsert_trust_profile(updated_profile)
 
         # ------------------------------------------------------------------
         # Log adjustment
         # ------------------------------------------------------------------
-        adjustment_id = db.insert_trust_adjustment({
-            "profile_id":  profile_id,
-            "delta":       delta,
-            "reason":      outcome,
-            "run_id":      run_id,
-            "score_before": old_score,
-            "score_after": new_score,
-            "created_at":  now,
-        })
+        adjustment_id = db.insert_trust_adjustment(
+            {
+                "profile_id": profile_id,
+                "delta": delta,
+                "reason": outcome,
+                "run_id": run_id,
+                "score_before": old_score,
+                "score_after": new_score,
+                "created_at": now,
+            }
+        )
 
         logger.debug(
             "TrustCalibrator: %s/%s/%s outcome=%r old=%.4f new=%.4f delta=%.4f threshold=%.4f",
@@ -471,18 +464,18 @@ class TrustCalibrator:
         )
 
         return {
-            "profile_id":        profile_id,
-            "adjustment_id":     adjustment_id,
-            "run_id":            run_id,
-            "outcome":           outcome,
-            "old_score":         old_score,
-            "new_score":         new_score,
-            "delta":             delta,
-            "threshold":         new_threshold,
-            "total_runs":        total_runs,
+            "profile_id": profile_id,
+            "adjustment_id": adjustment_id,
+            "run_id": run_id,
+            "outcome": outcome,
+            "old_score": old_score,
+            "new_score": new_score,
+            "delta": delta,
+            "threshold": new_threshold,
+            "total_runs": total_runs,
             "successful_merges": successful_merges,
-            "regressions":       regressions,
-            "reverted_prs":      reverted_prs,
+            "regressions": regressions,
+            "reverted_prs": reverted_prs,
         }
 
 
@@ -601,33 +594,35 @@ def decay_idle_profiles(
         # Persist updated profile
         now_iso = now.isoformat()
         updated: Dict[str, Any] = {
-            "repo":                   profile["repo"],
-            "template_id":            profile["template_id"],
-            "task_type":              profile["task_type"],
-            "auto_merge_threshold":   new_threshold,
+            "repo": profile["repo"],
+            "template_id": profile["template_id"],
+            "task_type": profile["task_type"],
+            "auto_merge_threshold": new_threshold,
             "human_review_threshold": float(profile["human_review_threshold"]),
-            "trust_score":            new_score,
-            "total_runs":             int(profile["total_runs"]),
-            "successful_merges":      successful_merges,
-            "regressions":            int(profile["regressions"]),
-            "reverted_prs":           int(profile["reverted_prs"]),
-            "last_run_at":            last_run_at_str,
-            "created_at":             profile["created_at"],
-            "updated_at":             now_iso,
+            "trust_score": new_score,
+            "total_runs": int(profile["total_runs"]),
+            "successful_merges": successful_merges,
+            "regressions": int(profile["regressions"]),
+            "reverted_prs": int(profile["reverted_prs"]),
+            "last_run_at": last_run_at_str,
+            "created_at": profile["created_at"],
+            "updated_at": now_iso,
         }
         db.upsert_trust_profile(updated)
 
         # Log the adjustment
         profile_id = int(profile["id"])
-        adjustment_id = db.insert_trust_adjustment({
-            "profile_id":   profile_id,
-            "delta":        delta,
-            "reason":       "idle_decay",
-            "run_id":       None,
-            "score_before": old_score,
-            "score_after":  new_score,
-            "created_at":   now_iso,
-        })
+        adjustment_id = db.insert_trust_adjustment(
+            {
+                "profile_id": profile_id,
+                "delta": delta,
+                "reason": "idle_decay",
+                "run_id": None,
+                "score_before": old_score,
+                "score_after": new_score,
+                "created_at": now_iso,
+            }
+        )
 
         logger.debug(
             "decay_idle_profiles: profile_id=%d %s/%s/%s weeks_idle=%d "
@@ -643,14 +638,16 @@ def decay_idle_profiles(
             new_threshold,
         )
 
-        results.append({
-            "profile_id":    profile_id,
-            "adjustment_id": adjustment_id,
-            "old_score":     old_score,
-            "new_score":     new_score,
-            "delta":         delta,
-            "weeks_idle":    weeks_idle,
-            "threshold":     new_threshold,
-        })
+        results.append(
+            {
+                "profile_id": profile_id,
+                "adjustment_id": adjustment_id,
+                "old_score": old_score,
+                "new_score": new_score,
+                "delta": delta,
+                "weeks_idle": weeks_idle,
+                "threshold": new_threshold,
+            }
+        )
 
     return results

@@ -134,14 +134,14 @@ class RetryPlan:
 #: ``None`` means the failure is **non-retryable** — the caller must escalate
 #: or abort rather than launching another run.
 DEFAULT_STRATEGY_MAP: Dict[FailureClass, Optional[RetryStrategy]] = {
-    FailureClass.QUALITY_GAP:          RetryStrategy.ESCALATE_MODEL,
-    FailureClass.WRONG_MODEL:          RetryStrategy.ESCALATE_MODEL,
+    FailureClass.QUALITY_GAP: RetryStrategy.ESCALATE_MODEL,
+    FailureClass.WRONG_MODEL: RetryStrategy.ESCALATE_MODEL,
     FailureClass.INSUFFICIENT_CONTEXT: RetryStrategy.ADD_CONTEXT,
-    FailureClass.BAD_PROMPT:           RetryStrategy.REPHRASE_PROMPT,
-    FailureClass.FLAKY_TEST:           RetryStrategy.RETRY_UNCHANGED,
-    FailureClass.INFRA_ISSUE:          RetryStrategy.RETRY_UNCHANGED,
-    FailureClass.TIMEOUT:              RetryStrategy.INCREASE_TIMEOUT,
-    FailureClass.BUDGET_EXCEEDED:      None,  # Non-retryable
+    FailureClass.BAD_PROMPT: RetryStrategy.REPHRASE_PROMPT,
+    FailureClass.FLAKY_TEST: RetryStrategy.RETRY_UNCHANGED,
+    FailureClass.INFRA_ISSUE: RetryStrategy.RETRY_UNCHANGED,
+    FailureClass.TIMEOUT: RetryStrategy.INCREASE_TIMEOUT,
+    FailureClass.BUDGET_EXCEEDED: None,  # Non-retryable
 }
 
 #: Model escalation ladder — when strategy is ``ESCALATE_MODEL`` and no
@@ -456,8 +456,7 @@ class AdaptiveRetryEngine:
 
         if self._db is None or self._db_path is None:
             raise RuntimeError(
-                "plan_and_execute() requires db and db_path; "
-                "pass them to AdaptiveRetryEngine()."
+                "plan_and_execute() requires db and db_path; " "pass them to AdaptiveRetryEngine()."
             )
 
         # Normalize max_retries: None → 1 (safe default), negative → 0,
@@ -541,9 +540,7 @@ class AdaptiveRetryEngine:
 
         # 4. Check budget (read from input_json; 0 means no budget guard).
         try:
-            budget = float(
-                input_data.get("budget_usd") or input_data.get("cost_limit_usd") or 0
-            )
+            budget = float(input_data.get("budget_usd") or input_data.get("cost_limit_usd") or 0)
         except Exception:
             budget = 0.0
 
@@ -596,6 +593,7 @@ class AdaptiveRetryEngine:
                 if (orig_path / ".git").exists():
                     import os as _os
                     import shlex as _shlex
+
                     cmd = "git clone {} {}".format(
                         _shlex.quote(str(orig_path)),
                         _shlex.quote(retry_output_dir),
@@ -604,7 +602,9 @@ class AdaptiveRetryEngine:
                     if rc != 0:
                         _logger.error(
                             "RC-3 git clone failed (aborting retry, rc=%d): %s → %s",
-                            rc, original_output_dir, retry_output_dir,
+                            rc,
+                            original_output_dir,
+                            retry_output_dir,
                         )
                         raise RuntimeError(
                             f"Retry aborted: git clone of {original_output_dir} "
@@ -613,7 +613,8 @@ class AdaptiveRetryEngine:
                     _logger.info(
                         "RC-3 cloned original output_dir %s → %s (preserves "
                         "remote URL + committed history)",
-                        original_output_dir, retry_output_dir,
+                        original_output_dir,
+                        retry_output_dir,
                     )
 
                 # 6. Insert new pipeline_runs row INSIDE the dedup transaction.
@@ -869,9 +870,7 @@ class AdaptiveRetryEngine:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                 if result.returncode == 0 and result.stdout.strip():
                     retry_input["issue_body"] = result.stdout.strip()
-                    _logger.info(
-                        "Re-fetched issue body for #%s on retry run.", issue_number
-                    )
+                    _logger.info("Re-fetched issue body for #%s on retry run.", issue_number)
                 else:
                     _logger.warning(
                         "Warning: could not re-fetch issue #%s — using original input.",

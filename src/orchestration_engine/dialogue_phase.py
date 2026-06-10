@@ -105,11 +105,15 @@ class DialogueParticipant(BaseModel):
         costs predictable.
     """
 
-    executor: str = Field(..., description="Executor backend name (openrouter, anthropic, gemini_cli, ...).")
+    executor: str = Field(
+        ..., description="Executor backend name (openrouter, anthropic, gemini_cli, ...)."
+    )
     model: Optional[str] = Field(default=None, description="Concrete model identifier.")
     model_tier: Optional[str] = Field(default=None, description="Tier name (haiku/sonnet/opus).")
     role: Optional[str] = Field(default=None, description="Role prompt prepended to every turn.")
-    thinking_level: Optional[str] = Field(default="off", description="Thinking budget (off/low/medium/high).")
+    thinking_level: Optional[str] = Field(
+        default="off", description="Thinking budget (off/low/medium/high)."
+    )
 
     model_config = {"extra": "allow"}
 
@@ -309,7 +313,9 @@ class DialogueRunner:
             except Exception as exc:
                 logger.error(
                     "Dialogue %s round %d: drafter executor failed: %s",
-                    self.run_id or self.phase_id, round_num, exc,
+                    self.run_id or self.phase_id,
+                    round_num,
+                    exc,
                 )
                 return DialogueResult(
                     final_draft=prior_draft or "",
@@ -324,7 +330,9 @@ class DialogueRunner:
             if drafter_failure:
                 logger.error(
                     "Dialogue %s round %d: drafter returned FAILED: %s",
-                    self.run_id or self.phase_id, round_num, drafter_failure,
+                    self.run_id or self.phase_id,
+                    round_num,
+                    drafter_failure,
                 )
                 return DialogueResult(
                     final_draft=prior_draft or "",
@@ -338,13 +346,15 @@ class DialogueRunner:
             draft_text = self._extract_output(drafter_result)
             self._write_round_file(round_num, "draft", draft_text)
 
-            history.append({
-                "round": round_num,
-                "role": "drafter",
-                "executor": self.config.drafter.executor,
-                "model": self._effective_model(self.config.drafter, drafter_result),
-                "text": draft_text,
-            })
+            history.append(
+                {
+                    "round": round_num,
+                    "role": "drafter",
+                    "executor": self.config.drafter.executor,
+                    "model": self._effective_model(self.config.drafter, drafter_result),
+                    "text": draft_text,
+                }
+            )
 
             # --- Drift detection (rounds 2+) ----------------------------------
             similarity: Optional[float] = None
@@ -380,22 +390,26 @@ class DialogueRunner:
             except Exception as exc:
                 logger.error(
                     "Dialogue %s round %d: reviewer executor failed: %s",
-                    self.run_id or self.phase_id, round_num, exc,
+                    self.run_id or self.phase_id,
+                    round_num,
+                    exc,
                 )
                 # Still record the drafter's round so the caller can see what was produced
-                rounds.append(DialogueRound(
-                    round_number=round_num,
-                    draft_text=draft_text,
-                    review_text="",
-                    approved=False,
-                    drafter_cost=_safe_cost(drafter_result),
-                    reviewer_cost=Decimal("0"),
-                    drafter_tokens=_safe_tokens(drafter_result),
-                    reviewer_tokens=0,
-                    drafter_model=self._effective_model(self.config.drafter, drafter_result),
-                    reviewer_model=None,
-                    drift_similarity=similarity,
-                ))
+                rounds.append(
+                    DialogueRound(
+                        round_number=round_num,
+                        draft_text=draft_text,
+                        review_text="",
+                        approved=False,
+                        drafter_cost=_safe_cost(drafter_result),
+                        reviewer_cost=Decimal("0"),
+                        drafter_tokens=_safe_tokens(drafter_result),
+                        reviewer_tokens=0,
+                        drafter_model=self._effective_model(self.config.drafter, drafter_result),
+                        reviewer_model=None,
+                        drift_similarity=similarity,
+                    )
+                )
                 return DialogueResult(
                     final_draft=draft_text,
                     rounds=rounds,
@@ -409,21 +423,25 @@ class DialogueRunner:
             if reviewer_failure:
                 logger.error(
                     "Dialogue %s round %d: reviewer returned FAILED: %s",
-                    self.run_id or self.phase_id, round_num, reviewer_failure,
+                    self.run_id or self.phase_id,
+                    round_num,
+                    reviewer_failure,
                 )
-                rounds.append(DialogueRound(
-                    round_number=round_num,
-                    draft_text=draft_text,
-                    review_text="",
-                    approved=False,
-                    drafter_cost=_safe_cost(drafter_result),
-                    reviewer_cost=Decimal("0"),
-                    drafter_tokens=_safe_tokens(drafter_result),
-                    reviewer_tokens=0,
-                    drafter_model=self._effective_model(self.config.drafter, drafter_result),
-                    reviewer_model=None,
-                    drift_similarity=similarity,
-                ))
+                rounds.append(
+                    DialogueRound(
+                        round_number=round_num,
+                        draft_text=draft_text,
+                        review_text="",
+                        approved=False,
+                        drafter_cost=_safe_cost(drafter_result),
+                        reviewer_cost=Decimal("0"),
+                        drafter_tokens=_safe_tokens(drafter_result),
+                        reviewer_tokens=0,
+                        drafter_model=self._effective_model(self.config.drafter, drafter_result),
+                        reviewer_model=None,
+                        drift_similarity=similarity,
+                    )
+                )
                 return DialogueResult(
                     final_draft=draft_text,
                     rounds=rounds,
@@ -438,14 +456,16 @@ class DialogueRunner:
 
             approved = self._is_approved(review_text)
 
-            history.append({
-                "round": round_num,
-                "role": "reviewer",
-                "executor": self.config.reviewer.executor,
-                "model": self._effective_model(self.config.reviewer, reviewer_result),
-                "text": review_text,
-                "approved": approved,
-            })
+            history.append(
+                {
+                    "round": round_num,
+                    "role": "reviewer",
+                    "executor": self.config.reviewer.executor,
+                    "model": self._effective_model(self.config.reviewer, reviewer_result),
+                    "text": review_text,
+                    "approved": approved,
+                }
+            )
 
             round_record = DialogueRound(
                 round_number=round_num,
@@ -468,7 +488,8 @@ class DialogueRunner:
             if approved:
                 logger.info(
                     "Dialogue %s round %d: reviewer APPROVED — terminating early",
-                    self.run_id or self.phase_id, round_num,
+                    self.run_id or self.phase_id,
+                    round_num,
                 )
                 return DialogueResult(
                     final_draft=draft_text,
@@ -481,7 +502,8 @@ class DialogueRunner:
         # max_rounds reached without convergence — return final draft anyway
         logger.info(
             "Dialogue %s: max_rounds=%d hit without convergence; returning final draft",
-            self.run_id or self.phase_id, self.config.max_rounds,
+            self.run_id or self.phase_id,
+            self.config.max_rounds,
         )
         return DialogueResult(
             final_draft=prior_draft or "",
@@ -520,9 +542,7 @@ class DialogueRunner:
             parts.append("## Original task")
             parts.append(initial_input)
             parts.append("")
-            parts.append(
-                f"## Conversation history (rounds 1–{round_num - 1})"
-            )
+            parts.append(f"## Conversation history (rounds 1–{round_num - 1})")
             parts.append(
                 "The reviewer has critiqued your prior drafts. Incorporate ALL "
                 "outstanding feedback below into a new, improved draft."
@@ -672,13 +692,19 @@ class DialogueRunner:
             errors = getattr(result, "errors", None) or []
             if errors:
                 first = errors[0]
-                code = getattr(first, "code", "") or (first.get("code") if isinstance(first, dict) else "")
-                msg = getattr(first, "message", "") or (first.get("message") if isinstance(first, dict) else "")
+                code = getattr(first, "code", "") or (
+                    first.get("code") if isinstance(first, dict) else ""
+                )
+                msg = getattr(first, "message", "") or (
+                    first.get("message") if isinstance(first, dict) else ""
+                )
                 return f"{code}: {msg}" if code else msg or "unknown failure"
             return "executor returned FAILED with no error detail"
         return None
 
-    def _effective_model(self, participant: DialogueParticipant, result: TaskResult) -> Optional[str]:
+    def _effective_model(
+        self, participant: DialogueParticipant, result: TaskResult
+    ) -> Optional[str]:
         """Best-effort: prefer the executor-reported model_used, else config hint."""
         used = getattr(result, "model_used", None)
         if used:
@@ -696,7 +722,9 @@ class DialogueRunner:
         except OSError as exc:
             logger.warning(
                 "Dialogue %s: failed to write %s: %s",
-                self.run_id or self.phase_id, path, exc,
+                self.run_id or self.phase_id,
+                path,
+                exc,
             )
 
 

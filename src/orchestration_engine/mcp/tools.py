@@ -90,10 +90,7 @@ def register_tools(mcp) -> None:
             return "Missing required parameter: template_id"
 
         if mode not in _VALID_MODES:
-            return (
-                f"Invalid mode: {mode}. "
-                f"Supported modes: dry-run, standalone, openclaw"
-            )
+            return f"Invalid mode: {mode}. " f"Supported modes: dry-run, standalone, openclaw"
 
         try:
             engine = TemplateEngine()
@@ -107,9 +104,7 @@ def register_tools(mcp) -> None:
             run_id = str(uuid.uuid4())[:8]
             safe_id = re.sub(r"[^\w\-]", "_", template.id)
             output_dir = Path(
-                f"./output/{safe_id}"
-                f"-{now_utc().strftime('%Y%m%d-%H%M%S')}"
-                f"-{run_id}"
+                f"./output/{safe_id}" f"-{now_utc().strftime('%Y%m%d-%H%M%S')}" f"-{run_id}"
             )
             output_dir.mkdir(parents=True, exist_ok=True)
 

@@ -85,6 +85,7 @@ def _run_pytest_on_file(
     ]
 
     import time as _time
+
     start = _time.monotonic()
 
     try:
@@ -217,11 +218,13 @@ def _extract_test_details(stdout: str) -> list[TestDetail]:
         test_name = match.group(1).strip()
         outcome_str = match.group(2)
         message = failure_blocks.get(test_name, "")
-        details.append(TestDetail(
-            test_name=test_name,
-            outcome=outcome_str,
-            message=message,
-        ))
+        details.append(
+            TestDetail(
+                test_name=test_name,
+                outcome=outcome_str,
+                message=message,
+            )
+        )
 
     return details
 
@@ -291,11 +294,13 @@ def _handle_validate(request: ValidationRequest) -> ValidationResult:
             verdict="ERROR",
             tests_total=0,
             pass_rate=0.0,
-            details=[TestDetail(
-                test_name="read_test_file",
-                outcome="ERROR",
-                message=msg,
-            )],
+            details=[
+                TestDetail(
+                    test_name="read_test_file",
+                    outcome="ERROR",
+                    message=msg,
+                )
+            ],
             tests_passed=0,
             tests_failed=0,
             tests_errored=0,
@@ -309,11 +314,13 @@ def _handle_validate(request: ValidationRequest) -> ValidationResult:
             verdict="ERROR",
             tests_total=0,
             pass_rate=0.0,
-            details=[TestDetail(
-                test_name="read_test_file",
-                outcome="ERROR",
-                message=msg,
-            )],
+            details=[
+                TestDetail(
+                    test_name="read_test_file",
+                    outcome="ERROR",
+                    message=msg,
+                )
+            ],
             tests_passed=0,
             tests_failed=0,
             tests_errored=0,
@@ -335,11 +342,13 @@ def _handle_validate(request: ValidationRequest) -> ValidationResult:
                 verdict="ERROR",
                 tests_total=0,
                 pass_rate=0.0,
-                details=[TestDetail(
-                    test_name="integrity_check",
-                    outcome="ERROR",
-                    message=msg,
-                )],
+                details=[
+                    TestDetail(
+                        test_name="integrity_check",
+                        outcome="ERROR",
+                        message=msg,
+                    )
+                ],
                 tests_passed=0,
                 tests_failed=0,
                 tests_errored=0,

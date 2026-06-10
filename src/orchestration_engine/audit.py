@@ -177,9 +177,7 @@ class AuditResult:
         if self.created_at is None:
             self.created_at = now_utc().isoformat()
         # Clamp accuracy score to [0, 1]
-        self.reviewer_accuracy_score = max(
-            0.0, min(1.0, float(self.reviewer_accuracy_score))
-        )
+        self.reviewer_accuracy_score = max(0.0, min(1.0, float(self.reviewer_accuracy_score)))
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise the result to a plain dict.
@@ -197,9 +195,7 @@ class AuditResult:
             "caught_issues": [
                 {
                     "severity": (
-                        i.severity.value
-                        if isinstance(i.severity, Severity)
-                        else i.severity
+                        i.severity.value if isinstance(i.severity, Severity) else i.severity
                     ),
                     "category": i.category,
                     "description": i.description,
@@ -378,9 +374,7 @@ class AuditPhase:
             Raw LLM response string.
         """
         if self._executor is None:
-            logger.debug(
-                "AuditPhase: no executor configured — returning stub APPROVE response"
-            )
+            logger.debug("AuditPhase: no executor configured — returning stub APPROVE response")
             return "APPROVE\n"
 
         try:
@@ -422,8 +416,7 @@ class AuditPhase:
         """
         # Collect lowercase descriptions from the original reviewer's issues
         reviewer_descs: List[str] = [
-            (i.get("description") or "").lower().strip()
-            for i in original_issues
+            (i.get("description") or "").lower().strip() for i in original_issues
         ]
 
         result: List[AuditIssue] = []

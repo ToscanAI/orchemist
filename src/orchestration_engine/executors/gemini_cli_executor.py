@@ -133,7 +133,10 @@ class GeminiCliExecutor(BaseExecutor):
         binary_resolved = shutil.which(cmd[0]) or cmd[0]
         logger.info(
             "GeminiCliExecutor: invoking %s (model=%s, timeout=%ds, prompt_len=%d)",
-            binary_resolved, model or "<default>", timeout, len(prompt),
+            binary_resolved,
+            model or "<default>",
+            timeout,
+            len(prompt),
         )
 
         try:
@@ -150,15 +153,20 @@ class GeminiCliExecutor(BaseExecutor):
             # TypeError after the fix). elapsed is unused here but the subtraction
             # still executes before the raise below.
             elapsed = (now_utc() - start_time).total_seconds()
-            stdout_partial = (exc.stdout or "") if isinstance(exc.stdout, str) else (
-                exc.stdout.decode("utf-8", errors="replace") if exc.stdout else ""
+            stdout_partial = (
+                (exc.stdout or "")
+                if isinstance(exc.stdout, str)
+                else (exc.stdout.decode("utf-8", errors="replace") if exc.stdout else "")
             )
-            stderr_partial = (exc.stderr or "") if isinstance(exc.stderr, str) else (
-                exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
+            stderr_partial = (
+                (exc.stderr or "")
+                if isinstance(exc.stderr, str)
+                else (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else "")
             )
             logger.warning(
                 "GeminiCliExecutor: timed out after %ds (stderr=%r)",
-                timeout, (stderr_partial[:200] if stderr_partial else ""),
+                timeout,
+                (stderr_partial[:200] if stderr_partial else ""),
             )
             raise TimeoutError(
                 f"gemini CLI exceeded {timeout}s timeout; "
@@ -189,7 +197,8 @@ class GeminiCliExecutor(BaseExecutor):
         if exit_code != 0:
             logger.warning(
                 "GeminiCliExecutor: exit=%d stderr=%r",
-                exit_code, stderr[:500],
+                exit_code,
+                stderr[:500],
             )
             raise GeminiCliError(
                 f"gemini CLI exited {exit_code}: {stderr.strip()[:500] or '(empty stderr)'}"

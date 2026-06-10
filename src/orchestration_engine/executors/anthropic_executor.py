@@ -104,11 +104,15 @@ class AnthropicExecutor(BaseExecutor):
         task_id = self._resolve_task_id(task)
 
         # Resolve model
-        tier = model_tier or (
-            task.preferred_model.value
-            if hasattr(task.preferred_model, "value")
-            else task.preferred_model
-        ) or "sonnet"
+        tier = (
+            model_tier
+            or (
+                task.preferred_model.value
+                if hasattr(task.preferred_model, "value")
+                else task.preferred_model
+            )
+            or "sonnet"
+        )
         model = _MODEL_MAP.get(tier, _MODEL_MAP.get(ModelTier.SONNET))
 
         # Extract prompt from payload
@@ -228,9 +232,7 @@ class AnthropicExecutor(BaseExecutor):
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Anthropic API error {e.code}: {error_body}"
-            ) from e
+            raise RuntimeError(f"Anthropic API error {e.code}: {error_body}") from e
 
     @staticmethod
     def _try_parse_json(text: str) -> Optional[dict]:

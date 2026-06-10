@@ -22,50 +22,68 @@ from .schemas import ModelTier
 
 class QueueConfig(BaseModel):
     """Queue management configuration."""
+
     max_workers: int = Field(default=8, ge=1, le=32, description="Maximum concurrent workers")
     poll_interval_seconds: int = Field(default=2, ge=1, le=60, description="Queue polling interval")
-    stale_worker_timeout_minutes: float = Field(default=5, gt=0, le=60, description="Stale worker detection timeout")
+    stale_worker_timeout_minutes: float = Field(
+        default=5, gt=0, le=60, description="Stale worker detection timeout"
+    )
 
 
 class RetryConfig(BaseModel):
     """Retry and error recovery configuration."""
-    max_retries_default: int = Field(default=3, ge=0, le=10, description="Default max retries per task")
+
+    max_retries_default: int = Field(
+        default=3, ge=0, le=10, description="Default max retries per task"
+    )
     backoff_base: int = Field(default=1, ge=1, le=10, description="Base delay in seconds")
     backoff_max: int = Field(default=60, ge=1, le=300, description="Maximum backoff delay")
-    circuit_breaker_threshold: int = Field(default=5, ge=1, le=20, description="Consecutive failures before circuit breaker")
-    circuit_breaker_reset_minutes: int = Field(default=30, ge=5, le=180, description="Circuit breaker reset timeout")
+    circuit_breaker_threshold: int = Field(
+        default=5, ge=1, le=20, description="Consecutive failures before circuit breaker"
+    )
+    circuit_breaker_reset_minutes: int = Field(
+        default=30, ge=5, le=180, description="Circuit breaker reset timeout"
+    )
 
 
 class ModelsConfig(BaseModel):
     """Model tier and escalation configuration."""
+
     default_tier: str = Field(default="sonnet-4", description="Default model tier")
-    escalation_enabled: bool = Field(default=True, description="Enable model tier escalation on retry")
+    escalation_enabled: bool = Field(
+        default=True, description="Enable model tier escalation on retry"
+    )
 
     # Model mappings for OpenClaw — built from the canonical model_registry
     # (#916). Keys remain the VERSIONED ModelTier enum values (#914 normalizes
     # only the lookup boundary, not the enum values); values are the canonical
     # anthropic/-prefixed ids (opus-4-6 tier key → claude-opus-4-8 emission).
-    tier_mappings: Dict[str, str] = Field(default={
-        ModelTier.HAIKU.value: prefixed_id(ModelTier.HAIKU),
-        ModelTier.SONNET.value: prefixed_id(ModelTier.SONNET),
-        ModelTier.OPUS.value: prefixed_id(ModelTier.OPUS),
-    })
+    tier_mappings: Dict[str, str] = Field(
+        default={
+            ModelTier.HAIKU.value: prefixed_id(ModelTier.HAIKU),
+            ModelTier.SONNET.value: prefixed_id(ModelTier.SONNET),
+            ModelTier.OPUS.value: prefixed_id(ModelTier.OPUS),
+        }
+    )
 
     # Thinking levels per tier
-    thinking_levels: Dict[str, Optional[str]] = Field(default={
-        "haiku-4-5": None,
-        "sonnet-4": "low",
-        "opus-4-6": "medium"
-    })
+    thinking_levels: Dict[str, Optional[str]] = Field(
+        default={"haiku-4-5": None, "sonnet-4": "low", "opus-4-6": "medium"}
+    )
 
 
 class PathsConfig(BaseModel):
     """File and directory paths configuration."""
-    database: str = Field(default="~/.orchestration-engine/engine.db", description="SQLite database path")
-    logs: str = Field(default="~/.orchestration-engine/logs/", description="Log directory")
-    config_file: str = Field(default="~/.orchestration-engine/config.toml", description="Configuration file path")
 
-    @field_validator('database', 'logs', 'config_file')
+    database: str = Field(
+        default="~/.orchestration-engine/engine.db", description="SQLite database path"
+    )
+    logs: str = Field(default="~/.orchestration-engine/logs/", description="Log directory")
+    config_file: str = Field(
+        default="~/.orchestration-engine/config.toml", description="Configuration file path"
+    )
+
+    @field_validator("database", "logs", "config_file")
     @classmethod
     def expand_path(cls, v):
         """Expand user home directory in paths."""
@@ -74,17 +92,29 @@ class PathsConfig(BaseModel):
 
 class ResourceConfig(BaseModel):
     """Resource limits and budgets."""
-    default_timeout_seconds: int = Field(default=3600, ge=60, le=86400, description="Default task timeout")
-    max_memory_mb: Optional[int] = Field(default=None, ge=512, description="Maximum memory per task")
-    daily_budget_usd: Optional[Decimal] = Field(default=None, ge=0, description="Daily spending limit")
+
+    default_timeout_seconds: int = Field(
+        default=3600, ge=60, le=86400, description="Default task timeout"
+    )
+    max_memory_mb: Optional[int] = Field(
+        default=None, ge=512, description="Maximum memory per task"
+    )
+    daily_budget_usd: Optional[Decimal] = Field(
+        default=None, ge=0, description="Daily spending limit"
+    )
 
     # OpenClaw resource limits
-    max_concurrent_sessions: int = Field(default=8, ge=1, le=32, description="Max OpenClaw sessions")
-    session_cleanup_minutes: int = Field(default=30, ge=5, le=180, description="Session cleanup interval")
+    max_concurrent_sessions: int = Field(
+        default=8, ge=1, le=32, description="Max OpenClaw sessions"
+    )
+    session_cleanup_minutes: int = Field(
+        default=30, ge=5, le=180, description="Session cleanup interval"
+    )
 
 
 class LoggingConfig(BaseModel):
     """Logging configuration."""
+
     level: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
     format: str = Field(default="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     max_file_size_mb: int = Field(default=100, ge=1, le=1000)
@@ -126,6 +156,7 @@ _DEFAULT_OR_TIMEOUT: int = 300
 
 class OpenRouterConfig(BaseModel):
     """OpenRouter executor configuration."""
+
     model_config = ConfigDict(extra="ignore")
 
     api_key: str = Field(
@@ -141,17 +172,22 @@ class OpenRouterConfig(BaseModel):
         description="Custom model tier → model ID overrides (e.g. {'sonnet': 'openai/gpt-4o'}).",
     )
     timeout_seconds: int = Field(
-        default=_DEFAULT_OR_TIMEOUT, ge=10, le=3600,
+        default=_DEFAULT_OR_TIMEOUT,
+        ge=10,
+        le=3600,
         description="HTTP request timeout in seconds.",
     )
     max_tokens: int = Field(
-        default=16384, ge=256, le=200000,
+        default=16384,
+        ge=256,
+        le=200000,
         description="Maximum output tokens per request.",
     )
 
 
 class EngineConfig(BaseModel):
     """Complete orchestration engine configuration."""
+
     model_config = ConfigDict(validate_assignment=True, extra="ignore")
 
     queue: QueueConfig = Field(default_factory=QueueConfig)
@@ -166,17 +202,19 @@ class EngineConfig(BaseModel):
     )
 
     # Meta configuration
-    environment: str = Field(default="production", description="Environment: development/production")
+    environment: str = Field(
+        default="production", description="Environment: development/production"
+    )
     debug_mode: bool = Field(default=False, description="Enable debug features")
     dry_run: bool = Field(default=False, description="Dry run mode - don't execute tasks")
 
 
 def load_toml_config(config_path: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
     """Load configuration from TOML file.
-    
+
     Args:
         config_path: Path to config file. If None, uses default location.
-        
+
     Returns:
         Dictionary with configuration data. Empty dict if file doesn't exist.
     """
@@ -189,7 +227,7 @@ def load_toml_config(config_path: Optional[Union[str, Path]] = None) -> Dict[str
         return {}
 
     try:
-        with open(config_path, 'rb') as f:
+        with open(config_path, "rb") as f:
             return tomllib.load(f)
     except Exception as e:
         raise ValueError(f"Failed to load config from {config_path}: {e}")
@@ -197,13 +235,13 @@ def load_toml_config(config_path: Optional[Union[str, Path]] = None) -> Dict[str
 
 def merge_env_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
     """Merge environment variable overrides into config.
-    
+
     Environment variables follow pattern: ORCH_<SECTION>_<KEY>
     Example: ORCH_QUEUE_MAX_WORKERS=16
-    
+
     Args:
         config_dict: Base configuration dictionary
-        
+
     Returns:
         Configuration with environment overrides applied
     """
@@ -214,25 +252,25 @@ def merge_env_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         # Parse ORCH_QUEUE_MAX_WORKERS -> queue.max_workers
-        env_key = key[len(env_prefix):].lower()
-        parts = env_key.split('_')
+        env_key = key[len(env_prefix) :].lower()
+        parts = env_key.split("_")
 
         if len(parts) < 2:
             continue
 
         section = parts[0]
-        field = '_'.join(parts[1:])
+        field = "_".join(parts[1:])
 
         # Initialize section if not exists
         if section not in config_dict:
             config_dict[section] = {}
 
         # Convert value to appropriate type
-        if value.lower() in ('true', 'false'):
-            config_dict[section][field] = value.lower() == 'true'
+        if value.lower() in ("true", "false"):
+            config_dict[section][field] = value.lower() == "true"
         elif value.isdigit():
             config_dict[section][field] = int(value)
-        elif '.' in value and value.replace('.', '').isdigit():
+        elif "." in value and value.replace(".", "").isdigit():
             try:
                 config_dict[section][field] = float(value)
             except ValueError:
@@ -245,10 +283,10 @@ def merge_env_overrides(config_dict: Dict[str, Any]) -> Dict[str, Any]:
 
 def get_config(config_path: Optional[Union[str, Path]] = None) -> EngineConfig:
     """Load and validate configuration from file and environment.
-    
+
     Args:
         config_path: Optional path to config file
-        
+
     Returns:
         Validated EngineConfig instance
     """
@@ -267,10 +305,10 @@ def get_config(config_path: Optional[Union[str, Path]] = None) -> EngineConfig:
 
 def create_default_config(config_path: Optional[Union[str, Path]] = None) -> Path:
     """Create a default configuration file.
-    
+
     Args:
         config_path: Where to create the config file
-        
+
     Returns:
         Path to the created config file
     """
@@ -340,7 +378,7 @@ dry_run = false
 # installation_id = 67890
 """
 
-    with open(config_path, 'w') as f:
+    with open(config_path, "w") as f:
         f.write(default_config)
 
     return config_path

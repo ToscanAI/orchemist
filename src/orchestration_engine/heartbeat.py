@@ -88,8 +88,8 @@ class ProgressHeartbeat:
 
         # Mutable state — protected by _lock
         self._lock = threading.Lock()
-        self._current_phase: str = "starting"          # legacy compat
-        self._active_phases: Set[str] = set()          # Issue #102: multi-phase support
+        self._current_phase: str = "starting"  # legacy compat
+        self._active_phases: Set[str] = set()  # Issue #102: multi-phase support
         self._completed: int = 0
 
         # Thread control
@@ -140,7 +140,7 @@ class ProgressHeartbeat:
             phase_name: Display name of the phase that just started.
         """
         with self._lock:
-            self._current_phase = phase_name   # legacy field (keep for compat)
+            self._current_phase = phase_name  # legacy field (keep for compat)
             self._active_phases.add(phase_name)
 
     def remove_active_phase(self, phase_name: str) -> None:
@@ -259,6 +259,7 @@ class ProgressHeartbeat:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _format_elapsed(seconds: float) -> str:
     """Convert *seconds* to a compact human-readable string.

@@ -135,6 +135,7 @@ def run_scoring(
     # ── 1. Set up console ─────────────────────────────────────────────
     if console is None:
         from rich.console import Console
+
         console = Console(highlight=False)
 
     # ── 2. Resolve scenario file path ─────────────────────────────────
@@ -166,8 +167,7 @@ def run_scoring(
 
     if not scenario_path.exists():
         raise FileNotFoundError(
-            f"Scenario file not found: '{template.scenario}' "
-            f"(resolved to '{scenario_path}')"
+            f"Scenario file not found: '{template.scenario}' " f"(resolved to '{scenario_path}')"
         )
 
     # ── 3. Import ScenarioRunner ──────────────────────────────────────
@@ -176,6 +176,7 @@ def run_scoring(
     except ImportError:
         # Fallback: add project root to sys.path
         import sys as _sys
+
         project_root = Path(__file__).resolve().parent.parent.parent
         _sys.path.insert(0, str(project_root))
         from scenario_runner.runner import ScenarioRunner  # type: ignore[no-redef]
@@ -198,8 +199,7 @@ def run_scoring(
     scenario_name = scenario.get("name", scenario.get("id", scenario_path.stem))
     console.print()
     console.print(
-        f"[bold]Auto-scoring:[/bold] {scenario_name} "
-        f"[dim]({scenario_path.name})[/dim]"
+        f"[bold]Auto-scoring:[/bold] {scenario_name} " f"[dim]({scenario_path.name})[/dim]"
     )
 
     # ── 5. Load pipeline output ───────────────────────────────────────
@@ -275,6 +275,7 @@ def _run_adversarial_audit(
                             text = data["result"].get("text", "")
                             if text:
                                 from .review_parser import parse_review_output
+
                                 parsed = parse_review_output(text)
                                 review_outcome["verdict"] = parsed.verdict
                                 review_outcome["issues_found"] = [
@@ -298,8 +299,7 @@ def _run_adversarial_audit(
 
         # Log the audit result
         logger.info(
-            "Adversarial audit complete: run_id=%s accuracy=%.2f false_approval=%s "
-            "issues=%d",
+            "Adversarial audit complete: run_id=%s accuracy=%.2f false_approval=%s " "issues=%d",
             audit_result.run_id,
             audit_result.reviewer_accuracy_score,
             audit_result.false_approval,
@@ -329,14 +329,14 @@ def _print_audit_summary(console: Any, audit_result: Any) -> None:
     verdict_icon = (
         "[green]APPROVE[/green]"
         if audit_result.audit_verdict == "APPROVE"
-        else "[red]REQUEST_CHANGES[/red]"
-        if audit_result.audit_verdict == "REQUEST_CHANGES"
-        else "[dim]unknown[/dim]"
+        else (
+            "[red]REQUEST_CHANGES[/red]"
+            if audit_result.audit_verdict == "REQUEST_CHANGES"
+            else "[dim]unknown[/dim]"
+        )
     )
     false_approval_tag = (
-        " [bold red](FALSE APPROVAL DETECTED)[/bold red]"
-        if audit_result.false_approval
-        else ""
+        " [bold red](FALSE APPROVAL DETECTED)[/bold red]" if audit_result.false_approval else ""
     )
 
     console.print()
@@ -383,11 +383,7 @@ def _print_score_report(console: Any, score_result: Any, scenario: dict) -> None
     for cr in score_result.criterion_results:
         weight_label = "[GATE]" if cr.is_gate else str(cr.weight)
         score_pct = f"{cr.grade.score * 100:.1f}"
-        result_icon = (
-            "[green]✓ PASS[/green]"
-            if cr.grade.passed
-            else "[red]✗ FAIL[/red]"
-        )
+        result_icon = "[green]✓ PASS[/green]" if cr.grade.passed else "[red]✗ FAIL[/red]"
         crit_table.add_row(
             cr.criterion_id,
             cr.grade.grader_type,
@@ -403,9 +399,7 @@ def _print_score_report(console: Any, score_result: Any, scenario: dict) -> None
     overall_pct = score_result.weighted_score * 100
     threshold_pct = float(scenario.get("scoring", {}).get("pass_threshold", 0.70)) * 100
     verdict = (
-        "[bold green]✓ PASS[/bold green]"
-        if score_result.passed
-        else "[bold red]✗ FAIL[/bold red]"
+        "[bold green]✓ PASS[/bold green]" if score_result.passed else "[bold red]✗ FAIL[/bold red]"
     )
     gate_status = (
         "[green]all passed[/green]"
@@ -415,8 +409,7 @@ def _print_score_report(console: Any, score_result: Any, scenario: dict) -> None
 
     console.print(f"[bold]Scenario:[/bold]  {score_result.scenario_id}")
     console.print(
-        f"[bold]Score:[/bold]     {overall_pct:.1f} / 100  "
-        f"(threshold {threshold_pct:.0f})"
+        f"[bold]Score:[/bold]     {overall_pct:.1f} / 100  " f"(threshold {threshold_pct:.0f})"
     )
     console.print(f"[bold]Gates:[/bold]     {gate_status}")
     console.print(f"[bold]Verdict:[/bold]   {verdict}")

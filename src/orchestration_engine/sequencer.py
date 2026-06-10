@@ -84,10 +84,19 @@ class PhaseSequencer:
       concurrent invocations from worker threads cannot interleave.
     """
 
-    def __init__(self, template: PipelineTemplate, runner, config: dict = None,
-                 on_phase_complete=None, on_phase_start=None,
-                 on_pipeline_start=None, on_pipeline_complete=None,
-                 output_dir=None, run_id: Optional[str] = None, db=None) -> None:
+    def __init__(
+        self,
+        template: PipelineTemplate,
+        runner,
+        config: dict = None,
+        on_phase_complete=None,
+        on_phase_start=None,
+        on_pipeline_start=None,
+        on_pipeline_complete=None,
+        output_dir=None,
+        run_id: Optional[str] = None,
+        db=None,
+    ) -> None:
         """Initialise the sequencer.
 
         Args:
@@ -129,13 +138,11 @@ class PhaseSequencer:
         self.on_pipeline_start = on_pipeline_start
         self.on_pipeline_complete = on_pipeline_complete
         self.output_dir = output_dir
-        self.run_id: Optional[str] = run_id   # Issue #4.1.2: review outcome tracking
-        self.db = db                           # Issue #4.1.2: review outcome tracking
+        self.run_id: Optional[str] = run_id  # Issue #4.1.2: review outcome tracking
+        self.db = db  # Issue #4.1.2: review outcome tracking
 
         # Fast phase lookup by ID (Issue #231) — avoids O(n) linear scan per phase
-        self._phase_map: Dict[str, PhaseDefinition] = {
-            p.id: p for p in template.phases
-        }
+        self._phase_map: Dict[str, PhaseDefinition] = {p.id: p for p in template.phases}
 
         # Thread-safety locks (Issue #102)
         self._phase_outputs_lock: threading.Lock = threading.Lock()
@@ -189,9 +196,7 @@ class PhaseSequencer:
             try:
                 self.on_pipeline_start(self.pipeline_context)
             except Exception as exc:
-                logger.error(
-                    f"Pipeline {self.template.id}: on_pipeline_start hook failed: {exc}"
-                )
+                logger.error(f"Pipeline {self.template.id}: on_pipeline_start hook failed: {exc}")
                 raise
 
         final_result: dict = {}
@@ -199,19 +204,12 @@ class PhaseSequencer:
             for wave_index, wave in enumerate(execution_order):
                 # Decide whether to run this wave in parallel.
                 # A wave of size 1 is always sequential (no overhead, no ambiguity).
-                use_parallel = (
-                    self.template.parallel
-                    and len(wave) > 1
-                )
+                use_parallel = self.template.parallel and len(wave) > 1
 
                 if use_parallel:
-                    abort_result = self._execute_wave_parallel(
-                        wave, wave_index, initial_input
-                    )
+                    abort_result = self._execute_wave_parallel(wave, wave_index, initial_input)
                 else:
-                    abort_result = self._execute_wave_sequential(
-                        wave, wave_index, initial_input
-                    )
+                    abort_result = self._execute_wave_sequential(wave, wave_index, initial_input)
 
                 # Either method returns None on success or a final_result dict on abort
                 if abort_result is not None:
@@ -294,6 +292,7 @@ class PhaseSequencer:
             # wave proceeds to the next phase.
             if getattr(phase, "dialogue_config", None) is not None:
                 from . import feature_flags as _ff
+
                 if not _ff.is_enabled("dialogue_phase"):
                     # INFO not WARNING: the default-disabled state IS a clean
                     # exit (per CHANGELOG framing). Recurring WARNINGs on a
@@ -304,7 +303,8 @@ class PhaseSequencer:
                         "the admin console (or write `feature_flags.dialogue_phase`"
                         " = true to ~/.orchestration-engine/admin.json) to run "
                         "this phase.",
-                        self.template.id, phase_id,
+                        self.template.id,
+                        phase_id,
                     )
                     result = {
                         "state": "skipped_by_feature_flag",
@@ -341,9 +341,7 @@ class PhaseSequencer:
             # any <MISSING:> markers emitted by config/input/previous_output
             # substitution in BOTH the prompt and the command/working_dir.
             _missing_sink: set = set()
-            phase_input = self._build_phase_input(
-                phase, initial_input, missing_sink=_missing_sink
-            )
+            phase_input = self._build_phase_input(phase, initial_input, missing_sink=_missing_sink)
             command_extras = self._build_command_extras(
                 phase, initial_input, missing_sink=_missing_sink
             )
@@ -354,9 +352,7 @@ class PhaseSequencer:
             # to the executor. The guard precedes submit_task so a placeholder
             # failure never enters the retry loop (a config error won't
             # self-heal).
-            placeholder_failure = self._check_for_unresolved_placeholders(
-                phase, _missing_sink
-            )
+            placeholder_failure = self._check_for_unresolved_placeholders(phase, _missing_sink)
             if placeholder_failure is not None:
                 result = placeholder_failure
                 with self._phase_outputs_lock:
@@ -394,8 +390,7 @@ class PhaseSequencer:
 
             task_id = self.runner.queue.submit_task(task)
             logger.info(
-                f"Pipeline {self.template.id}: submitted phase '{phase_id}' "
-                f"(task_id={task_id})"
+                f"Pipeline {self.template.id}: submitted phase '{phase_id}' " f"(task_id={task_id})"
             )
 
             # Execute synchronously and store output
@@ -437,12 +432,14 @@ class PhaseSequencer:
             self._enrich_result_from_disk(phase_id, result)
 
             # ── Git handoff: commit phase output (Issue #681 / #674) ─────────
-            _git_handoff = getattr(self, '_git_handoff', None)
-            _loop_groups = getattr(self, '_loop_groups', None)
-            if (_git_handoff is not None
-                    and _git_handoff.is_active()
-                    and _loop_groups is not None
-                    and phase_id in _loop_groups):
+            _git_handoff = getattr(self, "_git_handoff", None)
+            _loop_groups = getattr(self, "_loop_groups", None)
+            if (
+                _git_handoff is not None
+                and _git_handoff.is_active()
+                and _loop_groups is not None
+                and phase_id in _loop_groups
+            ):
                 phase_text = _extract_phase_text(result)
                 if phase_text is not None:
                     _git_handoff.commit_phase_output(phase_id, 0, phase_text)
@@ -451,7 +448,7 @@ class PhaseSequencer:
                 self.phase_outputs[phase_id] = result
 
             # Hash capture — record protected_outputs from THIS phase for future verification (#531)
-            if result.get('state') == 'success' and getattr(phase, 'protected_outputs', []):
+            if result.get("state") == "success" and getattr(phase, "protected_outputs", []):
                 self._store_protected_hashes(phase)
 
             # Output length validation (#351) — fail phase if output is too short
@@ -462,7 +459,7 @@ class PhaseSequencer:
                     self.phase_outputs[phase_id] = result
 
             # Supervisor hook (#194) — sequential path
-            if getattr(phase, 'supervisor', False) and result.get('state') == 'success':
+            if getattr(phase, "supervisor", False) and result.get("state") == "success":
                 result, abort_info = self._run_supervisor_for_phase(phase, result, initial_input)
                 if abort_info:
                     logger.error(
@@ -483,14 +480,14 @@ class PhaseSequencer:
             # Notify caller (e.g. CLI progress display)
             self._invoke_on_phase_complete(phase_id, result)
 
-            phase_state = result.get('state', 'unknown')
+            phase_state = result.get("state", "unknown")
             logger.info(
                 f"Pipeline {self.template.id}: phase '{phase_id}' completed "
                 f"(state={phase_state})"
             )
 
             # Stop pipeline on phase failure — don't feed errors downstream
-            if phase_state in ('failed', 'permanently_failed'):
+            if phase_state in ("failed", "permanently_failed"):
                 logger.error(
                     f"Pipeline {self.template.id}: phase '{phase_id}' failed, "
                     f"aborting pipeline."
@@ -579,11 +576,13 @@ class PhaseSequencer:
             # queue entirely — and bypasses the gate if not checked here.
             if getattr(phase, "dialogue_config", None) is not None:
                 from . import feature_flags as _ff
+
                 if not _ff.is_enabled("dialogue_phase"):
                     logger.info(
                         "Pipeline %s: dialogue phase '%s' SKIPPED (parallel "
                         "wave) — admin feature_flags.dialogue_phase is False.",
-                        self.template.id, phase_id,
+                        self.template.id,
+                        phase_id,
                     )
                     result = {
                         "state": "skipped_by_feature_flag",
@@ -626,9 +625,7 @@ class PhaseSequencer:
             # the phase_outputs lock safely. The parallel worker returns the
             # bare phase-result; the pool aggregator keys on permanently_failed
             # and wraps it into the pipeline abort.
-            placeholder_failure = self._check_for_unresolved_placeholders(
-                phase, _missing_sink
-            )
+            placeholder_failure = self._check_for_unresolved_placeholders(phase, _missing_sink)
             if placeholder_failure is not None:
                 result = placeholder_failure
                 with self._phase_outputs_lock:
@@ -696,7 +693,7 @@ class PhaseSequencer:
                 self.phase_outputs[phase_id] = result
 
             # Hash capture — record protected_outputs from THIS phase for future verification (#531)
-            if result.get('state') == 'success' and getattr(phase, 'protected_outputs', []):
+            if result.get("state") == "success" and getattr(phase, "protected_outputs", []):
                 self._store_protected_hashes(phase)
 
             # Output length validation (#351) — fail phase if output is too short
@@ -707,7 +704,7 @@ class PhaseSequencer:
                     self.phase_outputs[phase_id] = result
 
             # Supervisor hook (#194) — parallel path
-            if getattr(phase, 'supervisor', False) and result.get('state') == 'success':
+            if getattr(phase, "supervisor", False) and result.get("state") == "success":
                 result, abort_info = self._run_supervisor_for_phase(phase, result, initial_input)
                 if abort_info:
                     logger.error(
@@ -898,12 +895,12 @@ class PhaseSequencer:
             return
         if not self.output_dir:
             logger.warning(
-                "spec_adversary phase completed but output_dir is None "
-                "— skipping reward persist"
+                "spec_adversary phase completed but output_dir is None " "— skipping reward persist"
             )
             return
         try:
             from .spec_adversary import compute_reward, parse_adversary_output, persist_reward
+
             raw_text = _extract_phase_text(result)
             verdict = parse_adversary_output(raw_text)
             reward = compute_reward(verdict)
@@ -972,16 +969,18 @@ class PhaseSequencer:
                 created_at=now_utc().isoformat(),
             )
 
-            self.db.insert_review_outcome({
-                "review_id": outcome.review_id,
-                "run_id": outcome.run_id,
-                "phase_id": outcome.phase_id,
-                "reviewer_model": outcome.reviewer_model,
-                "verdict": outcome.verdict,
-                "issues_found": outcome.issues_found,
-                "fix_verified": outcome.fix_verified,
-                "created_at": outcome.created_at,
-            })
+            self.db.insert_review_outcome(
+                {
+                    "review_id": outcome.review_id,
+                    "run_id": outcome.run_id,
+                    "phase_id": outcome.phase_id,
+                    "reviewer_model": outcome.reviewer_model,
+                    "verdict": outcome.verdict,
+                    "issues_found": outcome.issues_found,
+                    "fix_verified": outcome.fix_verified,
+                    "created_at": outcome.created_at,
+                }
+            )
 
             logger.info(
                 f"Pipeline {self.template.id}: recorded review outcome "
@@ -1068,9 +1067,7 @@ class PhaseSequencer:
                     f"file(s) to {str(working_dir)!r}: {paths}"
                 )
             else:
-                logger.debug(
-                    f"Phase '{phase.id}': dry-run — no FILE blocks found in output"
-                )
+                logger.debug(f"Phase '{phase.id}': dry-run — no FILE blocks found in output")
             result.setdefault("metadata", {})["files_written"] = []
             return
 
@@ -1212,9 +1209,7 @@ class PhaseSequencer:
                         "failed_phase": phase.id,
                         "aborted": True,
                         "supervisor_abort": True,
-                        "supervisor_reason": (
-                            f"max_retries ({max_retries}) exhausted: {reason}"
-                        ),
+                        "supervisor_reason": (f"max_retries ({max_retries}) exhausted: {reason}"),
                     }
                     return current_result, abort_result
 
@@ -1288,7 +1283,7 @@ class PhaseSequencer:
             for verdict in ("APPROVE", "REVISE", "ABORT"):
                 if upper.startswith(verdict):
                     # Extract reason after the keyword (and optional colon/space)
-                    remainder = stripped[len(verdict):].lstrip(":").strip()
+                    remainder = stripped[len(verdict) :].lstrip(":").strip()
                     return verdict, remainder
         logger.warning(
             f"Supervisor response had no APPROVE/REVISE/ABORT verdict; "
@@ -1353,9 +1348,7 @@ class PhaseSequencer:
                 f"got {actual_len} chars, expected at least {min_len}. "
                 f"Last 50 chars: {tail!r}"
             )
-            logger.error(
-                f"Pipeline {self.template.id}: {error_msg} — treating as failure."
-            )
+            logger.error(f"Pipeline {self.template.id}: {error_msg} — treating as failure.")
             # Build a synthetic FAILED result so the pipeline abort path handles it
             # consistently with other phase failures.
             failed_result: dict = {
@@ -1444,9 +1437,7 @@ class PhaseSequencer:
                 **phase.transitions,
             }
             approve_target = effective.get("approve")
-            is_approve_transition = (
-                approve_target is not None and next_phase_id == approve_target
-            )
+            is_approve_transition = approve_target is not None and next_phase_id == approve_target
 
         if not is_approve_transition:
             return  # only snapshot on approve / exhausted
@@ -1509,7 +1500,7 @@ class PhaseSequencer:
             return
 
         with self._phase_outputs_lock:
-            for filename in getattr(phase, 'protected_outputs', []):
+            for filename in getattr(phase, "protected_outputs", []):
                 abs_path = str(Path(self.output_dir) / filename)
                 try:
                     digest = compute_hash(abs_path)
@@ -1552,8 +1543,10 @@ class PhaseSequencer:
 
         # Adversary exemption: the phase that owns protect_on_approve is not
         # subject to its own protection (Issue #718)
-        if (self._protect_on_approve_source_phase is not None
-                and phase.id == self._protect_on_approve_source_phase):
+        if (
+            self._protect_on_approve_source_phase is not None
+            and phase.id == self._protect_on_approve_source_phase
+        ):
             return None
 
         with self._phase_outputs_lock:
@@ -1575,11 +1568,13 @@ class PhaseSequencer:
                     return {
                         "state": TaskState.FAILED.value,
                         "result": {"text": ""},
-                        "errors": [{
-                            "code": "PROTECTED_FILE_MODIFIED",
-                            "message": msg,
-                            "severity": "error",
-                        }],
+                        "errors": [
+                            {
+                                "code": "PROTECTED_FILE_MODIFIED",
+                                "message": msg,
+                                "severity": "error",
+                            }
+                        ],
                         "metadata": {
                             "attempt_number": 1,
                             "total_attempts": 1,
@@ -1599,11 +1594,13 @@ class PhaseSequencer:
                 return {
                     "state": TaskState.FAILED.value,
                     "result": {"text": ""},
-                    "errors": [{
-                        "code": "PROTECTED_FILE_MODIFIED",
-                        "message": msg,
-                        "severity": "error",
-                    }],
+                    "errors": [
+                        {
+                            "code": "PROTECTED_FILE_MODIFIED",
+                            "message": msg,
+                            "severity": "error",
+                        }
+                    ],
                     "metadata": {
                         "attempt_number": 1,
                         "total_attempts": 1,
@@ -1689,13 +1686,16 @@ class PhaseSequencer:
                 logger.warning(
                     "Phase '%s': protected_path '%s' could not be hashed at snapshot time — "
                     "skipping (path missing or not a directory).",
-                    phase.id, abs_path,
+                    phase.id,
+                    abs_path,
                 )
                 continue
             snapshots[abs_path] = digest
             logger.debug(
                 "Phase '%s': snapshot protected_path '%s' → sha256:%s…",
-                phase.id, abs_path, digest[:16],
+                phase.id,
+                abs_path,
+                digest[:16],
             )
         return snapshots
 
@@ -1743,7 +1743,9 @@ class PhaseSequencer:
                 )
                 logger.error(
                     "Pipeline %s: folder-guard FAILED on phase '%s': %s",
-                    self.template.id, phase.id, msg,
+                    self.template.id,
+                    phase.id,
+                    msg,
                 )
                 return {
                     "state": "failed",
@@ -1752,11 +1754,13 @@ class PhaseSequencer:
                     "protected_path": abs_path,
                     "expected_hash": expected,
                     "actual_hash": actual,
-                    "errors": [{
-                        "code": "PROTECTED_PATH_MODIFIED",
-                        "message": msg,
-                        "severity": "error",
-                    }],
+                    "errors": [
+                        {
+                            "code": "PROTECTED_PATH_MODIFIED",
+                            "message": msg,
+                            "severity": "error",
+                        }
+                    ],
                     "metadata": {
                         "attempt_number": 1,
                         "total_attempts": 1,
@@ -1783,7 +1787,15 @@ class PhaseSequencer:
                 return phase
         raise KeyError(f"Phase '{phase_id}' not found in template '{self.template.id}'")
 
-    def _build_phase_input(self, phase: PhaseDefinition, initial_input: dict, failure_context: str = "", iteration_history: str = "", missing_sink: Optional[set] = None, **extra_format_vars) -> str:
+    def _build_phase_input(
+        self,
+        phase: PhaseDefinition,
+        initial_input: dict,
+        failure_context: str = "",
+        iteration_history: str = "",
+        missing_sink: Optional[set] = None,
+        **extra_format_vars,
+    ) -> str:
         """Build the prompt string for a phase.
 
         Uses Python's ``str.format()`` to interpolate:
@@ -1845,7 +1857,9 @@ class PhaseSequencer:
         # {previous_output_inline} always gives the full raw content regardless.
         _output_dir_for_proxy = str(self.output_dir) if self.output_dir else None
         previous_output_proxy = _PreviousOutputProxy(
-            self.phase_outputs, _output_dir_for_proxy, self._phase_map,
+            self.phase_outputs,
+            _output_dir_for_proxy,
+            self._phase_map,
             missing_sink=missing_sink,
         )
         previous_output_inline_proxy = _PreviousOutputInlineProxy(
@@ -1874,7 +1888,7 @@ class PhaseSequencer:
 
         # Load context_files and build file_context dict
         file_context: Dict[str, str] = {}
-        if hasattr(phase, 'context_files') and phase.context_files:
+        if hasattr(phase, "context_files") and phase.context_files:
             for file_path in phase.context_files:
                 try:
                     p = Path(file_path).expanduser()
@@ -1883,12 +1897,16 @@ class PhaseSequencer:
                         # Use filename (without extension) as key
                         key = p.stem.replace("-", "_").replace(".", "_")
                         file_context[key] = content
-                        logger.debug(f"Phase '{phase.id}': loaded context file '{file_path}' ({len(content)} chars)")
+                        logger.debug(
+                            f"Phase '{phase.id}': loaded context file '{file_path}' ({len(content)} chars)"
+                        )
                     else:
                         logger.warning(f"Phase '{phase.id}': context file not found: {file_path}")
                         file_context[p.stem] = f"<FILE_NOT_FOUND:{file_path}>"
                 except Exception as exc:
-                    logger.warning(f"Phase '{phase.id}': failed to read context file '{file_path}' — {exc}")
+                    logger.warning(
+                        f"Phase '{phase.id}': failed to read context file '{file_path}' — {exc}"
+                    )
                     file_context[Path(file_path).stem] = f"<FILE_READ_ERROR:{file_path}>"
         safe_files = _SafeDict(file_context)
 
@@ -1938,8 +1956,14 @@ class PhaseSequencer:
             word_count = len(text.split()) if text else 0
             phase_def = self._phase_map.get(pid)
             phase_name = phase_def.name if phase_def else pid
-            summary_lines.append(f"- {phase_name} ({pid}): completed, ~{word_count} words → {output_dir_str}/{pid.replace('-', '_')}.md")
-        phase_summary = "\n".join(summary_lines) if summary_lines else "This is the first phase — no prior work."
+            summary_lines.append(
+                f"- {phase_name} ({pid}): completed, ~{word_count} words → {output_dir_str}/{pid.replace('-', '_')}.md"
+            )
+        phase_summary = (
+            "\n".join(summary_lines)
+            if summary_lines
+            else "This is the first phase — no prior work."
+        )
 
         try:
             prompt = phase.prompt_template.format(
@@ -2055,7 +2079,10 @@ class PhaseSequencer:
             logger.warning(
                 "Pipeline %s: phase '%s' rendered %d unresolved placeholder(s) "
                 "%s — allowed in dry-run mode (would abort on a real run).",
-                self.template.id, phase.id, len(markers), marker_list,
+                self.template.id,
+                phase.id,
+                len(markers),
+                marker_list,
             )
             return None
 
@@ -2070,7 +2097,10 @@ class PhaseSequencer:
         logger.error(
             "Pipeline %s: phase '%s' rejected before dispatch — %d unresolved "
             "placeholder(s): %s",
-            self.template.id, phase.id, len(markers), marker_list,
+            self.template.id,
+            phase.id,
+            len(markers),
+            marker_list,
         )
         return {
             "state": "permanently_failed",
@@ -2169,14 +2199,13 @@ class PhaseSequencer:
                     frontmatter_data = {}
 
         # Skill name: prefer frontmatter 'name:', else filename stem
-        skill_name: str = (
-            str(frontmatter_data.get("name", "")).strip()
-            or resolved_real.stem
-        )
+        skill_name: str = str(frontmatter_data.get("name", "")).strip() or resolved_real.stem
 
         return skill_name, body.strip()
 
-    def _execute_and_wait(self, task_id: str, phase: PhaseDefinition, initial_input: Optional[dict] = None) -> dict:
+    def _execute_and_wait(
+        self, task_id: str, phase: PhaseDefinition, initial_input: Optional[dict] = None
+    ) -> dict:
         """Execute a queued task synchronously and return its result as a dict.
 
         Retrieves the TaskSpec from the queue, runs it through the runner's
@@ -2234,9 +2263,7 @@ class PhaseSequencer:
         # Retrieve the TaskSpec we just submitted
         task_spec = self.runner.queue.get_task(task_id)
         if not task_spec:
-            raise RuntimeError(
-                f"Phase '{phase.id}': task {task_id} not found in queue"
-            )
+            raise RuntimeError(f"Phase '{phase.id}': task {task_id} not found in queue")
 
         # Find the first executor that can handle this task type
         executor = None
@@ -2289,12 +2316,14 @@ class PhaseSequencer:
                     f"raised exception — {exc}"
                 )
                 sanitized = self._sanitize_error_for_prompt(last_error_msg)
-                attempt_history.append({
-                    "attempt": attempt,
-                    "error": sanitized,
-                    "partial_output": "",
-                    "tokens_used": 0,
-                })
+                attempt_history.append(
+                    {
+                        "attempt": attempt,
+                        "error": sanitized,
+                        "partial_output": "",
+                        "tokens_used": 0,
+                    }
+                )
                 if attempt < total_attempts:
                     failure_context = self._format_failure_context(attempt, sanitized, "")
                     logger.debug(
@@ -2340,12 +2369,14 @@ class PhaseSequencer:
                 partial_output = _extract_phase_text(result.dict())  # Pydantic v1
             tokens_used = result.metadata.get("tokens_used", 0) if result.metadata else 0
             sanitized_err = self._sanitize_error_for_prompt(last_error_msg)
-            attempt_history.append({
-                "attempt": attempt,
-                "error": sanitized_err,
-                "partial_output": partial_output,  # full output in history
-                "tokens_used": tokens_used,
-            })
+            attempt_history.append(
+                {
+                    "attempt": attempt,
+                    "error": sanitized_err,
+                    "partial_output": partial_output,  # full output in history
+                    "tokens_used": tokens_used,
+                }
+            )
 
             # Sleep between attempts, but NOT after the final one
             if attempt < total_attempts:
@@ -2423,8 +2454,8 @@ class PhaseSequencer:
             Sanitized string of at most 500 characters.
         """
         # 1. Remove ANSI escape codes
-        ansi_escape = re.compile(r'\x1b\[[0-9;]*[mGKHFJsr]')
-        error = ansi_escape.sub('', error)
+        ansi_escape = re.compile(r"\x1b\[[0-9;]*[mGKHFJsr]")
+        error = ansi_escape.sub("", error)
 
         # 2. Strip Python traceback blocks.
         #    A traceback starts with "Traceback (most recent call last):" and
@@ -2436,12 +2467,12 @@ class PhaseSequencer:
         in_traceback = False
         filtered: List[str] = []
         for line in lines:
-            if line.strip().startswith('Traceback (most recent call last):'):
+            if line.strip().startswith("Traceback (most recent call last):"):
                 in_traceback = True
                 continue
             if in_traceback:
                 # Traceback body: lines indented with spaces or tabs
-                if line.startswith('  ') or line.startswith('\t'):
+                if line.startswith("  ") or line.startswith("\t"):
                     continue
                 else:
                     # Non-indented line → the exception class/message line
@@ -2450,11 +2481,11 @@ class PhaseSequencer:
             else:
                 filtered.append(line)
 
-        error = '\n'.join(filtered).strip()
+        error = "\n".join(filtered).strip()
 
         # 3. Truncate to 500 chars
         if len(error) > 500:
-            error = error[:497] + '...'
+            error = error[:497] + "..."
 
         return error
 
@@ -2492,7 +2523,9 @@ class PhaseSequencer:
         )
 
     def _build_command_extras(
-        self, phase: "PhaseDefinition", initial_input: dict,
+        self,
+        phase: "PhaseDefinition",
+        initial_input: dict,
         missing_sink: Optional[set] = None,
     ) -> Dict[str, Any]:
         """Build extra payload fields for command task_type phases.
@@ -2533,7 +2566,8 @@ class PhaseSequencer:
         except (KeyError, IndexError, AttributeError, ValueError) as exc:
             logger.warning(
                 "Phase '%s': command interpolation failed (%s); using raw command.",
-                phase.id, exc,
+                phase.id,
+                exc,
             )
             interpolated_command = raw_command
 
@@ -2557,7 +2591,9 @@ class PhaseSequencer:
 
         logger.debug(
             "Phase '%s': command_extras resolved — command=%r, working_dir=%r",
-            phase.id, interpolated_command, working_dir or "<inherit>",
+            phase.id,
+            interpolated_command,
+            working_dir or "<inherit>",
         )
 
         return {
@@ -2636,7 +2672,9 @@ class PhaseSequencer:
                 "task_type": "review",
                 "confidence": 0.0,
                 "result": {"output": "", "text": ""},
-                "errors": [{"code": "dialogue_executor_unresolved", "message": err, "severity": "error"}],
+                "errors": [
+                    {"code": "dialogue_executor_unresolved", "message": err, "severity": "error"}
+                ],
                 "execution_time_seconds": time.time() - start_time,
                 "metadata": {"phase_id": phase.id},
             }
@@ -2678,11 +2716,13 @@ class PhaseSequencer:
 
         errors: List[Dict[str, Any]] = []
         if dialogue_result.error:
-            errors.append({
-                "code": "dialogue_executor_error",
-                "message": dialogue_result.error,
-                "severity": "error",
-            })
+            errors.append(
+                {
+                    "code": "dialogue_executor_error",
+                    "message": dialogue_result.error,
+                    "severity": "error",
+                }
+            )
 
         return {
             "state": "success" if is_success else "failed",
@@ -2760,9 +2800,7 @@ class PhaseSequencer:
         try:
             return TaskType(task_type_str.lower())
         except ValueError:
-            logger.warning(
-                f"Unknown task_type '{task_type_str}'; defaulting to 'content'"
-            )
+            logger.warning(f"Unknown task_type '{task_type_str}'; defaulting to 'content'")
             return TaskType.CONTENT
 
     @staticmethod
@@ -2833,7 +2871,7 @@ def _extract_phase_text(phase_output: Any) -> str:
 # ---------------------------------------------------------------------------
 
 #: Regex matching a tagged finding line: [SEVERITY][category] description
-_FINDING_TAG_RE = re.compile(r'^\s*\[([A-Za-z]+)\]\[([^\]]+)\]\s+(.+)$')
+_FINDING_TAG_RE = re.compile(r"^\s*\[([A-Za-z]+)\]\[([^\]]+)\]\s+(.+)$")
 
 
 def _extract_findings_from_text(text: str) -> list:
@@ -2852,8 +2890,7 @@ def _extract_findings_from_text(text: str) -> list:
     if not findings:
         # No tagged lines — check for substantive untagged content
         content_lines = [
-            line for line in text.splitlines()
-            if line.strip() and not line.strip().startswith('#')
+            line for line in text.splitlines() if line.strip() and not line.strip().startswith("#")
         ]
         if content_lines:
             findings = [text.strip()[:2000]]
@@ -2867,10 +2904,11 @@ def _are_findings_similar(a: str, b: str) -> bool:
     lowercasing and stripping ``[TAG][TAG]`` prefixes.  Empty word-sets
     are never considered similar.
     """
+
     def _words(s: str) -> set:
         # Strip [SEVERITY][category] tag prefix before comparison
-        s = re.sub(r'^\s*\[[^\]]+\]\[[^\]]+\]\s*', '', s.lower())
-        return set(re.findall(r'\w+', s))
+        s = re.sub(r"^\s*\[[^\]]+\]\[[^\]]+\]\s*", "", s.lower())
+        return set(re.findall(r"\w+", s))
 
     words_a = _words(a)
     words_b = _words(b)
@@ -2899,7 +2937,7 @@ def _analyze_round_findings(output_dir, phase_id: str, max_iterations: int) -> s
         return ""
 
     output_path = Path(output_dir)
-    safe_pid = re.sub(r'[^\w\-]', '_', phase_id)
+    safe_pid = re.sub(r"[^\w\-]", "_", phase_id)
 
     # Discover all round files: {safe_pid}_round{N}.md
     round_files = []
@@ -2936,9 +2974,7 @@ def _analyze_round_findings(output_dir, phase_id: str, max_iterations: int) -> s
             f"{n_rounds} round files found but no structured findings could be "
             f"extracted for comparison."
         )
-        logger.error(
-            "Finding analysis for phase '%s': %s", phase_id, analysis
-        )
+        logger.error("Finding analysis for phase '%s': %s", phase_id, analysis)
         if output_dir:
             try:
                 analysis_path = output_path / "finding_analysis.md"
@@ -2984,9 +3020,7 @@ def _analyze_round_findings(output_dir, phase_id: str, max_iterations: int) -> s
             f"manual intervention or the issue should be split."
         )
 
-    logger.error(
-        "Finding analysis for phase '%s': %s", phase_id, analysis
-    )
+    logger.error("Finding analysis for phase '%s': %s", phase_id, analysis)
     if output_dir:
         try:
             analysis_path = output_path / "finding_analysis.md"
@@ -3151,7 +3185,9 @@ class _SafeDict(dict):
         try:
             return self[key]
         except KeyError:
-            logger.warning(f"Template referenced missing attribute: '{key}' — substituting <MISSING:{key}>")
+            logger.warning(
+                f"Template referenced missing attribute: '{key}' — substituting <MISSING:{key}>"
+            )
             try:
                 sink = object.__getattribute__(self, "_missing_sink")
             except AttributeError:
@@ -3203,8 +3239,13 @@ class _PreviousOutputProxy:
     template authoring errors produce visible, non-crashing placeholders.
     """
 
-    def __init__(self, phase_outputs: dict, output_dir: Optional[str], phase_map: dict,
-                 missing_sink: Optional[set] = None) -> None:
+    def __init__(
+        self,
+        phase_outputs: dict,
+        output_dir: Optional[str],
+        phase_map: dict,
+        missing_sink: Optional[set] = None,
+    ) -> None:
         self._phase_outputs = phase_outputs
         self._output_dir = output_dir
         self._phase_map = phase_map
@@ -3413,10 +3454,14 @@ class StateMachineSequencer(PhaseSequencer):
             current run).  Reset at the start of each :meth:`execute` call.
         """
         # Extract git_handoff before forwarding to parent (Issue #674)
-        _git_handoff = kwargs.pop('git_handoff', None)
+        _git_handoff = kwargs.pop("git_handoff", None)
         # If runner is a plain callable, wrap it in a minimal runner shim
         # so that unit tests can pass a bare function.
-        if "runner" in kwargs and callable(kwargs["runner"]) and not hasattr(kwargs["runner"], "queue"):
+        if (
+            "runner" in kwargs
+            and callable(kwargs["runner"])
+            and not hasattr(kwargs["runner"], "queue")
+        ):
             kwargs["runner"] = _wrap_callable_runner(kwargs["runner"])
         elif len(args) >= 2 and callable(args[1]) and not hasattr(args[1], "queue"):
             args = (args[0], _wrap_callable_runner(args[1])) + args[2:]
@@ -3492,8 +3537,7 @@ class StateMachineSequencer(PhaseSequencer):
 
             # Detect self-loop via success transition (phase → itself)
             success_target = effective.get("success")
-            if (success_target == phase.id
-                    and phase.max_iterations > 0):
+            if success_target == phase.id and phase.max_iterations > 0:
                 groups[phase.id] = [phase.id]
                 continue
 
@@ -3622,22 +3666,22 @@ class StateMachineSequencer(PhaseSequencer):
                 # ABORT) — these are routing metadata, not content (BC-7.3).
                 stripped_lines: List[str] = []
                 past_verdict = False
-                for line in text.split('\n'):
+                for line in text.split("\n"):
                     if not past_verdict and line.strip().lower() in _VERDICT_KEYWORDS:
                         continue  # skip verdict-only line at start
                     past_verdict = True
                     stripped_lines.append(line)
-                text = '\n'.join(stripped_lines)
+                text = "\n".join(stripped_lines)
                 if len(text) > self._MAX_SECTION_CHARS:
                     if output_dir_str:
-                        safe_mid = re.sub(r'[^\w\-]', '_', member_id)
+                        safe_mid = re.sub(r"[^\w\-]", "_", member_id)
                         suffix = (
                             f"\n[...truncated, full output at "
                             f"{output_dir_str}/{safe_mid}_round{round_num}.md]"
                         )
                     else:
                         suffix = "\n[...truncated]"
-                    text = text[:self._MAX_SECTION_CHARS] + suffix
+                    text = text[: self._MAX_SECTION_CHARS] + suffix
                 sections.append(f"--- Round {round_num}: {member_id} ---\n{text}")
 
         return "\n\n".join(sections) if sections else ""
@@ -3690,7 +3734,7 @@ class StateMachineSequencer(PhaseSequencer):
             method from a parallel wave worker without setting
             ``_current_build_iter`` under ``_phase_outputs_lock`` first.
         """
-        current_iter = getattr(self, '_current_build_iter', 1)
+        current_iter = getattr(self, "_current_build_iter", 1)
         history_str = self._build_iteration_history(phase.id, current_iter)
 
         # ── Git handoff variables (Issue #674) ──
@@ -3791,7 +3835,9 @@ class StateMachineSequencer(PhaseSequencer):
                     logger.warning("Git handoff initialization failed — falling back to file-based")
                     self._git_handoff = None
             except Exception as exc:
-                logger.warning("Git handoff initialization error: %s — falling back to file-based", exc)
+                logger.warning(
+                    "Git handoff initialization error: %s — falling back to file-based", exc
+                )
                 self._git_handoff = None
 
         # ── Pipeline-start hook (e.g. git branch creation) ────────────────────
@@ -3799,9 +3845,7 @@ class StateMachineSequencer(PhaseSequencer):
             try:
                 self.on_pipeline_start(self.pipeline_context)
             except Exception as exc:
-                logger.error(
-                    f"Pipeline {self.template.id}: on_pipeline_start hook failed: {exc}"
-                )
+                logger.error(f"Pipeline {self.template.id}: on_pipeline_start hook failed: {exc}")
                 raise
 
         # Entry point: first phase in template order
@@ -3847,9 +3891,7 @@ class StateMachineSequencer(PhaseSequencer):
                             self.phase_outputs.get(current_phase_id, {}),
                         )
                         # Issue #718: snapshot protect_on_approve on exhausted (implicit approval)
-                        self._maybe_snapshot_on_approve(
-                            phase, _exhausted_next, is_exhausted=True
-                        )
+                        self._maybe_snapshot_on_approve(phase, _exhausted_next, is_exhausted=True)
                         # ── Phase 0 hard-gate (#840) ─────────────────────────
                         # When the exhausted phase is the existing_symbols
                         # inventory AND the admin feature_flags.phase0_hard_gate
@@ -3859,17 +3901,16 @@ class StateMachineSequencer(PhaseSequencer):
                         # sub-check 7d rigour want: an empty/missing inventory
                         # is a BLOCKER, not "fall through and grep ad-hoc".
                         from . import feature_flags as _ff
-                        if (
-                            current_phase_id == _ff.PHASE_0_ID
-                            and _exhausted_next is not None
-                        ):
+
+                        if current_phase_id == _ff.PHASE_0_ID and _exhausted_next is not None:
                             if _ff.is_enabled("phase0_hard_gate"):
                                 logger.warning(
                                     "Pipeline %s: Phase 0 exhausted AND "
                                     "feature_flags.phase0_hard_gate=True — "
                                     "overriding YAML's exhausted→%s fallback "
                                     "and HALTING (sub-check 7d hard gate).",
-                                    self.template.id, _exhausted_next,
+                                    self.template.id,
+                                    _exhausted_next,
                                 )
                                 _exhausted_next = None
                         if _exhausted_next is not None:
@@ -3892,14 +3933,13 @@ class StateMachineSequencer(PhaseSequencer):
                         abort_result = {
                             "phase_outputs": self.phase_outputs,
                             "final_output": (
-                                self.phase_outputs.get(last_phase, {})
-                                if last_phase else {}
+                                self.phase_outputs.get(last_phase, {}) if last_phase else {}
                             ),
                             "iteration_history": dict(self.iteration_history),
                             "iteration_counts": dict(self.iteration_counts),
                             "aborted": True,
                             "abort_reason": "MAX_ITERATIONS_EXCEEDED",
-                            "failed_phase": current_phase_id,   # Issue #651: fix 'unknown' in daemon
+                            "failed_phase": current_phase_id,  # Issue #651: fix 'unknown' in daemon
                             "exceeded_phase": current_phase_id,
                         }
                         # ── Finding analysis (Issue #651) ─────────────────────────────────────
@@ -3911,11 +3951,14 @@ class StateMachineSequencer(PhaseSequencer):
                         if current_phase_id == "spec" and "spec_adversary" in self.phase_outputs:
                             try:
                                 from .spec_adversary import parse_adversary_output
+
                                 adv_raw = _extract_phase_text(self.phase_outputs["spec_adversary"])
                                 adv_verdict = parse_adversary_output(adv_raw)
                                 if adv_verdict.verdict == "REQUEST_CHANGES":
                                     abort_result["escalation_required"] = True
-                                    abort_result["escalation_reason"] = "spec_adversary_loop_exhausted"
+                                    abort_result["escalation_reason"] = (
+                                        "spec_adversary_loop_exhausted"
+                                    )
                                     abort_result["adversary_findings"] = [
                                         {"category": f.category, "description": f.description}
                                         for f in adv_verdict.findings
@@ -3955,9 +3998,7 @@ class StateMachineSequencer(PhaseSequencer):
 
                 # ── on_phase_start callback ───────────────────────────────────
                 # step_index = position in executed_sequence (0-based, repeats for loops)
-                self._invoke_on_phase_start(
-                    current_phase_id, phase, len(executed_sequence) - 1
-                )
+                self._invoke_on_phase_start(current_phase_id, phase, len(executed_sequence) - 1)
 
                 # ── Dialogue phase dispatch + gate (Track B + #840) ──────────
                 # State-machine path: a type:dialogue phase routed via
@@ -3967,12 +4008,14 @@ class StateMachineSequencer(PhaseSequencer):
                 # the non-state-machine case in _execute_wave_*).
                 if getattr(phase, "dialogue_config", None) is not None:
                     from . import feature_flags as _ff
+
                     if not _ff.is_enabled("dialogue_phase"):
                         logger.info(
                             "Pipeline %s: dialogue phase '%s' SKIPPED "
                             "(state-machine path) — admin "
                             "feature_flags.dialogue_phase is False.",
-                            self.template.id, current_phase_id,
+                            self.template.id,
+                            current_phase_id,
                         )
                         result = {
                             "state": "skipped_by_feature_flag",
@@ -3987,7 +4030,9 @@ class StateMachineSequencer(PhaseSequencer):
                         self._invoke_on_phase_complete(current_phase_id, result)
                         # Route via SUCCESS transition (skip == clean exit).
                         next_phase_id = self._resolve_next_phase(
-                            phase, PhaseOutcome.SUCCESS, result,
+                            phase,
+                            PhaseOutcome.SUCCESS,
+                            result,
                         )
                         if next_phase_id is None:
                             current_phase_id = None
@@ -4009,7 +4054,9 @@ class StateMachineSequencer(PhaseSequencer):
                             "aborted": True,
                         }
                     next_phase_id = self._resolve_next_phase(
-                        phase, PhaseOutcome.SUCCESS, result,
+                        phase,
+                        PhaseOutcome.SUCCESS,
+                        result,
                     )
                     if next_phase_id is None:
                         current_phase_id = None
@@ -4037,9 +4084,7 @@ class StateMachineSequencer(PhaseSequencer):
                 # iteration_history / iteration_counts. The guard precedes
                 # _execute_and_wait so a placeholder failure never enters the
                 # retry loop.
-                placeholder_failure = self._check_for_unresolved_placeholders(
-                    phase, _missing_sink
-                )
+                placeholder_failure = self._check_for_unresolved_placeholders(phase, _missing_sink)
                 if placeholder_failure is not None:
                     result = placeholder_failure
                     with self._phase_outputs_lock:
@@ -4096,9 +4141,7 @@ class StateMachineSequencer(PhaseSequencer):
                 )
 
                 # ── Execute and wait (with retry logic from parent) ───────────
-                result = self._execute_and_wait(
-                    task_id, phase, initial_input=initial_input
-                )
+                result = self._execute_and_wait(task_id, phase, initial_input=initial_input)
 
                 # ── Write FILE blocks if requested (#189) ─────────────────────
                 if phase.write_files:
@@ -4175,9 +4218,11 @@ class StateMachineSequencer(PhaseSequencer):
                     self.phase_outputs[current_phase_id] = result
 
                 # ── Git handoff: commit phase output (Issue #674) ─────────────
-                if (self._git_handoff is not None
-                        and self._git_handoff.is_active()
-                        and current_phase_id in self._loop_groups):
+                if (
+                    self._git_handoff is not None
+                    and self._git_handoff.is_active()
+                    and current_phase_id in self._loop_groups
+                ):
                     phase_text = _extract_phase_text(result)
                     if phase_text is not None:
                         self._git_handoff.commit_phase_output(
@@ -4185,7 +4230,7 @@ class StateMachineSequencer(PhaseSequencer):
                         )
 
                 # ── Hash capture — record protected_outputs from THIS phase for future verification (#531)
-                if result.get('state') == 'success' and getattr(phase, 'protected_outputs', []):
+                if result.get("state") == "success" and getattr(phase, "protected_outputs", []):
                     self._store_protected_hashes(phase)
 
                 # ── Supervisor hook (#194) ────────────────────────────────────
@@ -4244,9 +4289,7 @@ class StateMachineSequencer(PhaseSequencer):
 
             # ── Build final result ────────────────────────────────────────────
             last_phase_id = executed_sequence[-1] if executed_sequence else None
-            final_output = (
-                self.phase_outputs.get(last_phase_id, {}) if last_phase_id else {}
-            )
+            final_output = self.phase_outputs.get(last_phase_id, {}) if last_phase_id else {}
             final_result = {
                 "phase_outputs": self.phase_outputs,
                 "final_output": final_output,
@@ -4273,7 +4316,8 @@ class StateMachineSequencer(PhaseSequencer):
                 except Exception as exc:
                     logger.warning(
                         "Git handoff finalize failed: %s — final files remain in %s",
-                        exc, self.output_dir,
+                        exc,
+                        self.output_dir,
                     )
             self._git_handoff.cleanup(preserve=pipeline_failed)
 
@@ -4410,6 +4454,4 @@ class StateMachineSequencer(PhaseSequencer):
         try:
             hook(*args)
         except Exception as hook_exc:
-            logger.warning(
-                f"Pipeline {pipeline_id}: on_pipeline_complete hook failed: {hook_exc}"
-            )
+            logger.warning(f"Pipeline {pipeline_id}: on_pipeline_complete hook failed: {hook_exc}")

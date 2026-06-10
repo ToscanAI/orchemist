@@ -49,13 +49,14 @@ def _read_version() -> str:
     """
     try:
         import importlib.metadata
+
         return importlib.metadata.version("orchemist")
     except Exception:
         pass
 
     try:
         _pyproject = Path(__file__).parent.parent.parent.parent / "pyproject.toml"
-        with open(_pyproject, 'rb') as f:
+        with open(_pyproject, "rb") as f:
             data = tomllib.load(f)
         return data["project"]["version"]
     except Exception:
@@ -89,11 +90,13 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
         print("MCP server started", file=sys.stderr)
         _check_api_key()
         from mcp.server.fastmcp import FastMCP
+
         version = _read_version()
         mcp = FastMCP(name="orchemist")
         register_tools(mcp)
         mcp._mcp_server.version = version
         import asyncio
+
         asyncio.run(mcp.run_stdio_async())
 
     elif transport == "sse":
@@ -104,6 +107,7 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
         # uvicorn catches and logs OSErrors internally rather than re-raising,
         # so we must verify the port is free before handing off to the MCP SDK.
         import socket as _socket
+
         _check_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
         _check_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 0)
         try:
@@ -119,11 +123,13 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
             _check_sock.close()
 
         from mcp.server.fastmcp import FastMCP
+
         version = _read_version()
         mcp = FastMCP(name="orchemist", host="0.0.0.0", port=port)
         register_tools(mcp)
         mcp._mcp_server.version = version
         import asyncio
+
         try:
             asyncio.run(mcp.run_sse_async())
         except OSError as e:

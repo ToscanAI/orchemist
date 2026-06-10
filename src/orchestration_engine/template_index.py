@@ -36,6 +36,7 @@ DEFAULT_CACHE_PATH = Path.home() / ".orch" / "cache" / "template-index.yaml"
 # Data model
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TemplateEntry:
     """One entry in the community template index."""
@@ -96,6 +97,7 @@ class TemplateEntry:
 # ---------------------------------------------------------------------------
 # Index class
 # ---------------------------------------------------------------------------
+
 
 class TemplateIndex:
     """Container for a collection of :class:`TemplateEntry` objects.

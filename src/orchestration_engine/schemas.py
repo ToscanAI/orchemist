@@ -16,16 +16,19 @@ from .timestamps import now_utc
 
 # Core Enums
 
+
 class Priority(IntEnum):
     """Task priority levels."""
-    CRITICAL = 1    # Process immediately, bypass normal queue
-    HIGH = 2        # Process before normal priority tasks
-    NORMAL = 3      # Standard priority (default)
-    LOW = 4         # Process when no higher priority work
+
+    CRITICAL = 1  # Process immediately, bypass normal queue
+    HIGH = 2  # Process before normal priority tasks
+    NORMAL = 3  # Standard priority (default)
+    LOW = 4  # Process when no higher priority work
 
 
 class TaskType(str, Enum):
     """Supported task types."""
+
     CONTENT = "content"
     CODE = "code"
     RESEARCH = "research"
@@ -44,6 +47,7 @@ class TaskType(str, Enum):
 
 class TaskState(str, Enum):
     """Task lifecycle states."""
+
     QUEUED = "queued"
     RUNNING = "running"
     SUCCESS = "success"
@@ -55,6 +59,7 @@ class TaskState(str, Enum):
 
 class OrchestraState(str, Enum):
     """Orchestra workflow states."""
+
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -63,15 +68,17 @@ class OrchestraState(str, Enum):
 
 class ConfidenceLevel(str, Enum):
     """Human-readable confidence levels."""
-    VERY_LOW = "very_low"    # 0.0 - 0.2
-    LOW = "low"              # 0.2 - 0.4
-    MEDIUM = "medium"        # 0.4 - 0.6
-    HIGH = "high"            # 0.6 - 0.8
+
+    VERY_LOW = "very_low"  # 0.0 - 0.2
+    LOW = "low"  # 0.2 - 0.4
+    MEDIUM = "medium"  # 0.4 - 0.6
+    HIGH = "high"  # 0.6 - 0.8
     VERY_HIGH = "very_high"  # 0.8 - 1.0
 
 
 class ModelTier(str, Enum):
     """Available model tiers."""
+
     HAIKU = "haiku-4-5"
     SONNET = "sonnet-4"
     OPUS = "opus-4-6"
@@ -79,8 +86,10 @@ class ModelTier(str, Enum):
 
 # Base Task Input Schema
 
+
 class TaskSpec(BaseModel):
     """Input specification for submitting a new task."""
+
     # Auto-generated unique ID (set here so callers can override for testing)
     id: str = Field(default_factory=lambda: str(uuid4()))
 
@@ -113,8 +122,10 @@ class TaskSpec(BaseModel):
 
 # Task Result Schemas
 
+
 class TaskError(BaseModel):
     """Structured error information."""
+
     code: str
     message: str
     severity: Literal["warning", "error", "critical"]
@@ -124,6 +135,7 @@ class TaskError(BaseModel):
 
 class TaskResult(BaseModel):
     """Complete task execution result."""
+
     task_id: str
     task_type: TaskType
     state: TaskState
@@ -155,7 +167,7 @@ class TaskResult(BaseModel):
     quality_checks_passed: Dict[str, bool] = {}
     quality_check_details: Dict[str, Any] = {}
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def set_confidence_level(self):
         """Auto-set confidence level based on numeric confidence."""
         conf = self.confidence
@@ -176,6 +188,7 @@ class TaskResult(BaseModel):
 
 class TaskStatus(BaseModel):
     """Current status of a task in the queue."""
+
     task_id: str
     task_type: TaskType
     state: TaskState
@@ -207,6 +220,7 @@ class TaskStatus(BaseModel):
 
 class TaskSummary(BaseModel):
     """Lightweight task summary for listings."""
+
     task_id: str
     task_type: TaskType
     state: TaskState
@@ -226,12 +240,14 @@ class TaskSummary(BaseModel):
 
 # Orchestra Schemas
 
+
 class OrchestraSpec(BaseModel):
     """Input specification for creating a new orchestra workflow."""
+
     template: str = ""  # Template name like "content-pipeline", "code-sprint"
     name: Optional[str] = None
     description: Optional[str] = None  # Human-readable description
-    phases: List[str] = []             # Ordered list of phase names
+    phases: List[str] = []  # Ordered list of phase names
     config: Dict[str, Any] = Field(default_factory=dict)  # Template-specific parameters
     priority: Priority = Priority.NORMAL
 
@@ -246,6 +262,7 @@ class OrchestraSpec(BaseModel):
 
 class OrchestraStatus(BaseModel):
     """Current status of an orchestra workflow."""
+
     orchestra_id: str
     template: str
     name: Optional[str] = None
@@ -264,7 +281,7 @@ class OrchestraStatus(BaseModel):
 
     # Resource usage
     cost_budget_usd: Optional[Decimal] = None
-    cost_spent_usd: Decimal = Decimal('0.00')
+    cost_spent_usd: Decimal = Decimal("0.00")
     time_budget_hours: Optional[int] = None
 
     # Current phase info
@@ -281,16 +298,19 @@ class OrchestraStatus(BaseModel):
 
 # Queue Statistics
 
+
 class TaskStats(BaseModel):
     """Statistics for a specific task state/type."""
+
     count: int
     oldest_task_age_seconds: Optional[float] = None
     avg_execution_time_seconds: Optional[float] = None
-    total_cost_usd: Decimal = Decimal('0.00')
+    total_cost_usd: Decimal = Decimal("0.00")
 
 
 class QueueStats(BaseModel):
     """Overall queue statistics and health metrics."""
+
     timestamp: datetime = Field(default_factory=now_utc)
 
     # Task counts by state
@@ -313,7 +333,7 @@ class QueueStats(BaseModel):
     throughput_tasks_per_hour: Optional[float] = None
 
     # Resource usage
-    total_cost_today_usd: Decimal = Decimal('0.00')
+    total_cost_today_usd: Decimal = Decimal("0.00")
     total_tokens_consumed: int = 0
 
     # Worker status
@@ -335,14 +355,22 @@ class QueueStats(BaseModel):
     @property
     def total_tasks(self) -> int:
         """Total tasks across all states."""
-        return (self.queued + self.running + self.completed +
-                self.failed + self.retrying + self.cancelled)
+        return (
+            self.queued
+            + self.running
+            + self.completed
+            + self.failed
+            + self.retrying
+            + self.cancelled
+        )
 
 
 # Task Filters for Querying
 
+
 class TaskFilters(BaseModel):
     """Filters for querying tasks."""
+
     states: Optional[List[TaskState]] = None
     types: Optional[List[TaskType]] = None
     priorities: Optional[List[Priority]] = None
@@ -356,8 +384,10 @@ class TaskFilters(BaseModel):
 
 # Task Run Schema (for individual execution attempts)
 
+
 class TaskRunResult(BaseModel):
     """Result from a single task execution attempt."""
+
     run_id: str = Field(default_factory=lambda: str(uuid4()))
     task_id: str
     attempt_number: int
@@ -387,8 +417,10 @@ class TaskRunResult(BaseModel):
 
 # Dead Letter Queue Schema
 
+
 class DeadLetterTask(BaseModel):
     """Task that permanently failed and was moved to dead letter queue."""
+
     id: str = Field(default_factory=lambda: str(uuid4()))
     original_task_id: str
     task_type: TaskType
@@ -403,6 +435,7 @@ class DeadLetterTask(BaseModel):
 
 
 # Utility Functions
+
 
 def generate_task_id() -> str:
     """Generate a unique task ID."""
@@ -466,8 +499,10 @@ DEFAULT_MAX_RETRIES = {
 
 # Phase 2 Schemas - Task Runner, Workers, Progress, Recovery
 
+
 class WorkerStatus(BaseModel):
     """Status information for a worker."""
+
     worker_id: str
     state: Literal["idle", "assigned", "running", "stale", "terminated"]
     assigned_task_id: Optional[str] = None
@@ -490,13 +525,24 @@ class WorkerStatus(BaseModel):
 
 class ProgressEvent(BaseModel):
     """Individual progress event for task tracking."""
+
     id: str = Field(default_factory=lambda: str(uuid4()))
     task_id: str
     event_type: Literal[
-        "queued", "started", "progress_update", "model_selected",
-        "session_created", "session_ended", "retry_scheduled",
-        "escalated", "completed", "failed", "cancelled", "timeout",
-        "resource_limit", "circuit_breaker"
+        "queued",
+        "started",
+        "progress_update",
+        "model_selected",
+        "session_created",
+        "session_ended",
+        "retry_scheduled",
+        "escalated",
+        "completed",
+        "failed",
+        "cancelled",
+        "timeout",
+        "resource_limit",
+        "circuit_breaker",
     ]
     timestamp: datetime = Field(default_factory=now_utc)
 
@@ -519,17 +565,22 @@ class ProgressEvent(BaseModel):
 
 class CircuitBreakerState(BaseModel):
     """Circuit breaker state for error recovery."""
-    name: str                              # Circuit breaker identifier (e.g., "content:haiku")
-    failure_count: int = 0                 # Consecutive failures
-    last_failure: Optional[datetime] = None # Last failure timestamp
-    opened_at: Optional[datetime] = None   # When circuit was opened
+
+    name: str  # Circuit breaker identifier (e.g., "content:haiku")
+    failure_count: int = 0  # Consecutive failures
+    last_failure: Optional[datetime] = None  # Last failure timestamp
+    opened_at: Optional[datetime] = None  # When circuit was opened
     state: Literal["closed", "open", "half_open"] = "closed"
 
     def is_open(self, threshold: int = 5, reset_timeout_minutes: int = 30) -> bool:
         """Check if circuit breaker is open."""
         if self.state == "open" and self.opened_at:
             # Check if reset timeout has passed
-            opened = self.opened_at if self.opened_at.tzinfo else self.opened_at.replace(tzinfo=timezone.utc)
+            opened = (
+                self.opened_at
+                if self.opened_at.tzinfo
+                else self.opened_at.replace(tzinfo=timezone.utc)
+            )
             reset_time = opened + timedelta(minutes=reset_timeout_minutes)
             if now_utc() >= reset_time:
                 return False  # Allow half-open state
@@ -545,14 +596,16 @@ class CircuitBreakerState(BaseModel):
 
 class TaskExecutionRequest(BaseModel):
     """Request to execute a specific task immediately."""
+
     task_id: str
-    force: bool = False          # Force execution even if worker pool is full
-    model_tier: Optional[str] = None    # Override model tier
+    force: bool = False  # Force execution even if worker pool is full
+    model_tier: Optional[str] = None  # Override model tier
     timeout_override: Optional[int] = None  # Override timeout seconds
 
 
 class WorkerPoolStatus(BaseModel):
     """Comprehensive worker pool status."""
+
     total_workers: int
     active_workers: int
     idle_workers: int
@@ -576,14 +629,15 @@ class WorkerPoolStatus(BaseModel):
     @property
     def available_capacity(self) -> int:
         """Number of tasks that can be assigned immediately."""
-        return max(0, min(
-            self.max_workers - self.active_workers,
-            self.max_sessions - self.current_sessions
-        ))
+        return max(
+            0,
+            min(self.max_workers - self.active_workers, self.max_sessions - self.current_sessions),
+        )
 
 
 class RunnerStatus(BaseModel):
     """Comprehensive task runner status."""
+
     running: bool
     uptime_seconds: Optional[float] = None
 
@@ -615,9 +669,11 @@ class RunnerStatus(BaseModel):
             return "unhealthy"
 
         # Check various health indicators
-        if (self.circuit_breakers_open > 3 or
-            self.worker_pool_status.worker_utilization > 90 or
-            (self.retry_success_rate and self.retry_success_rate < 0.5)):
+        if (
+            self.circuit_breakers_open > 3
+            or self.worker_pool_status.worker_utilization > 90
+            or (self.retry_success_rate and self.retry_success_rate < 0.5)
+        ):
             return "degraded"
 
         return "healthy"

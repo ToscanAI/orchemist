@@ -86,8 +86,14 @@ def normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(row, dict):
         return row
     out = dict(row)
-    for key in ("created_at", "updated_at", "completed_at", "started_at",
-                "last_run_at", "last_updated"):
+    for key in (
+        "created_at",
+        "updated_at",
+        "completed_at",
+        "started_at",
+        "last_run_at",
+        "last_updated",
+    ):
         if key in out:
             out[key] = normalize_ts(out[key])
     # ``commits`` is included for forward-compat: gate dicts (a different

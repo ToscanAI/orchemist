@@ -124,39 +124,29 @@ def _is_safe_path(path: str) -> bool:
 
     # ── 2. URL-encoded traversal sequences ──────────────────────────────────
     if _URL_ENCODED_RE.search(path):
-        logger.warning(
-            "output_parser: rejected URL-encoded path: %r", path
-        )
+        logger.warning("output_parser: rejected URL-encoded path: %r", path)
         return False
 
     # ── 3. Backslash (Windows separator — reject outright) ──────────────────
     if "\\" in path:
-        logger.warning(
-            "output_parser: rejected path containing backslash: %r", path
-        )
+        logger.warning("output_parser: rejected path containing backslash: %r", path)
         return False
 
     # ── 4. UNC path  (//server/share) — checked before generic /  ────────────
     # This must come before the absolute-path check so UNC paths receive the
     # more specific log message; both checks are otherwise equivalent for //.
     if path.startswith("//"):
-        logger.warning(
-            "output_parser: rejected UNC path: %r", path
-        )
+        logger.warning("output_parser: rejected UNC path: %r", path)
         return False
 
     # ── 5. Absolute Unix path ────────────────────────────────────────────────
     if path.startswith("/"):
-        logger.warning(
-            "output_parser: rejected absolute Unix path: %r", path
-        )
+        logger.warning("output_parser: rejected absolute Unix path: %r", path)
         return False
 
     # ── 6. Windows drive-letter path  (C:/ or just C:) ───────────────────────
     if len(path) >= 2 and path[1] == ":" and path[0].isalpha():
-        logger.warning(
-            "output_parser: rejected Windows drive-letter path: %r", path
-        )
+        logger.warning("output_parser: rejected Windows drive-letter path: %r", path)
         return False
 
     # ── 7. Single-dot path "." ───────────────────────────────────────────────
@@ -167,23 +157,17 @@ def _is_safe_path(path: str) -> bool:
     try:
         normalised = PurePosixPath(path)
     except Exception:
-        logger.warning(
-            "output_parser: rejected unparseable path: %r", path
-        )
+        logger.warning("output_parser: rejected unparseable path: %r", path)
         return False
 
     if str(normalised) == ".":
-        logger.warning(
-            "output_parser: rejected single-dot path: %r", path
-        )
+        logger.warning("output_parser: rejected single-dot path: %r", path)
         return False
 
     # ── 8. Parent-directory traversal via .. component ───────────────────────
     parts = normalised.parts
     if ".." in parts:
-        logger.warning(
-            "output_parser: rejected path with '..' component: %r", path
-        )
+        logger.warning("output_parser: rejected path with '..' component: %r", path)
         return False
 
     return True
@@ -284,9 +268,7 @@ def parse_output(text: str) -> ParsedOutput:
             if _FILE_END_RE.match(line_for_match):
                 if current_path is not None:
                     # Well-formed, valid-path block → save it.
-                    files.append(
-                        FileBlock(path=current_path, content="".join(content_lines))
-                    )
+                    files.append(FileBlock(path=current_path, content="".join(content_lines)))
                 # Reset state regardless.
                 in_block = False
                 current_path = None
@@ -350,9 +332,7 @@ def extract_and_write(text: str, output_dir: Path | str) -> list[FileBlock]:
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
-        logger.warning(
-            "extract_and_write: cannot create output_dir %r: %s", str(output_dir), exc
-        )
+        logger.warning("extract_and_write: cannot create output_dir %r: %s", str(output_dir), exc)
         return []
 
     written: list[FileBlock] = []
@@ -380,8 +360,6 @@ def extract_and_write(text: str, output_dir: Path | str) -> list[FileBlock]:
             written.append(fb)
             logger.debug("extract_and_write: wrote %s", target)
         except Exception as exc:
-            logger.warning(
-                "extract_and_write: failed to write %r: %s", str(target), exc
-            )
+            logger.warning("extract_and_write: failed to write %r: %s", str(target), exc)
 
     return written

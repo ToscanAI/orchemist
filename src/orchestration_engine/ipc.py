@@ -27,6 +27,7 @@ Usage (validator subprocess side):
     result = run_tests(request)
     sys.stdout.write(serialize_response(result, request.id))
 """
+
 from __future__ import annotations
 
 import json
@@ -70,12 +71,21 @@ DEFAULT_TEST_COMMAND = "pytest"
 
 # Fields that indicate a ValidationResult response (used in deserialize_response).
 # Module-level to avoid repeated frozenset allocation on every call.
-_VALIDATION_HINTS: frozenset = frozenset({
-    "verdict", "pass_rate", "details", "tests_total",
-    "tests_passed", "tests_failed", "tests_errored",
-    "duration_seconds", "retry_recommended", "retry_reason",
-    "test_manifest_hash",
-})
+_VALIDATION_HINTS: frozenset = frozenset(
+    {
+        "verdict",
+        "pass_rate",
+        "details",
+        "tests_total",
+        "tests_passed",
+        "tests_failed",
+        "tests_errored",
+        "duration_seconds",
+        "retry_recommended",
+        "retry_reason",
+        "test_manifest_hash",
+    }
+)
 
 
 def _next_id() -> int:
@@ -158,6 +168,7 @@ class IPCProtocolError(Exception):
 @dataclass
 class IPCError:
     """Structured JSON-RPC 2.0 error response returned by deserialize_response."""
+
     code: int
     message: str
     data: Optional[str] = None
@@ -166,9 +177,10 @@ class IPCError:
 @dataclass
 class TestDetail:
     """Individual test result within a ValidationResult."""
+
     test_name: str
-    outcome: str   # "PASS" | "FAIL" | "ERROR"
-    message: str   # failure message; empty string for passing tests
+    outcome: str  # "PASS" | "FAIL" | "ERROR"
+    message: str  # failure message; empty string for passing tests
 
 
 @dataclass
@@ -180,6 +192,7 @@ class ValidationRequest:
     Optional fields: test_command, timeout_seconds, test_manifest_hash.
     The request_id kwarg controls the JSON-RPC id emitted by serialize_request.
     """
+
     run_id: str
     test_store_path: str
     repo_path: str
@@ -194,8 +207,9 @@ class ValidationRequest:
 @dataclass
 class HealthRequest:
     """Request to check subprocess health (ping)."""
+
     request_id: Optional[int] = None  # used by serialize_request
-    id: int = 0                         # populated by deserialize_request
+    id: int = 0  # populated by deserialize_request
 
 
 @dataclass
@@ -207,7 +221,8 @@ class ValidationResult:
     Optional: tests_passed, tests_failed, tests_errored, duration_seconds,
               retry_recommended, retry_reason, test_manifest_hash.
     """
-    verdict: str                  # "PASS" | "FAIL" | "ERROR"
+
+    verdict: str  # "PASS" | "FAIL" | "ERROR"
     tests_total: int
     pass_rate: float
     details: List[TestDetail]
@@ -223,6 +238,7 @@ class ValidationResult:
 @dataclass
 class HealthResult:
     """Result of a health RPC call."""
+
     status: str  # "ok"
 
 
@@ -272,8 +288,11 @@ def _validation_result_to_dict(result: ValidationResult) -> dict:
         ],
         "retry_recommended": result.retry_recommended,
         "retry_reason": result.retry_reason,
-        **({"test_manifest_hash": result.test_manifest_hash}
-           if result.test_manifest_hash is not None else {}),
+        **(
+            {"test_manifest_hash": result.test_manifest_hash}
+            if result.test_manifest_hash is not None
+            else {}
+        ),
     }
 
 
@@ -352,9 +371,7 @@ def deserialize_request(line: str) -> Union[ValidationRequest, HealthRequest]:
         required = ("run_id", "test_store_path", "repo_path", "branch")
         for r in required:
             if r not in params:
-                raise IPCProtocolError(
-                    f"missing required param for validate: '{r}'"
-                )
+                raise IPCProtocolError(f"missing required param for validate: '{r}'")
         return ValidationRequest(
             run_id=params["run_id"],
             test_store_path=params["test_store_path"],
@@ -503,9 +520,7 @@ def _parse_validation_result(result: dict) -> ValidationResult:
             f"pass_rate must be a number, got {type(pass_rate).__name__}: {pass_rate!r}"
         )
     if not (0.0 <= pass_rate <= 1.0):
-        raise IPCProtocolError(
-            f"pass_rate out of range: {pass_rate} — must be between 0.0 and 1.0"
-        )
+        raise IPCProtocolError(f"pass_rate out of range: {pass_rate} — must be between 0.0 and 1.0")
 
     tests_total = result["tests_total"]
     if not isinstance(tests_total, int):
@@ -537,18 +552,18 @@ def _parse_test_details(raw_details: list) -> List[TestDetail]:
         # Check required fields
         for req in ("test_name", "outcome", "message"):
             if req not in item:
-                raise IPCProtocolError(
-                    f"invalid test detail: missing required field '{req}'"
-                )
+                raise IPCProtocolError(f"invalid test detail: missing required field '{req}'")
         outcome = item["outcome"]
         if outcome not in _VALID_OUTCOMES:
             raise IPCProtocolError(
                 f"invalid test detail outcome: '{outcome}' — must be one of "
                 f"{sorted(_VALID_OUTCOMES)}"
             )
-        details.append(TestDetail(
-            test_name=item["test_name"],
-            outcome=outcome,
-            message=item["message"],
-        ))
+        details.append(
+            TestDetail(
+                test_name=item["test_name"],
+                outcome=outcome,
+                message=item["message"],
+            )
+        )
     return details

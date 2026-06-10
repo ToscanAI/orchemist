@@ -1,4 +1,5 @@
 """Phase transition types for state-machine pipeline execution."""
+
 from enum import Enum
 from typing import Any, Dict
 

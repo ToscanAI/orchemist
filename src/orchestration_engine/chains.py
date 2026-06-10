@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Regex to match {{placeholder}} and {{dotted.path}} tokens
-_PLACEHOLDER_RE = re.compile(r'\{\{(\w+(?:\.\w+)*)\}\}')
+_PLACEHOLDER_RE = re.compile(r"\{\{(\w+(?:\.\w+)*)\}\}")
 
 # Hard upper-bound safety cap (independent of template max_chain_depth)
 MAX_ALLOWED_CHAIN_DEPTH = 20
@@ -34,6 +34,7 @@ MAX_ALLOWED_CHAIN_DEPTH = 20
 # ---------------------------------------------------------------------------
 # Placeholder interpolation
 # ---------------------------------------------------------------------------
+
 
 def _resolve_dotted(key: str, context: Dict[str, Any]) -> Optional[str]:
     """Resolve a dotted key path against a context dict.
@@ -116,6 +117,7 @@ def interpolate_input_map(
 # Child pipeline evaluation
 # ---------------------------------------------------------------------------
 
+
 def evaluate_on_complete(
     template: Any,
     run: Dict[str, Any],
@@ -172,7 +174,9 @@ def evaluate_on_complete(
         logger.warning(
             "Chain depth limit reached (parent_depth=%d, max_chain_depth=%d) "
             "for run '%s' — skipping child pipelines.",
-            parent_depth, max_depth, run.get("run_id", "?"),
+            parent_depth,
+            max_depth,
+            run.get("run_id", "?"),
         )
         return []
 
@@ -202,16 +206,18 @@ def evaluate_on_complete(
             context,
         )
 
-        child_configs.append({
-            "template_name": entry.template,
-            "input_map": resolved_input_map,
-            "chain_depth": child_depth,
-            "parent_run_id": run.get("run_id", ""),
-            # Inherit mode and gateway settings from the parent run
-            "mode": run.get("mode", "dry-run"),
-            "gateway_url": run.get("gateway_url"),
-            "skip_scoring": bool(run.get("skip_scoring", 0)),
-        })
+        child_configs.append(
+            {
+                "template_name": entry.template,
+                "input_map": resolved_input_map,
+                "chain_depth": child_depth,
+                "parent_run_id": run.get("run_id", ""),
+                # Inherit mode and gateway settings from the parent run
+                "mode": run.get("mode", "dry-run"),
+                "gateway_url": run.get("gateway_url"),
+                "skip_scoring": bool(run.get("skip_scoring", 0)),
+            }
+        )
 
     return child_configs
 
@@ -219,6 +225,7 @@ def evaluate_on_complete(
 # ---------------------------------------------------------------------------
 # Child pipeline spawning
 # ---------------------------------------------------------------------------
+
 
 def spawn_chain_runs(
     child_configs: List[Dict[str, Any]],
@@ -260,7 +267,9 @@ def spawn_chain_runs(
         except Exception as exc:
             logger.warning(
                 "Chain spawn: could not resolve template '%s' for parent '%s': %s",
-                template_name, parent_run_id, exc,
+                template_name,
+                parent_run_id,
+                exc,
             )
             continue
 
@@ -271,7 +280,8 @@ def spawn_chain_runs(
         except Exception as exc:
             logger.warning(
                 "Chain spawn: could not load template '%s': %s",
-                template_name, exc,
+                template_name,
+                exc,
             )
             continue
 
@@ -300,30 +310,34 @@ def spawn_chain_runs(
             db.insert_pipeline_run(run_data)
             logger.info(
                 "Chain spawn: inserted child run '%s' (template='%s', depth=%d, parent='%s')",
-                child_run_id, template_name, run_data["chain_depth"], parent_run_id,
+                child_run_id,
+                template_name,
+                run_data["chain_depth"],
+                parent_run_id,
             )
         except Exception as exc:
             logger.warning(
                 "Chain spawn: could not insert child run for template '%s': %s",
-                template_name, exc,
+                template_name,
+                exc,
             )
             continue
 
         # Spawn daemon subprocess
         try:
             _spawn_daemon(child_run_id, db_path)
-            logger.info(
-                "Chain spawn: daemon started for child run '%s'", child_run_id
-            )
+            logger.info("Chain spawn: daemon started for child run '%s'", child_run_id)
             spawned_run_ids.append(child_run_id)
         except Exception as exc:
             logger.warning(
                 "Chain spawn: could not start daemon for child run '%s': %s",
-                child_run_id, exc,
+                child_run_id,
+                exc,
             )
             # Mark as failed in DB so status queries don't stall
             try:
                 from .timestamps import now_utc
+
                 db.update_pipeline_run(
                     child_run_id,
                     status="failed",
@@ -339,6 +353,7 @@ def spawn_chain_runs(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
 
 def _resolve_template_path(engine: Any, template_name: str) -> Path:
     """Resolve a template name to an absolute path.

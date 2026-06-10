@@ -143,9 +143,7 @@ def _validate_run_id(run_id: str) -> None:
         raise TestStoreError("invalid run_id: must not be empty")
     p = Path(run_id)
     if p.is_absolute() or ".." in p.parts:
-        raise TestStoreError(
-            f"invalid run_id: '{run_id}' contains path traversal or is absolute"
-        )
+        raise TestStoreError(f"invalid run_id: '{run_id}' contains path traversal or is absolute")
 
 
 # ---------------------------------------------------------------------------
@@ -379,9 +377,7 @@ class TestStore:
         # Check manifest version before constructing the dataclass
         version = data["manifest_version"]
         if version not in SUPPORTED_MANIFEST_VERSIONS:
-            raise TestStoreError(
-                f"Unsupported manifest version '{version}' for run '{run_id}'"
-            )
+            raise TestStoreError(f"Unsupported manifest version '{version}' for run '{run_id}'")
 
         return TestManifest(
             run_id=data["run_id"],

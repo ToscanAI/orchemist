@@ -89,23 +89,23 @@ VALID_CLASSIFICATION_TYPES: frozenset = frozenset(
 
 #: Maps a classification type to its recommended pipeline template.
 CLASSIFICATION_TEMPLATE_MAP: Dict[str, str] = {
-    "bug":      "coding-pipeline-standard",
-    "feature":  "coding-pipeline-standard",
+    "bug": "coding-pipeline-standard",
+    "feature": "coding-pipeline-standard",
     "refactor": "coding-pipeline-standard",
-    "docs":     "content-pipeline-v27",
+    "docs": "content-pipeline-v27",
     "research": "research-competitive",
-    "content":  "content-pipeline-v27",
+    "content": "content-pipeline-v27",
 }
 
 #: Default mapping used by TemplateSelector.
 #: Maps classification types to abstract pipeline template names.
 #: These use version-agnostic names; callers resolve to concrete versioned templates.
 DEFAULT_TEMPLATE_MAPPING: Dict[str, str] = {
-    "bug":      "coding-pipeline",
-    "feature":  "coding-pipeline",
+    "bug": "coding-pipeline",
+    "feature": "coding-pipeline",
     "refactor": "coding-pipeline",
-    "docs":     "content-pipeline",
-    "content":  "content-pipeline",
+    "docs": "content-pipeline",
+    "content": "content-pipeline",
     "research": "research-pipeline",
 }
 
@@ -182,9 +182,7 @@ class IssueClassification:
     status: str = "classified"
     id: Optional[int] = None
     run_id: Optional[str] = None
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain-dict representation suitable for DB insertion.
@@ -194,15 +192,15 @@ class IssueClassification:
             for unsaved instances.
         """
         return {
-            "id":                  self.id,
-            "issue_number":        self.issue_number,
-            "repo":                self.repo,
+            "id": self.id,
+            "issue_number": self.issue_number,
+            "repo": self.repo,
             "classification_type": self.classification_type,
-            "confidence":          self.confidence,
-            "template_id":         self.template_id,
-            "run_id":              self.run_id,
-            "status":              self.status,
-            "created_at":          self.created_at,
+            "confidence": self.confidence,
+            "template_id": self.template_id,
+            "run_id": self.run_id,
+            "status": self.status,
+            "created_at": self.created_at,
         }
 
 
@@ -387,14 +385,14 @@ class IssueClassifier:
             Raw string output from the LLM (or stub JSON on error).
         """
         if self._executor is None:
-            logger.debug(
-                "IssueClassifier: no executor configured — returning stub response"
+            logger.debug("IssueClassifier: no executor configured — returning stub response")
+            return json.dumps(
+                {
+                    "classification_type": self._STUB_CLASSIFICATION,
+                    "confidence": self._STUB_CONFIDENCE,
+                    "reasoning": "Stub mode — no executor configured.",
+                }
             )
-            return json.dumps({
-                "classification_type": self._STUB_CLASSIFICATION,
-                "confidence":          self._STUB_CONFIDENCE,
-                "reasoning":           "Stub mode — no executor configured.",
-            })
 
         try:
             result = self._executor.execute(prompt)
@@ -410,11 +408,13 @@ class IssueClassifier:
                 "IssueClassifier: executor.execute() raised %s — falling back to stub",
                 exc,
             )
-            return json.dumps({
-                "classification_type": self._STUB_CLASSIFICATION,
-                "confidence":          self._STUB_CONFIDENCE,
-                "reasoning":           f"Executor error: {type(exc).__name__}",
-            })
+            return json.dumps(
+                {
+                    "classification_type": self._STUB_CLASSIFICATION,
+                    "confidence": self._STUB_CONFIDENCE,
+                    "reasoning": f"Executor error: {type(exc).__name__}",
+                }
+            )
 
     def _parse_output(self, raw: str) -> Tuple[str, float, str]:
         """Parse LLM output and extract ``(classification_type, confidence, reasoning)``.
@@ -438,7 +438,7 @@ class IssueClassifier:
             parsed = json.loads(text)
         except json.JSONDecodeError:
             # 2. Search for first {…} object in the output
-            match = re.search(r'\{[^{}]+\}', text, re.DOTALL)
+            match = re.search(r"\{[^{}]+\}", text, re.DOTALL)
             if match:
                 try:
                     parsed = json.loads(match.group())
@@ -456,8 +456,7 @@ class IssueClassifier:
         cls_type = str(parsed.get("classification_type", "feature")).lower().strip()
         if cls_type not in VALID_CLASSIFICATION_TYPES:
             logger.warning(
-                "IssueClassifier: unknown classification_type %r — "
-                "defaulting to 'feature'",
+                "IssueClassifier: unknown classification_type %r — " "defaulting to 'feature'",
                 cls_type,
             )
             cls_type = "feature"
@@ -682,9 +681,7 @@ class InputExtractor:
             Raw string output from the LLM (or stub JSON on error).
         """
         if self._executor is None:
-            logger.debug(
-                "InputExtractor: no executor configured — returning stub response"
-            )
+            logger.debug("InputExtractor: no executor configured — returning stub response")
             return json.dumps(self._STUB_RESULT)
 
         try:
@@ -727,7 +724,7 @@ class InputExtractor:
             pass
 
         # 2. Search for first {…} object in the output
-        match = re.search(r'\{[^{}]+\}', text, re.DOTALL)
+        match = re.search(r"\{[^{}]+\}", text, re.DOTALL)
         if match:
             try:
                 parsed = json.loads(match.group())
@@ -775,11 +772,15 @@ def post_github_comment(repo: str, issue_number: int, body: str) -> Optional[str
     try:
         result = subprocess.run(
             [
-                "gh", "api",
+                "gh",
+                "api",
                 f"repos/{repo}/issues/{issue_number}/comments",
-                "--method", "POST",
-                "--field", f"body={body}",
-                "--jq", ".html_url",
+                "--method",
+                "POST",
+                "--field",
+                f"body={body}",
+                "--jq",
+                ".html_url",
             ],
             capture_output=True,
             text=True,
@@ -947,8 +948,7 @@ def add_github_label(repo: str, issue_number: int, label: str) -> bool:
     endpoint = f"repos/{repo}/issues/{issue_number}/labels"
     try:
         result = subprocess.run(
-            ["gh", "api", endpoint, "--method", "POST",
-             "--field", f"labels[]={label}"],
+            ["gh", "api", endpoint, "--method", "POST", "--field", f"labels[]={label}"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -1060,12 +1060,19 @@ def create_pr_for_issue(
     try:
         result = subprocess.run(
             [
-                "gh", "pr", "create",
-                "--repo", repo,
-                "--base", "main",
-                "--head", branch_name,
-                "--title", title,
-                "--body", pr_body,
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                repo,
+                "--base",
+                "main",
+                "--head",
+                branch_name,
+                "--title",
+                title,
+                "--body",
+                pr_body,
             ],
             capture_output=True,
             text=True,
@@ -1104,7 +1111,7 @@ def _truncate_title(text: str, limit: int = 80) -> str:
     if len(text) <= limit:
         return text
     truncated = text[:limit]
-    cut = truncated.rfind(' ')
+    cut = truncated.rfind(" ")
     if cut > 0:
         truncated = truncated[:cut]
     return truncated.rstrip()
@@ -1149,7 +1156,7 @@ def create_content_pr(
     """
     import subprocess
 
-    topic_truncated = _truncate_title(topic.strip()) if topic else 'content'
+    topic_truncated = _truncate_title(topic.strip()) if topic else "content"
     title = f"{prefix}: {topic_truncated}"
     pr_body = f"{body}\n\n---\n*Run ID: `{run_id}`*"
     if issue_number is not None:
@@ -1160,12 +1167,19 @@ def create_content_pr(
     try:
         result = subprocess.run(
             [
-                "gh", "pr", "create",
-                "--repo", repo,
-                "--base", "main",
-                "--head", branch_name,
-                "--title", title,
-                "--body", pr_body,
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                repo,
+                "--base",
+                "main",
+                "--head",
+                branch_name,
+                "--title",
+                title,
+                "--body",
+                pr_body,
             ],
             capture_output=True,
             text=True,
@@ -1289,7 +1303,11 @@ def post_failure_summary_comment(
         if remediation:
             lines.append(f"- **Remediation:** {remediation}")
         if confidence is not None:
-            lines.append(f"- **Confidence:** {confidence:.0%}" if isinstance(confidence, float) else f"- **Confidence:** {confidence}")
+            lines.append(
+                f"- **Confidence:** {confidence:.0%}"
+                if isinstance(confidence, float)
+                else f"- **Confidence:** {confidence}"
+            )
 
     lines.append(f"\n---\n*Run ID: `{run_id}`*")
 
@@ -1355,16 +1373,16 @@ def post_result_to_issue(
             result_text="Here are the findings...",
         )
     """
-    if final_status == 'failed':
+    if final_status == "failed":
         return post_failure_summary_comment(
             repo=repo,
             issue_number=issue_number,
-            error_message=error_message or 'Unknown error',
+            error_message=error_message or "Unknown error",
             run_id=run_id,
             diagnosis=diagnosis,
         )
 
-    if classification_type in ('bug', 'feature', 'refactor'):
+    if classification_type in ("bug", "feature", "refactor"):
         return create_pr_for_issue(
             repo=repo,
             issue_number=issue_number,
@@ -1373,7 +1391,7 @@ def post_result_to_issue(
             body=result_text,
         )
 
-    if classification_type in ('content', 'docs', 'research'):
+    if classification_type in ("content", "docs", "research"):
         truncated = result_text[:_RESULT_TEXT_MAX_CHARS]
         return post_pipeline_result_comment(
             repo=repo,
@@ -1687,9 +1705,7 @@ class IssueAutomation:
                 f"⚠️ **Confidence too low for automatic launch** "
                 f"(`{classification.confidence:.0%}` < threshold)"
             )
-            lines.append(
-                "This issue has been escalated to human review via Telegram."
-            )
+            lines.append("This issue has been escalated to human review via Telegram.")
         else:
             lines.append(f"**Pipeline:** `{template_name}`")
             if run_id:

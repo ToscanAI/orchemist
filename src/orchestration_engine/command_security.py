@@ -65,18 +65,18 @@ from typing import List, Optional, Tuple
 # ALWAYS-ON security floor: it runs in both denylist-only and allowlist modes.
 # ---------------------------------------------------------------------------
 DANGEROUS_PATTERNS: List[re.Pattern] = [
-    re.compile(r"\brm\s+(-\w*f\w*|-\w*r\w*){1,}"),      # rm -rf, rm -fr, rm -f, rm -r
-    re.compile(r"\bsudo\b"),                               # privilege escalation
-    re.compile(r"\bsu\s"),                                 # switch user
+    re.compile(r"\brm\s+(-\w*f\w*|-\w*r\w*){1,}"),  # rm -rf, rm -fr, rm -f, rm -r
+    re.compile(r"\bsudo\b"),  # privilege escalation
+    re.compile(r"\bsu\s"),  # switch user
     re.compile(r"\bcurl\b.*\|\s*(?:sh|bash|zsh|fish)"),  # curl | sh (RCE pattern)
     re.compile(r"\bwget\b.*\|\s*(?:sh|bash|zsh|fish)"),  # wget | sh (RCE pattern)
-    re.compile(r">\s*/dev/sd[a-z]"),                      # disk overwrite
-    re.compile(r"\bdd\b.*of=/dev/"),                      # dd to device
-    re.compile(r"\bmkfs\b"),                              # format filesystem
-    re.compile(r"\bchmod\s+777\b"),                       # world-writable
-    re.compile(r"\bchown\s+root\b"),                      # chown to root
-    re.compile(r":\(\)\{.*\}"),                           # fork bomb
-    re.compile(r"\bpkill\b|\bkillall\b"),                 # mass process kill
+    re.compile(r">\s*/dev/sd[a-z]"),  # disk overwrite
+    re.compile(r"\bdd\b.*of=/dev/"),  # dd to device
+    re.compile(r"\bmkfs\b"),  # format filesystem
+    re.compile(r"\bchmod\s+777\b"),  # world-writable
+    re.compile(r"\bchown\s+root\b"),  # chown to root
+    re.compile(r":\(\)\{.*\}"),  # fork bomb
+    re.compile(r"\bpkill\b|\bkillall\b"),  # mass process kill
 ]
 
 # ---------------------------------------------------------------------------
@@ -86,9 +86,16 @@ DANGEROUS_PATTERNS: List[re.Pattern] = [
 # "echo" is included because, while /usr/bin/echo exists, it behaves as a
 # builtin in bash/sh and is universally expected to be safe.
 # ---------------------------------------------------------------------------
-SHELL_BUILTINS: frozenset = frozenset({
-    "exit", "cd", ":", "true", "false", "echo",
-})
+SHELL_BUILTINS: frozenset = frozenset(
+    {
+        "exit",
+        "cd",
+        ":",
+        "true",
+        "false",
+        "echo",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Substitution tokens that bypass an allowlist over a shell string. When an
@@ -169,10 +176,7 @@ def check_shell_command(
             continue  # builtin; not subject to allowlist
         # Strip leading path components for portability (/usr/bin/git → git).
         basename = binary.split("/")[-1]
-        if not any(
-            basename == a or binary == a or binary.endswith(f"/{a}")
-            for a in allowed
-        ):
+        if not any(basename == a or binary == a or binary.endswith(f"/{a}") for a in allowed):
             return (
                 "security_blocked",
                 f"[SECURITY] command '{binary}' not in allowlist",

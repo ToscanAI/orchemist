@@ -103,25 +103,17 @@ class ClaudeCodeExecutor(BaseExecutor):
         try:
             result_text = self._run_sampling(prompt)
         except _NoSessionError:
-            return self._make_failed(
-                task_id, task, start_time,
-                "No active MCP session context"
-            )
+            return self._make_failed(task_id, task, start_time, "No active MCP session context")
         except _RejectedError:
             return self._make_failed(
-                task_id, task, start_time,
-                "Claude Code rejected the sampling request"
+                task_id, task, start_time, "Claude Code rejected the sampling request"
             )
         except _EmptyResponseError:
             return self._make_failed(
-                task_id, task, start_time,
-                "Empty response from Claude Code session"
+                task_id, task, start_time, "Empty response from Claude Code session"
             )
         except Exception as exc:
-            return self._make_failed(
-                task_id, task, start_time,
-                f"MCP session error: {exc}"
-            )
+            return self._make_failed(task_id, task, start_time, f"MCP session error: {exc}")
 
         elapsed = (now_utc() - start_time).total_seconds()
         return TaskResult(

@@ -79,8 +79,7 @@ class RoutingTier:
 
         if not (0.0 <= self.min_score <= 1.0):
             raise ValueError(
-                f"RoutingTier '{self.name}': min_score must be in [0, 1], "
-                f"got {self.min_score}"
+                f"RoutingTier '{self.name}': min_score must be in [0, 1], " f"got {self.min_score}"
             )
         # max_score may exceed 1.0 (e.g. 1.01) so the top tier captures 1.0
         # under exclusive-upper-bound semantics.  Only validate that it is
@@ -248,9 +247,7 @@ class RoutingEngine:
         confidence_level: ConfidenceLevel = confidence_result.confidence_level
 
         # Sort tiers by min_score DESC — highest threshold wins first
-        sorted_tiers = sorted(
-            self._config.tiers, key=lambda t: t.min_score, reverse=True
-        )
+        sorted_tiers = sorted(self._config.tiers, key=lambda t: t.min_score, reverse=True)
 
         for tier in sorted_tiers:
             if tier.matches(score):
@@ -340,15 +337,22 @@ class RoutingEngine:
                         logger.debug(
                             "evaluate: using trust-profile thresholds for %s/%s/%s "
                             "(auto_merge=%.4f, human_review=%.4f, merges=%d)",
-                            repo, template_id, _effective_task_type,
-                            auto_merge_thr, human_review_thr, successful_merges,
+                            repo,
+                            template_id,
+                            _effective_task_type,
+                            auto_merge_thr,
+                            human_review_thr,
+                            successful_merges,
                         )
                         return RoutingEngine(trust_config).route(confidence_result)
             except Exception as exc:
                 logger.warning(
                     "evaluate: trust profile lookup failed for %s/%s/%s "
                     "(falling back to default routing): %s",
-                    repo, template_id, _effective_task_type, exc,
+                    repo,
+                    template_id,
+                    _effective_task_type,
+                    exc,
                 )
 
         return self.route(confidence_result)
@@ -381,9 +385,7 @@ class RoutingEngine:
         seen_names: set[str] = set()
         for tier in sorted_tiers:
             if tier.name in seen_names:
-                errors.append(
-                    f"Duplicate tier name '{tier.name}' detected in routing config."
-                )
+                errors.append(f"Duplicate tier name '{tier.name}' detected in routing config.")
             seen_names.add(tier.name)
 
         # Coverage start gap
@@ -555,15 +557,12 @@ def _parse_routing_config(raw: Any) -> Optional[RoutingConfig]:
     raw_tiers = raw.get("tiers")
     if not isinstance(raw_tiers, list):
         logger.warning(
-            "_parse_routing_config: 'tiers' key missing or not a list — "
-            "returning None."
+            "_parse_routing_config: 'tiers' key missing or not a list — " "returning None."
         )
         return None
 
     if not raw_tiers:
-        logger.warning(
-            "routing_config has empty tiers list — no scores will match any tier"
-        )
+        logger.warning("routing_config has empty tiers list — no scores will match any tier")
         return None
 
     tiers: List[RoutingTier] = []

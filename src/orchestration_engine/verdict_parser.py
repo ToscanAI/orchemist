@@ -40,11 +40,11 @@ _PASS1_RE = re.compile(
 # with trailing boundary that rejects alphanumeric continuation or _[A-Za-z0-9].
 # Strips common markdown leaders: #, >, -, *, digits., backticks, bold/italic markers.
 _PASS2_RE = re.compile(
-    r"^[\s#>*\-`_\d.]*"                          # leading markdown noise
-    r"(?:(?:verdict|decision)\s*:\s*)?"           # optional conversational prefix
-    r"[\s*_`]*"                                   # more markdown around keyword
+    r"^[\s#>*\-`_\d.]*"  # leading markdown noise
+    r"(?:(?:verdict|decision)\s*:\s*)?"  # optional conversational prefix
+    r"[\s*_`]*"  # more markdown around keyword
     r"(APPROVE|REQUEST_CHANGES|ABORT)"
-    r"(?![A-Za-z0-9]|_[A-Za-z0-9])",             # trailing boundary
+    r"(?![A-Za-z0-9]|_[A-Za-z0-9])",  # trailing boundary
     re.IGNORECASE,
 )
 

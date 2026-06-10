@@ -127,9 +127,7 @@ class AuthenticationError(GatewayHTTPError):
 
     def __init__(self, status_code: int, body: str) -> None:
         if status_code not in (401, 403):
-            raise ValueError(
-                f"AuthenticationError expects status 401 or 403, got {status_code}"
-            )
+            raise ValueError(f"AuthenticationError expects status 401 or 403, got {status_code}")
         super().__init__(status_code=status_code, body=body)
 
 

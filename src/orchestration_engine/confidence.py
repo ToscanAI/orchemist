@@ -77,7 +77,7 @@ if TYPE_CHECKING:
 # Routing thresholds (authoritative source — referenced by routing.py)
 # Issue #429.1: centralised here to avoid duplication with routing.py hardcodes.
 # ---------------------------------------------------------------------------
-AUTO_MERGE_THRESHOLD: float = 0.90    # ConfidenceLevel.HIGH boundary
+AUTO_MERGE_THRESHOLD: float = 0.90  # ConfidenceLevel.HIGH boundary
 HUMAN_REVIEW_THRESHOLD: float = 0.70  # Lowered from 0.75 post-calibration (Issue #429.1)
 
 # ---------------------------------------------------------------------------
@@ -86,15 +86,15 @@ HUMAN_REVIEW_THRESHOLD: float = 0.70  # Lowered from 0.75 post-calibration (Issu
 #             review_quality reduced 0.15 → 0.05 to make room.
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS: dict[str, float] = {
-    "acceptance_pass_rate": 0.40,   # Issue #528 — PRIMARY: spec-derived behavioral tests
-    "test_pass_rate": 0.20,         # Updated in Issue #4.1.4: 0.25 → 0.20
-    "code_quality": 0.20,           # Issue #533 — NEW: code quality check pass rate
-    "review_quality": 0.10,         # Issue #533: raised 0.05 → 0.10 (was over-reduced in #528)
+    "acceptance_pass_rate": 0.40,  # Issue #528 — PRIMARY: spec-derived behavioral tests
+    "test_pass_rate": 0.20,  # Updated in Issue #4.1.4: 0.25 → 0.20
+    "code_quality": 0.20,  # Issue #533 — NEW: code quality check pass rate
+    "review_quality": 0.10,  # Issue #533: raised 0.05 → 0.10 (was over-reduced in #528)
     "change_complexity": 0.10,
-    "llm_judge": 0.30,              # Updated in Issue #4.1.4: 0.35 → 0.30
-    "review_catch_value": 0.15,     # Issue #4.1.3
-    "adversarial_audit": 0.10,      # Issue #4.1.4 — renamed from audit_catch_rate
-    "historical_calibration": 0.05, # Issue #4.1.6 — only active via extra_signals
+    "llm_judge": 0.30,  # Updated in Issue #4.1.4: 0.35 → 0.30
+    "review_catch_value": 0.15,  # Issue #4.1.3
+    "adversarial_audit": 0.10,  # Issue #4.1.4 — renamed from audit_catch_rate
+    "historical_calibration": 0.05,  # Issue #4.1.6 — only active via extra_signals
 }
 
 # ---------------------------------------------------------------------------
@@ -127,15 +127,15 @@ DEFAULT_WEIGHTS: dict[str, float] = {
 # defined above and should be updated in lock-step when this table changes.
 # ---------------------------------------------------------------------------
 DEFAULT_WEIGHTS_V2: dict[str, float] = {
-    "acceptance_pass_rate": 0.40,   # Issue #528 — PRIMARY: spec-derived behavioral tests
-    "llm_judge": 0.40,              # ↑ Primary signal: rubric/review scores most discriminative
-    "test_pass_rate": 0.30,         # ↑ Binary reliability signal — very trustworthy
-    "code_quality": 0.20,           # Issue #533 — NEW: code quality check pass rate
-    "review_catch_value": 0.12,     # ↓ Reduced: often absent in coding pipeline runs
-    "adversarial_audit": 0.08,      # ↓ Reduced: rarely present in Sprint 1-4
-    "review_quality": 0.04,         # Issue #533: raised 0.02 → 0.04 (proportional; matches V2 philosophy)
-    "change_complexity": 0.02,      # ↓ Heavily reduced: task count ≠ quality indicator
-    "historical_calibration": 0.02, # Unchanged: extra_signals only
+    "acceptance_pass_rate": 0.40,  # Issue #528 — PRIMARY: spec-derived behavioral tests
+    "llm_judge": 0.40,  # ↑ Primary signal: rubric/review scores most discriminative
+    "test_pass_rate": 0.30,  # ↑ Binary reliability signal — very trustworthy
+    "code_quality": 0.20,  # Issue #533 — NEW: code quality check pass rate
+    "review_catch_value": 0.12,  # ↓ Reduced: often absent in coding pipeline runs
+    "adversarial_audit": 0.08,  # ↓ Reduced: rarely present in Sprint 1-4
+    "review_quality": 0.04,  # Issue #533: raised 0.02 → 0.04 (proportional; matches V2 philosophy)
+    "change_complexity": 0.02,  # ↓ Heavily reduced: task count ≠ quality indicator
+    "historical_calibration": 0.02,  # Unchanged: extra_signals only
 }
 # Note: weights do not need to sum to 1.00; renormalisation in _weighted_average handles absent signals.
 
@@ -143,6 +143,7 @@ DEFAULT_WEIGHTS_V2: dict[str, float] = {
 # ---------------------------------------------------------------------------
 # Enums & data structures
 # ---------------------------------------------------------------------------
+
 
 class ConfidenceLevel(str, Enum):
     """3-tier confidence level for a full pipeline run.
@@ -198,9 +199,7 @@ class ConfidenceSignal:
 
     def __post_init__(self) -> None:
         if self.weight < 0:
-            raise ValueError(
-                f"Signal '{self.name}' weight must be >= 0, got {self.weight}"
-            )
+            raise ValueError(f"Signal '{self.name}' weight must be >= 0, got {self.weight}")
         # Clamp value to [0, 1]
         self.value = max(0.0, min(1.0, float(self.value)))
 
@@ -225,6 +224,7 @@ class ConfidenceResult:
 # ---------------------------------------------------------------------------
 # Calculator
 # ---------------------------------------------------------------------------
+
 
 class ConfidenceCalculator:
     """Computes composite confidence from task result JSON files in an output dir.
@@ -316,9 +316,7 @@ class ConfidenceCalculator:
             ValueError: If *output_dir* does not exist.
         """
         if not output_dir.exists():
-            raise ValueError(
-                f"Output directory {output_dir} does not exist"
-            )
+            raise ValueError(f"Output directory {output_dir} does not exist")
 
         # ------------------------------------------------------------------
         # Dynamic weights via ReviewerCalibrator (Issue #4.1.5 / #4.1.6)
@@ -332,6 +330,7 @@ class ConfidenceCalculator:
         if calibration_outcomes:
             try:
                 from .reviewer_calibration import ReviewerCalibrator  # noqa: PLC0415
+
                 _calibrator = ReviewerCalibrator()
                 _metrics_map = _calibrator.compute(calibration_outcomes)
                 _eff_weights = self._compute_dynamic_weights(_metrics_map)
@@ -347,7 +346,8 @@ class ConfidenceCalculator:
         # code_quality_results.json).
         _SKIP_FILES = frozenset({"acceptance_results.json", "code_quality_results.json"})
         task_files = sorted(
-            p for p in output_dir.glob("*.json")
+            p
+            for p in output_dir.glob("*.json")
             if not p.name.startswith("_") and p.name not in _SKIP_FILES
         )
 
@@ -409,12 +409,8 @@ class ConfidenceCalculator:
             )
 
         # Partition into review/judge tasks and regular (non-review) tasks
-        review_tasks = [
-            (f, d) for f, d in tasks if self._is_review_task(f, d)
-        ]
-        non_review_tasks = [
-            (f, d) for f, d in tasks if not self._is_review_task(f, d)
-        ]
+        review_tasks = [(f, d) for f, d in tasks if self._is_review_task(f, d)]
+        non_review_tasks = [(f, d) for f, d in tasks if not self._is_review_task(f, d)]
 
         # ------------------------------------------------------------------
         # Signal: llm_judge
@@ -422,23 +418,18 @@ class ConfidenceCalculator:
         # Only emitted when at least one such task is present.
         # ------------------------------------------------------------------
         if review_tasks:
-            confidences = [
-                float(d["confidence"])
-                for _, d in review_tasks
-                if "confidence" in d
-            ]
+            confidences = [float(d["confidence"]) for _, d in review_tasks if "confidence" in d]
             if confidences:
                 avg = sum(confidences) / len(confidences)
-                signals.append(ConfidenceSignal(
-                    name="llm_judge",
-                    value=avg,
-                    weight=_eff_weights.get("llm_judge", DEFAULT_WEIGHTS["llm_judge"]),
-                    raw_value=confidences,
-                    source=(
-                        f"review/judge tasks: "
-                        f"{[f for f, _ in review_tasks]}"
-                    ),
-                ))
+                signals.append(
+                    ConfidenceSignal(
+                        name="llm_judge",
+                        value=avg,
+                        weight=_eff_weights.get("llm_judge", DEFAULT_WEIGHTS["llm_judge"]),
+                        raw_value=confidences,
+                        source=(f"review/judge tasks: " f"{[f for f, _ in review_tasks]}"),
+                    )
+                )
 
         # ------------------------------------------------------------------
         # Signal: test_pass_rate
@@ -446,44 +437,37 @@ class ConfidenceCalculator:
         # Only emitted when at least one non-review task is present.
         # ------------------------------------------------------------------
         if non_review_tasks:
-            success_count = sum(
-                1 for _, d in non_review_tasks if d.get("state") == "success"
-            )
+            success_count = sum(1 for _, d in non_review_tasks if d.get("state") == "success")
             rate = success_count / len(non_review_tasks)
-            signals.append(ConfidenceSignal(
-                name="test_pass_rate",
-                value=rate,
-                weight=_eff_weights.get(
-                    "test_pass_rate", DEFAULT_WEIGHTS["test_pass_rate"]
-                ),
-                raw_value={"passed": success_count, "total": len(non_review_tasks)},
-                source=(
-                    f"{success_count}/{len(non_review_tasks)} "
-                    f"non-review tasks succeeded"
-                ),
-            ))
+            signals.append(
+                ConfidenceSignal(
+                    name="test_pass_rate",
+                    value=rate,
+                    weight=_eff_weights.get("test_pass_rate", DEFAULT_WEIGHTS["test_pass_rate"]),
+                    raw_value={"passed": success_count, "total": len(non_review_tasks)},
+                    source=(
+                        f"{success_count}/{len(non_review_tasks)} " f"non-review tasks succeeded"
+                    ),
+                )
+            )
 
         # ------------------------------------------------------------------
         # Signal: review_quality
         # Average confidence across ALL tasks (including review tasks).
         # Only emitted when at least one task has a confidence field.
         # ------------------------------------------------------------------
-        all_confidences = [
-            float(d["confidence"])
-            for _, d in tasks
-            if "confidence" in d
-        ]
+        all_confidences = [float(d["confidence"]) for _, d in tasks if "confidence" in d]
         if all_confidences:
             avg_all = sum(all_confidences) / len(all_confidences)
-            signals.append(ConfidenceSignal(
-                name="review_quality",
-                value=avg_all,
-                weight=_eff_weights.get(
-                    "review_quality", DEFAULT_WEIGHTS["review_quality"]
-                ),
-                raw_value=all_confidences,
-                source=f"average confidence over {len(all_confidences)} tasks",
-            ))
+            signals.append(
+                ConfidenceSignal(
+                    name="review_quality",
+                    value=avg_all,
+                    weight=_eff_weights.get("review_quality", DEFAULT_WEIGHTS["review_quality"]),
+                    raw_value=all_confidences,
+                    source=f"average confidence over {len(all_confidences)} tasks",
+                )
+            )
 
         # ------------------------------------------------------------------
         # Signal: change_complexity
@@ -492,15 +476,15 @@ class ConfidenceCalculator:
         # ------------------------------------------------------------------
         num_tasks = len(tasks)
         complexity_score = 1.0 / (1.0 + num_tasks)
-        signals.append(ConfidenceSignal(
-            name="change_complexity",
-            value=complexity_score,
-            weight=_eff_weights.get(
-                "change_complexity", DEFAULT_WEIGHTS["change_complexity"]
-            ),
-            raw_value=num_tasks,
-            source=f"{num_tasks} task file(s) in output dir",
-        ))
+        signals.append(
+            ConfidenceSignal(
+                name="change_complexity",
+                value=complexity_score,
+                weight=_eff_weights.get("change_complexity", DEFAULT_WEIGHTS["change_complexity"]),
+                raw_value=num_tasks,
+                source=f"{num_tasks} task file(s) in output dir",
+            )
+        )
 
         # NOTE: acceptance_pass_rate and code_quality signals are extracted
         # earlier (before the "if not tasks" guard) to ensure they are always
@@ -514,6 +498,7 @@ class ConfidenceCalculator:
         # ------------------------------------------------------------------
         if review_outcomes:
             from .review_catch_value import ReviewCatchValueCalculator  # noqa: PLC0415
+
             rcv_weight = _eff_weights.get(
                 "review_catch_value", DEFAULT_WEIGHTS["review_catch_value"]
             )
@@ -537,16 +522,18 @@ class ConfidenceCalculator:
                 acr_weight = _eff_weights.get(
                     "adversarial_audit", DEFAULT_WEIGHTS["adversarial_audit"]
                 )
-                signals.append(ConfidenceSignal(
-                    name="adversarial_audit",
-                    value=avg_accuracy,
-                    weight=acr_weight,
-                    raw_value={
-                        "reviewer_accuracy_scores": accuracy_scores,
-                        "audit_count": len(accuracy_scores),
-                    },
-                    source=f"{len(accuracy_scores)} audit result(s)",
-                ))
+                signals.append(
+                    ConfidenceSignal(
+                        name="adversarial_audit",
+                        value=avg_accuracy,
+                        weight=acr_weight,
+                        raw_value={
+                            "reviewer_accuracy_scores": accuracy_scores,
+                            "audit_count": len(accuracy_scores),
+                        },
+                        source=f"{len(accuracy_scores)} audit result(s)",
+                    )
+                )
 
         # ------------------------------------------------------------------
         # Extra signals  (Issue #4.1.6)

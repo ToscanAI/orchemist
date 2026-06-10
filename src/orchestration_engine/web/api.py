@@ -63,7 +63,7 @@ def _verify_github_signature(secret: str, payload_bytes: bytes, sig_header: Opti
         return False
     if not sig_header.startswith("sha256="):
         return False
-    expected = sig_header[len("sha256="):]
+    expected = sig_header[len("sha256=") :]
     computed = hmac.new(
         secret.encode("utf-8"),
         payload_bytes,
@@ -215,8 +215,10 @@ def _strict_coerce_bool(value: Any) -> Optional[bool]:
         return bool(value)
     if isinstance(value, str):
         low = value.strip().lower()
-        if low in ("true", "1", "yes", "on"): return True
-        if low in ("false", "0", "no", "off", ""): return False
+        if low in ("true", "1", "yes", "on"):
+            return True
+        if low in ("false", "0", "no", "off", ""):
+            return False
     return None
 
 
@@ -304,6 +306,7 @@ class _SseConnectionLimiter:
 
     def __init__(self) -> None:
         import threading
+
         self._lock = threading.Lock()
         self._active_total: int = 0
         self._active_per_ip: Dict[str, int] = {}
@@ -495,13 +498,12 @@ def create_api_app(
                     _swept,
                 )
             else:
-                logger.debug(
-                    "Startup sweep: marked 0 zombie pipeline runs (clean state; #754)"
-                )
+                logger.debug("Startup sweep: marked 0 zombie pipeline runs (clean state; #754)")
         except Exception as _exc:  # pragma: no cover — last-resort guard
             logger.error(
                 "Startup sweep failed (server will still start): %s: %s",
-                type(_exc).__name__, _exc,
+                type(_exc).__name__,
+                _exc,
             )
 
     # ------------------------------------------------------------------
@@ -745,11 +747,11 @@ def create_api_app(
             "started_at": run.get("started_at"),
             "completed_at": run.get("completed_at"),
             "created_at": run.get("created_at"),
-            "parent_run_id": run.get("parent_run_id"),       # Issue #330.3: chaining parent
-            "chain_depth": int(run.get("chain_depth") or 0), # Issue #330.3: chaining depth
-            "review_reason": run.get("review_reason"),         # Issue #331.4: review queue
-            "reviewed_at": run.get("reviewed_at"),             # Issue #331.4: review queue
-            "reviewed_by": run.get("reviewed_by"),             # Issue #331.4: review queue
+            "parent_run_id": run.get("parent_run_id"),  # Issue #330.3: chaining parent
+            "chain_depth": int(run.get("chain_depth") or 0),  # Issue #330.3: chaining depth
+            "review_reason": run.get("review_reason"),  # Issue #331.4: review queue
+            "reviewed_at": run.get("reviewed_at"),  # Issue #331.4: review queue
+            "reviewed_by": run.get("reviewed_by"),  # Issue #331.4: review queue
         }
 
     # ------------------------------------------------------------------
@@ -823,7 +825,7 @@ def create_api_app(
         # Sanitize template_id to prevent path traversal attacks.
         # IDs must start with an alphanumeric character and contain only
         # alphanumeric characters, hyphens, dots, and underscores.
-        if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', template_id):
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", template_id):
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -877,8 +879,7 @@ def create_api_app(
             engine = _make_engine()
             resolved = p.resolve()
             allowed = any(
-                resolved.is_relative_to(d.resolve())
-                for d, _ in engine.get_search_paths()
+                resolved.is_relative_to(d.resolve()) for d, _ in engine.get_search_paths()
             )
             if not allowed:
                 raise HTTPException(
@@ -961,7 +962,8 @@ def create_api_app(
                     "Launch rejected (#839 backpressure): %d active runs "
                     ">= ORCH_MAX_DAEMONS=%d. Wait for in-flight runs to "
                     "complete or raise the cap.",
-                    _active, _max_daemons,
+                    _active,
+                    _max_daemons,
                 )
                 raise HTTPException(
                     status_code=429,
@@ -977,8 +979,8 @@ def create_api_app(
         if output_dir_override:
             output_dir = Path(output_dir_override)
         else:
-            _safe_id = re.sub(r'[^\w\-]', '_', template.id)
-            _ts = _now_utc().strftime('%Y%m%d-%H%M%S')
+            _safe_id = re.sub(r"[^\w\-]", "_", template.id)
+            _ts = _now_utc().strftime("%Y%m%d-%H%M%S")
             output_dir = Path(f"./output/{_safe_id}-{_ts}-{run_id}")
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1161,9 +1163,7 @@ def create_api_app(
                     for p in tpl.phases
                 ]
                 config_schema = tpl.config_schema or {}
-                category = tpl.category or (
-                    tpl.phases[0].task_type if tpl.phases else "general"
-                )
+                category = tpl.category or (tpl.phases[0].task_type if tpl.phases else "general")
                 author = tpl.author or ""
             except Exception:
                 phases_summary = []
@@ -1705,8 +1705,8 @@ def create_api_app(
 
         # 4. Modify the YAML to set the new id and name
         raw["id"] = candidate
-        base_name = raw.get('name', template.name)
-        _copy_match = re.match(r'^(.*?)\s*\(Copy(?:\s+(\d+))?\)$', base_name)
+        base_name = raw.get("name", template.name)
+        _copy_match = re.match(r"^(.*?)\s*\(Copy(?:\s+(\d+))?\)$", base_name)
         if _copy_match:
             base_name = _copy_match.group(1)
             _copy_counter = int(_copy_match.group(2) or 1) + 1
@@ -1718,7 +1718,7 @@ def create_api_app(
         # 5. Write to user templates dir (user-writable) — exclusive create to avoid TOCTOU race
         dest = _writable_template_path(engine, candidate, "user")
         try:
-            with dest.open('x', encoding='utf-8') as f:
+            with dest.open("x", encoding="utf-8") as f:
                 f.write(new_content)
         except FileExistsError:
             # Retry with incremented counter suffix
@@ -1726,7 +1726,7 @@ def create_api_app(
                 retry_candidate = f"{base_id}-copy-{_retry}"
                 dest = _writable_template_path(engine, retry_candidate, "user")
                 try:
-                    with dest.open('x', encoding='utf-8') as f:
+                    with dest.open("x", encoding="utf-8") as f:
                         f.write(new_content)
                     raw["id"] = retry_candidate
                     break
@@ -1816,17 +1816,17 @@ def create_api_app(
         # 2. Prepare input data with executor and model map overrides
         launch_input = dict(req.input)
         if req.executor:
-            launch_input['_executor_type'] = req.executor
+            launch_input["_executor_type"] = req.executor
         if req.model_map:
-            launch_input['_model_map'] = req.model_map
+            launch_input["_model_map"] = req.model_map
 
         # Build extra env vars for API key (never persisted to DB)
         extra_env: Dict[str, str] = {}
         if req.api_key:
-            if req.mode == 'openrouter':
-                extra_env['OPENROUTER_API_KEY'] = req.api_key
+            if req.mode == "openrouter":
+                extra_env["OPENROUTER_API_KEY"] = req.api_key
             else:
-                extra_env['ANTHROPIC_API_KEY'] = req.api_key
+                extra_env["ANTHROPIC_API_KEY"] = req.api_key
 
         # 2b. Launch via shared helper (DB row + daemon spawn)
         db = Database(Path(effective_db_path))
@@ -1934,11 +1934,13 @@ def create_api_app(
         if input_map:
             # First pass: resolve $.path expressions
             dot_path_map = {
-                k: v for k, v in input_map.items()
+                k: v
+                for k, v in input_map.items()
                 if not (isinstance(v, str) and v.startswith("{{payload."))
             }
             template_map = {
-                k: v for k, v in input_map.items()
+                k: v
+                for k, v in input_map.items()
                 if isinstance(v, str) and v.startswith("{{payload.")
             }
             input_data = _apply_input_map(payload, dot_path_map) if dot_path_map else {}
@@ -2027,6 +2029,7 @@ def create_api_app(
             raise HTTPException(status_code=400, detail=str(exc))
 
         import sqlite3
+
         try:
             db.create_trigger(cfg.to_dict())
         except sqlite3.IntegrityError:
@@ -2103,9 +2106,7 @@ def create_api_app(
         return JSONResponse(_trigger_to_response(row))
 
     @app.put("/api/v1/triggers/{trigger_id}")
-    async def update_trigger_endpoint(
-        trigger_id: str, body: TriggerUpdateRequest
-    ) -> JSONResponse:
+    async def update_trigger_endpoint(trigger_id: str, body: TriggerUpdateRequest) -> JSONResponse:
         """Update an existing webhook trigger.
 
         Only fields that are explicitly provided in the request body are
@@ -2152,6 +2153,7 @@ def create_api_app(
         if update_kwargs:
             # Validate the merged result before writing
             from orchestration_engine.webhooks import TriggerConfig
+
             merged = {**existing, **update_kwargs}
             try:
                 TriggerConfig.from_dict(merged)
@@ -2268,10 +2270,12 @@ def create_api_app(
             raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
 
         children = db.list_pipeline_run_children(run_id)
-        return JSONResponse({
-            "run_id": run_id,
-            "children": [_run_to_dict(c) for c in children],
-        })
+        return JSONResponse(
+            {
+                "run_id": run_id,
+                "children": [_run_to_dict(c) for c in children],
+            }
+        )
 
     @app.get("/api/v1/runs/{run_id}/logs")
     async def get_run_logs(run_id: str) -> JSONResponse:
@@ -2388,16 +2392,20 @@ def create_api_app(
             if entry.name.startswith(".") or not entry.is_file():
                 continue
             stat = entry.stat()
-            files.append({
-                "name": entry.name,
-                "size_bytes": stat.st_size,
-                "mtime": stat.st_mtime,
-            })
-        return JSONResponse({
-            "run_id": run_id,
-            "output_dir": str(out_dir),
-            "files": files,
-        })
+            files.append(
+                {
+                    "name": entry.name,
+                    "size_bytes": stat.st_size,
+                    "mtime": stat.st_mtime,
+                }
+            )
+        return JSONResponse(
+            {
+                "run_id": run_id,
+                "output_dir": str(out_dir),
+                "files": files,
+            }
+        )
 
     @app.get("/api/v1/runs/{run_id}/artifacts/{filename}")
     async def get_run_artifact(run_id: str, filename: str) -> JSONResponse:
@@ -2414,12 +2422,14 @@ def create_api_app(
         out_dir = _resolve_output_dir(run)
         content = _read_artifact(out_dir, filename)
         target = (out_dir / filename).resolve()
-        return JSONResponse({
-            "run_id": run_id,
-            "filename": filename,
-            "size_bytes": target.stat().st_size,
-            "content": content,
-        })
+        return JSONResponse(
+            {
+                "run_id": run_id,
+                "filename": filename,
+                "size_bytes": target.stat().st_size,
+                "content": content,
+            }
+        )
 
     @app.get("/api/v1/runs/{run_id}/phase0")
     async def get_run_phase0(run_id: str) -> JSONResponse:
@@ -2499,7 +2509,10 @@ def create_api_app(
                 stripped = line.strip()
                 if stripped.startswith("- ") and "(empty —" not in stripped:
                     entries.append(stripped[2:])
-            sections[key] = {"count": len(entries), "entries": entries[:50]}  # cap per-section payload
+            sections[key] = {
+                "count": len(entries),
+                "entries": entries[:50],
+            }  # cap per-section payload
 
         # Verdict label counts from §5/§6 (CONSUME / EXTEND / DIVERGENT / NEW-OK / BLOCKED)
         verdicts = {
@@ -2510,13 +2523,19 @@ def create_api_app(
             "BLOCKED": len(_re.findall(r"\bBLOCKED\b", raw)),
         }
 
-        return JSONResponse({
-            "run_id": run_id,
-            "filename": artifact.name,
-            "sections": sections,
-            "verdicts": verdicts,
-            "raw": raw if len(raw) <= _ARTIFACT_MAX_BYTES else raw[:_ARTIFACT_MAX_BYTES] + "\n[…truncated…]",
-        })
+        return JSONResponse(
+            {
+                "run_id": run_id,
+                "filename": artifact.name,
+                "sections": sections,
+                "verdicts": verdicts,
+                "raw": (
+                    raw
+                    if len(raw) <= _ARTIFACT_MAX_BYTES
+                    else raw[:_ARTIFACT_MAX_BYTES] + "\n[…truncated…]"
+                ),
+            }
+        )
 
     @app.get("/api/v1/runs/{run_id}/dialogue")
     async def get_run_dialogue(run_id: str) -> JSONResponse:
@@ -2584,21 +2603,25 @@ def create_api_app(
             # Capture decimal Jaccard value, stopping before any trailing
             # sentence punctuation (e.g. ``Jaccard 0.93.`` → ``0.93``).
             jac_m = _re.search(r"[Jj]accard[^0-9]*(\d+(?:\.\d+)?)", content)
-            rounds.append({
-                "index": int(m.group("idx")),
-                "side": (m.group("side") or "").lower(),
-                "model": m.group("model"),
-                "verdict": (m.group("verdict") or "").lower() or None,
-                "content": content[:4096],  # cap per-round body
-                "jaccard": float(jac_m.group(1)) if jac_m else None,
-            })
+            rounds.append(
+                {
+                    "index": int(m.group("idx")),
+                    "side": (m.group("side") or "").lower(),
+                    "model": m.group("model"),
+                    "verdict": (m.group("verdict") or "").lower() or None,
+                    "content": content[:4096],  # cap per-round body
+                    "jaccard": float(jac_m.group(1)) if jac_m else None,
+                }
+            )
 
-        return JSONResponse({
-            "run_id": run_id,
-            "filename": artifact.name,
-            "rounds": rounds,
-            "raw": raw,
-        })
+        return JSONResponse(
+            {
+                "run_id": run_id,
+                "filename": artifact.name,
+                "rounds": rounds,
+                "raw": raw,
+            }
+        )
 
     # ── Harness aggregate endpoints (items 4, 6, 7 from the post-0.10 audit) ──
     # These three close the read-side data gaps the harness was rendering as
@@ -2661,12 +2684,14 @@ def create_api_app(
                 conn.execute("ROLLBACK")
                 raise
         items = [_normalize_row(db._row_to_dict(r)) for r in rows]
-        return JSONResponse({
-            "items": items,
-            "total": int(total),
-            "limit": limit,
-            "offset": offset,
-        })
+        return JSONResponse(
+            {
+                "items": items,
+                "total": int(total),
+                "limit": limit,
+                "offset": offset,
+            }
+        )
 
     @app.get("/api/v1/stale-findings")
     async def list_stale_findings_endpoint() -> JSONResponse:
@@ -2680,12 +2705,14 @@ def create_api_app(
 
         Response shape mirrors `/api/v1/regressions` for consistency.
         """
-        return JSONResponse({
-            "items": [],
-            "total": 0,
-            "scan_status": "no_scanner_yet",
-            "next_scan_at": None,
-        })
+        return JSONResponse(
+            {
+                "items": [],
+                "total": 0,
+                "scan_status": "no_scanner_yet",
+                "next_scan_at": None,
+            }
+        )
 
     @app.get("/api/v1/trust-profiles")
     async def list_trust_profiles_endpoint() -> JSONResponse:
@@ -2748,12 +2775,14 @@ def create_api_app(
                 conn.execute("ROLLBACK")
                 raise
         items = [_normalize_row(db._row_to_dict(r)) for r in rows]
-        return JSONResponse({
-            "items": items,
-            "total": int(total),
-            "limit": limit,
-            "offset": offset,
-        })
+        return JSONResponse(
+            {
+                "items": items,
+                "total": int(total),
+                "limit": limit,
+                "offset": offset,
+            }
+        )
 
     # ── Admin config defaults + helpers ─────────────────────────────────────
     # Helpers (_ADMIN_DEFAULTS, _strict_coerce_bool, _coerce_admin_doc,
@@ -2784,6 +2813,7 @@ def create_api_app(
         import json as _json
 
         from .. import feature_flags as _ff
+
         admin_path = _ff._admin_json_path()  # honours ORCH_ADMIN_PATH (#840)
         raw_loaded: Any = None
         source = "default"
@@ -2800,15 +2830,18 @@ def create_api_app(
         extra: Dict[str, Any] = {}
         if isinstance(raw_loaded, dict):
             extra = {
-                k: v for k, v in raw_loaded.items()
+                k: v
+                for k, v in raw_loaded.items()
                 if k not in {"autonomy_level", "feature_flags", "modes"}
             }
-        return JSONResponse({
-            **merged,
-            "extra": extra,
-            "source": source,
-            "path": str(admin_path),
-        })
+        return JSONResponse(
+            {
+                **merged,
+                "extra": extra,
+                "source": source,
+                "path": str(admin_path),
+            }
+        )
 
     @app.put("/api/v1/admin/feature-flags")
     async def update_feature_flags(request: Request) -> JSONResponse:
@@ -2868,6 +2901,7 @@ def create_api_app(
             patch[k] = coerced
 
         from .. import feature_flags as _ff
+
         admin_path = _ff._admin_json_path()  # honours ORCH_ADMIN_PATH (#840)
         admin_dir = admin_path.parent
 
@@ -2887,10 +2921,11 @@ def create_api_app(
         # forward-compat operator (or beta build) had set on disk that
         # wasn't in _ADMIN_KNOWN_FLAGS.
         existing_flags = current.get("feature_flags")
-        disk_flags: Dict[str, Any] = dict(existing_flags) if isinstance(existing_flags, dict) else {}
+        disk_flags: Dict[str, Any] = (
+            dict(existing_flags) if isinstance(existing_flags, dict) else {}
+        )
         before_canonical: Dict[str, Any] = {
-            k: disk_flags.get(k, _ADMIN_DEFAULTS["feature_flags"][k])
-            for k in _ADMIN_KNOWN_FLAGS
+            k: disk_flags.get(k, _ADMIN_DEFAULTS["feature_flags"][k]) for k in _ADMIN_KNOWN_FLAGS
         }
         disk_flags.update(patch)
         merged_flags = _merge_feature_flags_with_passthrough(disk_flags)
@@ -2917,10 +2952,7 @@ def create_api_app(
                 Path(tmp).unlink(missing_ok=True)
         # Append-only audit log (#838) — record only the keys that
         # ACTUALLY changed value, so audit rows are scannable.
-        changed_keys = sorted(
-            k for k, v in canonical_flags.items()
-            if before_canonical.get(k) != v
-        )
+        changed_keys = sorted(k for k, v in canonical_flags.items() if before_canonical.get(k) != v)
         if changed_keys:
             try:
                 db = Database(Path(effective_db_path))
@@ -2932,10 +2964,12 @@ def create_api_app(
                 )
             except Exception as _exc:  # noqa: BLE001 — audit log is best-effort
                 logger.warning("admin audit-log append failed: %s", _exc)
-        return JSONResponse({
-            "feature_flags": canonical_flags,
-            "path": str(admin_path),
-        })
+        return JSONResponse(
+            {
+                "feature_flags": canonical_flags,
+                "path": str(admin_path),
+            }
+        )
 
     @app.get("/api/v1/admin/audit-log")
     async def get_admin_audit_log(limit: int = 100, offset: int = 0) -> JSONResponse:
@@ -2982,11 +3016,13 @@ def create_api_app(
             )
         db = Database(Path(effective_db_path))
         rows = db.list_admin_audit(limit=limit, offset=offset)
-        return JSONResponse({
-            "rows": rows,
-            "limit": limit,
-            "offset": offset,
-        })
+        return JSONResponse(
+            {
+                "rows": rows,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
 
     # ── SSE connection limits (#841) ─────────────────────────────────────
     # The limiter lives at module scope (see SseConnectionLimiter below)
@@ -3050,7 +3086,7 @@ def create_api_app(
         # with Retry-After so clients back off instead of reconnecting
         # tight-loop. Successful admit MUST be paired with a release in
         # the generator's finally block.
-        client_ip = (request.client.host if request.client else "unknown")
+        client_ip = request.client.host if request.client else "unknown"
         admit_err = _sse_limiter.admit(client_ip)
         if admit_err is not None:
             raise HTTPException(
@@ -3067,11 +3103,13 @@ def create_api_app(
             # Release the slot we just admitted — the not-found stream
             # is a fast-fail and shouldn't count against the cap.
             _sse_limiter.release(client_ip)
+
             async def _not_found():
                 yield {
                     "event": "error",
                     "data": json.dumps({"error": f"Run '{run_id}' not found"}),
                 }
+
             return EventSourceResponse(_not_found())
 
         async def _event_generator():
@@ -3085,9 +3123,7 @@ def create_api_app(
                         break
 
                     # Fetch new events since the last one delivered
-                    events = db.list_pipeline_run_events(
-                        run_id, after_id=last_event_id
-                    )
+                    events = db.list_pipeline_run_events(run_id, after_id=last_event_id)
                     for evt in events:
                         last_event_id = evt["id"]
                         # Parse metadata JSON for enriched fields (#747)
@@ -3095,7 +3131,11 @@ def create_api_app(
                         raw_meta = evt.get("metadata_json")
                         if raw_meta:
                             try:
-                                meta = json.loads(raw_meta) if isinstance(raw_meta, str) else (raw_meta or {})
+                                meta = (
+                                    json.loads(raw_meta)
+                                    if isinstance(raw_meta, str)
+                                    else (raw_meta or {})
+                                )
                             except (json.JSONDecodeError, TypeError):
                                 pass
 
@@ -3497,7 +3537,7 @@ def create_api_app(
         db = Database(Path(effective_db_path))
         all_profiles = db.list_trust_profiles()
         total = len(all_profiles)
-        items = all_profiles[offset: offset + limit]
+        items = all_profiles[offset : offset + limit]
         return JSONResponse(
             {
                 "items": items,
@@ -3577,19 +3617,19 @@ def create_api_app(
 
         now_iso = datetime.now(timezone.utc).isoformat()
         updated: Dict[str, Any] = {
-            "repo":                   profile["repo"],
-            "template_id":            profile["template_id"],
-            "task_type":              profile["task_type"],
-            "auto_merge_threshold":   new_threshold,
+            "repo": profile["repo"],
+            "template_id": profile["template_id"],
+            "task_type": profile["task_type"],
+            "auto_merge_threshold": new_threshold,
             "human_review_threshold": float(profile["human_review_threshold"]),
-            "trust_score":            new_score,
-            "total_runs":             int(profile["total_runs"]),
-            "successful_merges":      successful_merges,
-            "regressions":            int(profile["regressions"]),
-            "reverted_prs":           int(profile["reverted_prs"]),
-            "last_run_at":            profile.get("last_run_at"),
-            "created_at":             profile["created_at"],
-            "updated_at":             now_iso,
+            "trust_score": new_score,
+            "total_runs": int(profile["total_runs"]),
+            "successful_merges": successful_merges,
+            "regressions": int(profile["regressions"]),
+            "reverted_prs": int(profile["reverted_prs"]),
+            "last_run_at": profile.get("last_run_at"),
+            "created_at": profile["created_at"],
+            "updated_at": now_iso,
         }
         db.upsert_trust_profile(updated)
 
@@ -3598,15 +3638,17 @@ def create_api_app(
         if body.reviewed_by:
             audit_reason = f"manual_override:{body.reviewed_by}"
 
-        db.insert_trust_adjustment({
-            "profile_id":   profile_id,
-            "delta":        delta,
-            "reason":       audit_reason,
-            "run_id":       None,
-            "score_before": old_score,
-            "score_after":  new_score,
-            "created_at":   now_iso,
-        })
+        db.insert_trust_adjustment(
+            {
+                "profile_id": profile_id,
+                "delta": delta,
+                "reason": audit_reason,
+                "run_id": None,
+                "score_before": old_score,
+                "score_after": new_score,
+                "created_at": now_iso,
+            }
+        )
 
         refreshed = db.get_trust_profile_by_id(profile_id)
         return JSONResponse(refreshed)
@@ -3698,10 +3740,7 @@ def create_api_app(
             )
 
         # Resolve DB path: env var → config → persistent default
-        db_path = (
-            os.environ.get("NOTIFY_TELEGRAM_CALLBACK_DB_PATH", "")
-            or effective_db_path
-        )
+        db_path = os.environ.get("NOTIFY_TELEGRAM_CALLBACK_DB_PATH", "") or effective_db_path
         gateway_url = os.environ.get(
             "NOTIFY_OPENCLAW_GATEWAY_URL",
             os.environ.get("OPENCLAW_GATEWAY_URL", ""),
@@ -3723,9 +3762,7 @@ def create_api_app(
         result = handler.handle_update(update)
         if not result.get("ok"):
             # Log the error but return 200 to prevent Telegram from retrying
-            logger.warning(
-                "Telegram callback handler returned non-ok result: %s", result
-            )
+            logger.warning("Telegram callback handler returned non-ok result: %s", result)
         return JSONResponse(result)
 
     # ------------------------------------------------------------------
@@ -3785,12 +3822,11 @@ def create_api_app(
 
         # 1c. GitHub App webhook signature verification (opt-in)
         from orchestration_engine.config import get_global_config
+
         cfg = get_global_config()
         if cfg.github_app and cfg.github_app.webhook_secret:
             sig_header = request.headers.get("X-Hub-Signature-256")
-            if not _verify_github_signature(
-                cfg.github_app.webhook_secret, _body_bytes, sig_header
-            ):
+            if not _verify_github_signature(cfg.github_app.webhook_secret, _body_bytes, sig_header):
                 raise HTTPException(
                     status_code=403,
                     detail="Invalid or missing X-Hub-Signature-256 header",
@@ -3849,9 +3885,7 @@ def create_api_app(
                 )
         elif action == "opened":
             # For "opened" action, check the issue already carries the trigger label
-            issue_labels = [
-                lbl.get("name", "") for lbl in (issue.get("labels") or [])
-            ]
+            issue_labels = [lbl.get("name", "") for lbl in (issue.get("labels") or [])]
             if trigger_label not in issue_labels:
                 return JSONResponse(
                     {"status": "ignored", "reason": "trigger_label_absent"},
@@ -3872,7 +3906,7 @@ def create_api_app(
             )
 
         # 7. Build automation and process
-        classifier = IssueClassifier()   # stub mode; replace executor via subclass/config
+        classifier = IssueClassifier()  # stub mode; replace executor via subclass/config
         selector = TemplateSelector()
         extractor = InputExtractor()
         try:
@@ -3892,9 +3926,7 @@ def create_api_app(
 
         title = issue.get("title", "") or ""
         body_text = issue.get("body", "") or ""
-        issue_label_names = [
-            lbl.get("name", "") for lbl in (issue.get("labels") or [])
-        ]
+        issue_label_names = [lbl.get("name", "") for lbl in (issue.get("labels") or [])]
 
         engine_instance = TemplateEngine()
         gw_url = os.environ.get("OPENCLAW_GATEWAY_URL")
@@ -3970,6 +4002,7 @@ def create_api_app(
 
         # Signature verification (opt-in, same as handle_github_issues)
         from orchestration_engine.config import get_global_config
+
         _cfg = get_global_config()
         if _cfg.github_app and _cfg.github_app.webhook_secret:
             sig_header = request.headers.get("X-Hub-Signature-256")
@@ -4056,7 +4089,7 @@ def create_api_app(
             raise HTTPException(
                 status_code=400,
                 detail=f"Default template '{_default_tpl}' not found. "
-                       f"Set ORCH_DEFAULT_TEMPLATE to an available template name.",
+                f"Set ORCH_DEFAULT_TEMPLATE to an available template name.",
             )
 
         engine = TemplateEngine()
@@ -4133,7 +4166,7 @@ def create_api_app(
             raise HTTPException(
                 status_code=400,
                 detail=f"Default template '{_default_tpl}' not found. "
-                       f"Set ORCH_DEFAULT_TEMPLATE to an available template name.",
+                f"Set ORCH_DEFAULT_TEMPLATE to an available template name.",
             )
 
         pipeline_input = generate_pipeline_input(

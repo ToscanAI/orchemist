@@ -268,7 +268,7 @@ class DiagnosisEngine:
             # Extract JSON from between markdown code fences if present.
             # Handles: ```json\n{...}\n```, ```\n{...}\n```,
             # and responses with preamble prose before the fence.
-            fence_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+            fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
             if fence_match:
                 text = fence_match.group(1).strip()
             data = json.loads(text)
@@ -351,9 +351,7 @@ class DiagnosisEngine:
                 model_tier=self.DEFAULT_MODEL_TIER,
             )
         except Exception as exc:
-            _logger.error(
-                "Executor call failed during diagnosis for run %s: %s", run_id, exc
-            )
+            _logger.error("Executor call failed during diagnosis for run %s: %s", run_id, exc)
             fallback = DiagnosisResult(
                 failure_class=FailureClass.INFRA_ISSUE,
                 remediation=Remediation.ESCALATE_TO_HUMAN,
@@ -364,7 +362,9 @@ class DiagnosisEngine:
             return fallback
 
         # Handle non-success executor states.
-        if exec_result.state not in ("success", "SUCCESS") and getattr(exec_result.state, "value", None) not in ("success",):
+        if exec_result.state not in ("success", "SUCCESS") and getattr(
+            exec_result.state, "value", None
+        ) not in ("success",):
             _logger.warning(
                 "Executor returned non-success state %s for run %s",
                 exec_result.state,
@@ -415,9 +415,7 @@ class DiagnosisEngine:
                     error_message=error_message or "",
                 )
             except Exception as exc:
-                _logger.warning(
-                    "FailurePatternTracker.track failed (non-fatal): %s", exc
-                )
+                _logger.warning("FailurePatternTracker.track failed (non-fatal): %s", exc)
 
         return final
 
@@ -545,8 +543,7 @@ class FailurePatternTracker:
 
         if record.get("is_systemic"):
             self._logger.warning(
-                "Systemic failure detected — template=%s  class=%s  "
-                "occurrences=%s  hash=%s",
+                "Systemic failure detected — template=%s  class=%s  " "occurrences=%s  hash=%s",
                 template_id,
                 failure_class,
                 record.get("occurrence_count"),

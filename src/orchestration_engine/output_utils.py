@@ -61,10 +61,10 @@ def extract_output_text(phase_out: Dict[str, Any]) -> str:
     called from a Click context — silent silent-drift surface in the daemon
     copy that is paid off here.
     """
-    inner = phase_out.get('result', {})
+    inner = phase_out.get("result", {})
     if not isinstance(inner, dict):
         return str(inner)
-    for key in ('output', 'text', 'content', 'message'):
+    for key in ("output", "text", "content", "message"):
         if key in inner:
             val = inner[key]
             if isinstance(val, builtins.list):
@@ -75,11 +75,11 @@ def extract_output_text(phase_out: Dict[str, Any]) -> str:
                 texts = []
                 for block in val:
                     if isinstance(block, builtins.dict):
-                        if block.get('type') == 'text':
-                            texts.append(block.get('text', ''))
+                        if block.get("type") == "text":
+                            texts.append(block.get("text", ""))
                     elif isinstance(block, str):
                         texts.append(block)
-                return '\n\n'.join(t for t in texts if t)
+                return "\n\n".join(t for t in texts if t)
             return str(val)
     if inner:
         return json.dumps(inner, indent=2, default=str)
@@ -99,14 +99,13 @@ def safe_write_phase_output(out_path: Path, new_content: str, phase_id: str) -> 
         new_content: Text to write (UTF-8 encoded on disk).
         phase_id:    Phase identifier used in log messages only.
     """
-    if out_path.exists() and out_path.stat().st_size > len(new_content.encode('utf-8')):
+    if out_path.exists() and out_path.stat().st_size > len(new_content.encode("utf-8")):
         # Agent already wrote a larger file — keep the agent's version.
         logger.info(
-            "Phase '%s': keeping agent-written file (%d bytes) over captured "
-            "output (%d bytes)",
+            "Phase '%s': keeping agent-written file (%d bytes) over captured " "output (%d bytes)",
             phase_id,
             out_path.stat().st_size,
-            len(new_content.encode('utf-8')),
+            len(new_content.encode("utf-8")),
         )
     else:
         out_path.write_text(new_content)

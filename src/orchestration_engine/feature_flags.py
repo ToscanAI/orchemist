@@ -95,7 +95,8 @@ def _read_flags_from_disk() -> Dict[str, bool]:
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning(
             "feature_flags: failed to read %s — using defaults. Cause: %s",
-            path, exc,
+            path,
+            exc,
         )
         return flags
     if not isinstance(loaded, dict):
@@ -132,11 +133,7 @@ def get_flags(*, fresh: bool = False) -> Dict[str, bool]:
     """
     now = time.monotonic()
     with _LOCK:
-        if (
-            not fresh
-            and _CACHE["flags"] is not None
-            and (now - _CACHE["loaded_at"]) < _TTL_SECONDS
-        ):
+        if not fresh and _CACHE["flags"] is not None and (now - _CACHE["loaded_at"]) < _TTL_SECONDS:
             return dict(_CACHE["flags"])
         flags = _read_flags_from_disk()
         _CACHE["flags"] = flags
@@ -152,8 +149,9 @@ def is_enabled(flag_name: str) -> bool:
     """
     if flag_name not in _DEFAULTS:
         logger.warning(
-            "feature_flags.is_enabled(%r): unknown flag — returning False. "
-            "Known flags: %s", flag_name, sorted(_DEFAULTS.keys())
+            "feature_flags.is_enabled(%r): unknown flag — returning False. " "Known flags: %s",
+            flag_name,
+            sorted(_DEFAULTS.keys()),
         )
         return False
     return get_flags()[flag_name]

@@ -152,12 +152,8 @@ class SprintChainManager:
             raise ValueError("Sprint queue config missing required 'repo' field")
 
         issues = data.get("issues", [])
-        if not isinstance(issues, list) or not all(
-            isinstance(i, int) and i > 0 for i in issues
-        ):
-            raise ValueError(
-                "Sprint queue config 'issues' must be a list of positive integers"
-            )
+        if not isinstance(issues, list) or not all(isinstance(i, int) and i > 0 for i in issues):
+            raise ValueError("Sprint queue config 'issues' must be a list of positive integers")
 
         daily_budget_cap_usd: Optional[float] = None
         if "daily_budget_cap_usd" in data:
@@ -239,15 +235,12 @@ class SprintChainManager:
         if config.daily_budget_cap_usd is None:
             return True
         if self._cost_tracker is None:
-            logger.warning(
-                "sprint_chain: no cost_tracker — skipping budget guard"
-            )
+            logger.warning("sprint_chain: no cost_tracker — skipping budget guard")
             return True
         today_cost = self._cost_tracker.get_daily_cost()
         if today_cost >= config.daily_budget_cap_usd:
             logger.info(
-                "sprint_chain: daily budget cap $%.4f reached (today: $%.4f) "
-                "— pausing chain",
+                "sprint_chain: daily budget cap $%.4f reached (today: $%.4f) " "— pausing chain",
                 config.daily_budget_cap_usd,
                 today_cost,
             )
@@ -410,8 +403,7 @@ class SprintChainManager:
         # -- 2. Score guard --
         if not self.check_score_guard(score, config.score_threshold):
             logger.info(
-                "sprint_chain: score %.4f below threshold %.4f for run %s "
-                "— chain stopped",
+                "sprint_chain: score %.4f below threshold %.4f for run %s " "— chain stopped",
                 score or 0.0,
                 config.score_threshold,
                 run_id,
@@ -433,9 +425,7 @@ class SprintChainManager:
         # that we advance past it even though mark_processed hasn't run yet.
         next_issue = self.get_next_issue(config, processed + [current_issue])
         if next_issue is None:
-            logger.info(
-                "sprint_chain: all issues in queue processed for %r", repo
-            )
+            logger.info("sprint_chain: all issues in queue processed for %r", repo)
             return TriggerResult(triggered=False, reason="queue_exhausted")
 
         # -- 5. Budget guard --
@@ -458,9 +448,7 @@ class SprintChainManager:
         try:
             self.mark_processed(repo, current_issue, run_id, score)
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "sprint_chain: mark_processed failed (non-fatal): %s", exc
-            )
+            logger.warning("sprint_chain: mark_processed failed (non-fatal): %s", exc)
 
         # -- 8. Label next issue --
         labeled = self.label_next_issue(repo, next_issue)
@@ -481,13 +469,10 @@ class SprintChainManager:
                 comment_template=config.comment_template,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "sprint_chain: post_queue_comment failed (non-fatal): %s", exc
-            )
+            logger.warning("sprint_chain: post_queue_comment failed (non-fatal): %s", exc)
 
         logger.info(
-            "sprint_chain: labeled issue #%d pipeline-ready in %r "
-            "(previous: #%d, score=%.4f)",
+            "sprint_chain: labeled issue #%d pipeline-ready in %r " "(previous: #%d, score=%.4f)",
             next_issue,
             repo,
             current_issue,

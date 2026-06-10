@@ -3,6 +3,7 @@
 Single source of truth for thinking_level -> budget_tokens. Both the
 Anthropic and OpenRouter executors import this; values must stay byte-identical.
 """
+
 from typing import Dict
 
 #: thinking_level -> budget tokens. Keys are the only recognized levels
