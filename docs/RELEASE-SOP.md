@@ -133,7 +133,7 @@ Once the release PR merges to `main`:
 | `twine check dist/*` passes before publish | `publish.yaml` | Fails the workflow on malformed metadata |
 | Test suite green on `main` | `ci.yml` push trigger | Required to consider `main` ready to tag |
 | 2-reviewer rule on release PRs (incl. `pyproject.toml` bumps) | CI | `.github/CODEOWNERS` requires maintainer approval; combined with branch protection's "1 review required" this yields 2 reviewers (closes #890) |
-| Tag signing | CI (WARN; FAIL gate 2026-06-03) | `publish.yaml` runs `git tag -v $GITHUB_REF_NAME`; currently warns only. A follow-up PR (#890 follow-up) imports the maintainer pubkey and flips the step to FAIL closed on 2026-06-03 |
+| Tag signing | CI (FAIL-closed) | `publish.yaml` imports `.github/release-signing-pubkey.asc` and runs `git tag -v $GITHUB_REF_NAME` with no fallthrough (#890 → #935/#936); an unsigned or unverifiable tag blocks build + publish |
 | Tag created from `main` | Convention | Workflow is branch-agnostic by design (allows hotfix-branch releases when needed) |
 | Signed commits on `main` | Convention | Branch-protection ruleset 16835594 admin update pending — out of scope for the #890 code PR |
 
@@ -152,15 +152,13 @@ Closed in #890:
   `pyproject.toml` (the simpler standard mechanism). Combined with
   branch protection this is the 2-reviewer requirement.
 - ~~**Tag-signature enforcement in `publish.yaml`.**~~ Added as a
-  `git tag -v` step in WARN mode. A separate follow-up PR will
-  import the maintainer pubkey and flip to FAIL mode on 2026-06-03.
+  `git tag -v` step in WARN mode, then flipped to FAIL-closed in
+  #935/#936 — the maintainer public key is committed in-repo at
+  `.github/release-signing-pubkey.asc` (no secret needed) and the
+  verify step has no fallthrough.
 
 Still open:
 
-- **WARN → FAIL transition for the `git tag -v` step.** Scheduled
-  for 2026-06-03; requires the maintainer GPG public key to be
-  available to the runner via a secret (e.g.
-  `MAINTAINER_GPG_PUBKEY`).
 - **Branch-protection ruleset on `main` requiring signed commits.**
   Currently the ruleset (id 16835594) blocks force-push but does
   not require signatures. This is an admin/web action on the
@@ -189,4 +187,4 @@ If a bad release ships:
 
 ---
 
-*Last reviewed: 2026-05-27 (closes #890; previously closes #837).*
+*Last reviewed: 2026-06-10 (v0.13.0 release pass; previously #890, #837).*
