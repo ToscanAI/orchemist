@@ -26,38 +26,49 @@ jobs:
       # events (correct behavior). On push events to main, it compares against
       # the previous commit on the branch — which can produce surprising
       # results (e.g. a push that merges a docs-only PR may evaluate to
-      # docs_only=true even though main pushes are meant to run full CI).
+      # non_docs=false even though main pushes are meant to run full CI).
       # We mitigate by explicitly setting `base: main` so push events compare
       # against the configured base; for pull_request events, the action's
       # default base-detection still wins.
-      - name: Detect docs-only changes
+      # FIX 2026-06-10 (#958): the original `docs_only` filter listed the doc
+      # patterns directly, but dorny/paths-filter outputs true when ANY
+      # changed file matches — so a mixed code+docs PR (e.g. pyproject.toml +
+      # CHANGELOG.md) was misclassified docs_only=true and skipped this job's
+      # substantive steps while still reporting SUCCESS. Inverted detection:
+      # with `predicate-quantifier: every`, a file matches `non_docs` only if
+      # it matches EVERY negated pattern (i.e. it is not a doc file), so
+      # non_docs=true ⇔ at least one substantive file changed. Substantive
+      # steps run iff non_docs == 'true'; pure docs PRs still short-circuit
+      # to SUCCESS (not SKIPPED) so required checks stay satisfied.
+      - name: Detect substantive (non-docs) changes
         id: changes
         uses: dorny/paths-filter@v3
         with:
           base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
+          predicate-quantifier: 'every'
           filters: |
-            docs_only:
-              - '**.md'
-              - 'docs/**'
-              - 'LICENSE'
-              - '.github/ISSUE_TEMPLATE/**'
+            non_docs:
+              - '!**.md'
+              - '!docs/**'
+              - '!LICENSE'
+              - '!.github/ISSUE_TEMPLATE/**'
 
       - name: Set up Python ${{ matrix.python-version }}
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: pip install -e ".[dev,web,github]"
 
       - name: Run tests
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: pytest
 
       - name: Validate bundled templates
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: |
           shopt -s nullglob
           templates=(templates/*.yaml)
@@ -71,7 +82,7 @@ jobs:
           done
 
       - name: Template drift lint
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: python3 scripts/check_template_sync.py
 
   # ----------------------------------------------------------------------
@@ -96,34 +107,45 @@ jobs:
       - name: Checkout engine
         uses: actions/checkout@v4
 
-      - name: Detect docs-only changes
+      # FIX 2026-06-10 (#958): the original `docs_only` filter listed the doc
+      # patterns directly, but dorny/paths-filter outputs true when ANY
+      # changed file matches — so a mixed code+docs PR (e.g. pyproject.toml +
+      # CHANGELOG.md) was misclassified docs_only=true and skipped this job's
+      # substantive steps while still reporting SUCCESS. Inverted detection:
+      # with `predicate-quantifier: every`, a file matches `non_docs` only if
+      # it matches EVERY negated pattern (i.e. it is not a doc file), so
+      # non_docs=true ⇔ at least one substantive file changed. Substantive
+      # steps run iff non_docs == 'true'; pure docs PRs still short-circuit
+      # to SUCCESS (not SKIPPED) so required checks stay satisfied.
+      - name: Detect substantive (non-docs) changes
         id: changes
         uses: dorny/paths-filter@v3
         with:
           base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
+          predicate-quantifier: 'every'
           filters: |
-            docs_only:
-              - '**.md'
-              - 'docs/**'
-              - 'LICENSE'
-              - '.github/ISSUE_TEMPLATE/**'
+            non_docs:
+              - '!**.md'
+              - '!docs/**'
+              - '!LICENSE'
+              - '!.github/ISSUE_TEMPLATE/**'
 
       - name: Clone orchemist-skills (sibling)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: git clone --depth 1 https://github.com/ToscanAI/orchemist-skills.git ../orchemist-skills
 
       - name: Set up Python 3.11
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies (engine)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: pip install -e ".[dev]"
 
       - name: Cross-repo parity check
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: python3 scripts/check_template_sync.py --skills-dir ../orchemist-skills/pipelines
 
   # ----------------------------------------------------------------------
@@ -153,24 +175,35 @@ jobs:
       # events (correct behavior). On push events to main, it compares against
       # the previous commit on the branch — which can produce surprising
       # results (e.g. a push that merges a docs-only PR may evaluate to
-      # docs_only=true even though main pushes are meant to run full CI).
+      # non_docs=false even though main pushes are meant to run full CI).
       # We mitigate by explicitly setting `base: main` so push events compare
       # against the configured base; for pull_request events, the action's
       # default base-detection still wins.
-      - name: Detect docs-only changes
+      # FIX 2026-06-10 (#958): the original `docs_only` filter listed the doc
+      # patterns directly, but dorny/paths-filter outputs true when ANY
+      # changed file matches — so a mixed code+docs PR (e.g. pyproject.toml +
+      # CHANGELOG.md) was misclassified docs_only=true and skipped this job's
+      # substantive steps while still reporting SUCCESS. Inverted detection:
+      # with `predicate-quantifier: every`, a file matches `non_docs` only if
+      # it matches EVERY negated pattern (i.e. it is not a doc file), so
+      # non_docs=true ⇔ at least one substantive file changed. Substantive
+      # steps run iff non_docs == 'true'; pure docs PRs still short-circuit
+      # to SUCCESS (not SKIPPED) so required checks stay satisfied.
+      - name: Detect substantive (non-docs) changes
         id: changes
         uses: dorny/paths-filter@v3
         with:
           base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
+          predicate-quantifier: 'every'
           filters: |
-            docs_only:
-              - '**.md'
-              - 'docs/**'
-              - 'LICENSE'
-              - '.github/ISSUE_TEMPLATE/**'
+            non_docs:
+              - '!**.md'
+              - '!docs/**'
+              - '!LICENSE'
+              - '!.github/ISSUE_TEMPLATE/**'
 
       - name: Set up Python 3.11
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -178,11 +211,11 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install Python dependencies (engine)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: pip install -e ".[dev,web,github]"
 
       - name: Set up Node 20
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -190,7 +223,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Cache Playwright browsers
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
@@ -199,22 +232,22 @@ jobs:
             ${{ runner.os }}-playwright-
 
       - name: Install frontend dependencies
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: cd frontend && npm ci
 
       - name: Install Playwright browsers
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: cd frontend && npx playwright install --with-deps chromium
 
       - name: Start engine (orch api-server)
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: |
           nohup orch api-server --port 8771 --host 127.0.0.1 > /tmp/api-server.log 2>&1 &
           echo $! > /tmp/api-server.pid
           echo "engine pid: $(cat /tmp/api-server.pid)"
 
       - name: Wait for engine ready
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         continue-on-error: true
         run: |
           if bash scripts/wait_for_url.sh http://127.0.0.1:8771/api/v1/health 30 engine; then
@@ -227,7 +260,7 @@ jobs:
           fi
 
       - name: Start Next dev server
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: |
           cd frontend
           nohup npm run dev -- --port 3010 > /tmp/next-dev.log 2>&1 &
@@ -235,11 +268,11 @@ jobs:
           echo "next pid: $(cat /tmp/next-dev.pid)"
 
       - name: Wait for Next dev ready
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         run: bash scripts/wait_for_url.sh http://127.0.0.1:3010 60 next-dev
 
       - name: Run Playwright tests
-        if: steps.changes.outputs.docs_only != 'true'
+        if: steps.changes.outputs.non_docs == 'true'
         env:
           PW_BASE_URL: http://localhost:3010
           CI: 'true'

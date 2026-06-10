@@ -53,7 +53,17 @@ jobs:
         # Block scalar (`run: |`) is required — an inline plain scalar would
         # treat a space-prefixed '#' issue ref as a YAML comment and break the
         # command (regression history: #934).
+        #
+        # actions/checkout materializes refs/tags/<tag> as the PEELED COMMIT
+        # (GITHUB_SHA) on tag-push events, so without a re-fetch `git tag -v`
+        # always fails with "cannot verify a non-tag object of type commit" —
+        # the signature is never even inspected. Observed live on the
+        # abandoned v0.13.0 tag (2026-06-10). Re-fetch the real annotated tag
+        # object from origin, assert the ref now IS a tag object (a pushed
+        # lightweight tag must also fail), then verify the signature.
         run: |
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          test "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" = "tag"
           git tag -v "$GITHUB_REF_NAME"
 
       - name: Install build tools

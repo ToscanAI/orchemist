@@ -87,6 +87,16 @@ Once the release PR merges to `main`:
    or one signed by a key not in that file, **blocks the publish**. Never push
    an unsigned release tag.
 
+   **Known CI gotcha (fixed in v0.13.1):** on tag-push events
+   `actions/checkout` materializes `refs/tags/<tag>` as the peeled *commit*
+   (`GITHUB_SHA`), not the annotated tag object — a bare `git tag -v` then
+   fails with `cannot verify a non-tag object of type commit` no matter how
+   the tag was signed. The verify step therefore re-fetches the real tag
+   object (`git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"`) and
+   asserts `git cat-file -t` returns `tag` before verifying. Observed live on
+   the abandoned, never-published v0.13.0 tag (2026-06-10); if you see that
+   error, check the re-fetch lines are still present in `publish.yaml`.
+
    If `git tag -s` fails with "no secret key" you are on a host without the
    private key: sign on the release host, or add the new signer's public key to
    `.github/release-signing-pubkey.asc` (append its armored block) and commit it
