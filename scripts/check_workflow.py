@@ -24,9 +24,11 @@ raw textual grep), so:
 DESIGN
 ------
 The script walks the parsed dict and applies one rule per behavioral contract
-from .orchemist/runs/<id>/behavioral.md. For each rule that fails, the script
+from .orchemist/runs/<id>/behavioral.md. It now pins three jobs: the `test`
+job's preservation (matrix + protected step names), the `playwright-e2e` job's
+shape, and the `lint` job's shape (#962). For each rule that fails, the script
 prints `MISSING: <field-path> — <reason>` on its own line. On all-pass, it
-prints `OK: ci.yml has playwright-e2e job with expected shape`.
+prints `OK: ci.yml has expected job shapes (test, playwright-e2e, lint)`.
 
 Exit codes:
     0 — no missing rules
@@ -94,6 +96,60 @@ def _extract_dorny_filters(steps: list[dict[str, Any]]) -> dict[str, Any]:
             if isinstance(filters, dict):
                 return filters
     return {}
+
+
+def _check_docs_gate(job_name: str, steps: list[dict[str, Any]], missing: list[str]) -> None:
+    """Assert the docs-only paths-filter gate on a job's steps.
+
+    Pins the #958 inversion contract: a dorny/paths-filter step must carry the
+    four negated doc globs (no un-negated regression) and
+    predicate-quantifier == 'every'. Messages are parameterized by job_name so
+    every job that gates on docs reuses the identical assertions.
+    """
+    has_dorny = any(
+        s.get("uses", "").startswith("dorny/paths-filter@") for s in steps
+    )
+    if not has_dorny:
+        missing.append(
+            f"MISSING: jobs.{job_name}.steps[*] — no dorny/paths-filter step "
+            f"(docs-only gate)"
+        )
+        return
+    filters = _extract_dorny_filters(steps)
+    all_globs: list[str] = []
+    for v in filters.values():
+        if isinstance(v, list):
+            all_globs.extend(v)
+        elif isinstance(v, str):
+            all_globs.append(v)
+    needed = {"!**.md", "!docs/**", "!LICENSE", "!.github/ISSUE_TEMPLATE/**"}
+    missing_globs = needed - set(all_globs)
+    if missing_globs:
+        missing.append(
+            f"MISSING: jobs.{job_name} dorny/paths-filter.with.filters — "
+            f"missing negated globs: {sorted(missing_globs)}"
+        )
+    unnegated = {g.lstrip("!") for g in needed} & set(all_globs)
+    if unnegated:
+        missing.append(
+            f"MISSING: jobs.{job_name} dorny/paths-filter.with.filters — "
+            f"un-negated doc globs present (any-match regression, see #958): "
+            f"{sorted(unnegated)}"
+        )
+    quantifier = next(
+        (
+            s.get("with", {}).get("predicate-quantifier")
+            for s in steps
+            if s.get("uses", "").startswith("dorny/paths-filter@")
+        ),
+        None,
+    )
+    if quantifier != "every":
+        missing.append(
+            f"MISSING: jobs.{job_name} dorny/paths-filter.with."
+            f"predicate-quantifier — expected 'every', got {quantifier!r} "
+            f"(required for the negated non_docs filter, see #958)"
+        )
 
 
 def check_workflow(path: Path) -> list[str]:
@@ -165,61 +221,11 @@ def check_workflow(path: Path) -> list[str]:
             "targets the `~/.cache/ms-playwright` directory"
         )
 
-    # dorny/paths-filter step in the playwright-e2e job
-    has_dorny_pw = any(
-        s.get("uses", "").startswith("dorny/paths-filter@") for s in pw_steps
-    )
-    if not has_dorny_pw:
-        missing.append(
-            "MISSING: jobs.playwright-e2e.steps[*] — no dorny/paths-filter step "
-            "(docs-only gate)"
-        )
-
-    # All four docs-only globs present — as NEGATED patterns since the
-    # 2026-06-10 inversion (#958): the filter is `non_docs` with
-    # `predicate-quantifier: every`, so each doc class appears as `!<glob>`.
-    # A bare (un-negated) glob here would mean the broken any-match
-    # semantics are back — flag it explicitly.
-    if has_dorny_pw:
-        filters = _extract_dorny_filters(pw_steps)
-        all_globs: list[str] = []
-        for v in filters.values():
-            if isinstance(v, list):
-                all_globs.extend(v)
-            elif isinstance(v, str):
-                all_globs.append(v)
-        needed = {"!**.md", "!docs/**", "!LICENSE", "!.github/ISSUE_TEMPLATE/**"}
-        missing_globs = needed - set(all_globs)
-        if missing_globs:
-            missing.append(
-                f"MISSING: jobs.playwright-e2e dorny/paths-filter.with.filters — "
-                f"missing negated globs: {sorted(missing_globs)}"
-            )
-        unnegated = {g.lstrip("!") for g in needed} & set(all_globs)
-        if unnegated:
-            missing.append(
-                f"MISSING: jobs.playwright-e2e dorny/paths-filter.with.filters — "
-                f"un-negated doc globs present (any-match regression, see #958): "
-                f"{sorted(unnegated)}"
-            )
-        # Negated globs only invert per-file under `predicate-quantifier:
-        # every`; under the default `some` they degrade to matching nearly
-        # every file (gate never skips — fail-safe but wasteful and a sign
-        # the inversion contract was broken).
-        quantifier = next(
-            (
-                s.get("with", {}).get("predicate-quantifier")
-                for s in pw_steps
-                if s.get("uses", "").startswith("dorny/paths-filter@")
-            ),
-            None,
-        )
-        if quantifier != "every":
-            missing.append(
-                f"MISSING: jobs.playwright-e2e dorny/paths-filter.with."
-                f"predicate-quantifier — expected 'every', got {quantifier!r} "
-                f"(required for the negated non_docs filter, see #958)"
-            )
+    # dorny/paths-filter docs-only gate on the playwright-e2e job — presence,
+    # the four NEGATED globs (no un-negated any-match regression, #958), and
+    # predicate-quantifier == 'every'. Shared with the lint job via the
+    # _check_docs_gate helper (messages parameterized by job name → identical).
+    _check_docs_gate("playwright-e2e", pw_steps, missing)
 
     # wait_for_url.sh invoked >= 2 times (engine + Next dev)
     wait_count = sum(
@@ -300,6 +306,61 @@ def check_workflow(path: Path) -> list[str]:
                 "the existing test job (docs-only gate)"
             )
 
+    # ------------------------------------------------------------------
+    # Group 3 — lint job shape (#962, Part B of #713)
+    # ------------------------------------------------------------------
+    lint_job = jobs.get("lint")
+    if lint_job is None:
+        missing.append("MISSING: jobs.lint — lint job not defined")
+    else:
+        if lint_job.get("runs-on") != "ubuntu-latest":
+            missing.append(
+                f"MISSING: jobs.lint.runs-on — expected 'ubuntu-latest', "
+                f"got {lint_job.get('runs-on')!r}"
+            )
+        if lint_job.get("name") != "Lint (ruff + black)":
+            missing.append(
+                f"MISSING: jobs.lint.name — expected 'Lint (ruff + black)' "
+                f"(the required-check name registered in ruleset 16835594), "
+                f"got {lint_job.get('name')!r}"
+            )
+        lint_steps = lint_job.get("steps", [])
+
+        _check_docs_gate("lint", lint_steps, missing)
+
+        ruff_steps = [s for s in lint_steps if "ruff check src/" in s.get("run", "")]
+        black_steps = [s for s in lint_steps if "black --check src/" in s.get("run", "")]
+        if not ruff_steps:
+            missing.append(
+                "MISSING: jobs.lint.steps[*].run — no step runs `ruff check src/`"
+            )
+        if not black_steps:
+            missing.append(
+                "MISSING: jobs.lint.steps[*].run — no step runs "
+                "`black --check src/`"
+            )
+
+        # The ruff/black steps must be docs-gated (short-circuit on docs-only)
+        # AND fail-closed (no continue-on-error / no `||` fallthrough).
+        gate = "steps.changes.outputs.non_docs == 'true'"
+        for label, found in (("ruff check src/", ruff_steps), ("black --check src/", black_steps)):
+            for s in found:
+                if s.get("if") != gate:
+                    missing.append(
+                        f"MISSING: jobs.lint step running `{label}` — must be "
+                        f"gated `if: {gate}`, got {s.get('if')!r}"
+                    )
+                if s.get("continue-on-error"):
+                    missing.append(
+                        f"MISSING: jobs.lint step running `{label}` — must be "
+                        f"fail-closed (no continue-on-error)"
+                    )
+                if "||" in s.get("run", ""):
+                    missing.append(
+                        f"MISSING: jobs.lint step running `{label}` — must be "
+                        f"fail-closed (no `||` fallthrough in run)"
+                    )
+
     return missing
 
 
@@ -307,8 +368,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Structural lint for .github/workflows/ci.yml — asserts the "
-            "playwright-e2e job has the expected shape and the existing "
-            "test job is preserved."
+            "playwright-e2e and lint jobs have the expected shape and the "
+            "existing test job is preserved."
         )
     )
     parser.add_argument(
@@ -325,7 +386,7 @@ def main() -> int:
             print(line)
         return 1
 
-    print("OK: ci.yml has playwright-e2e job with expected shape")
+    print("OK: ci.yml has expected job shapes (test, playwright-e2e, lint)")
     return 0
 
 
