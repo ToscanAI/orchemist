@@ -98,6 +98,37 @@ models:
     output_per_million: 25.0
 
   # -------------------------------------------------------------------------
+  # Non-Anthropic models reachable via --mode openrouter (#967).
+  # MAINTENANCE-OWNED ESTIMATES — conservative public list prices as of
+  # 2026-06 (not fetched live; no network call). When OpenRouter returns
+  # usage.total_cost it is authoritative and these are bypassed. Keys use the
+  # prefixed provider/model form (the runtime body["model"] string); exact-
+  # match only, no prefix stripping (see header). Update procedure: edit THIS
+  # file (single source, #908); both the executor _PRICING fallback and the
+  # CostTracker ledger read it. Models lacking a key here fall back to
+  # `default` and are flagged metadata["cost_estimated"]=True at the result.
+  # -------------------------------------------------------------------------
+  openai/gpt-4o:
+    input_per_million: 2.5
+    output_per_million: 10.0
+
+  openai/gpt-4o-mini:
+    input_per_million: 0.15
+    output_per_million: 0.6
+
+  google/gemini-2.5-pro:
+    input_per_million: 1.25
+    output_per_million: 10.0
+
+  deepseek/deepseek-chat:
+    input_per_million: 0.27
+    output_per_million: 1.1
+
+  mistralai/mistral-large:
+    input_per_million: 2.0
+    output_per_million: 6.0
+
+  # -------------------------------------------------------------------------
   # Fallback — used when the requested model is not in this table.
   # Defaults to Sonnet-class pricing as a conservative estimate.
   # -------------------------------------------------------------------------
