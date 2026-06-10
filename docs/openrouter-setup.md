@@ -31,6 +31,8 @@ The `orch run` CLI accepts four modes. Only `openrouter` uses `OPENROUTER_API_KE
 
 Mode names are validated by the CLI; values outside this set are rejected by `orch run --mode`.
 
+> **Local / self-hosted servers:** `openrouter` mode also drives any OpenAI-compatible endpoint you control. Add `--base-url http://localhost:11434/v1` (Ollama, LM Studio, vLLM) and **no API key is required** — see [Local models](#local-models-ollama--lm-studio--vllm) below.
+
 ---
 
 ## Configuration options
@@ -178,6 +180,59 @@ orch run my-pipeline.yaml --mode openrouter --api-key sk-or-v1-... \
 ```
 
 If the dry-run passes but `--mode openrouter` fails with the error above, the problem is in how the key is being delivered to the engine process — revisit the env-inheritance notes above.
+
+---
+
+## Local models (Ollama / LM Studio / vLLM)
+
+`openrouter` mode speaks OpenAI `/v1/chat/completions`; point `--base-url` at any OpenAI-compatible server you control — **no OpenRouter key required**. This is the off-cloud path for teams that cannot or will not send code/prompts to a hosted provider.
+
+### Ollama quickstart
+
+```bash
+ollama pull llama3                       # pull the model first; Ollama serves on :11434
+orch run my-pipeline.yaml --mode openrouter \
+  --base-url http://localhost:11434/v1 \
+  --model-map '{"sonnet": "llama3"}'
+```
+
+`--model-map` remaps the pipeline's tier names (e.g. `sonnet`) to the bare local model id (`llama3`). No `--api-key` is needed: when `--base-url` targets a non-default endpoint, Orchemist supplies a harmless placeholder bearer token that local servers ignore.
+
+### The `/v1` suffix convention
+
+Include the `/v1` suffix in `--base-url`; the executor appends `/chat/completions`, so `--base-url http://localhost:11434/v1` issues requests to `http://localhost:11434/v1/chat/completions`. A trailing slash is tolerated (it is stripped).
+
+### LM Studio
+
+```bash
+orch run my-pipeline.yaml --mode openrouter \
+  --base-url http://localhost:1234/v1 \
+  --model-map '{"sonnet": "your-loaded-model-id"}'
+```
+
+LM Studio's local server defaults to port `1234`; the keyless flow is identical to Ollama.
+
+### vLLM
+
+```bash
+orch run my-pipeline.yaml --mode openrouter \
+  --base-url http://localhost:8000/v1 \
+  --model-map '{"sonnet": "your-served-model"}'
+```
+
+vLLM's OpenAI-compatible server defaults to port `8000`. Ports above are the documented defaults of each tool — override `--base-url` to wherever your server actually listens (include the `/v1`).
+
+### Honesty machinery on local models
+
+Local model ids are not in Orchemist's pricing or extended-thinking tables, so two safeguards fire automatically (this is expected behavior, not a bug):
+
+- **Cost is reported as ESTIMATED.** A bare local id (e.g. `llama3`) has no pricing key, so cost is computed off the `default` rate, `metadata["cost_estimated"]` is `True`, and a one-time `WARNING` is logged. Treat the reported `$` figure as indicative only.
+- **Extended thinking is loudly omitted.** A requested `--thinking` level on a non-Anthropic id logs one `WARNING` and sends no thinking body — the model cannot be confirmed to support it.
+- **Tool-calling may be unsupported** by small local models. If a local model cannot tool-call, set `disable_tools` on the task/payload so the pipeline uses the single-shot path.
+
+### Vendor headers are harmless
+
+Orchemist always sends two static OpenRouter courtesy headers (`HTTP-Referer`, `X-Title`). Local servers (Ollama, LM Studio, vLLM) ignore unknown headers, so they are harmless and require no configuration.
 
 ---
 

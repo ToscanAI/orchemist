@@ -296,3 +296,78 @@ class TestCliRunCommand:
         # All files should be inside out_dir
         for f in out_dir.iterdir():
             assert str(f).startswith(str(out_dir))
+
+    # -- #968: --base-url CLI wiring (openai-compatible local endpoints) -------
+
+    def test_openrouter_base_url_forwarded(self, hello_yaml, monkeypatch):
+        """#968 §B.3: --base-url is threaded to PipelineRunner.openrouter().
+
+        The factory is patched to a kwargs-tolerant MagicMock so no real run
+        occurs; the forwarding assertion (call_args.kwargs['base_url']) holds
+        regardless of the command's exit code.
+        """
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with patch.object(PipelineRunner, "openrouter", return_value=MagicMock()) as mock_factory:
+            self._invoke(
+                [
+                    "run", str(hello_yaml),
+                    "--mode", "openrouter",
+                    "--base-url", "http://localhost:11434/v1",
+                    "--api-key", "sk-or-test",
+                    "--input", '{"name": "x"}',
+                ],
+                env={"OPENROUTER_API_KEY": "", "ANTHROPIC_API_KEY": ""},
+            )
+        assert mock_factory.called
+        assert mock_factory.call_args.kwargs.get("base_url") == "http://localhost:11434/v1"
+
+    def test_base_url_rejected_outside_openrouter_mode(self, hello_yaml, monkeypatch):
+        """#968 §B.3: --base-url with a non-openrouter mode exits 1 with the mirror
+        of the --model-map guard message."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        result = self._invoke(
+            [
+                "run", str(hello_yaml),
+                "--mode", "dry-run",
+                "--base-url", "http://localhost:11434/v1",
+            ],
+            env={"OPENROUTER_API_KEY": "", "ANTHROPIC_API_KEY": ""},
+        )
+        assert result.exit_code == 1
+        assert "--base-url is only valid with --mode openrouter" in result.output
+
+    def test_openrouter_keyless_custom_base_url_cli_ok(self, hello_yaml, monkeypatch):
+        """#968 composition at the CLI seam: a keyless local run (no key, custom
+        base_url) completes end-to-end (NO 'API key required'), with the executor
+        HTTP layer mocked."""
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        def _ollama_response():
+            payload = {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 5},
+            }
+            resp = MagicMock()
+            resp.read.return_value = json.dumps(payload).encode("utf-8")
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            return resp
+
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_url.return_value = _ollama_response()
+            result = self._invoke(
+                [
+                    "run", str(hello_yaml),
+                    "--mode", "openrouter",
+                    "--base-url", "http://localhost:11434/v1",
+                    "--model-map", '{"sonnet": "llama3"}',
+                    "--input", '{"name": "x"}',
+                ],
+                env={"OPENROUTER_API_KEY": "", "ANTHROPIC_API_KEY": ""},
+            )
+        assert result.exit_code == 0, result.output
+        assert "API key required" not in result.output
+        assert "completed" in result.output.lower()

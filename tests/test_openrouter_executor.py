@@ -955,3 +955,160 @@ class TestCostEstimatedFlag:
         assert result.metadata["cost_estimated"] is True
         assert result.metadata["cost_estimated_model"] == "meta-llama/llama-3.3-70b"
         assert len(_cost_warnings(caplog)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #968 — generic OpenAI-compatible endpoints via a custom base_url
+# (Ollama / LM Studio / vLLM). Implementer-authored unit tests (distinct from
+# the sealed suite). The factory relaxes its key-guard for a non-default
+# base_url and supplies the "ollama" placeholder bearer; openrouter_executor.py
+# is NOT modified — the placeholder lives only in the factory relaxation branch.
+# ---------------------------------------------------------------------------
+
+
+_CLOUD_GUARD_MESSAGE = (
+    "OpenRouter API key required.\n"
+    "  Option 1: orch run --api-key sk-or-...\n"
+    "  Option 2: export OPENROUTER_API_KEY=sk-or-..."
+)
+
+
+class TestCustomBaseUrlFactoryGuard:
+    """#968 §B.2 — keyless relaxation gated strictly on a non-default base_url."""
+
+    def test_factory_keyless_custom_base_url_ok(self):
+        """Keyless + non-default base_url constructs (no raise); the custom URL is
+        threaded to the executor."""
+        from orchestration_engine.pipeline_runner import PipelineRunner
+
+        with patch.dict("os.environ", {}, clear=True):
+            import os
+
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            runner = PipelineRunner.openrouter(base_url="http://localhost:11434/v1")
+        assert len(runner.executors) == 1
+        assert runner.executors[0].base_url == "http://localhost:11434/v1"
+
+    def test_factory_keyless_default_base_url_still_raises(self):
+        """Empty key + default base_url (None and the trailing-slash spelling of the
+        default) STILL raises the byte-exact cloud guard — the relaxation cannot be
+        slipped past with a cosmetic trailing slash."""
+        from orchestration_engine.pipeline_runner import PipelineRunner
+
+        with patch.dict("os.environ", {}, clear=True):
+            import os
+
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            with pytest.raises(ValueError) as excinfo_default:
+                PipelineRunner.openrouter()
+            with pytest.raises(ValueError) as excinfo_slash:
+                PipelineRunner.openrouter(base_url="https://openrouter.ai/api/v1/")
+        assert str(excinfo_default.value) == _CLOUD_GUARD_MESSAGE
+        assert str(excinfo_slash.value) == _CLOUD_GUARD_MESSAGE
+
+    def test_factory_keyed_custom_base_url_ok(self):
+        """A real key + custom base_url constructs; the real key flows (placeholder
+        is NOT substituted when a key is present)."""
+        from orchestration_engine.pipeline_runner import PipelineRunner
+
+        with patch.dict("os.environ", {}, clear=True):
+            import os
+
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            runner = PipelineRunner.openrouter(
+                api_key="sk-or-test", base_url="https://my-proxy.com/v1"
+            )
+        assert runner.executors[0].base_url == "https://my-proxy.com/v1"
+        assert runner.executors[0].api_key == "sk-or-test"
+
+
+class TestCustomBaseUrlRequestShape:
+    """#968 §B.1 — placeholder bearer + exact local URL on the keyless path."""
+
+    def test_keyless_local_uses_placeholder_bearer(self):
+        """Built through the factory, a keyless local executor sends
+        'Bearer ollama' (well-formed, not 'Bearer ') to <base_url>/chat/completions."""
+        from orchestration_engine.pipeline_runner import PipelineRunner
+
+        with patch.dict("os.environ", {}, clear=True):
+            import os
+
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            runner = PipelineRunner.openrouter(base_url="http://localhost:11434/v1")
+            executor = runner.executors[0]
+            with patch("urllib.request.urlopen") as mock_url:
+                mock_url.return_value = _mock_urlopen(_mock_response())
+                executor.execute(_make_task(), model_tier="llama3", thinking_level="off")
+
+        req = mock_url.call_args[0][0]
+        assert req.full_url == "http://localhost:11434/v1/chat/completions"
+        assert req.get_header("Authorization") == "Bearer ollama"
+        assert req.get_header("Authorization") != "Bearer "
+
+    def test_custom_base_url_chat_completions_path(self):
+        """The exact full URL (not merely a prefix) pins openrouter_executor.py:897."""
+        executor = OpenRouterExecutor(api_key="sk-or-test", base_url="http://localhost:11434/v1")
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_url.return_value = _mock_urlopen(_mock_response())
+            executor.execute(_make_task(), model_tier="sonnet")
+        req = mock_url.call_args[0][0]
+        assert req.full_url == "http://localhost:11434/v1/chat/completions"
+
+
+class TestCustomBaseUrlComposesWith967:
+    """#968 INV-3 — #967 cost-estimate and thinking-omit honesty compose for free
+    at a keyless custom endpoint. Built through the factory so the placeholder key
+    suppresses the keyless-ctor warning and the family counts stay clean."""
+
+    def test_local_model_cost_estimated_via_custom_base_url(self, caplog):
+        """Keyless local executor, response WITHOUT total_cost, tier remapped to a
+        bare local id → cost flagged estimated, ONE cost warning, ZERO thinking
+        warnings (cross-family-leak guard)."""
+        from orchestration_engine.pipeline_runner import PipelineRunner
+
+        with patch.dict("os.environ", {}, clear=True):
+            import os
+
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            runner = PipelineRunner.openrouter(
+                base_url="http://localhost:11434/v1", model_map={"sonnet": "llama3"}
+            )
+            executor = runner.executors[0]
+            with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+                with patch("urllib.request.urlopen") as mock_url:
+                    mock_url.return_value = _mock_urlopen(_mock_response(total_cost=None))
+                    result = executor.execute(
+                        _make_task(), model_tier="sonnet", thinking_level="off"
+                    )
+
+        assert result.metadata["cost_estimated"] is True
+        assert result.metadata["cost_estimated_model"] == "llama3"
+        cost_warns = _cost_warnings(caplog)
+        assert len(cost_warns) == 1
+        assert "llama3" in cost_warns[0].getMessage().lower()
+        assert len(_thinking_warnings(caplog)) == 0
+
+    def test_local_model_thinking_omitted_via_custom_base_url(self, caplog):
+        """Keyless local executor, bare id, requested thinking level → sent body omits
+        'thinking', ONE thinking warning naming the id, SUCCESS."""
+        from orchestration_engine.pipeline_runner import PipelineRunner
+
+        with patch.dict("os.environ", {}, clear=True):
+            import os
+
+            os.environ.pop("OPENROUTER_API_KEY", None)
+            runner = PipelineRunner.openrouter(base_url="http://localhost:11434/v1")
+            executor = runner.executors[0]
+            with caplog.at_level(logging.WARNING, logger=_EXECUTOR_LOGGER):
+                with patch("urllib.request.urlopen") as mock_url:
+                    mock_url.return_value = _mock_urlopen(_mock_response())
+                    result = executor.execute(
+                        _make_task(), model_tier="llama3", thinking_level="high"
+                    )
+                    sent_body = json.loads(mock_url.call_args[0][0].data)
+
+        assert "thinking" not in sent_body
+        thinking_warns = _thinking_warnings(caplog)
+        assert len(thinking_warns) == 1
+        assert "llama3" in thinking_warns[0].getMessage().lower()
+        assert result.state == TaskState.SUCCESS

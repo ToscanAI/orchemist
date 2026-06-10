@@ -1124,6 +1124,15 @@ def workers(detailed: bool) -> None:  # noqa: C901
     default=None,
     help='JSON model tier overrides for openrouter mode, e.g. \'{"sonnet": "openai/gpt-4o"}\'.',
 )
+@click.option(
+    "--base-url",
+    default=None,
+    help=(
+        "Custom OpenAI-compatible base URL for openrouter mode — point at a local "
+        "server (Ollama, LM Studio, vLLM), e.g. http://localhost:11434/v1. Include the "
+        "/v1 suffix. No API key is required when this targets a non-default endpoint."
+    ),
+)
 def run_template(  # noqa: C901
     template_name_or_file: str,
     mode: str,
@@ -1141,6 +1150,7 @@ def run_template(  # noqa: C901
     repo: Optional[str],
     executor: str,
     model_map_json: Optional[str],
+    base_url: Optional[str],
 ) -> None:
     """Execute a pipeline template end-to-end.
 
@@ -1178,6 +1188,11 @@ def run_template(  # noqa: C901
     # --model-map is only valid with --mode openrouter
     if model_map_json and mode != "openrouter":
         click.echo("Error: --model-map is only valid with --mode openrouter", err=True)
+        sys.exit(1)
+
+    # --base-url is only valid with --mode openrouter
+    if base_url and mode != "openrouter":
+        click.echo("Error: --base-url is only valid with --mode openrouter", err=True)
         sys.exit(1)
 
     import sys as _sys  # noqa: PLC0415
@@ -1390,7 +1405,9 @@ def run_template(  # noqa: C901
                 except json.JSONDecodeError as e:
                     click.echo(f"Error: --model-map is not valid JSON: {e}", err=True)
                     sys.exit(1)
-            runner = PipelineRunner.openrouter(api_key=effective_key, model_map=model_map)
+            runner = PipelineRunner.openrouter(
+                api_key=effective_key, model_map=model_map, base_url=base_url
+            )
         else:  # dry-run
             runner = PipelineRunner.dry_run(
                 delay_seconds=dry_run_delay,
