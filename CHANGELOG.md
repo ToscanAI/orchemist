@@ -4,6 +4,29 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-06-10
+
+### Added
+- **Tool-result truncation** (#800 via #939) — large tool results are truncated before being appended to executor message history, preventing context blowouts in long agentic phases.
+- **Phase-skill boilerplate drift lint** (#929 part 2 via #948) — `scripts/check_template_sync.py` now cross-checks the shared phase-skill boilerplate anchors across the 7 phase-skill files, failing CI on drift (closes #929).
+- **Deletion-guard for daemon persistence writes** (#954 via #955) — the `run_daemon` closure DB writes are extracted into importable `_persist_phase_start` / `_persist_phase_complete` helpers (byte-identical writes), with tests that fail if the #516 `current_phase` phase-start write is ever removed.
+
+### Changed
+- **`Severity` migrated to a `str`-mixed enum + adversary regex unification + timeout-constant naming** (#929 parts 1&3, #942 item, via #947) — severity values compare/serialize as plain strings with `.value` used at all human-facing format sites (the 3.10 vs 3.11+ enum `__format__` divergence makes bare f-string rendering version-dependent); `acceptance_test_adversary` reuses the shared finding regex; per-executor timeout constants follow one naming convention.
+- **Maintenance sweep — #932 items 2-5** (via #941, #943) — `datetime.utcnow()`/naive `now()` migrated to tz-aware UTC throughout; dead `SPLIT_TASK` verdict path removed; daemon `print` calls routed through `logger`; `db.py` stub methods documented.
+- **Signed-tag publish gate is FAIL-closed** (#890 follow-up via #935, #936) — `publish.yaml` imports the committed release-signing public key (`.github/release-signing-pubkey.asc`) and `git tag -v` blocks build + publish on unsigned or unverifiable tags (previously WARN-only).
+
+### Fixed
+- **Config-schema defaults merged on the web launch path + `<MISSING:>` rejection** (#676, #535 via #937) — phases can no longer dispatch with unrendered `<MISSING:...>` placeholders.
+- **`queue.py` health metrics** (#932 item 1 via #940) — wired to real `task_runs` aggregation instead of returning zeroed metrics.
+- **Issues-launch endpoint NameError + `PUT /templates/{name}` extended validation restored** (#642 via #944) — invalid template updates 422 again (regression from PR #634).
+- **HTTP transport-timeout misclassification** (#732 via #945) — transport timeouts no longer increment the circuit breaker or trigger model escalation; a startup-grace first-message poll prevents orphan/prompt-less sessions.
+- **Circuit-breaker state flake** (#938 via #946) — CB state reads/writes serialize through the DB `_locked()`/`transaction()` helpers, eliminating the shared-cache table-lock flake (guard test repeats the scenario N=200).
+- **Daemon status lag + content-pipeline PR titles** (#516, #624 via #949) — `current_phase` is persisted on phase *start* (not only completion), daemon logs are unbuffered, and docs-pipeline PRs derive their title from `doc_title` with `Closes #N` support.
+
+### Removed
+- **Stray spec-loop artifacts from the repo root** (`spec.md`, `behavioral.md`, `acceptance_test*.md` — leftovers of an April 2026 run; pipeline runs write to external run dirs).
+
 ## [0.12.0] - 2026-06-08
 
 ### Changed
