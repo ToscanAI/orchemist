@@ -6,8 +6,6 @@ Anthropic and OpenRouter executors import this; values must stay byte-identical.
 
 from typing import Dict
 
-import os  # RED-PROOF: unused import — ruff F401 (revert before merge)
-
 #: thinking_level -> budget tokens. Keys are the only recognized levels
 #: (mirror templates.KNOWN_THINKING_LEVELS). An unknown level resolves to the
 #: fail-safe DEFAULT below (thinking disabled), never a silent paid budget.
