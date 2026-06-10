@@ -24,10 +24,9 @@ import logging
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
-# Only import from ipc, test_store, and file_guard — never from validator, sequencer, daemon, or errors
+# Only import from ipc, test_store, and file_guard — never from validator, sequencer, daemon, or errors  # noqa: E501
 from orchestration_engine.file_guard import compute_hash
 from orchestration_engine.ipc import (
     HealthRequest,
@@ -85,7 +84,8 @@ def _run_pytest_on_file(
         "--no-header",
     ]
 
-    import time as _time
+    import time as _time  # noqa: PLC0415
+
     start = _time.monotonic()
 
     try:
@@ -186,7 +186,7 @@ def _parse_pytest_output(
 
 def _extract_test_details(stdout: str) -> list[TestDetail]:
     """Extract per-test outcomes from pytest -v output."""
-    import re
+    import re  # noqa: PLC0415
 
     details: list[TestDetail] = []
     # Match lines like: "test_foo.py::test_bar PASSED" or "test_foo.py::test_baz FAILED"
@@ -218,11 +218,13 @@ def _extract_test_details(stdout: str) -> list[TestDetail]:
         test_name = match.group(1).strip()
         outcome_str = match.group(2)
         message = failure_blocks.get(test_name, "")
-        details.append(TestDetail(
-            test_name=test_name,
-            outcome=outcome_str,
-            message=message,
-        ))
+        details.append(
+            TestDetail(
+                test_name=test_name,
+                outcome=outcome_str,
+                message=message,
+            )
+        )
 
     return details
 
@@ -232,7 +234,7 @@ def _extract_test_details(stdout: str) -> list[TestDetail]:
 # ---------------------------------------------------------------------------
 
 
-def _handle_health(request: HealthRequest) -> HealthResult:
+def _handle_health(request: HealthRequest) -> HealthResult:  # noqa: ARG001
     """Handle a health ping request."""
     return HealthResult(status="ok")
 
@@ -292,11 +294,13 @@ def _handle_validate(request: ValidationRequest) -> ValidationResult:
             verdict="ERROR",
             tests_total=0,
             pass_rate=0.0,
-            details=[TestDetail(
-                test_name="read_test_file",
-                outcome="ERROR",
-                message=msg,
-            )],
+            details=[
+                TestDetail(
+                    test_name="read_test_file",
+                    outcome="ERROR",
+                    message=msg,
+                )
+            ],
             tests_passed=0,
             tests_failed=0,
             tests_errored=0,
@@ -310,11 +314,13 @@ def _handle_validate(request: ValidationRequest) -> ValidationResult:
             verdict="ERROR",
             tests_total=0,
             pass_rate=0.0,
-            details=[TestDetail(
-                test_name="read_test_file",
-                outcome="ERROR",
-                message=msg,
-            )],
+            details=[
+                TestDetail(
+                    test_name="read_test_file",
+                    outcome="ERROR",
+                    message=msg,
+                )
+            ],
             tests_passed=0,
             tests_failed=0,
             tests_errored=0,
@@ -336,11 +342,13 @@ def _handle_validate(request: ValidationRequest) -> ValidationResult:
                 verdict="ERROR",
                 tests_total=0,
                 pass_rate=0.0,
-                details=[TestDetail(
-                    test_name="integrity_check",
-                    outcome="ERROR",
-                    message=msg,
-                )],
+                details=[
+                    TestDetail(
+                        test_name="integrity_check",
+                        outcome="ERROR",
+                        message=msg,
+                    )
+                ],
                 tests_passed=0,
                 tests_failed=0,
                 tests_errored=0,

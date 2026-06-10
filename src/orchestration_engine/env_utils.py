@@ -13,7 +13,6 @@ silently — operators can mistype the env var without crashing the server.
 
 from __future__ import annotations
 
-
 __all__ = ["env_int"]
 
 

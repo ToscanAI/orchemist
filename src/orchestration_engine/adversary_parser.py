@@ -151,7 +151,7 @@ def parse_adversary_output(text: Any, config: AdversaryConfig) -> AdversaryVerdi
     else:
         try:
             raw_text = str(text)
-        except Exception:
+        except Exception:  # noqa: BLE001
             raw_text = ""
 
     # ── Step 2: extract verdict via shared parser ─────────────────────────────
@@ -190,8 +190,7 @@ def parse_adversary_output(text: Any, config: AdversaryConfig) -> AdversaryVerdi
             fallback_cat = config.valid_categories[0]
 
         logger.warning(
-            "adversary_parser: no recognisable verdict found in output "
-            "(first 120 chars): %r",
+            "adversary_parser: no recognisable verdict found in output " "(first 120 chars): %r",
             raw_text[:120],
         )
         explanatory_finding = AdversaryFinding(

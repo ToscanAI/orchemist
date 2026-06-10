@@ -13,16 +13,14 @@ Usage::
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 from urllib import request as urllib_request
 from urllib.error import URLError
 
 import yaml
-
 
 # Default URL for the community template index
 DEFAULT_INDEX_URL = (
@@ -37,6 +35,7 @@ DEFAULT_CACHE_PATH = Path.home() / ".orch" / "cache" / "template-index.yaml"
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TemplateEntry:
@@ -99,6 +98,7 @@ class TemplateEntry:
 # Index class
 # ---------------------------------------------------------------------------
 
+
 class TemplateIndex:
     """Container for a collection of :class:`TemplateEntry` objects.
 
@@ -156,7 +156,7 @@ class TemplateIndex:
             raw_entries = data.get("templates", []) or []
         else:
             raise ValueError(
-                f"Unexpected template index format: expected a list or dict, got {type(data).__name__}"
+                f"Unexpected template index format: expected a list or dict, got {type(data).__name__}"  # noqa: E501
             )
 
         self.entries = [TemplateEntry.from_dict(e) for e in raw_entries if isinstance(e, dict)]

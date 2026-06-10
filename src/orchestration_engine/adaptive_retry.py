@@ -23,15 +23,15 @@ Typical usage::
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import logging
 import subprocess
-import dataclasses
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Dict, Optional, Union
 
-from .diagnosis import DiagnosisResult, FailureClass, Remediation
+from .diagnosis import DiagnosisResult, FailureClass
 from .model_registry import bare_id
 from .schemas import ModelTier
 
@@ -134,14 +134,14 @@ class RetryPlan:
 #: ``None`` means the failure is **non-retryable** — the caller must escalate
 #: or abort rather than launching another run.
 DEFAULT_STRATEGY_MAP: Dict[FailureClass, Optional[RetryStrategy]] = {
-    FailureClass.QUALITY_GAP:          RetryStrategy.ESCALATE_MODEL,
-    FailureClass.WRONG_MODEL:          RetryStrategy.ESCALATE_MODEL,
+    FailureClass.QUALITY_GAP: RetryStrategy.ESCALATE_MODEL,
+    FailureClass.WRONG_MODEL: RetryStrategy.ESCALATE_MODEL,
     FailureClass.INSUFFICIENT_CONTEXT: RetryStrategy.ADD_CONTEXT,
-    FailureClass.BAD_PROMPT:           RetryStrategy.REPHRASE_PROMPT,
-    FailureClass.FLAKY_TEST:           RetryStrategy.RETRY_UNCHANGED,
-    FailureClass.INFRA_ISSUE:          RetryStrategy.RETRY_UNCHANGED,
-    FailureClass.TIMEOUT:              RetryStrategy.INCREASE_TIMEOUT,
-    FailureClass.BUDGET_EXCEEDED:      None,  # Non-retryable
+    FailureClass.BAD_PROMPT: RetryStrategy.REPHRASE_PROMPT,
+    FailureClass.FLAKY_TEST: RetryStrategy.RETRY_UNCHANGED,
+    FailureClass.INFRA_ISSUE: RetryStrategy.RETRY_UNCHANGED,
+    FailureClass.TIMEOUT: RetryStrategy.INCREASE_TIMEOUT,
+    FailureClass.BUDGET_EXCEEDED: None,  # Non-retryable
 }
 
 #: Model escalation ladder — when strategy is ``ESCALATE_MODEL`` and no
@@ -413,7 +413,7 @@ class AdaptiveRetryEngine:
             current_id = parent_id
         return current_id
 
-    def plan_and_execute(
+    def plan_and_execute(  # noqa: C901
         self,
         diagnosis: DiagnosisResult,
         run: Dict[str, Any],
@@ -450,14 +450,13 @@ class AdaptiveRetryEngine:
         # Note: subprocess is imported at module-level (line 28) so it can be
         # patched via `patch("orchestration_engine.adaptive_retry.subprocess.Popen")`.
         # Do NOT re-import here; the module-level import is used.
-        import sys
-        import uuid
-        from pathlib import Path as _Path
+        import sys  # noqa: PLC0415
+        import uuid  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
 
         if self._db is None or self._db_path is None:
             raise RuntimeError(
-                "plan_and_execute() requires db and db_path; "
-                "pass them to AdaptiveRetryEngine()."
+                "plan_and_execute() requires db and db_path; " "pass them to AdaptiveRetryEngine()."
             )
 
         # Normalize max_retries: None → 1 (safe default), negative → 0,
@@ -473,7 +472,7 @@ class AdaptiveRetryEngine:
         # 1. Resolve original run ID via DB-backed chain walk (handles chained retries).
         try:
             original_run_id: str = self._resolve_root_run_id(run_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             _logger.warning(
                 "Could not resolve root run ID for %s — failing safe. Error: %s",
                 run_id,
@@ -491,7 +490,7 @@ class AdaptiveRetryEngine:
         try:
             input_data = json.loads(run.get("input_json") or "{}")
             current_model = input_data.get("model_override")
-        except Exception:
+        except Exception:  # noqa: BLE001
             input_data = {}
 
         plan = self.plan(diagnosis, original_run_id=original_run_id, current_model=current_model)
@@ -509,7 +508,7 @@ class AdaptiveRetryEngine:
         # 3. Check retry cap.
         try:
             existing_count = self.count_existing_retries(original_run_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             _logger.warning(
                 "Could not determine retry count for run %s — failing safe. Error: %s",
                 original_run_id,
@@ -541,10 +540,8 @@ class AdaptiveRetryEngine:
 
         # 4. Check budget (read from input_json; 0 means no budget guard).
         try:
-            budget = float(
-                input_data.get("budget_usd") or input_data.get("cost_limit_usd") or 0
-            )
-        except Exception:
+            budget = float(input_data.get("budget_usd") or input_data.get("cost_limit_usd") or 0)
+        except Exception:  # noqa: BLE001
             budget = 0.0
 
         if budget > 0:
@@ -594,8 +591,9 @@ class AdaptiveRetryEngine:
                 # separate concern from daemon spawning.
                 orig_path = _Path(original_output_dir)
                 if (orig_path / ".git").exists():
-                    import shlex as _shlex
-                    import os as _os
+                    import os as _os  # noqa: PLC0415
+                    import shlex as _shlex  # noqa: PLC0415
+
                     cmd = "git clone {} {}".format(
                         _shlex.quote(str(orig_path)),
                         _shlex.quote(retry_output_dir),
@@ -604,7 +602,9 @@ class AdaptiveRetryEngine:
                     if rc != 0:
                         _logger.error(
                             "RC-3 git clone failed (aborting retry, rc=%d): %s → %s",
-                            rc, original_output_dir, retry_output_dir,
+                            rc,
+                            original_output_dir,
+                            retry_output_dir,
                         )
                         raise RuntimeError(
                             f"Retry aborted: git clone of {original_output_dir} "
@@ -613,7 +613,8 @@ class AdaptiveRetryEngine:
                     _logger.info(
                         "RC-3 cloned original output_dir %s → %s (preserves "
                         "remote URL + committed history)",
-                        original_output_dir, retry_output_dir,
+                        original_output_dir,
+                        retry_output_dir,
                     )
 
                 # 6. Insert new pipeline_runs row INSIDE the dedup transaction.
@@ -672,7 +673,10 @@ class AdaptiveRetryEngine:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _apply_retry_unchanged(plan: RetryPlan, input_json: Dict[str, Any]) -> Dict[str, Any]:
+    def _apply_retry_unchanged(
+        plan: RetryPlan,  # noqa: ARG004
+        input_json: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """Return a deep copy of *input_json* with no modifications.
 
         Used when the failure is transient or flaky and the best action is
@@ -737,7 +741,7 @@ class AdaptiveRetryEngine:
 
     @staticmethod
     def _apply_rephrase_prompt(
-        plan: RetryPlan,
+        plan: RetryPlan,  # noqa: ARG004
         input_json: Dict[str, Any],
         diagnosis: DiagnosisResult,
     ) -> Dict[str, Any]:
@@ -780,7 +784,7 @@ class AdaptiveRetryEngine:
     # Public dispatcher (Issue #395, 3.2.2)
     # ------------------------------------------------------------------
 
-    def build_retry_input(
+    def build_retry_input(  # noqa: C901
         self,
         plan: RetryPlan,
         original_run: Dict[str, Any],
@@ -869,15 +873,13 @@ class AdaptiveRetryEngine:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                 if result.returncode == 0 and result.stdout.strip():
                     retry_input["issue_body"] = result.stdout.strip()
-                    _logger.info(
-                        "Re-fetched issue body for #%s on retry run.", issue_number
-                    )
+                    _logger.info("Re-fetched issue body for #%s on retry run.", issue_number)
                 else:
                     _logger.warning(
                         "Warning: could not re-fetch issue #%s — using original input.",
                         issue_number,
                     )
-            except Exception:
+            except Exception:  # noqa: BLE001
                 _logger.warning(
                     "Warning: could not re-fetch issue #%s — using original input.",
                     issue_number,

@@ -6,7 +6,7 @@ Provides helpers to traverse, format, and display pipeline run chains.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 MAX_ALLOWED_CHAIN_DEPTH = 20
 
@@ -208,8 +208,7 @@ def build_chain_display(db: Any, root_run_id: str) -> str:
 
     # Build depth map from chain_depth column (set by execution engine)
     header = (
-        f"{'RUN ID':<10}  {'ISSUE':<8}  {'STATUS':<14}  {'SCORE':>6}  "
-        f"{'ELAPSED':>8}  TEMPLATE"
+        f"{'RUN ID':<10}  {'ISSUE':<8}  {'STATUS':<14}  {'SCORE':>6}  " f"{'ELAPSED':>8}  TEMPLATE"
     )
     separator = "\u2500" * 80
     lines = [header, separator]
@@ -238,9 +237,7 @@ def build_active_chains_display(db: Any) -> str:
     if not roots:
         return "No active chains found."
 
-    header = (
-        f"{'ROOT RUN':<10}  {'TEMPLATE':<30}  {'STATUS':<14}  {'DEPTH':>5}  CREATED"
-    )
+    header = f"{'ROOT RUN':<10}  {'TEMPLATE':<30}  {'STATUS':<14}  {'DEPTH':>5}  CREATED"
     separator = "\u2500" * 80
     lines = [header, separator]
 
@@ -250,8 +247,6 @@ def build_active_chains_display(db: Any) -> str:
         status = (root.get("status") or "")[:14]
         depth = int(root.get("chain_depth") or 0)
         created_at = str(root.get("created_at") or "")[:19]
-        lines.append(
-            f"{run_id_short:<10}  {template:<30}  {status:<14}  {depth:>5}  {created_at}"
-        )
+        lines.append(f"{run_id_short:<10}  {template:<30}  {status:<14}  {depth:>5}  {created_at}")
 
     return "\n".join(lines)

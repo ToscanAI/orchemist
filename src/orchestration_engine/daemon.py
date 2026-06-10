@@ -12,6 +12,10 @@ Usage (internal — spawned by cli.py):
     python -m orchestration_engine.daemon <run_id> <db_path>
 """
 
+# E501 residuals here are long RST/`:func:` references inside docstrings that
+# black cannot wrap; a line-level noqa is inert inside a string literal.
+# ruff: noqa: E501
+
 import json
 import logging
 import os
@@ -19,19 +23,20 @@ import re
 import signal
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .confidence import ConfidenceCalculator
 from .db import default_db_path
-from .timestamps import now_utc
 from .output_utils import (
     extract_output_text as _extract_output_text,
+)
+from .output_utils import (
     safe_write_phase_output as _safe_write_phase_output,
 )
-from .routing import RoutingEngine, DEFAULT_ROUTING_CONFIG
+from .routing import DEFAULT_ROUTING_CONFIG, RoutingEngine
+from .timestamps import now_utc
 
 # ---------------------------------------------------------------------------
 # Logging bootstrap — daemon writes to output_dir/.orch-daemon.log
@@ -56,7 +61,7 @@ _shutdown_requested = False
 _active_executor: Any = None
 
 
-def _sigterm_handler(signum: int, frame: Any) -> None:
+def _sigterm_handler(signum: int, frame: Any) -> None:  # noqa: ARG001
     """Handle SIGTERM: request graceful shutdown.
 
     Sets the module-level ``_shutdown_requested`` flag and, when an executor
@@ -72,13 +77,12 @@ def _sigterm_handler(signum: int, frame: Any) -> None:
     if _active_executor is not None:
         _session = getattr(_active_executor, "_active_session_key", None)
         logger.warning(
-            "SIGTERM: signalling executor to stop polling "
-            "(active session: %s)",
+            "SIGTERM: signalling executor to stop polling " "(active session: %s)",
             _session or "none",
         )
         try:
             _active_executor.request_shutdown()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("SIGTERM: executor request_shutdown failed (non-fatal): %s", exc)
 
 
@@ -121,18 +125,19 @@ def _happy_path_phase_ids(template: Any) -> List[str]:
         phases = getattr(template, "phases", None)
         if not phases:
             return []
-        from .templates import TemplateEngine
+        from .templates import TemplateEngine  # noqa: PLC0415
+
         eff = TemplateEngine._compute_effective_transitions(template)
         valid_ids = {p.id for p in phases}
         entry = phases[0].id
 
-        visited: List[str] = []   # preserves first-seen order
+        visited: List[str] = []  # preserves first-seen order
         seen: set = set()
         stack: List[str] = [entry]
         while stack:
             pid = stack.pop()
             if pid in seen or pid not in valid_ids:
-                continue          # cycle/self-loop guard + ignore dangling targets
+                continue  # cycle/self-loop guard + ignore dangling targets
             seen.add(pid)
             visited.append(pid)
             outcomes = eff.get(pid, {})
@@ -143,10 +148,8 @@ def _happy_path_phase_ids(template: Any) -> List[str]:
                     stack.append(tgt)
                     break
         return visited
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning(
-            "_happy_path_phase_ids: failed to derive oracle (non-fatal): %s", exc
-        )
+    except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
+        logger.warning("_happy_path_phase_ids: failed to derive oracle (non-fatal): %s", exc)
         return []
 
 
@@ -166,7 +169,7 @@ def _remove_pid_file(pid_path: Path) -> None:
     """Remove the PID file, ignoring errors."""
     try:
         pid_path.unlink(missing_ok=True)
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -214,16 +217,12 @@ def apply_config_schema_defaults(config: Dict[str, Any], config_schema: Any) -> 
     """
     if not isinstance(config_schema, dict):
         return
-    props = config_schema.get('properties')
+    props = config_schema.get("properties")
     if not isinstance(props, dict):
         return
     for key, spec in props.items():
-        if (
-            isinstance(spec, dict)
-            and 'default' in spec
-            and key not in config
-        ):
-            config[key] = spec['default']
+        if isinstance(spec, dict) and "default" in spec and key not in config:
+            config[key] = spec["default"]
 
 
 def _get_effective_max_retries(template: Any) -> int:
@@ -245,7 +244,7 @@ def _get_effective_max_retries(template: Any) -> int:
     Returns:
         Integer effective max_retries cap (>= 0).
     """
-    _DEFAULT = 1
+    _DEFAULT = 1  # noqa: N806
     routing_config = getattr(template, "routing_config", None)
     if routing_config is None:
         routing_config = DEFAULT_ROUTING_CONFIG
@@ -301,10 +300,8 @@ def _apply_daemon_notification_suppression() -> None:
             "OpenClaw notifications suppressed for daemon process "
             "(set NOTIFY_OPENCLAW_DAEMON_ENABLED=1 to re-enable)"
         )
-    except Exception as exc:  # pragma: no cover
-        logger.warning(
-            "Failed to suppress OpenClaw notifications (non-fatal): %s", exc
-        )
+    except Exception as exc:  # pragma: no cover  # noqa: BLE001
+        logger.warning("Failed to suppress OpenClaw notifications (non-fatal): %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -312,9 +309,9 @@ def _apply_daemon_notification_suppression() -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_daemon(run_id: str, db_path: str) -> None:
+def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
     """Main daemon entry point.  Called by __main__ after argument parsing."""
-    from .db import Database
+    from .db import Database  # noqa: PLC0415
 
     # Open the persistent DB (on-disk file, not :memory:)
     db = Database(Path(db_path))
@@ -325,7 +322,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
         logger.error("run_id %r not found in DB %r", run_id, db_path)
         sys.exit(1)
 
-    output_dir = Path(run['output_dir'])
+    output_dir = Path(run["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Set up file logging ---
@@ -333,8 +330,8 @@ def run_daemon(run_id: str, db_path: str) -> None:
     _setup_logging(log_path)
 
     logger.info("Daemon starting: run_id=%s  db=%s", run_id, db_path)
-    logger.info("Template: %s", run['template_path'])
-    logger.info("Mode:     %s", run['mode'])
+    logger.info("Template: %s", run["template_path"])
+    logger.info("Mode:     %s", run["mode"])
     logger.info("Output:   %s", output_dir)
 
     # --- Suppress OpenClaw notifications in daemon process (Issue #660) ---
@@ -350,47 +347,49 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # --- Update DB: mark as running ---
     db.update_pipeline_run(
         run_id,
-        status='running',
+        status="running",
         pid=os.getpid(),
         started_at=now_utc().isoformat(),
     )
 
     # --- Load template ---
     try:
-        from .templates import TemplateEngine
+        from .templates import TemplateEngine  # noqa: PLC0415
+
         engine = TemplateEngine()
-        template_path = Path(run['template_path'])
+        template_path = Path(run["template_path"])
         template = engine.load_template(template_path)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         _fail(db, run_id, pid_path, f"Template load error: {exc}")
         return
 
     # --- Build PipelineRunner ---
-    mode = run['mode']
+    mode = run["mode"]
     try:
-        from .pipeline_runner import PipelineRunner
-        import os as _os
+        import os as _os  # noqa: PLC0415
 
-        if mode == 'standalone':
-            api_key = _os.environ.get('ANTHROPIC_API_KEY')
+        from .pipeline_runner import PipelineRunner  # noqa: PLC0415
+
+        if mode == "standalone":
+            api_key = _os.environ.get("ANTHROPIC_API_KEY")
             # Read executor_type stored in input_json (set by pipeline_launch CLI).
             # Falls back to 'auto' for runs created before this feature was added.
-            _raw_input = json.loads(run['input_json']) if run.get('input_json') else {}
-            executor_type = _raw_input.pop('_executor_type', 'auto')
+            _raw_input = json.loads(run["input_json"]) if run.get("input_json") else {}
+            executor_type = _raw_input.pop("_executor_type", "auto")
             runner = PipelineRunner.standalone(api_key=api_key, executor_type=executor_type)
-        elif mode == 'openclaw':
-            gateway_url = run.get('gateway_url') or _os.environ.get('OPENCLAW_GATEWAY_URL')
-            gateway_token = _os.environ.get('OPENCLAW_GATEWAY_TOKEN')
+        elif mode == "openclaw":
+            gateway_url = run.get("gateway_url") or _os.environ.get("OPENCLAW_GATEWAY_URL")
+            gateway_token = _os.environ.get("OPENCLAW_GATEWAY_TOKEN")
             runner = PipelineRunner.openclaw(
                 gateway_url=gateway_url,
                 gateway_token=gateway_token,
             )
-        elif mode == 'openrouter':
-            _or_key = _os.environ.get('OPENROUTER_API_KEY', '')
+        elif mode == "openrouter":
+            _or_key = _os.environ.get("OPENROUTER_API_KEY", "")
             runner = PipelineRunner.openrouter(api_key=_or_key)
         else:  # dry-run
             runner = PipelineRunner.dry_run()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         _fail(db, run_id, pid_path, f"PipelineRunner init error: {exc}")
         return
 
@@ -408,40 +407,39 @@ def run_daemon(run_id: str, db_path: str) -> None:
 
     # --- Parse input ---
     try:
-        initial_input: Dict[str, Any] = json.loads(run['input_json'])
-    except Exception as exc:
+        initial_input: Dict[str, Any] = json.loads(run["input_json"])
+    except Exception as exc:  # noqa: BLE001
         _fail(db, run_id, pid_path, f"Input JSON parse error: {exc}")
         return
 
     # --- Apply config_schema defaults (#835) ---
-    apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
+    apply_config_schema_defaults(initial_input, getattr(template, "config_schema", None))
 
     # --- Instantiate CostTracker (Issue #5.2.2) ---
     try:
-        from .cost_tracker import CostTracker
+        from .cost_tracker import CostTracker  # noqa: PLC0415
+
         _cost_tracker = CostTracker(db)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("CostTracker init failed (non-fatal): %s", exc)
         _cost_tracker = None
 
     # --- Preflight: Definition of Ready (Issue #476, #576) ---
     try:
-        from .preflight import PreflightChecker
+        from .preflight import PreflightChecker  # noqa: PLC0415
 
         # Extract required_fields and category from template (Issue #576).
         # config_schema.required overrides the hardcoded REQUIRED_INPUT_FIELDS
         # when it is a list (may be empty []).  Any non-list value (None,
         # string, int, …) triggers the existing default coding-field fallback.
-        _config_schema = getattr(template, 'config_schema', None) or {}
+        _config_schema = getattr(template, "config_schema", None) or {}
         _schema_required = (
-            _config_schema.get('required')
-            if isinstance(_config_schema, dict)
-            else None
+            _config_schema.get("required") if isinstance(_config_schema, dict) else None
         )
         _required_fields: Optional[List[str]] = (
             _schema_required if isinstance(_schema_required, list) else None
         )
-        _category: str = getattr(template, 'category', '') or ''
+        _category: str = getattr(template, "category", "") or ""
 
         _preflight = PreflightChecker(
             initial_input,
@@ -455,9 +453,11 @@ def run_daemon(run_id: str, db_path: str) -> None:
         logger.info("Preflight checks:\n%s", _preflight_result.summary())
         if not _preflight_result.passed:
             _fail(
-                db, run_id, pid_path,
+                db,
+                run_id,
+                pid_path,
                 f"Preflight FAILED (Definition of Ready not met):\n"
-                f"{chr(10).join(_preflight_result.errors)}"
+                f"{chr(10).join(_preflight_result.errors)}",
             )
             return
         if _preflight_result.warnings:
@@ -467,7 +467,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
         logger.debug("Preflight module not available, skipping")
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("Preflight infra check failed (non-fatal): %s", exc)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.error("Preflight raised unexpected error — failing safe: %s", exc)
         _fail(db, run_id, pid_path, f"Preflight error (fail-safe): {exc}")
         return
@@ -476,18 +476,19 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # The daemon never instantiates a full GitContext, so it must explicitly
     # create the gate file here — before sequencer.execute() — so that the
     # auto-merge path (load_gate / update_gate_scoring) can find the run.
-    _gate_branch: str = (
-        initial_input.get('branch_name') or initial_input.get('branch') or ''
-    )
+    _gate_branch: str = initial_input.get("branch_name") or initial_input.get("branch") or ""
     if _gate_branch:
         try:
             from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+
             _gate_repo_path: Optional[str] = (
-                initial_input.get('repo_path') or initial_input.get('repo') or None
+                initial_input.get("repo_path") or initial_input.get("repo") or None
             )
-            _gate_issue_raw = initial_input.get('issue_number')
-            _gate_issue: Optional[int] = int(_gate_issue_raw) if _gate_issue_raw is not None else None
-            _gate_pipeline_id: str = run.get('template_id', '')
+            _gate_issue_raw = initial_input.get("issue_number")
+            _gate_issue: Optional[int] = (
+                int(_gate_issue_raw) if _gate_issue_raw is not None else None
+            )
+            _gate_pipeline_id: str = run.get("template_id", "")
             _GitContext.create_gate(
                 run_id=run_id,
                 branch_name=_gate_branch,
@@ -497,7 +498,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 issue_number=_gate_issue,
             )
             logger.info("Gate file created for run_id=%s branch=%s", run_id, _gate_branch)
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover  # noqa: BLE001
             logger.warning("Gate file creation failed (non-fatal): %s", exc)
     else:
         logger.debug("No branch_name in initial_input — skipping gate file creation")
@@ -505,11 +506,11 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # --- Extract trust routing context (Issue #4.2.3) ---
     # template_id comes from the run record; repo and task_type from initial_input.
     # repo_url like "https://github.com/owner/repo" is converted to "owner/repo".
-    _trust_template_id: str = run.get('template_id', '')
+    _trust_template_id: str = run.get("template_id", "")
     _trust_repo: str = _extract_repo_slug(
-        initial_input.get('repo_url', '') or initial_input.get('repo', '')
+        initial_input.get("repo_url", "") or initial_input.get("repo", "")
     )
-    _trust_task_type: str = initial_input.get('task_type', '')
+    _trust_task_type: str = initial_input.get("task_type", "")
 
     # --- Build callbacks ---
     completed_phases: list = []
@@ -525,23 +526,25 @@ def run_daemon(run_id: str, db_path: str) -> None:
         """Emit a phase_started event to the DB for SSE streaming (Issue #258)."""
         if _shutdown_requested:
             return
-        import time as _time
+        import time as _time  # noqa: PLC0415
+
         _phase_start_times[phase_id] = _time.monotonic()
         logger.info("Phase start: %s  wave=%d", phase_id, wave_index)
 
         # Enrich with model_tier and phase_name (#747)
         start_metadata: Dict[str, Any] = {}
-        if hasattr(phase, 'model_tier'):
+        if hasattr(phase, "model_tier"):
             tier = phase.model_tier
-            start_metadata['model_tier'] = tier.value if hasattr(tier, 'value') else str(tier)
-        if hasattr(phase, 'name'):
-            start_metadata['phase_name'] = str(phase.name)
-        if hasattr(phase, 'thinking_level'):
+            start_metadata["model_tier"] = tier.value if hasattr(tier, "value") else str(tier)
+        if hasattr(phase, "name"):
+            start_metadata["phase_name"] = str(phase.name)
+        if hasattr(phase, "thinking_level"):
             tl = phase.thinking_level
-            start_metadata['thinking_level'] = tl.value if hasattr(tl, 'value') else str(tl) if tl else None
+            start_metadata["thinking_level"] = (
+                tl.value if hasattr(tl, "value") else str(tl) if tl else None
+            )
 
-        _write_phase_event(db, run_id, phase_id, "phase_started",
-                          extra_metadata=start_metadata)
+        _write_phase_event(db, run_id, phase_id, "phase_started", extra_metadata=start_metadata)
 
         # Persist the running phase so `orch status` reflects it immediately
         # (#516). Mirrors the current_phase write in _on_phase_complete but
@@ -550,13 +553,13 @@ def run_daemon(run_id: str, db_path: str) -> None:
         # #516 write is execution-path testable (#954).
         _persist_phase_start(db, run_id, phase_id)
 
-    def _on_phase_complete(phase_id: str, phase_result: dict) -> None:
+    def _on_phase_complete(phase_id: str, phase_result: dict) -> None:  # noqa: C901
         """Update DB after each phase completes."""
         if _shutdown_requested:
             return
 
-        _st = phase_result.get('state', 'unknown')
-        state_val = _st.value if hasattr(_st, 'value') else str(_st)
+        _st = phase_result.get("state", "unknown")
+        state_val = _st.value if hasattr(_st, "value") else str(_st)
         logger.info("Phase complete: %s  state=%s", phase_id, state_val)
 
         completed_phases.append(phase_id)
@@ -564,14 +567,14 @@ def run_daemon(run_id: str, db_path: str) -> None:
 
         # Write phase output to disk (iteration-aware — Issue #648a)
         try:
-            safe_pid = re.sub(r'[^\w\-]', '_', phase_id)
+            safe_pid = re.sub(r"[^\w\-]", "_", phase_id)
             phase_text = _extract_output_text(phase_result)
             if phase_text:
                 out_path = output_dir / f"{safe_pid}.md"
                 new_content = f"# Phase: {phase_id}\n\n{phase_text}\n"
 
                 # Determine iteration number from metadata (BC-1 through BC-7)
-                iteration_num = phase_result.get('metadata', {}).get('iteration', 1)
+                iteration_num = phase_result.get("metadata", {}).get("iteration", 1)
                 if not isinstance(iteration_num, int) or iteration_num < 1:
                     iteration_num = 1
 
@@ -581,10 +584,11 @@ def run_daemon(run_id: str, db_path: str) -> None:
                     if not round1_path.exists():
                         try:
                             round1_path.write_text(out_path.read_text())
-                        except Exception as _exc:
+                        except Exception as _exc:  # noqa: BLE001
                             logger.warning(
                                 "Failed to copy round1 file for phase '%s': %s",
-                                phase_id, _exc,
+                                phase_id,
+                                _exc,
                             )
 
                 # BC-1 / BC-2: write primary file (existing size-check behaviour preserved)
@@ -595,52 +599,59 @@ def run_daemon(run_id: str, db_path: str) -> None:
                     try:
                         round_path = output_dir / f"{safe_pid}_round{iteration_num}.md"
                         round_path.write_text(new_content)
-                    except Exception as _exc:
+                    except Exception as _exc:  # noqa: BLE001
                         logger.warning(
-                            "Failed to write round-indexed file for phase '%s' "
-                            "iteration %d: %s",
-                            phase_id, iteration_num, _exc,
+                            "Failed to write round-indexed file for phase '%s' " "iteration %d: %s",
+                            phase_id,
+                            iteration_num,
+                            _exc,
                         )
 
             # Write JSON
             (output_dir / f"{safe_pid}.json").write_text(
                 json.dumps(phase_result, indent=2, default=str)
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to write phase output to disk: %s", exc)
 
         # Persist progress to DB
         _persist_phase_complete(db, run_id, phase_id, completed_phases, phase_outputs)
 
         # Emit phase_completed event for SSE streaming (Issue #258, enriched #747)
-        tokens = phase_result.get('tokens_consumed')
-        cost = phase_result.get('cost_usd')
+        tokens = phase_result.get("tokens_consumed")
+        cost = phase_result.get("cost_usd")
 
         # Compute elapsed time (#747)
-        import time as _time
+        import time as _time  # noqa: PLC0415
+
         complete_metadata: Dict[str, Any] = {}
         start_t = _phase_start_times.pop(phase_id, None)
         if start_t is not None:
-            complete_metadata['elapsed_seconds'] = round(_time.monotonic() - start_t, 2)
+            complete_metadata["elapsed_seconds"] = round(_time.monotonic() - start_t, 2)
 
         # Enrich with model info (#747)
-        model_used = phase_result.get('model_used')
+        model_used = phase_result.get("model_used")
         if model_used:
-            complete_metadata['model_used'] = str(model_used)
-        model_tier = phase_result.get('model_tier')
+            complete_metadata["model_used"] = str(model_used)
+        model_tier = phase_result.get("model_tier")
         if model_tier:
-            complete_metadata['model_tier'] = model_tier.value if hasattr(model_tier, 'value') else str(model_tier)
+            complete_metadata["model_tier"] = (
+                model_tier.value if hasattr(model_tier, "value") else str(model_tier)
+            )
 
         # Token breakdown (#747)
-        tokens_in = phase_result.get('tokens_in') or phase_result.get('prompt_tokens')
-        tokens_out = phase_result.get('tokens_out') or phase_result.get('completion_tokens')
+        tokens_in = phase_result.get("tokens_in") or phase_result.get("prompt_tokens")
+        tokens_out = phase_result.get("tokens_out") or phase_result.get("completion_tokens")
         if tokens_in is not None:
-            complete_metadata['tokens_in'] = int(tokens_in)
+            complete_metadata["tokens_in"] = int(tokens_in)
         if tokens_out is not None:
-            complete_metadata['tokens_out'] = int(tokens_out)
+            complete_metadata["tokens_out"] = int(tokens_out)
 
         _write_phase_event(
-            db, run_id, phase_id, "phase_completed",
+            db,
+            run_id,
+            phase_id,
+            "phase_completed",
             phase_result=phase_result,
             tokens_consumed=int(tokens) if tokens is not None else None,
             cost_usd=float(cost) if cost is not None else None,
@@ -651,9 +662,9 @@ def run_daemon(run_id: str, db_path: str) -> None:
         # --- Record phase cost and enforce per-run budget (Issue #496) ---
         if _cost_tracker is not None:
             try:
-                _model = phase_result.get('model_used') or 'unknown'
-                _in = phase_result.get('input_tokens')
-                _out = phase_result.get('output_tokens')
+                _model = phase_result.get("model_used") or "unknown"
+                _in = phase_result.get("input_tokens")
+                _out = phase_result.get("output_tokens")
                 _cost_record = None
                 if _in is not None and _out is not None and (_in or _out):
                     # Real input/output split available (Issue #908): bill each
@@ -666,7 +677,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
                         output_tokens=int(_out),
                     )
                 else:
-                    _total_tokens = phase_result.get('tokens_consumed') or 0
+                    _total_tokens = phase_result.get("tokens_consumed") or 0
                     if _total_tokens > 0:
                         # No split available: bill the whole total at the OUTPUT
                         # rate. output_per_million >= input_per_million for every
@@ -685,13 +696,13 @@ def run_daemon(run_id: str, db_path: str) -> None:
                         "Cost recorded for phase '%s': $%.6f "
                         "(in=%s, out=%s, total=%s, model=%s)",
                         phase_id,
-                        _cost_record['cost_usd'],
-                        _cost_record['input_tokens'],
-                        _cost_record['output_tokens'],
-                        phase_result.get('tokens_consumed'),
+                        _cost_record["cost_usd"],
+                        _cost_record["input_tokens"],
+                        _cost_record["output_tokens"],
+                        phase_result.get("tokens_consumed"),
                         _model,
                     )
-            except Exception as _cost_exc:
+            except Exception as _cost_exc:  # noqa: BLE001
                 logger.warning(
                     "Cost recording failed for phase '%s' (non-fatal): %s",
                     phase_id,
@@ -706,7 +717,8 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 and not _budget_exceeded_flag
             ):
                 try:
-                    from .cost_tracker import BudgetExceededError
+                    from .cost_tracker import BudgetExceededError  # noqa: PLC0415
+
                     _cost_tracker.check_budget(
                         run_id=run_id,
                         budget_usd=template.budget.max_cost_per_run,
@@ -730,11 +742,14 @@ def run_daemon(run_id: str, db_path: str) -> None:
             logger.info(
                 "Review phase '%s' complete: state=%s verdict=%r confidence=%s  "
                 "(outcome recorded by sequencer hook)",
-                phase_id, state_val, _verdict, _confidence,
+                phase_id,
+                state_val,
+                _verdict,
+                _confidence,
             )
 
     # --- Execute pipeline ---
-    from .sequencer import PhaseSequencer, StateMachineSequencer
+    from .sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
 
     # Auto-select sequencer: use StateMachineSequencer when the template
     # declares transitions on any phase or at the template level.
@@ -742,7 +757,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
     _has_transitions = any(p.transitions for p in template.phases) or bool(
         template.default_transitions
     )
-    _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer
+    _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer  # noqa: N806
 
     logger.info("Starting %s.execute()", _SequencerClass.__name__)
 
@@ -752,13 +767,14 @@ def run_daemon(run_id: str, db_path: str) -> None:
 
     # ── Git handoff for spec loop (Issue #674) ──────────────────────────
     _git_handoff = None
-    _repo_path = initial_input.get('repo_path') if initial_input else None
+    _repo_path = initial_input.get("repo_path") if initial_input else None
     if _repo_path and output_dir:
         try:
-            from .git_handoff import GitHandoff
+            from .git_handoff import GitHandoff  # noqa: PLC0415
+
             _git_handoff = GitHandoff(repo_path=Path(_repo_path), run_id=run_id)
             logger.info("GitHandoff created for run_id=%s", run_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("GitHandoff creation failed (non-fatal): %s", exc)
             _git_handoff = None
 
@@ -769,12 +785,14 @@ def run_daemon(run_id: str, db_path: str) -> None:
 
     with runner:
         sequencer = _SequencerClass(
-            template, runner, config=initial_input,
+            template,
+            runner,
+            config=initial_input,
             on_phase_complete=_on_phase_complete,
             on_phase_start=_on_phase_start,
             output_dir=output_dir,
             run_id=run_id,  # Issue #4.1.6: enables _record_review_outcome hook
-            db=db,          # Issue #4.1.6: required alongside run_id for DB writes
+            db=db,  # Issue #4.1.6: required alongside run_id for DB writes
             **_extra_kwargs,
         )
 
@@ -797,13 +815,12 @@ def run_daemon(run_id: str, db_path: str) -> None:
             _orphaned = getattr(_active_executor, "_active_session_key", None)
             if _orphaned:
                 logger.warning(
-                    "Graceful shutdown: orphaned session key = %s "
-                    "(attempting cancellation)",
+                    "Graceful shutdown: orphaned session key = %s " "(attempting cancellation)",
                     _orphaned,
                 )
             try:
                 _active_executor.cancel_active_session()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Graceful shutdown: cancel_active_session failed (non-fatal): %s",
                     exc,
@@ -811,9 +828,9 @@ def run_daemon(run_id: str, db_path: str) -> None:
 
         db.update_pipeline_run(
             run_id,
-            status='cancelled',
+            status="cancelled",
             completed_at=now_utc().isoformat(),
-            error_message='Cancelled by SIGTERM',
+            error_message="Cancelled by SIGTERM",
         )
         _remove_pid_file(pid_path)
         return
@@ -826,29 +843,30 @@ def run_daemon(run_id: str, db_path: str) -> None:
         logger.error("Run '%s' terminated: %s", run_id, _budget_msg)
         db.update_pipeline_run(
             run_id,
-            status='budget_exceeded',
+            status="budget_exceeded",
             completed_at=now_utc().isoformat(),
             error_message=_budget_msg,
         )
         _remove_pid_file(pid_path)
         sys.exit(3)
 
-    if aborted or (result and result.get('aborted')):
-        failed_phase = (result or {}).get('failed_phase', 'unknown') if result else 'unknown'
+    if aborted or (result and result.get("aborted")):
+        failed_phase = (result or {}).get("failed_phase", "unknown") if result else "unknown"
         base_msg = error_message or f"Pipeline aborted at phase '{failed_phase}'"
-        _finding_analysis = (result or {}).get('finding_analysis', '') if result else ''
+        _finding_analysis = (result or {}).get("finding_analysis", "") if result else ""
         msg = f"{base_msg} {_finding_analysis}".strip() if _finding_analysis else base_msg
         logger.error("Pipeline FAILED: %s", msg)
         db.update_pipeline_run(
             run_id,
-            status='failed',
+            status="failed",
             completed_at=now_utc().isoformat(),
             error_message=msg,
         )
         # --- Diagnose failure (non-fatal) ---
         _diagnosis = None
         try:
-            from .diagnosis import DiagnosisEngine
+            from .diagnosis import DiagnosisEngine  # noqa: PLC0415
+
             _diag_executor = runner.executors[0] if runner.executors else None
             if _diag_executor is not None:
                 _diag_engine = DiagnosisEngine(executor=_diag_executor, db=db)
@@ -856,20 +874,21 @@ def run_daemon(run_id: str, db_path: str) -> None:
                     run_id,
                     error_message=msg,
                     output_dir=str(output_dir),
-                    template_id=run.get('template_id'),
+                    template_id=run.get("template_id"),
                 )
                 logger.info("Diagnosis complete for run %s", run_id)
-        except Exception as _diag_exc:
+        except Exception as _diag_exc:  # noqa: BLE001
             logger.warning("Diagnosis failed (non-fatal): %s", _diag_exc)
 
         # --- Adaptive retry (#3.2.3) ---
         if _diagnosis is not None:
             try:
-                from .adaptive_retry import AdaptiveRetryEngine
+                from .adaptive_retry import AdaptiveRetryEngine  # noqa: PLC0415
+
                 _retry_engine = AdaptiveRetryEngine(db=db, db_path=db_path)
                 _max_retries = _get_effective_max_retries(template)
                 _retry_engine.plan_and_execute(_diagnosis, run, run_id, max_retries=_max_retries)
-            except Exception as _retry_exc:
+            except Exception as _retry_exc:  # noqa: BLE001
                 logger.warning("Adaptive retry failed (non-fatal): %s", _retry_exc)
 
         # --- Post failure result to GitHub (Issue #5.1.4) ---
@@ -878,7 +897,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
             db=db,
             initial_input=initial_input,
             phase_outputs=phase_outputs,
-            final_status='failed',
+            final_status="failed",
             error_message=msg,
             diagnosis=_diagnosis,
             output_dir=output_dir,
@@ -894,35 +913,44 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # Write summary files
     try:
         _write_summary(output_dir, template, result or {}, mode, run_id)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to write summary: %s", exc)
 
     # Auto-scoring (optional)
     # When scoring runs and fails, the pipeline run is marked 'scoring_failed'
     # instead of 'success' so that `orch wait` can propagate the failure to
     # callers (e.g. CI/CD pipelines).  Issue #288.
-    skip_scoring = bool(run.get('skip_scoring', 0))
-    _final_status = 'success'
-    _scoring_passed: bool = False        # tracks scoring outcome for auto-merge check
+    skip_scoring = bool(run.get("skip_scoring", 0))
+    _final_status = "success"
+    _scoring_passed: bool = False  # tracks scoring outcome for auto-merge check
     _scoring_score_val: Optional[float] = None
     if not skip_scoring and template.scenario:
         try:
-            from rich.console import Console
-            from .scoring import run_scoring as _run_scoring
+            from rich.console import Console  # noqa: PLC0415
+
+            from .scoring import run_scoring as _run_scoring  # noqa: PLC0415
+
             console = Console(highlight=False, force_terminal=False, no_color=True)
             # Forward the pipeline executor so LLM judge criteria route
             # through the same auth path (e.g. OpenClaw subscription token).
             # Issue #272.
             _scoring_executor = runner.executors[0] if runner.executors else None
             scoring_passed, scoring_score = _run_scoring(
-                template, output_dir=output_dir, console=console,
-                template_file=template_path, exit_on_failure=False,
+                template,
+                output_dir=output_dir,
+                console=console,
+                template_file=template_path,
+                exit_on_failure=False,
                 executor=_scoring_executor,
             )
             _scoring_passed = bool(scoring_passed)
             _scoring_score_val = scoring_score
-            _scoring_status = 'passed' if scoring_passed else 'failed'
-            logger.info("Auto-scoring complete: %s  score=%s", _scoring_status, f"{scoring_score:.4f}" if scoring_score is not None else "n/a")
+            _scoring_status = "passed" if scoring_passed else "failed"
+            logger.info(
+                "Auto-scoring complete: %s  score=%s",
+                _scoring_status,
+                f"{scoring_score:.4f}" if scoring_score is not None else "n/a",
+            )
             db.update_pipeline_run(
                 run_id,
                 scoring_status=_scoring_status,
@@ -931,50 +959,53 @@ def run_daemon(run_id: str, db_path: str) -> None:
             # Persist scoring results to the gate file so orch gate info/approve
             # can enforce the score gate (Issue #289)
             try:
-                from .git_integration import GitContext as _GitContext
+                from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+
                 _GitContext.update_gate_scoring(run_id, _scoring_status, scoring_score)
-            except Exception as _ge:
+            except Exception as _ge:  # noqa: BLE001
                 logger.warning("Could not update gate file with scoring: %s", _ge)
             # Gate final pipeline status on scoring outcome (Issue #288)
             if not scoring_passed:
-                _final_status = 'scoring_failed'
+                _final_status = "scoring_failed"
                 logger.warning(
                     "Scoring FAILED (score=%.4f) — marking run as 'scoring_failed'",
                     scoring_score,
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Auto-scoring raised an exception: %s", exc)
-            db.update_pipeline_run(run_id, scoring_status='error')
+            db.update_pipeline_run(run_id, scoring_status="error")
             # Design decision: scoring infrastructure errors do NOT block the pipeline
             # (scoring_status='error' vs 'failed'). A scoring exception means the
             # judge/LLM infra failed, not that the pipeline output was low quality.
             # _final_status remains 'success'. Gate approve will warn but allow.
             # Mark gate with error status on scoring exception (Issue #289)
             try:
-                from .git_integration import GitContext as _GitContext
-                _GitContext.update_gate_scoring(run_id, 'error', None)
-            except Exception as _ge:
+                from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+
+                _GitContext.update_gate_scoring(run_id, "error", None)
+            except Exception as _ge:  # noqa: BLE001
                 logger.warning("Could not update gate file with scoring error: %s", _ge)
 
     # --- Postflight: Definition of Done (Issue #476) ---
     try:
-        from .postflight import PostflightChecker
+        from .postflight import PostflightChecker  # noqa: PLC0415
+
         _elapsed = None
         try:
-            _started = run.get('started_at')
+            _started = run.get("started_at")
             if _started:
                 _parsed = datetime.fromisoformat(_started)
                 if _parsed.tzinfo is None:
                     _parsed = _parsed.replace(tzinfo=timezone.utc)
                 _elapsed = (now_utc() - _parsed).total_seconds()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         # Derive the happy-path oracle from the loaded template (Issue #915).
         # A walk failure degrades to None → the completeness check is skipped,
         # never crashing the advisory postflight block.
         try:
             _expected_phases = _happy_path_phase_ids(template) or None
-        except Exception:
+        except Exception:  # noqa: BLE001
             _expected_phases = None
         _postflight = PostflightChecker(
             input_data=initial_input,
@@ -993,7 +1024,7 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 logger.warning("Postflight warning: %s", w)
     except ImportError:
         logger.debug("Postflight module not available, skipping")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Postflight checks failed (non-fatal): %s", exc)
 
     # --- Routing dispatch (Issue #331.3 / #4.1.6) ---
@@ -1007,16 +1038,17 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # Gate routing/auto-merge by template category (Issue #578).
     # Content, research, and docs pipelines must never be auto-merged —
     # routing is irrelevant for these categories.
-    _NON_CODE_CATEGORIES_ROUTING = frozenset({'content', 'research', 'docs'})
-    _normalised_category_routing = (_category or '').lower().strip()
+    _NON_CODE_CATEGORIES_ROUTING = frozenset({"content", "research", "docs"})  # noqa: N806
+    _normalised_category_routing = (_category or "").lower().strip()
 
     if _normalised_category_routing in _NON_CODE_CATEGORIES_ROUTING:
         logger.info(
             "Routing skipped for run '%s': template category=%r is non-code "
             "(Issue #578); final_status set to 'pending_review'.",
-            run_id, _category,
+            run_id,
+            _category,
         )
-        _final_status = 'pending_review'
+        _final_status = "pending_review"
         _merge_intent = None
     else:
         # _compute_and_dispatch_routing returns (final_status, merge_intent).
@@ -1073,10 +1105,11 @@ def run_daemon(run_id: str, db_path: str) -> None:
                 phase_outputs=_merge_intent["phase_outputs"],
                 repo=_merge_intent["repo"],
             )
-        except Exception as _merge_exc:
+        except Exception as _merge_exc:  # noqa: BLE001
             logger.warning(
                 "Deferred auto-merge failed for run '%s' (non-fatal): %s",
-                run_id, _merge_exc,
+                run_id,
+                _merge_exc,
             )
 
     # --- Chain execution (Issue #330.2) ---
@@ -1084,7 +1117,8 @@ def run_daemon(run_id: str, db_path: str) -> None:
     # and spawn any configured child pipelines.  Failures here are non-fatal:
     # the parent run has already been marked with its final status.
     try:
-        from .chains import evaluate_on_complete, spawn_chain_runs
+        from .chains import evaluate_on_complete, spawn_chain_runs  # noqa: PLC0415
+
         child_configs = evaluate_on_complete(
             template=template,
             run=run,
@@ -1100,9 +1134,10 @@ def run_daemon(run_id: str, db_path: str) -> None:
             )
             logger.info(
                 "Chain execution: spawned %d child run(s): %s",
-                len(spawned), spawned,
+                len(spawned),
+                spawned,
             )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Chain execution failed (non-fatal): %s", exc)
 
     _remove_pid_file(pid_path)
@@ -1144,7 +1179,7 @@ def _extract_repo_slug(repo_url: str) -> str:
         return slug
     # SSH GitHub URL: git@github.com:owner/repo.git
     if url.startswith("git@github.com:"):
-        slug = url[len("git@github.com:"):].rstrip("/").removesuffix(".git")
+        slug = url[len("git@github.com:") :].rstrip("/").removesuffix(".git")
         return slug
     # Already a slug or something else — return as-is
     return url
@@ -1185,11 +1220,9 @@ def _write_phase_event(
             metadata.update(extra_metadata)
         if phase_result:
             # Capture a lightweight summary rather than the full result blob
-            result_inner = phase_result.get('result', {})
+            result_inner = phase_result.get("result", {})
             if isinstance(result_inner, dict):
-                metadata['word_count'] = len(
-                    str(result_inner.get('output') or '').split()
-                )
+                metadata["word_count"] = len(str(result_inner.get("output") or "").split())
         db.insert_pipeline_run_event(
             run_id=run_id,
             event_type=event_type,
@@ -1199,10 +1232,13 @@ def _write_phase_event(
             state=state,
             metadata=metadata,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Could not write phase event (run=%s phase=%s type=%s): %s",
-            run_id, phase_id, event_type, exc,
+            run_id,
+            phase_id,
+            event_type,
+            exc,
         )
 
 
@@ -1262,7 +1298,7 @@ def _do_auto_merge(
         scoring_score:     The scoring score used for the log message.  May be
                            ``None`` when called from the routing path.
     """
-    from .git_integration import GitContext as _GitContext
+    from .git_integration import GitContext as _GitContext  # noqa: PLC0415
 
     strategy = auto_merge_config.strategy if auto_merge_config else "merge"
     score_str = f"{scoring_score:.4f}" if scoring_score is not None else "n/a"
@@ -1286,7 +1322,10 @@ def _do_auto_merge(
 
     logger.info(
         "Auto-merge TRIGGERED for run '%s': score=%s, branch='%s', strategy='%s'.",
-        run_id, score_str, branch_name, strategy,
+        run_id,
+        score_str,
+        branch_name,
+        strategy,
     )
 
     _GitContext.auto_merge_pr(
@@ -1302,7 +1341,7 @@ def _do_auto_merge(
             status="merged",
             message=f"Auto-merged by orchestrator (score={score_str})",
         )
-    except Exception as _ge:
+    except Exception as _ge:  # noqa: BLE001
         logger.warning("Auto-merge: could not update gate status: %s", _ge)
 
 
@@ -1383,7 +1422,8 @@ class _PromptExecutorAdapter:
         extracts and returns the text content from the resulting
         :class:`~schemas.TaskResult`.
         """
-        from .schemas import TaskSpec, TaskType, ModelTier  # noqa: PLC0415
+        from .schemas import ModelTier, TaskSpec, TaskType  # noqa: PLC0415
+
         task = TaskSpec(
             type=TaskType.REVIEW,
             payload={"prompt": prompt},
@@ -1444,13 +1484,14 @@ def _run_post_pipeline_review_analysis(
         review_outcomes = db.get_review_outcomes_for_run(run_id) or []
         logger.info(
             "PostReviewAnalysis: fetched %d review outcome(s) for run '%s'",
-            len(review_outcomes), run_id,
+            len(review_outcomes),
+            run_id,
         )
-    except Exception as _ro_exc:
+    except Exception as _ro_exc:  # noqa: BLE001
         logger.warning(
-            "PostReviewAnalysis: could not fetch review outcomes for run '%s' "
-            "(non-fatal): %s",
-            run_id, _ro_exc,
+            "PostReviewAnalysis: could not fetch review outcomes for run '%s' " "(non-fatal): %s",
+            run_id,
+            _ro_exc,
         )
 
     # 2. Fetch historical calibration outcomes from DB (Issue #4.1.5)
@@ -1461,7 +1502,7 @@ def _run_post_pipeline_review_analysis(
             "PostReviewAnalysis: fetched %d calibration outcome(s) for dynamic weights",
             len(calibration_outcomes),
         )
-    except Exception as _co_exc:
+    except Exception as _co_exc:  # noqa: BLE001
         logger.warning(
             "PostReviewAnalysis: could not fetch calibration outcomes (non-fatal): %s",
             _co_exc,
@@ -1475,6 +1516,7 @@ def _run_post_pipeline_review_analysis(
     if executor is not None and review_outcomes:
         try:
             from .audit import AuditPhase  # noqa: PLC0415
+
             _prompt_executor = _PromptExecutorAdapter(executor)
             _audit_model = _prompt_executor.model
             _auditor = AuditPhase(executor=_prompt_executor, model=_audit_model)
@@ -1483,7 +1525,7 @@ def _run_post_pipeline_review_analysis(
             # adversarial auditor can review the actual diff rather than
             # only the original issue list (improves catch rate).
             _code_diff: Optional[str] = None
-            for _pid, _pout in phase_outputs.items():
+            for _pout in phase_outputs.values():
                 _txt = _extract_output_text(_pout).strip()
                 if _txt:
                     _code_diff = _txt
@@ -1502,10 +1544,11 @@ def _run_post_pipeline_review_analysis(
                 _audit_result.reviewer_accuracy_score,
                 _audit_result.false_approval,
             )
-        except Exception as _audit_exc:
+        except Exception as _audit_exc:  # noqa: BLE001
             logger.warning(
                 "PostReviewAnalysis: AuditPhase failed for run '%s' (non-fatal): %s",
-                run_id, _audit_exc,
+                run_id,
+                _audit_exc,
             )
 
     # 4. Persist calibration snapshots post-audit (Issue #4.1.6)
@@ -1515,18 +1558,20 @@ def _run_post_pipeline_review_analysis(
     if calibration_outcomes:
         try:
             from .reviewer_calibration import ReviewerCalibrator  # noqa: PLC0415
+
             _calibrator = ReviewerCalibrator(db=db)
             _calibrator.calibrate_and_save(calibration_outcomes)
             logger.info(
                 "PostReviewAnalysis: calibration snapshot persisted for run '%s' "
                 "(%d outcome(s))",
-                run_id, len(calibration_outcomes),
+                run_id,
+                len(calibration_outcomes),
             )
-        except Exception as _cal_exc:
+        except Exception as _cal_exc:  # noqa: BLE001
             logger.warning(
-                "PostReviewAnalysis: calibrate_and_save failed for run '%s' "
-                "(non-fatal): %s",
-                run_id, _cal_exc,
+                "PostReviewAnalysis: calibrate_and_save failed for run '%s' " "(non-fatal): %s",
+                run_id,
+                _cal_exc,
             )
 
     return review_outcomes, audit_results, calibration_outcomes
@@ -1538,8 +1583,8 @@ def _compute_and_dispatch_routing(
     db: Any,
     auto_merge_config: Any,
     routing_config: Any,
-    scoring_passed: bool,
-    scoring_score: Optional[float],
+    scoring_passed: bool,  # noqa: ARG001
+    scoring_score: Optional[float],  # noqa: ARG001
     phase_outputs: Dict[str, Any],
     final_status: str,
     executor: Optional[Any] = None,
@@ -1596,13 +1641,11 @@ def _compute_and_dispatch_routing(
     """
     try:
         # 1. Run post-pipeline review analysis (audit + calibration update).
-        review_outcomes, audit_results, calibration_outcomes = (
-            _run_post_pipeline_review_analysis(
-                run_id=run_id,
-                db=db,
-                phase_outputs=phase_outputs,
-                executor=executor,
-            )
+        review_outcomes, audit_results, calibration_outcomes = _run_post_pipeline_review_analysis(
+            run_id=run_id,
+            db=db,
+            phase_outputs=phase_outputs,
+            executor=executor,
         )
 
         # 2. Compute composite confidence from output directory, wiring all signals
@@ -1632,7 +1675,10 @@ def _compute_and_dispatch_routing(
 
         logger.info(
             "Routing decision for run '%s': tier='%s' strategy='%s' score=%.4f",
-            run_id, decision.tier, decision.strategy, decision.score,
+            run_id,
+            decision.tier,
+            decision.strategy,
+            decision.score,
         )
 
         # 3a. Map strategy → action
@@ -1651,34 +1697,38 @@ def _compute_and_dispatch_routing(
         signals_json = json.dumps(signals_dict, default=str)
 
         # 4. Persist routing decision to DB (audit trail)
-        db.insert_routing_decision({
-            "run_id": run_id,
-            "confidence_score": confidence_result.composite_score,
-            "tier_name": decision.tier,
-            "action": action,
-            "justification": confidence_result.explanation,
-            "signals_json": signals_json,
-        })
+        db.insert_routing_decision(
+            {
+                "run_id": run_id,
+                "confidence_score": confidence_result.composite_score,
+                "tier_name": decision.tier,
+                "action": action,
+                "justification": confidence_result.explanation,
+                "signals_json": signals_json,
+            }
+        )
 
         logger.info(
             "Routing decision persisted for run '%s': action='%s'",
-            run_id, action,
+            run_id,
+            action,
         )
 
         # 5. Only dispatch action if pipeline succeeded (don't auto-merge a failing run)
-        if final_status not in ('success',):
+        if final_status not in ("success",):
             logger.info(
                 "Routing dispatch skipped for run '%s': final_status='%s' "
                 "(only dispatching on success)",
-                run_id, final_status,
+                run_id,
+                final_status,
             )
             return final_status, None
 
         # 6. Determine updated final_status from routing action before dispatch
         if action == "human_review":
-            final_status = 'pending_review'
+            final_status = "pending_review"
         elif action == "reject":
-            final_status = 'rejected'
+            final_status = "rejected"
 
         # 7. Dispatch action (status already updated above; dispatch does I/O only).
         #    For auto_merge, defer execution until after _post_github_result_hook so
@@ -1705,15 +1755,16 @@ def _compute_and_dispatch_routing(
 
         return final_status, merge_intent
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Confidence/routing integration failed for run '%s' (non-fatal): %s",
-            run_id, exc,
+            run_id,
+            exc,
         )
         return final_status, None
 
 
-def _dispatch_routing_action(
+def _dispatch_routing_action(  # noqa: C901
     run_id: str,
     action: str,
     decision: Any,
@@ -1759,11 +1810,13 @@ def _dispatch_routing_action(
             logger.info(
                 "Routing action 'human_review' for run '%s': tier='%s' score=%.4f "
                 "— queued for manual review (status will be set to pending_review).",
-                run_id, decision.tier, decision.score,
+                run_id,
+                decision.tier,
+                decision.score,
             )
             try:
-                from .notifications import NotificationDispatcher
-                from .git_integration import GitContext as _GitContextHR
+                from .git_integration import GitContext as _GitContextHR  # noqa: PLC0415
+                from .notifications import NotificationDispatcher  # noqa: PLC0415
 
                 # Enrich notification with issue context from the gate file
                 _gate_data = _GitContextHR.load_gate(run_id) or {}
@@ -1803,7 +1856,7 @@ def _dispatch_routing_action(
                     confidence=_confidence,
                     pr_url=_pr_url,
                 )
-            except Exception as _ne:
+            except Exception as _ne:  # noqa: BLE001
                 logger.warning(
                     "Notification dispatch failed for run '%s' (non-fatal): %s",
                     run_id,
@@ -1813,7 +1866,9 @@ def _dispatch_routing_action(
             logger.info(
                 "Routing action 'reject' for run '%s': tier='%s' score=%.4f "
                 "— run will be marked as rejected.",
-                run_id, decision.tier, decision.score,
+                run_id,
+                decision.tier,
+                decision.score,
             )
             _post_reject_comment(
                 run_id=run_id,
@@ -1823,16 +1878,19 @@ def _dispatch_routing_action(
         else:
             logger.warning(
                 "Unknown routing action '%s' for run '%s' — treated as human_review.",
-                action, run_id,
+                action,
+                run_id,
             )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Routing dispatch failed for run '%s' action='%s' (non-fatal): %s",
-            run_id, action, exc,
+            run_id,
+            action,
+            exc,
         )
 
 
-def _dispatch_auto_merge(
+def _dispatch_auto_merge(  # noqa: C901
     run_id: str,
     auto_merge_config: Any,
     decision: Any,
@@ -1872,19 +1930,13 @@ def _dispatch_auto_merge(
         repo:              Git repository slug (e.g. ``"owner/repo"``).  Used
                            for the allowlist check.  Optional.
     """
-    import os as _os
+    import os as _os  # noqa: PLC0415
 
     # Derive effective config values; auto_merge_config is no longer required.
     strategy = auto_merge_config.strategy if auto_merge_config else "squash"
-    require_approve = (
-        auto_merge_config.require_approve
-        if auto_merge_config is not None
-        else False
-    )
+    require_approve = auto_merge_config.require_approve if auto_merge_config is not None else False
     review_phase_id = (
-        auto_merge_config.review_phase_id
-        if auto_merge_config is not None
-        else "review"
+        auto_merge_config.review_phase_id if auto_merge_config is not None else "review"
     )
 
     # --- Safety guard 1: repo allowlist ---
@@ -1895,7 +1947,9 @@ def _dispatch_auto_merge(
             logger.info(
                 "Auto-merge BLOCKED for run '%s': repo '%s' is not in "
                 "ORCH_AUTO_MERGE_ALLOWED_REPOS allowlist (%s).",
-                run_id, repo, ", ".join(sorted(allowed_repos)),
+                run_id,
+                repo,
+                ", ".join(sorted(allowed_repos)),
             )
             return
 
@@ -1906,19 +1960,22 @@ def _dispatch_auto_merge(
             logger.info(
                 "Auto-merge skipped for run '%s': review phase '%s' not found "
                 "(require_approve=True).",
-                run_id, review_phase_id,
+                run_id,
+                review_phase_id,
             )
             return
         review_text = _extract_output_text(review_out).strip()
         # Issue #687: canonical verdict extractor lives in verdict_parser and
         # returns lowercase ("approve" / "request_changes" / "abort" / None).
         from .verdict_parser import extract_verdict as _extract_verdict  # noqa: PLC0415
+
         _verdict = _extract_verdict(text=review_text)
         if _verdict != "approve":
             logger.info(
                 "Auto-merge skipped for run '%s': review phase '%s' did not "
                 "return APPROVE verdict (got: %r).",
-                run_id, review_phase_id,
+                run_id,
+                review_phase_id,
                 _verdict,
             )
             return
@@ -1957,7 +2014,8 @@ def _dispatch_auto_merge(
             "Auto-merge BLOCKED for run '%s': branch '%s' is in the protected "
             "branches list — refusing to auto-merge.  "
             "Override via ORCH_AUTO_MERGE_PROTECTED_BRANCHES env var.",
-            run_id, branch_name,
+            run_id,
+            branch_name,
         )
         return
 
@@ -1969,14 +2027,19 @@ def _dispatch_auto_merge(
         logger.info(
             "Auto-merge DRY-RUN for run '%s': would merge branch '%s' "
             "with strategy='%s' (set ORCH_AUTO_MERGE_DRY_RUN=0 to activate).",
-            run_id, branch_name, strategy,
+            run_id,
+            branch_name,
+            strategy,
         )
         return
 
     # --- Execute merge ---
     logger.info(
         "Auto-merge TRIGGERED for run '%s': score=%.4f, branch='%s', strategy='%s'.",
-        run_id, decision.score, branch_name, strategy,
+        run_id,
+        decision.score,
+        branch_name,
+        strategy,
     )
 
     _GitContext.auto_merge_pr(
@@ -1992,12 +2055,13 @@ def _dispatch_auto_merge(
             status="merged",
             message=f"Auto-merged by orchestrator (score={decision.score:.4f})",
         )
-    except Exception as _ge:
+    except Exception as _ge:  # noqa: BLE001
         logger.warning("Auto-merge: could not update gate status: %s", _ge)
 
     # --- Dispatch notification after successful merge ---
     try:
         from .notifications import NotificationDispatcher  # noqa: PLC0415
+
         _notifier = NotificationDispatcher.from_env()
         _notifier.dispatch(
             event="auto_merge",
@@ -2008,10 +2072,11 @@ def _dispatch_auto_merge(
             repo=repo or "unknown",
             strategy=strategy,
         )
-    except Exception as _ne:
+    except Exception as _ne:  # noqa: BLE001
         logger.warning(
             "Auto-merge notification dispatch failed for run '%s' (non-fatal): %s",
-            run_id, _ne,
+            run_id,
+            _ne,
         )
 
     # --- Sprint chain advancement (Issue #514) ---
@@ -2055,14 +2120,12 @@ def _trigger_sprint_chain_next(
     if not queue_config_path:
         return
     if not issue_number:
-        logger.debug(
-            "sprint_chain: no issue_number for run %s — skipping", run_id
-        )
+        logger.debug("sprint_chain: no issue_number for run %s — skipping", run_id)
         return
     try:
-        from .sprint_chain import SprintChainManager  # noqa: PLC0415
-        from .db import Database  # noqa: PLC0415
         from .cost_tracker import CostTracker  # noqa: PLC0415
+        from .db import Database  # noqa: PLC0415
+        from .sprint_chain import SprintChainManager  # noqa: PLC0415
 
         db = Database(Path(db_path))
         tracker = CostTracker(db)
@@ -2110,7 +2173,8 @@ def _post_reject_comment(
         confidence_result: :class:`~confidence.ConfidenceResult` for explanation text.
     """
     try:
-        from .git_integration import GitContext as _GitContext
+        from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+
         gate_data = _GitContext.load_gate(run_id)
         if gate_data is None:
             return
@@ -2129,27 +2193,26 @@ def _post_reject_comment(
             f"issues are resolved.*"
         )
 
-        if not hasattr(_GitContext, 'post_pr_comment'):
+        if not hasattr(_GitContext, "post_pr_comment"):
             # post_pr_comment not yet implemented — log and skip gracefully
             logger.info(
                 "Reject comment for run '%s' not posted — GitContext.post_pr_comment "
                 "not available. Comment would have been:\n%s",
-                run_id, comment_body,
+                run_id,
+                comment_body,
             )
             # Still update gate status to 'rejected' so orch gate info reflects it
             try:
                 _GitContext.update_gate_status(
                     run_id,
                     status="rejected",
-                    message=(
-                        f"Rejected by routing engine "
-                        f"(confidence={decision.score:.4f})"
-                    ),
+                    message=(f"Rejected by routing engine " f"(confidence={decision.score:.4f})"),
                 )
-            except Exception as _ge:
+            except Exception as _ge:  # noqa: BLE001
                 logger.warning(
                     "Could not update gate status for rejected run '%s': %s",
-                    run_id, _ge,
+                    run_id,
+                    _ge,
                 )
             return
 
@@ -2158,10 +2221,11 @@ def _post_reject_comment(
             branch_name=branch_name,
             comment=comment_body,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Could not post reject comment for run '%s' (non-fatal): %s",
-            run_id, exc,
+            run_id,
+            exc,
         )
 
 
@@ -2171,11 +2235,11 @@ def _fail(db: Any, run_id: str, pid_path: Path, message: str) -> None:
     try:
         db.update_pipeline_run(
             run_id,
-            status='failed',
+            status="failed",
             completed_at=now_utc().isoformat(),
             error_message=message,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Could not update DB on fail: %s", exc)
     _remove_pid_file(pid_path)
     sys.exit(1)
@@ -2184,10 +2248,8 @@ def _fail(db: Any, run_id: str, pid_path: Path, message: str) -> None:
 def _setup_logging(log_path: Path) -> None:
     """Configure root logger to write to the daemon log file."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(str(log_path), mode='a', encoding='utf-8')
-    handler.setFormatter(
-        logging.Formatter('%(asctime)s  %(levelname)-8s  %(name)s  %(message)s')
-    )
+    handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s"))
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.addHandler(handler)
@@ -2201,16 +2263,16 @@ def _write_summary(
     run_id: str,
 ) -> None:
     """Write _final_output.json, _final_output.md, and _summary.md."""
-    completed_phases = list(result.get('phase_outputs', {}).keys())
+    completed_phases = list(result.get("phase_outputs", {}).keys())
     run_date = now_utc().strftime("%Y-%m-%d %H:%M:%S")
 
     # _final_output.json
     (output_dir / "_final_output.json").write_text(
-        json.dumps(result.get('final_output', {}), indent=2, default=str)
+        json.dumps(result.get("final_output", {}), indent=2, default=str)
     )
 
     # _final_output.md
-    final_text = _extract_output_text(result.get('final_output', {}))
+    final_text = _extract_output_text(result.get("final_output", {}))
     (output_dir / "_final_output.md").write_text(f"# Final Output\n\n{final_text}\n")
 
     # _summary.md
@@ -2230,14 +2292,14 @@ def _write_summary(
         "|-------|-------|--------|------|",
     ]
     for phase_id in completed_phases:
-        out = result['phase_outputs'][phase_id]
-        _state = out.get('state', 'unknown')
-        state = _state.value if hasattr(_state, 'value') else str(_state)
-        tokens = out.get('tokens_consumed', 0)
-        cost = out.get('cost_usd', 0)
+        out = result["phase_outputs"][phase_id]
+        _state = out.get("state", "unknown")
+        state = _state.value if hasattr(_state, "value") else str(_state)
+        tokens = out.get("tokens_consumed", 0)
+        cost = out.get("cost_usd", 0)
         cost_float = float(cost) if cost else 0.0
         cost_str = f"${cost_float:.4f}" if cost else "n/a"
-        safe_id = re.sub(r'[^\w\-]', '_', phase_id)
+        safe_id = re.sub(r"[^\w\-]", "_", phase_id)
         total_tokens += tokens
         total_cost += cost_float
         summary_lines.append(f"| {safe_id} | {state} | {tokens} | {cost_str} |")
@@ -2295,7 +2357,7 @@ def dispatch_regression_fix_safely(
         The ``run_id`` string of the spawned fix pipeline, or ``None`` when
         the SafetyGuard blocked the attempt or when the pipeline launch failed.
     """
-    from .regression import SafetyGuard, RegressionStatus  # noqa: PLC0415
+    from .regression import RegressionStatus, SafetyGuard  # noqa: PLC0415
 
     guard = SafetyGuard()
     allowed, reason = guard.should_attempt_fix(regression, db)
@@ -2311,7 +2373,7 @@ def dispatch_regression_fix_safely(
                 regression.id,
                 status=RegressionStatus.ESCALATED.value,
             )
-        except Exception as _ue:
+        except Exception as _ue:  # noqa: BLE001
             logger.warning(
                 "dispatch_regression_fix_safely: could not update regression %s "
                 "to ESCALATED (non-fatal): %s",
@@ -2333,7 +2395,7 @@ def dispatch_regression_fix_safely(
 # ---------------------------------------------------------------------------
 
 
-def _post_github_result_hook(
+def _post_github_result_hook(  # noqa: C901
     run_id: str,
     db: Any,
     initial_input: Dict[str, Any],
@@ -2341,7 +2403,7 @@ def _post_github_result_hook(
     final_status: str,
     error_message: Optional[str],
     diagnosis: Any,
-    output_dir: Any,
+    output_dir: Any,  # noqa: ARG001
     template_category: str = "",
 ) -> None:
     """Post pipeline results back to the originating GitHub issue (Issue #5.1.4).
@@ -2381,23 +2443,23 @@ def _post_github_result_hook(
                            Defaults to ``""`` (backward-compatible coding path).
     """
     try:
-        from .issue_automation import (
-            create_pr_for_issue,
+        from .issue_automation import (  # noqa: PLC0415
             create_content_pr,
-            post_pipeline_result_comment,
+            create_pr_for_issue,
             post_failure_summary_comment,
+            post_pipeline_result_comment,
         )
 
         # --- Non-code category dispatch (Issue #578) ---
         # Must run BEFORE the issue_number guard so content/docs pipelines
         # without an issue_number are not silently dropped.
-        _NON_CODE_CATEGORIES = frozenset({'content', 'research', 'docs'})
-        _CONTENT_PR_CATEGORIES = frozenset({'content', 'docs'})
-        _normalised_category = (template_category or '').lower().strip()
+        _NON_CODE_CATEGORIES = frozenset({"content", "research", "docs"})  # noqa: N806
+        _CONTENT_PR_CATEGORIES = frozenset({"content", "docs"})  # noqa: N806
+        _normalised_category = (template_category or "").lower().strip()
 
         if _normalised_category in _NON_CODE_CATEGORIES:
             # Research pipelines: no PR, no comment — always skip.
-            if _normalised_category == 'research':
+            if _normalised_category == "research":
                 logger.debug(
                     "_post_github_result_hook: research pipeline run='%s' — "
                     "skipping postflight (no PR, no comment)",
@@ -2406,48 +2468,48 @@ def _post_github_result_hook(
                 return
 
             # Content / docs failure: no orphan comments, no PR.
-            if final_status == 'failed':
+            if final_status == "failed":
                 logger.debug(
                     "_post_github_result_hook: %s pipeline run='%s' failed — "
                     "skipping postflight (no comment)",
-                    _normalised_category, run_id,
+                    _normalised_category,
+                    run_id,
                 )
                 return
 
             # Content / docs success: create a PR (no issue_number needed).
             _content_repo: str = _extract_repo_slug(
-                initial_input.get('repo_url', '') or initial_input.get('repo', '')
+                initial_input.get("repo_url", "") or initial_input.get("repo", "")
             )
             _content_branch: str = (
-                initial_input.get('branch_name')
-                or initial_input.get('branch')
-                or ''
+                initial_input.get("branch_name") or initial_input.get("branch") or ""
             )
             if not _content_repo or not _content_branch:
                 logger.debug(
                     "_post_github_result_hook: %s pipeline run='%s' missing "
                     "repo=%r or branch_name=%r — skipping PR",
-                    _normalised_category, run_id, _content_repo, _content_branch,
+                    _normalised_category,
+                    run_id,
+                    _content_repo,
+                    _content_branch,
                 )
                 return
 
             _content_topic: str = (
-                initial_input.get('topic')
-                or initial_input.get('title')
-                or initial_input.get('doc_title')
+                initial_input.get("topic")
+                or initial_input.get("title")
+                or initial_input.get("doc_title")
                 or f"pipeline run {run_id}"
             )
             _last_text = ""
             if phase_outputs:
                 _last_phase = list(phase_outputs.values())[-1]
-                _last_text = (
-                    _last_phase.get('output', '')
-                    or _last_phase.get('text', '')
-                    or ''
-                )[:500]
+                _last_text = (_last_phase.get("output", "") or _last_phase.get("text", "") or "")[
+                    :500
+                ]
             _pr_body = _last_text or f"Automated content pipeline run `{run_id}`."
 
-            _pr_prefix = 'docs' if _normalised_category == 'docs' else 'content'
+            _pr_prefix = "docs" if _normalised_category == "docs" else "content"
 
             try:
                 url = create_content_pr(
@@ -2456,37 +2518,36 @@ def _post_github_result_hook(
                     topic=_content_topic,
                     body=_pr_body,
                     run_id=run_id,
-                    issue_number=initial_input.get('issue_number'),
+                    issue_number=initial_input.get("issue_number"),
                     prefix=_pr_prefix,
                 )
                 if url:
-                    logger.info(
-                        "_post_github_result_hook: content PR created → %s", url
-                    )
+                    logger.info("_post_github_result_hook: content PR created → %s", url)
                 else:
                     logger.warning(
                         "_post_github_result_hook: content PR creation returned None"
-                        " for run='%s'", run_id,
+                        " for run='%s'",
+                        run_id,
                     )
-            except Exception as _pr_exc:
+            except Exception as _pr_exc:  # noqa: BLE001
                 logger.warning(
                     "_post_github_result_hook: content PR creation failed (non-fatal)"
-                    " for run='%s': %s", run_id, _pr_exc,
+                    " for run='%s': %s",
+                    run_id,
+                    _pr_exc,
                 )
             return
 
         # --- Existing code path (category is empty / 'code' / unrecognised) ---
         # Resolve issue context.
-        issue_number: Optional[int] = initial_input.get('issue_number')
+        issue_number: Optional[int] = initial_input.get("issue_number")
         repo: str = _extract_repo_slug(
-            initial_input.get('repo_url', '') or initial_input.get('repo', '')
+            initial_input.get("repo_url", "") or initial_input.get("repo", "")
         )
 
         if not issue_number or not repo:
             # Not triggered by a GitHub issue — nothing to post.
-            logger.debug(
-                "_post_github_result_hook: no issue_number/repo in input — skipping"
-            )
+            logger.debug("_post_github_result_hook: no issue_number/repo in input — skipping")
             return
 
         issue_number = int(issue_number)
@@ -2497,54 +2558,46 @@ def _post_github_result_hook(
         try:
             ipm_row = db.get_issue_classification_by_run_id(run_id)
             if ipm_row:
-                classification_type = ipm_row.get('classification_type')
-                ipm_row_id = ipm_row.get('id')
-        except Exception as _db_exc:
-            logger.warning(
-                "_post_github_result_hook: DB lookup failed (non-fatal): %s", _db_exc
-            )
+                classification_type = ipm_row.get("classification_type")
+                ipm_row_id = ipm_row.get("id")
+        except Exception as _db_exc:  # noqa: BLE001
+            logger.warning("_post_github_result_hook: DB lookup failed (non-fatal): %s", _db_exc)
 
         # Fall back to initial_input if DB lookup missed.
         if not classification_type:
-            classification_type = initial_input.get('classification_type', 'feature')
+            classification_type = initial_input.get("classification_type", "feature")
 
         # --- Dispatch ---
-        if final_status == 'failed':
+        if final_status == "failed":
             url = post_failure_summary_comment(
                 repo=repo,
                 issue_number=issue_number,
-                error_message=error_message or 'Unknown error',
+                error_message=error_message or "Unknown error",
                 run_id=run_id,
                 diagnosis=diagnosis,
             )
             if url:
-                logger.info(
-                    "_post_github_result_hook: failure comment posted → %s", url
-                )
+                logger.info("_post_github_result_hook: failure comment posted → %s", url)
                 if ipm_row_id is not None:
-                    db.update_issue_classification_status(ipm_row_id, 'completed')
+                    db.update_issue_classification_status(ipm_row_id, "completed")
             else:
-                logger.warning(
-                    "_post_github_result_hook: failure comment post returned None"
-                )
+                logger.warning("_post_github_result_hook: failure comment post returned None")
 
-        elif classification_type in ('bug', 'feature', 'refactor'):
+        elif classification_type in ("bug", "feature", "refactor"):
             # Code pipeline — open a PR.
             branch_name: str = (
-                initial_input.get('branch_name')
-                or initial_input.get('feature_branch')
+                initial_input.get("branch_name")
+                or initial_input.get("feature_branch")
                 or f"feat/issue-{issue_number}"
             )
-            pr_title = initial_input.get('pr_title') or f"Pipeline result for #{issue_number}"
+            pr_title = initial_input.get("pr_title") or f"Pipeline result for #{issue_number}"
             # Collect a short summary from the last phase output.
             _last_text = ""
             if phase_outputs:
                 _last_phase = list(phase_outputs.values())[-1]
-                _last_text = (
-                    _last_phase.get('output', '')
-                    or _last_phase.get('text', '')
-                    or ''
-                )[:500]
+                _last_text = (_last_phase.get("output", "") or _last_phase.get("text", "") or "")[
+                    :500
+                ]
             _base_body = _last_text or f"Automated result from pipeline run `{run_id}`."
             # Include Closes #N so GitHub auto-links the issue (Issue #578).
             pr_body = f"{_base_body}\n\nCloses #{issue_number}"
@@ -2553,7 +2606,8 @@ def _post_github_result_hook(
             # Sub-agents sometimes commit locally without pushing.  Push now so
             # `gh pr create` doesn't fail with "No commits between main and branch".
             from .postflight import ensure_branch_pushed  # noqa: PLC0415
-            _repo_path = initial_input.get('repo_path', '')
+
+            _repo_path = initial_input.get("repo_path", "")
             if _repo_path:
                 _pushed = ensure_branch_pushed(_repo_path, branch_name)
                 if not _pushed:
@@ -2577,26 +2631,18 @@ def _post_github_result_hook(
                 body=pr_body,
             )
             if url:
-                logger.info(
-                    "_post_github_result_hook: PR created → %s", url
-                )
+                logger.info("_post_github_result_hook: PR created → %s", url)
                 if ipm_row_id is not None:
-                    db.update_issue_classification_status(ipm_row_id, 'completed')
+                    db.update_issue_classification_status(ipm_row_id, "completed")
             else:
-                logger.warning(
-                    "_post_github_result_hook: PR creation returned None"
-                )
+                logger.warning("_post_github_result_hook: PR creation returned None")
 
-        elif classification_type in ('content', 'docs', 'research'):
+        elif classification_type in ("content", "docs", "research"):
             # Non-code pipeline — post output as comment (truncated to 65k chars).
             _result_text = ""
             if phase_outputs:
                 _last_phase = list(phase_outputs.values())[-1]
-                _result_text = (
-                    _last_phase.get('output', '')
-                    or _last_phase.get('text', '')
-                    or ''
-                )
+                _result_text = _last_phase.get("output", "") or _last_phase.get("text", "") or ""
             _result_text = (_result_text or "*(No output text captured.)*")[:65_000]
             url = post_pipeline_result_comment(
                 repo=repo,
@@ -2606,32 +2652,26 @@ def _post_github_result_hook(
                 run_id=run_id,
             )
             if url:
-                logger.info(
-                    "_post_github_result_hook: result comment posted → %s", url
-                )
+                logger.info("_post_github_result_hook: result comment posted → %s", url)
                 if ipm_row_id is not None:
-                    db.update_issue_classification_status(ipm_row_id, 'completed')
+                    db.update_issue_classification_status(ipm_row_id, "completed")
             else:
-                logger.warning(
-                    "_post_github_result_hook: result comment post returned None"
-                )
+                logger.warning("_post_github_result_hook: result comment post returned None")
         else:
             logger.debug(
                 "_post_github_result_hook: unrecognised classification_type=%r — skipping",
                 classification_type,
             )
 
-    except Exception as exc:
-        logger.warning(
-            "_post_github_result_hook: unexpected error (non-fatal): %s", exc
-        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("_post_github_result_hook: unexpected error (non-fatal): %s", exc)
 
 
 # ---------------------------------------------------------------------------
 # __main__ entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     if len(sys.argv) != 3:
         logger.error("Usage: python -m orchestration_engine.daemon <run_id> <db_path>")
         sys.exit(1)

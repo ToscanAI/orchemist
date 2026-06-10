@@ -80,11 +80,11 @@ class GeminiCliExecutor(BaseExecutor):
 
     # ── TaskExecutor ABC ──────────────────────────────────────────────
 
-    def can_handle(self, task_type: TaskType) -> bool:
+    def can_handle(self, task_type: TaskType) -> bool:  # noqa: ARG002
         """The Gemini CLI is text-in/text-out — usable for any task type."""
         return True
 
-    def estimate_cost(self, task: TaskSpec) -> float:
+    def estimate_cost(self, task: TaskSpec) -> float:  # noqa: ARG002
         """Rough cost estimate.  Gemini 3.1 Pro is ~ $1.25/$5 per Mtok."""
         return 0.02
 
@@ -92,7 +92,7 @@ class GeminiCliExecutor(BaseExecutor):
         self,
         task: TaskSpec,
         worker_id: str = "gemini-cli",
-        model_tier: Optional[str] = None,
+        model_tier: Optional[str] = None,  # noqa: ARG002
         thinking_level: Optional[str] = None,  # noqa: ARG002 — accepted for ABC compat
     ) -> TaskResult:
         """Run a single ``gemini -p`` invocation and return a :class:`TaskResult`.
@@ -133,7 +133,10 @@ class GeminiCliExecutor(BaseExecutor):
         binary_resolved = shutil.which(cmd[0]) or cmd[0]
         logger.info(
             "GeminiCliExecutor: invoking %s (model=%s, timeout=%ds, prompt_len=%d)",
-            binary_resolved, model or "<default>", timeout, len(prompt),
+            binary_resolved,
+            model or "<default>",
+            timeout,
+            len(prompt),
         )
 
         try:
@@ -150,15 +153,15 @@ class GeminiCliExecutor(BaseExecutor):
             # TypeError after the fix). elapsed is unused here but the subtraction
             # still executes before the raise below.
             elapsed = (now_utc() - start_time).total_seconds()
-            stdout_partial = (exc.stdout or "") if isinstance(exc.stdout, str) else (
-                exc.stdout.decode("utf-8", errors="replace") if exc.stdout else ""
-            )
-            stderr_partial = (exc.stderr or "") if isinstance(exc.stderr, str) else (
-                exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
+            stderr_partial = (
+                (exc.stderr or "")
+                if isinstance(exc.stderr, str)
+                else (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else "")
             )
             logger.warning(
                 "GeminiCliExecutor: timed out after %ds (stderr=%r)",
-                timeout, (stderr_partial[:200] if stderr_partial else ""),
+                timeout,
+                (stderr_partial[:200] if stderr_partial else ""),
             )
             raise TimeoutError(
                 f"gemini CLI exceeded {timeout}s timeout; "
@@ -189,7 +192,8 @@ class GeminiCliExecutor(BaseExecutor):
         if exit_code != 0:
             logger.warning(
                 "GeminiCliExecutor: exit=%d stderr=%r",
-                exit_code, stderr[:500],
+                exit_code,
+                stderr[:500],
             )
             raise GeminiCliError(
                 f"gemini CLI exited {exit_code}: {stderr.strip()[:500] or '(empty stderr)'}"

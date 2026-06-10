@@ -12,29 +12,26 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
-from typing import Dict, Any, List, Optional
-
-logger = logging.getLogger(__name__)
-
-import yaml
+from typing import Any, Dict, List, Optional
 
 import click
-from decimal import Decimal
+import yaml
 
 from .daemon import apply_config_schema_defaults
 from .db import Database, default_db_path
-from .timestamps import now_utc
 from .output_utils import (
     extract_output_text as _extract_output_text,
+)
+from .output_utils import (
     safe_write_phase_output as _safe_write_phase_output,
 )
 from .queue import TaskQueue
-from .schemas import (
-    TaskSpec, TaskType, Priority, TaskState, TaskFilters,
-    generate_task_id
-)
+from .schemas import Priority, TaskFilters, TaskSpec, TaskState, TaskType
+from .timestamps import now_utc
 
+logger = logging.getLogger(__name__)
 
 # Global queue instance (initialized per command)
 queue: Optional[TaskQueue] = None
@@ -59,7 +56,7 @@ def format_duration(seconds: Optional[float]) -> str:
     """Format duration in seconds to human readable format."""
     if seconds is None or seconds == 0:
         return "N/A"
-    
+
     if seconds < 60:
         return f"{seconds:.1f}s"
     elif seconds < 3600:
@@ -73,62 +70,70 @@ def print_table(headers: List[str], rows: List[List[str]]) -> None:
     if not rows:
         click.echo("No data to display")
         return
-    
+
     # Calculate column widths
     col_widths = [len(h) for h in headers]
     for row in rows:
         for i, cell in enumerate(row):
             if i < len(col_widths):
                 col_widths[i] = max(col_widths[i], len(str(cell)))
-    
+
     # Print header
-    header_line = " | ".join(
-        h.ljust(col_widths[i]) for i, h in enumerate(headers)
-    )
+    header_line = " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers))
     click.echo(header_line)
     click.echo("-" * len(header_line))
-    
+
     # Print rows
     for row in rows:
         row_line = " | ".join(
-            str(row[i] if i < len(row) else "").ljust(col_widths[i])
-            for i in range(len(headers))
+            str(row[i] if i < len(row) else "").ljust(col_widths[i]) for i in range(len(headers))
         )
         click.echo(row_line)
 
 
 @click.group()
-@click.option('--db-path', type=click.Path(path_type=Path), help='Database file path')
-@click.option('--verbose', '-v', is_flag=True, help='Verbose output')
+@click.option("--db-path", type=click.Path(path_type=Path), help="Database file path")
+@click.option("--verbose", "-v", is_flag=True, help="Verbose output")
 @click.version_option()
 def main(db_path: Optional[Path], verbose: bool) -> None:
     """Orchestration Engine CLI - AI Agent Task Coordination."""
     global queue
-    
+
     if verbose:
-        import logging
+        import logging  # noqa: PLC0415
+
         logging.basicConfig(level=logging.INFO)
-    
+
     # Initialize queue with custom db path if provided
     if db_path:
-        from .db import Database
+        from .db import Database  # noqa: PLC0415
+
         queue = TaskQueue(Database(db_path))
 
 
 @main.command()
-@click.option('--type', 'task_type', type=click.Choice([t.value for t in TaskType]),
-              required=True, help='Task type')
-@click.option('--payload', required=True, help='Task payload as JSON string')
-@click.option('--priority', type=click.Choice([p.name.lower() for p in Priority]),
-              default='normal', help='Task priority')
-@click.option('--max-retries', type=int, help='Maximum retry attempts')
-@click.option('--timeout', type=int, help='Timeout in seconds')
-@click.option('--min-confidence', type=float, help='Minimum confidence score (0.0-1.0)')
-@click.option('--cost-limit', type=float, help='Cost limit in USD')
-@click.option('--orchestra-id', help='Orchestra workflow ID')
-@click.option('--orchestra-phase', help='Phase within orchestra')
-@click.option('--tag', multiple=True, help='Tags (can be used multiple times)')
-@click.option('--created-by', help='Creator identifier')
+@click.option(
+    "--type",
+    "task_type",
+    type=click.Choice([t.value for t in TaskType]),
+    required=True,
+    help="Task type",
+)
+@click.option("--payload", required=True, help="Task payload as JSON string")
+@click.option(
+    "--priority",
+    type=click.Choice([p.name.lower() for p in Priority]),
+    default="normal",
+    help="Task priority",
+)
+@click.option("--max-retries", type=int, help="Maximum retry attempts")
+@click.option("--timeout", type=int, help="Timeout in seconds")
+@click.option("--min-confidence", type=float, help="Minimum confidence score (0.0-1.0)")
+@click.option("--cost-limit", type=float, help="Cost limit in USD")
+@click.option("--orchestra-id", help="Orchestra workflow ID")
+@click.option("--orchestra-phase", help="Phase within orchestra")
+@click.option("--tag", multiple=True, help="Tags (can be used multiple times)")
+@click.option("--created-by", help="Creator identifier")
 def submit(
     task_type: str,
     payload: str,
@@ -140,7 +145,7 @@ def submit(
     orchestra_id: Optional[str],
     orchestra_phase: Optional[str],
     tag: tuple,
-    created_by: Optional[str]
+    created_by: Optional[str],
 ) -> None:
     """Submit a new task to the queue."""
     try:
@@ -150,7 +155,7 @@ def submit(
         except json.JSONDecodeError as e:
             click.echo(f"Error: Invalid JSON payload: {e}", err=True)
             sys.exit(1)
-        
+
         # Create task specification
         task_spec = TaskSpec(
             type=TaskType(task_type),
@@ -163,26 +168,26 @@ def submit(
             orchestra_id=orchestra_id,
             orchestra_phase=orchestra_phase,
             tags=list(tag),
-            created_by=created_by
+            created_by=created_by,
         )
-        
+
         # Submit task
         task_queue = get_queue()
         task_id = task_queue.submit_task(task_spec)
-        
-        click.echo(f"✓ Task submitted successfully")
+
+        click.echo("✓ Task submitted successfully")
         click.echo(f"Task ID: {task_id}")
         click.echo(f"Type: {task_type}")
         click.echo(f"Priority: {priority}")
-        
-    except Exception as e:
+
+    except Exception as e:  # noqa: BLE001
         click.echo(f"Error submitting task: {e}", err=True)
         sys.exit(1)
 
 
 @main.command()
-@click.argument('run_or_task_id', required=False, metavar='[RUN-ID|TASK-ID]')
-def status(run_or_task_id: Optional[str]) -> None:
+@click.argument("run_or_task_id", required=False, metavar="[RUN-ID|TASK-ID]")
+def status(run_or_task_id: Optional[str]) -> None:  # noqa: C901
     """Show pipeline run status, task status, or recent runs.
 
     Without an argument: list the 10 most recent async pipeline runs.
@@ -200,7 +205,7 @@ def status(run_or_task_id: Optional[str]) -> None:
         try:
             _db = Database()
             run = _db.get_pipeline_run(run_or_task_id)
-        except Exception:
+        except Exception:  # noqa: BLE001
             run = None
 
         if run is not None:
@@ -213,7 +218,9 @@ def status(run_or_task_id: Optional[str]) -> None:
             task_queue = get_queue()
             task_status_obj = task_queue.get_task_status(run_or_task_id)
             if not task_status_obj:
-                click.echo(f"ID '{run_or_task_id}' not found in pipeline runs or task queue.", err=True)
+                click.echo(
+                    f"ID '{run_or_task_id}' not found in pipeline runs or task queue.", err=True
+                )
                 sys.exit(1)
             click.echo(f"Task Status: {run_or_task_id}")
             click.echo(f"├─ Type: {task_status_obj.task_type.value}")
@@ -223,7 +230,9 @@ def status(run_or_task_id: Optional[str]) -> None:
             click.echo(f"├─ Started: {format_datetime(task_status_obj.started_at)}")
             click.echo(f"├─ Completed: {format_datetime(task_status_obj.completed_at)}")
             if task_status_obj.retry_count > 0:
-                click.echo(f"├─ Retries: {task_status_obj.retry_count}/{task_status_obj.max_retries}")
+                click.echo(
+                    f"├─ Retries: {task_status_obj.retry_count}/{task_status_obj.max_retries}"
+                )
             if task_status_obj.next_retry_at:
                 click.echo(f"├─ Next Retry: {format_datetime(task_status_obj.next_retry_at)}")
             if task_status_obj.orchestra_id:
@@ -234,7 +243,7 @@ def status(run_or_task_id: Optional[str]) -> None:
                 click.echo(f"└─ Progress: {task_status_obj.progress_percentage:.1f}%")
             else:
                 click.echo("└─ Progress: N/A")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             click.echo(f"Error getting status: {e}", err=True)
             sys.exit(1)
 
@@ -243,7 +252,7 @@ def status(run_or_task_id: Optional[str]) -> None:
         try:
             _db = Database()
             runs = _db.list_pipeline_runs(limit=10)
-        except Exception:
+        except Exception:  # noqa: BLE001
             runs = []
 
         if not runs:
@@ -253,8 +262,10 @@ def status(run_or_task_id: Optional[str]) -> None:
             try:
                 task_queue = get_queue()
                 stats = task_queue.get_queue_stats()
-                click.echo(f"\nQueue: {stats.queued} queued  {stats.running} running  {stats.completed} done")
-            except Exception:
+                click.echo(
+                    f"\nQueue: {stats.queued} queued  {stats.running} running  {stats.completed} done"  # noqa: E501
+                )
+            except Exception:  # noqa: BLE001
                 pass
             return
 
@@ -266,37 +277,37 @@ def status(run_or_task_id: Optional[str]) -> None:
 
 def _print_run_summary_line(run: Dict[str, Any]) -> None:
     """Print a single-line summary of a pipeline run."""
-    import os as _os
-    run_id = run['run_id']
-    status = run['status']
-    template_id = run.get('template_id', '?')[:20]
-    mode = run.get('mode', '?')
-    created = (run.get('created_at') or '')[:16]
+    run_id = run["run_id"]
+    status = run["status"]
+    template_id = run.get("template_id", "?")[:20]
+    mode = run.get("mode", "?")
+    created = (run.get("created_at") or "")[:16]
 
     # Check PID liveness if running
-    if status == 'running':
-        pid = run.get('pid')
+    if status == "running":
+        pid = run.get("pid")
         if pid:
             try:
-                from .daemon import is_process_alive
+                from .daemon import is_process_alive  # noqa: PLC0415
+
                 if not is_process_alive(pid):
-                    status = 'crashed'
-            except Exception:
+                    status = "crashed"
+            except Exception:  # noqa: BLE001
                 pass
 
     status_icon = {
-        'pending': '⏳',
-        'running': '🔄',
-        'success': '✅',
-        'failed': '❌',
-        'cancelled': '🚫',
-        'crashed': '💀',
-        'scoring_failed': '🔴',
-    }.get(status, '❓')
+        "pending": "⏳",
+        "running": "🔄",
+        "success": "✅",
+        "failed": "❌",
+        "cancelled": "🚫",
+        "crashed": "💀",
+        "scoring_failed": "🔴",
+    }.get(status, "❓")
 
-    current_phase = run.get('current_phase') or '-'
+    current_phase = run.get("current_phase") or "-"
     # Append scoring suffix when scoring_status is set (Issue #287)
-    _scoring_status = run.get('scoring_status')
+    _scoring_status = run.get("scoring_status")
     _scoring_suffix = f"  [score={_scoring_status}]" if _scoring_status else ""
     click.echo(
         f"{run_id}  {status_icon} {status:<10}  {template_id:<22}  "
@@ -304,33 +315,33 @@ def _print_run_summary_line(run: Dict[str, Any]) -> None:
     )
 
 
-def _print_run_detail(run: Dict[str, Any]) -> None:
+def _print_run_detail(run: Dict[str, Any]) -> None:  # noqa: C901
     """Print detailed status for a single pipeline run, checking PID liveness."""
-    import json as _json
-    import os as _os
+    import json as _json  # noqa: PLC0415
 
-    run_id = run['run_id']
-    status = run['status']
-    pid = run.get('pid')
+    run_id = run["run_id"]
+    status = run["status"]
+    pid = run.get("pid")
 
     # Check PID liveness
-    if status == 'running' and pid:
+    if status == "running" and pid:
         try:
-            from .daemon import is_process_alive
+            from .daemon import is_process_alive  # noqa: PLC0415
+
             if not is_process_alive(pid):
-                status = 'crashed'
+                status = "crashed"
                 # Update DB
                 try:
-                    Database().update_pipeline_run(run_id, status='crashed')
-                except Exception:
+                    Database().update_pipeline_run(run_id, status="crashed")
+                except Exception:  # noqa: BLE001
                     pass
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     # Elapsed time
-    started_at = run.get('started_at')
-    completed_at = run.get('completed_at')
-    elapsed_str = 'n/a'
+    started_at = run.get("started_at")
+    completed_at = run.get("completed_at")
+    elapsed_str = "n/a"
     if started_at:
         try:
             start_dt = datetime.fromisoformat(started_at)
@@ -344,24 +355,24 @@ def _print_run_detail(run: Dict[str, Any]) -> None:
                 end_dt = now_utc()
             elapsed_s = (end_dt - start_dt).total_seconds()
             elapsed_str = _fmt_elapsed(elapsed_s)
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     # Completed phases
     try:
-        completed_phases = _json.loads(run.get('completed_phases') or '[]')
-    except Exception:
+        completed_phases = _json.loads(run.get("completed_phases") or "[]")
+    except Exception:  # noqa: BLE001
         completed_phases = []
 
     status_icon = {
-        'pending': '⏳',
-        'running': '🔄',
-        'success': '✅',
-        'failed': '❌',
-        'cancelled': '🚫',
-        'crashed': '💀',
-        'scoring_failed': '🔴',
-    }.get(status, '❓')
+        "pending": "⏳",
+        "running": "🔄",
+        "success": "✅",
+        "failed": "❌",
+        "cancelled": "🚫",
+        "crashed": "💀",
+        "scoring_failed": "🔴",
+    }.get(status, "❓")
 
     click.echo(f"Pipeline Run: {run_id}")
     click.echo(f"├─ Status:     {status_icon} {status}")
@@ -372,28 +383,26 @@ def _print_run_detail(run: Dict[str, Any]) -> None:
     click.echo(f"├─ Completed:  {len(completed_phases)} phase(s): {completed_phases}")
     click.echo(f"├─ PID:        {pid or 'n/a'}")
     click.echo(f"├─ Output:     {run.get('output_dir', '?')}")
-    if run.get('error_message'):
+    if run.get("error_message"):
         click.echo(f"├─ Error:      {run['error_message']}")
     # Stall detection (#413) — check for recent stall events
-    if status == 'running':
+    if status == "running":
         try:
+            _db = Database()
             _stall_events = _db.list_pipeline_run_events(run_id, after_id=0, limit=100)
-            _recent_stalls = [
-                e for e in _stall_events
-                if e.get('event_type') == 'stall_detected'
-            ]
+            _recent_stalls = [e for e in _stall_events if e.get("event_type") == "stall_detected"]
             if _recent_stalls:
                 _last_stall = _recent_stalls[-1]
-                _stall_meta = _json.loads(_last_stall.get('metadata_json', '{}'))
-                _stall_msg = _stall_meta.get('message', 'No token progress detected')
+                _stall_meta = _json.loads(_last_stall.get("metadata_json", "{}"))
+                _stall_msg = _stall_meta.get("message", "No token progress detected")
                 click.echo(f"├─ Warning:    ⚠️  {_stall_msg}")
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
     # Scoring outcome (Issue #287)
-    _scoring_status = run.get('scoring_status')
-    _scoring_score = run.get('scoring_score')
+    _scoring_status = run.get("scoring_status")
+    _scoring_score = run.get("scoring_score")
     if _scoring_status is not None:
-        _score_icon = {'passed': '✅', 'failed': '❌', 'error': '⚠️'}.get(_scoring_status, '❓')
+        _score_icon = {"passed": "✅", "failed": "❌", "error": "⚠️"}.get(_scoring_status, "❓")
         _score_suffix = f"  (score={_scoring_score:.3f})" if _scoring_score is not None else ""
         click.echo(f"├─ Scoring:    {_score_icon} {_scoring_status}{_score_suffix}")
     click.echo(f"├─ Created:    {(run.get('created_at') or '')[:19]}")
@@ -414,19 +423,37 @@ def _fmt_elapsed(seconds: float) -> str:
 
 
 @main.command()
-@click.option('--state', multiple=True, type=click.Choice([s.value for s in TaskState]),
-              help='Filter by task state (can be used multiple times)')
-@click.option('--type', 'task_type', multiple=True, type=click.Choice([t.value for t in TaskType]),
-              help='Filter by task type (can be used multiple times)')
-@click.option('--priority', multiple=True, type=click.Choice([p.name.lower() for p in Priority]),
-              help='Filter by priority (can be used multiple times)')
-@click.option('--orchestra-id', help='Filter by orchestra ID')
-@click.option('--tag', multiple=True, help='Filter by tags')
-@click.option('--limit', type=int, default=20, help='Maximum number of tasks to show')
-@click.option('--offset', type=int, default=0, help='Number of tasks to skip')
-@click.option('--format', 'output_format', type=click.Choice(['table', 'json']),
-              default='table', help='Output format')
-def list(
+@click.option(
+    "--state",
+    multiple=True,
+    type=click.Choice([s.value for s in TaskState]),
+    help="Filter by task state (can be used multiple times)",
+)
+@click.option(
+    "--type",
+    "task_type",
+    multiple=True,
+    type=click.Choice([t.value for t in TaskType]),
+    help="Filter by task type (can be used multiple times)",
+)
+@click.option(
+    "--priority",
+    multiple=True,
+    type=click.Choice([p.name.lower() for p in Priority]),
+    help="Filter by priority (can be used multiple times)",
+)
+@click.option("--orchestra-id", help="Filter by orchestra ID")
+@click.option("--tag", multiple=True, help="Filter by tags")
+@click.option("--limit", type=int, default=20, help="Maximum number of tasks to show")
+@click.option("--offset", type=int, default=0, help="Number of tasks to skip")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"]),
+    default="table",
+    help="Output format",
+)
+def list(  # noqa: A001
     state: tuple,
     task_type: tuple,
     priority: tuple,
@@ -434,7 +461,7 @@ def list(
     tag: tuple,
     limit: int,
     offset: int,
-    output_format: str
+    output_format: str,
 ) -> None:
     """List tasks with optional filtering."""
     try:
@@ -446,166 +473,191 @@ def list(
             orchestra_id=orchestra_id,
             tags=list(tag) if tag else None,
             limit=limit,
-            offset=offset
+            offset=offset,
         )
-        
+
         # Get tasks
         task_queue = get_queue()
         tasks = task_queue.list_tasks(filters)
-        
-        if output_format == 'json':
+
+        if output_format == "json":
             # JSON output
             tasks_data = []
             for task in tasks:
-                tasks_data.append({
-                    'task_id': task.task_id,
-                    'type': task.task_type.value,
-                    'state': task.state.value,
-                    'priority': task.priority.name,
-                    'created_at': task.created_at.isoformat(),
-                    'retry_count': task.retry_count,
-                    'orchestra_id': task.orchestra_id,
-                    'title': task.title,
-                    'description': task.description,
-                    'tags': task.tags
-                })
+                tasks_data.append(  # noqa: PERF401
+                    {
+                        "task_id": task.task_id,
+                        "type": task.task_type.value,
+                        "state": task.state.value,
+                        "priority": task.priority.name,
+                        "created_at": task.created_at.isoformat(),
+                        "retry_count": task.retry_count,
+                        "orchestra_id": task.orchestra_id,
+                        "title": task.title,
+                        "description": task.description,
+                        "tags": task.tags,
+                    }
+                )
             click.echo(json.dumps(tasks_data, indent=2))
-        
+
         else:
             # Table output
             if not tasks:
                 click.echo("No tasks found matching the criteria")
                 return
-            
+
             headers = [
-                "Task ID", "Type", "State", "Priority", 
-                "Created", "Retries", "Orchestra", "Title"
+                "Task ID",
+                "Type",
+                "State",
+                "Priority",
+                "Created",
+                "Retries",
+                "Orchestra",
+                "Title",
             ]
-            
+
             rows = []
             for task in tasks:
-                rows.append([
-                    task.task_id[:8] + "...",  # Truncate task ID
-                    task.task_type.value,
-                    task.state.value,
-                    task.priority.name,
-                    format_datetime(task.created_at),
-                    f"{task.retry_count}" if task.retry_count > 0 else "-",
-                    task.orchestra_id[:8] + "..." if task.orchestra_id else "-",
-                    task.title[:30] + "..." if task.title and len(task.title) > 30 else task.title or "-"
-                ])
-            
+                rows.append(  # noqa: PERF401
+                    [
+                        task.task_id[:8] + "...",  # Truncate task ID
+                        task.task_type.value,
+                        task.state.value,
+                        task.priority.name,
+                        format_datetime(task.created_at),
+                        f"{task.retry_count}" if task.retry_count > 0 else "-",
+                        task.orchestra_id[:8] + "..." if task.orchestra_id else "-",
+                        (
+                            task.title[:30] + "..."
+                            if task.title and len(task.title) > 30
+                            else task.title or "-"
+                        ),
+                    ]
+                )
+
             print_table(headers, rows)
-            
+
             if len(tasks) == limit:
                 click.echo(f"\nShowing {limit} tasks (use --offset to see more)")
-    
-    except Exception as e:
+
+    except Exception as e:  # noqa: BLE001
         click.echo(f"Error listing tasks: {e}", err=True)
         sys.exit(1)
 
 
 @main.command()
-@click.argument('task_id')
-@click.option('--force', is_flag=True, help='Force cancellation without confirmation')
+@click.argument("task_id")
+@click.option("--force", is_flag=True, help="Force cancellation without confirmation")
 def cancel(task_id: str, force: bool) -> None:
     """Cancel a queued or running task."""
     try:
         task_queue = get_queue()
-        
+
         # Check if task exists first
         task_status = task_queue.get_task_status(task_id)
         if not task_status:
             click.echo(f"Task {task_id} not found", err=True)
             sys.exit(1)
-        
+
         # Confirm cancellation unless forced
         if not force:
             click.echo(f"Task: {task_id}")
             click.echo(f"Type: {task_status.task_type.value}")
             click.echo(f"State: {task_status.state.value}")
-            
+
             if not click.confirm("Are you sure you want to cancel this task?"):
                 click.echo("Cancellation aborted")
                 return
-        
+
         # Cancel task
         success = task_queue.cancel_task(task_id)
-        
+
         if success:
             click.echo(f"✓ Task {task_id} cancelled successfully")
         else:
-            click.echo(f"✗ Failed to cancel task {task_id} (may not be in cancellable state)", err=True)
+            click.echo(
+                f"✗ Failed to cancel task {task_id} (may not be in cancellable state)", err=True
+            )
             sys.exit(1)
-    
-    except Exception as e:
+
+    except Exception as e:  # noqa: BLE001
         click.echo(f"Error cancelling task: {e}", err=True)
         sys.exit(1)
 
 
 @main.command()
-@click.argument('task_id')
+@click.argument("task_id")
 def retry(task_id: str) -> None:
     """Manually retry a failed task."""
     try:
         task_queue = get_queue()
-        
+
         # Check task status first
         task_status = task_queue.get_task_status(task_id)
         if not task_status:
             click.echo(f"Task {task_id} not found", err=True)
             sys.exit(1)
-        
+
         if task_status.state not in [TaskState.FAILED, TaskState.PERMANENTLY_FAILED]:
-            click.echo(f"Task {task_id} is not in failed state (current: {task_status.state.value})", err=True)
+            click.echo(
+                f"Task {task_id} is not in failed state (current: {task_status.state.value})",
+                err=True,
+            )
             sys.exit(1)
-        
+
         # Retry task
         success = task_queue.retry_failed_task(task_id)
-        
+
         if success:
             click.echo(f"✓ Task {task_id} queued for retry")
         else:
-            click.echo(f"✗ Failed to retry task {task_id} (may have exceeded max retries)", err=True)
+            click.echo(
+                f"✗ Failed to retry task {task_id} (may have exceeded max retries)", err=True
+            )
             sys.exit(1)
-    
-    except Exception as e:
+
+    except Exception as e:  # noqa: BLE001
         click.echo(f"Error retrying task: {e}", err=True)
         sys.exit(1)
 
 
 @main.command()
-@click.option('--limit', type=int, default=20, help='Maximum number of dead letter tasks to show')
+@click.option("--limit", type=int, default=20, help="Maximum number of dead letter tasks to show")
 def dead_letter(limit: int) -> None:
     """Show tasks in the dead letter queue."""
     try:
         task_queue = get_queue()
         dead_tasks = task_queue.get_dead_letter_tasks(limit)
-        
+
         if not dead_tasks:
             click.echo("No tasks in dead letter queue")
             return
-        
-        headers = [
-            "Original ID", "Type", "Failure Reason", "Attempts", "Failed At"
-        ]
-        
+
+        headers = ["Original ID", "Type", "Failure Reason", "Attempts", "Failed At"]
+
         rows = []
         for task in dead_tasks:
-            rows.append([
-                task.original_task_id[:8] + "...",
-                task.task_type.value,
-                task.failure_reason[:50] + "..." if len(task.failure_reason) > 50 else task.failure_reason,
-                str(task.failure_count),
-                format_datetime(task.created_at)
-            ])
-        
+            rows.append(  # noqa: PERF401
+                [
+                    task.original_task_id[:8] + "...",
+                    task.task_type.value,
+                    (
+                        task.failure_reason[:50] + "..."
+                        if len(task.failure_reason) > 50
+                        else task.failure_reason
+                    ),
+                    str(task.failure_count),
+                    format_datetime(task.created_at),
+                ]
+            )
+
         print_table(headers, rows)
-        
+
         if len(dead_tasks) == limit:
             click.echo(f"\nShowing {limit} dead letter tasks")
-    
-    except Exception as e:
+
+    except Exception as e:  # noqa: BLE001
         click.echo(f"Error getting dead letter tasks: {e}", err=True)
         sys.exit(1)
 
@@ -616,22 +668,22 @@ def health() -> None:
     try:
         task_queue = get_queue()
         stats = task_queue.get_queue_stats()
-        
+
         # Basic health checks
         health_issues = []
-        
+
         # Check queue depth
         if stats.queued > 100:
             health_issues.append(f"High queue depth: {stats.queued} tasks")
-        
+
         # Check dead letter growth
         if stats.dead_letter_count > 50:
             health_issues.append(f"High dead letter count: {stats.dead_letter_count}")
-        
+
         # Check worker utilization
         if stats.active_workers == 0 and stats.queued > 0:
             health_issues.append("No active workers but tasks are queued")
-        
+
         # Display health status
         if health_issues:
             click.echo("⚠️  Health Issues Detected:")
@@ -639,23 +691,25 @@ def health() -> None:
                 click.echo(f"   • {issue}")
         else:
             click.echo("✅ System appears healthy")
-        
+
         # Display configuration
         click.echo("\nConfiguration:")
         click.echo(f"├─ Database: {task_queue.db.db_path}")
         click.echo(f"├─ Max Workers: {stats.max_workers}")
         click.echo(f"└─ Active Workers: {stats.active_workers}")
-    
-    except Exception as e:
+
+    except Exception as e:  # noqa: BLE001
         click.echo(f"Error checking health: {e}", err=True)
         sys.exit(1)
 
 
 @main.command()
-@click.argument('run_id', required=True)
-@click.option('--json-output', '--json', 'json_mode', is_flag=True, help='Machine-readable JSON output')
-@click.option('--refresh', default=3, help='Refresh interval in seconds')
-def watch(run_id: str, json_mode: bool, refresh: int) -> None:
+@click.argument("run_id", required=True)
+@click.option(
+    "--json-output", "--json", "json_mode", is_flag=True, help="Machine-readable JSON output"
+)
+@click.option("--refresh", default=3, help="Refresh interval in seconds")
+def watch(run_id: str, json_mode: bool, refresh: int) -> None:  # noqa: C901
     """Watch pipeline run progress in real-time (#414).
 
     Streams phase transitions, scoring results, warnings, and errors
@@ -668,13 +722,12 @@ def watch(run_id: str, json_mode: bool, refresh: int) -> None:
 
     Also works with legacy task IDs (falls back to old task-queue watch).
     """
-    import json as _json
 
     # ── Try pipeline run first ──────────────────────────────────────
     try:
         _db = Database()
         run = _db.get_pipeline_run(run_id)
-    except Exception:
+    except Exception:  # noqa: BLE001
         run = None
 
     if run is not None:
@@ -683,7 +736,7 @@ def watch(run_id: str, json_mode: bool, refresh: int) -> None:
 
     # ── Fallback: legacy task-queue watch ────────────────────────────
     try:
-        from .progress import ProgressTracker
+        from .progress import ProgressTracker  # noqa: PLC0415
 
         db = Database()
         tracker = ProgressTracker(db)
@@ -699,8 +752,12 @@ def watch(run_id: str, json_mode: bool, refresh: int) -> None:
             click.echo("=" * 60)
 
             status_emoji = {
-                "queued": "⏳", "running": "🔄", "success": "✅",
-                "failed": "❌", "retry": "🔁", "permanently_failed": "💀",
+                "queued": "⏳",
+                "running": "🔄",
+                "success": "✅",
+                "failed": "❌",
+                "retry": "🔁",
+                "permanently_failed": "💀",
                 "cancelled": "🚫",
             }
             emoji = status_emoji.get(progress.current_state.value, "❓")
@@ -728,12 +785,12 @@ def watch(run_id: str, json_mode: bool, refresh: int) -> None:
                 click.echo("\n✅ Task completed")
             except KeyboardInterrupt:
                 click.echo("\n👋 Stopped")
-    except Exception as e:
+    except Exception:  # noqa: BLE001
         click.echo(f"Error: '{run_id}' not found in pipeline runs or task queue.", err=True)
         sys.exit(1)
 
 
-def _watch_pipeline_run(
+def _watch_pipeline_run(  # noqa: C901
     run_id: str, db: "Database", json_mode: bool, refresh: int
 ) -> None:
     """Stream pipeline run events in real-time (#414).
@@ -741,11 +798,16 @@ def _watch_pipeline_run(
     Polls the pipeline_run_events table and prints formatted output
     as phases start, complete, stall, or score.
     """
-    import json as _json
+    import json as _json  # noqa: PLC0415
 
     terminal_states = {
-        'success', 'failed', 'cancelled', 'crashed',
-        'scoring_failed', 'pending_review', 'rejected',
+        "success",
+        "failed",
+        "cancelled",
+        "crashed",
+        "scoring_failed",
+        "pending_review",
+        "rejected",
     }
 
     last_event_id = 0
@@ -759,46 +821,57 @@ def _watch_pipeline_run(
                 click.echo(f"✗ Run '{run_id}' not found.", err=True)
                 sys.exit(1)
 
-            current_status = run['status']
+            current_status = run["status"]
 
             # Check PID liveness
-            if current_status == 'running' and run.get('pid'):
+            if current_status == "running" and run.get("pid"):
                 try:
-                    from .daemon import is_process_alive
-                    if not is_process_alive(run['pid']):
-                        current_status = 'crashed'
-                        db.update_pipeline_run(run_id, status='crashed')
-                except Exception:
+                    from .daemon import is_process_alive  # noqa: PLC0415
+
+                    if not is_process_alive(run["pid"]):
+                        current_status = "crashed"
+                        db.update_pipeline_run(run_id, status="crashed")
+                except Exception:  # noqa: BLE001
                     pass
 
             # Print header once
             if not header_printed:
-                template = run.get('template_id', '?')
+                template = run.get("template_id", "?")
                 click.echo(f"🔄 Pipeline {run_id} — {template}")
                 header_printed = True
 
             # Fetch new events
             events = db.list_pipeline_run_events(run_id, after_id=last_event_id, limit=100)
             for evt in events:
-                last_event_id = evt['id']
+                last_event_id = evt["id"]
                 _print_watch_event(evt, json_mode)
 
             # Status change
             if current_status != last_status:
                 if current_status in terminal_states:
-                    _scoring = run.get('scoring_status')
-                    _score = run.get('scoring_score')
+                    _scoring = run.get("scoring_status")
+                    _score = run.get("scoring_score")
                     score_str = f" (score={_score:.3f})" if _score is not None else ""
-                    icon = {'success': '✅', 'pending_review': '📋', 'failed': '❌',
-                            'crashed': '💀', 'scoring_failed': '🔴'}.get(current_status, '❓')
-                    ts = now_utc().strftime('%H:%M:%S')
+                    icon = {
+                        "success": "✅",
+                        "pending_review": "📋",
+                        "failed": "❌",
+                        "crashed": "💀",
+                        "scoring_failed": "🔴",
+                    }.get(current_status, "❓")
+                    ts = now_utc().strftime("%H:%M:%S")
                     if json_mode:
-                        click.echo(_json.dumps({
-                            "time": ts, "type": "run_complete",
-                            "status": current_status,
-                            "scoring_status": _scoring,
-                            "scoring_score": _score,
-                        }))
+                        click.echo(
+                            _json.dumps(
+                                {
+                                    "time": ts,
+                                    "type": "run_complete",
+                                    "status": current_status,
+                                    "scoring_status": _scoring,
+                                    "scoring_score": _score,
+                                }
+                            )
+                        )
                     else:
                         click.echo(
                             f"  [{ts}] 🏁 Pipeline complete — "
@@ -815,117 +888,134 @@ def _watch_pipeline_run(
 
 def _print_watch_event(evt: dict, json_mode: bool) -> None:
     """Format and print a single pipeline run event (#414)."""
-    import json as _json
+    import json as _json  # noqa: PLC0415
 
-    event_type = evt.get('event_type', '')
-    phase = evt.get('phase_id') or ''
-    tokens = evt.get('tokens_consumed')
-    state = evt.get('state')
-    ts = now_utc().strftime('%H:%M:%S')
+    event_type = evt.get("event_type", "")
+    phase = evt.get("phase_id") or ""
+    tokens = evt.get("tokens_consumed")
+    state = evt.get("state")
+    ts = now_utc().strftime("%H:%M:%S")
 
     try:
-        meta = _json.loads(evt.get('metadata_json', '{}'))
+        meta = _json.loads(evt.get("metadata_json", "{}"))
     except (TypeError, _json.JSONDecodeError):
         meta = {}
 
     if json_mode:
-        click.echo(_json.dumps({
-            "time": ts, "type": event_type, "phase": phase,
-            "tokens": tokens, "state": state, "metadata": meta,
-        }))
+        click.echo(
+            _json.dumps(
+                {
+                    "time": ts,
+                    "type": event_type,
+                    "phase": phase,
+                    "tokens": tokens,
+                    "state": state,
+                    "metadata": meta,
+                }
+            )
+        )
         return
 
     # Human-friendly formatting
-    if event_type == 'phase_started':
+    if event_type == "phase_started":
         click.echo(f"  [{ts}] ▶ {phase} started")
-    elif event_type == 'phase_completed':
+    elif event_type == "phase_completed":
         tokens_str = f", {tokens:,} tokens" if tokens else ""
         state_str = f" — {state}" if state else ""
         click.echo(f"  [{ts}] ✓ {phase} completed{tokens_str}{state_str}")
-    elif event_type == 'stall_detected':
-        msg = meta.get('message', 'No token progress detected')
+    elif event_type == "stall_detected":
+        msg = meta.get("message", "No token progress detected")
         click.echo(f"  [{ts}] ⚠️  {msg}")
-    elif event_type == 'status_changed':
-        new_status = meta.get('new_status') or state or '?'
+    elif event_type == "status_changed":
+        new_status = meta.get("new_status") or state or "?"
         click.echo(f"  [{ts}] 🔄 status → {new_status}")
     else:
         click.echo(f"  [{ts}] {event_type}: {phase or '(run)'}")
 
+
 @main.command()
-@click.option('--detailed', '-d', is_flag=True, help='Show detailed worker information')
-def workers(detailed: bool) -> None:
+@click.option("--detailed", "-d", is_flag=True, help="Show detailed worker information")
+def workers(detailed: bool) -> None:  # noqa: C901
     """Show active worker status."""
     try:
         # Import here to avoid circular imports
-        from .concurrency import WorkerPool
-        from .config import get_global_config
-        from .db import Database
-        
+        from .concurrency import WorkerPool  # noqa: PLC0415
+        from .config import get_global_config  # noqa: PLC0415
+        from .db import Database  # noqa: PLC0415
+
         config = get_global_config()
         db = Database()
         worker_pool = WorkerPool(db, config)
-        
+
         status = worker_pool.get_worker_status()
-        
+
         if not status:
             click.echo("No worker status available")
             return
-        
+
         # Summary
-        click.echo(f"👥 Worker Pool Status")
+        click.echo("👥 Worker Pool Status")
         click.echo("=" * 40)
         click.echo(f"Total Workers: {status['total_workers']}")
         click.echo(f"Max Workers: {status['max_workers']}")
-        
+
         # Resource status
-        if 'resource_status' in status:
-            resources = status['resource_status']
-            click.echo(f"\n💻 Resource Usage:")
-            click.echo(f"  Sessions: {resources['current_sessions']}/{resources['max_sessions']} "
-                      f"({resources['session_utilization']:.1f}%)")
-            
-            if resources.get('daily_budget_usd'):
-                click.echo(f"  Budget: ${resources['daily_cost_usd']:.2f}/"
-                          f"${resources['daily_budget_usd']:.2f} "
-                          f"({resources['budget_utilization']:.1f}%)")
+        if "resource_status" in status:
+            resources = status["resource_status"]
+            click.echo("\n💻 Resource Usage:")
+            click.echo(
+                f"  Sessions: {resources['current_sessions']}/{resources['max_sessions']} "
+                f"({resources['session_utilization']:.1f}%)"
+            )
+
+            if resources.get("daily_budget_usd"):
+                click.echo(
+                    f"  Budget: ${resources['daily_cost_usd']:.2f}/"
+                    f"${resources['daily_budget_usd']:.2f} "
+                    f"({resources['budget_utilization']:.1f}%)"
+                )
             else:
                 click.echo(f"  Daily Cost: ${resources['daily_cost_usd']:.2f}")
-        
+
         # Workers by state
-        if 'workers_by_state' in status and status['workers_by_state']:
-            click.echo(f"\n📊 Workers by State:")
-            
-            for state, workers in status['workers_by_state'].items():
+        if "workers_by_state" in status and status["workers_by_state"]:
+            click.echo("\n📊 Workers by State:")
+
+            for state, workers in status["workers_by_state"].items():
                 count = len(workers)
                 state_emoji = {
-                    'idle': '😴',
-                    'assigned': '📝',
-                    'running': '🏃',
-                    'stale': '💀',
-                    'terminated': '🚫'
+                    "idle": "😴",
+                    "assigned": "📝",
+                    "running": "🏃",
+                    "stale": "💀",
+                    "terminated": "🚫",
                 }
-                
-                emoji = state_emoji.get(state, '❓')
+
+                emoji = state_emoji.get(state, "❓")
                 click.echo(f"  {emoji} {state.capitalize()}: {count}")
-                
+
                 if detailed and workers:
                     for worker in workers[:3]:  # Show first 3 workers
-                        worker_id = worker['worker_id'][:12] + "..." if len(worker['worker_id']) > 15 else worker['worker_id']
-                        age = worker.get('heartbeat_age_seconds', 0)
-                        
+                        worker_id = (
+                            worker["worker_id"][:12] + "..."
+                            if len(worker["worker_id"]) > 15
+                            else worker["worker_id"]
+                        )
+                        age = worker.get("heartbeat_age_seconds", 0)
+
                         task_info = ""
-                        if worker.get('assigned_task_id'):
-                            task_id = worker['assigned_task_id'][:8] + "..."
+                        if worker.get("assigned_task_id"):
+                            task_id = worker["assigned_task_id"][:8] + "..."
                             task_info = f" (task: {task_id})"
-                        
+
                         click.echo(f"    • {worker_id} - {age:.0f}s ago{task_info}")
-                    
+
                     if len(workers) > 3:
                         click.echo(f"    ... and {len(workers) - 3} more")
         else:
             click.echo("No active workers")
-    
-    except Exception as e:
+
+    except Exception as e:  # noqa: BLE001
         click.echo(f"Error getting worker status: {e}", err=True)
         sys.exit(1)
 
@@ -934,105 +1024,107 @@ def workers(detailed: bool) -> None:
 # Template-based pipeline commands
 # ---------------------------------------------------------------------------
 
+
 @main.command("run")
-@click.argument('template_name_or_file')
+@click.argument("template_name_or_file")
 @click.option(
-    '--mode',
-    type=click.Choice(['standalone', 'openclaw', 'openrouter', 'dry-run']),
-    default='standalone',
+    "--mode",
+    type=click.Choice(["standalone", "openclaw", "openrouter", "dry-run"]),
+    default="standalone",
     show_default=True,
-    help='Execution mode: standalone (direct API), openclaw (sub-agent), openrouter (multi-provider), dry-run (mock).',
+    help="Execution mode: standalone (direct API), openclaw (sub-agent), openrouter (multi-provider), dry-run (mock).",  # noqa: E501
 )
 @click.option(
-    '--api-key',
-    envvar='ANTHROPIC_API_KEY',
+    "--api-key",
+    envvar="ANTHROPIC_API_KEY",
     default=None,
-    help='API key for standalone (ANTHROPIC_API_KEY) or openrouter (OPENROUTER_API_KEY) mode.',
+    help="API key for standalone (ANTHROPIC_API_KEY) or openrouter (OPENROUTER_API_KEY) mode.",
 )
 @click.option(
-    '--input', 'input_json',
+    "--input",
+    "input_json",
     default=None,
     help='Pipeline input as a JSON string, e.g. \'{"brief": "AI safety"}\'.',
 )
 @click.option(
-    '--input-file',
+    "--input-file",
     type=click.Path(exists=True, path_type=Path),
     default=None,
-    help='Path to a JSON file containing pipeline input.',
+    help="Path to a JSON file containing pipeline input.",
 )
 @click.option(
-    '--output-dir',
+    "--output-dir",
     type=click.Path(path_type=Path),
     default=None,
-    help='Directory to write phase outputs. Created if missing. '
-         'Defaults to ./output/<template-id>-<YYYYMMDD-HHMMSS>/',
+    help="Directory to write phase outputs. Created if missing. "
+    "Defaults to ./output/<template-id>-<YYYYMMDD-HHMMSS>/",
 )
 @click.option(
-    '--gateway-url',
+    "--gateway-url",
     default=None,
-    help='OpenClaw gateway URL for openclaw mode (or set OPENCLAW_GATEWAY_URL).',
+    help="OpenClaw gateway URL for openclaw mode (or set OPENCLAW_GATEWAY_URL).",
 )
 @click.option(
-    '--gateway-token',
+    "--gateway-token",
     default=None,
-    help='OpenClaw gateway bearer token for openclaw mode (or set OPENCLAW_GATEWAY_TOKEN).',
+    help="OpenClaw gateway bearer token for openclaw mode (or set OPENCLAW_GATEWAY_TOKEN).",
 )
 @click.option(
-    '--dry-run-delay',
+    "--dry-run-delay",
     type=float,
     default=0.0,
     hidden=True,
-    help='(dry-run mode only) Simulated per-phase delay in seconds.',
+    help="(dry-run mode only) Simulated per-phase delay in seconds.",
 )
 @click.option(
-    '--dry-run-failure-rate',
+    "--dry-run-failure-rate",
     type=float,
     default=0.0,
     hidden=True,
-    help='(dry-run mode only) Probability [0.0-1.0] of simulated phase failure.',
+    help="(dry-run mode only) Probability [0.0-1.0] of simulated phase failure.",
 )
 @click.option(
-    '--skip-scoring',
+    "--skip-scoring",
     is_flag=True,
     default=False,
-    help='Skip auto-scoring even if the template declares a scenario.',
+    help="Skip auto-scoring even if the template declares a scenario.",
 )
 @click.option(
-    '--score-only',
+    "--score-only",
     is_flag=True,
     default=False,
     help=(
-        'Run scoring on an existing output directory without re-running the pipeline. '
-        'Requires --output-dir pointing to a completed run.'
+        "Run scoring on an existing output directory without re-running the pipeline. "
+        "Requires --output-dir pointing to a completed run."
     ),
 )
 @click.option(
-    '--issue',
-    'issue_number',
+    "--issue",
+    "issue_number",
     type=int,
     default=None,
-    help='GitHub issue number to auto-fetch and merge into pipeline input.',
+    help="GitHub issue number to auto-fetch and merge into pipeline input.",
 )
 @click.option(
-    '--repo',
-    'repo',
+    "--repo",
+    "repo",
     default=None,
-    help='GitHub repository slug (e.g. owner/repo) for --issue lookup.',
+    help="GitHub repository slug (e.g. owner/repo) for --issue lookup.",
 )
 @click.option(
-    '--executor',
-    type=click.Choice(['api', 'claudecode', 'auto']),
-    default='auto',
+    "--executor",
+    type=click.Choice(["api", "claudecode", "auto"]),
+    default="auto",
     show_default=True,
-    help='Executor backend for standalone mode: api (ANTHROPIC_API_KEY), claudecode, or auto.',
+    help="Executor backend for standalone mode: api (ANTHROPIC_API_KEY), claudecode, or auto.",
 )
 @click.option(
-    '--model-map',
-    'model_map_json',
+    "--model-map",
+    "model_map_json",
     default=None,
     help='JSON model tier overrides for openrouter mode, e.g. \'{"sonnet": "openai/gpt-4o"}\'.',
 )
-def run_template(
+def run_template(  # noqa: C901
     template_name_or_file: str,
     mode: str,
     api_key: Optional[str],
@@ -1076,27 +1168,28 @@ def run_template(
       # Dry-run (no API calls):
       orch run pipeline.yaml --mode dry-run
     """
-    import json as _json
+    import json as _json  # noqa: PLC0415
 
-    # --executor is only valid with --mode standalone (dry-run ignores it; openclaw/openrouter are incompatible)
-    if mode in ('openclaw', 'openrouter') and executor != 'auto':
+    # --executor is only valid with --mode standalone (dry-run ignores it; openclaw/openrouter are incompatible)  # noqa: E501
+    if mode in ("openclaw", "openrouter") and executor != "auto":
         click.echo("Error: --executor is only valid with --mode standalone", err=True)
         sys.exit(1)
 
     # --model-map is only valid with --mode openrouter
-    if model_map_json and mode != 'openrouter':
+    if model_map_json and mode != "openrouter":
         click.echo("Error: --model-map is only valid with --mode openrouter", err=True)
         sys.exit(1)
 
-    from rich.console import Console
-    from rich.table import Table
+    import sys as _sys  # noqa: PLC0415
 
-    from .templates import TemplateEngine
-    from .pipeline_runner import PipelineRunner
-    from .sequencer import PhaseSequencer, StateMachineSequencer
-    from .heartbeat import ProgressHeartbeat
+    from rich.console import Console  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
 
-    import sys as _sys
+    from .heartbeat import ProgressHeartbeat  # noqa: PLC0415
+    from .pipeline_runner import PipelineRunner  # noqa: PLC0415
+    from .sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
+    from .templates import TemplateEngine  # noqa: PLC0415
+
     # Force plain text output in non-TTY environments (background, nohup, pipes)
     console = Console(
         highlight=False,
@@ -1143,23 +1236,26 @@ def run_template(
                 err=True,
             )
             sys.exit(1)
-        from .scoring import run_scoring as _run_scoring
         # Build an executor for the LLM judge grader so that scoring uses the
         # same authentication path as the mode specified by the caller.
         # In openclaw mode this routes judge calls through the gateway token
         # instead of a raw ANTHROPIC_API_KEY.  Issue #272.
-        import os as _os_so
+        import os as _os_so  # noqa: PLC0415
+
+        from .scoring import run_scoring as _run_scoring  # noqa: PLC0415
+
         _so_executor = None
         if mode == "openclaw":
             try:
-                from .openclaw_executor import OpenClawExecutor
+                from .openclaw_executor import OpenClawExecutor  # noqa: PLC0415
+
                 _so_url = gateway_url or _os_so.environ.get("OPENCLAW_GATEWAY_URL")
                 _so_token = gateway_token or _os_so.environ.get("OPENCLAW_GATEWAY_TOKEN")
                 _so_executor = OpenClawExecutor(
                     gateway_url=_so_url,
                     gateway_token=_so_token,
                 )
-            except Exception as _so_exc:
+            except Exception as _so_exc:  # noqa: BLE001
                 click.echo(
                     f"⚠ Could not create OpenClawExecutor for grader: {_so_exc}\n"
                     "  LLM judge criteria will fall back to ANTHROPIC_API_KEY.",
@@ -1167,9 +1263,10 @@ def run_template(
                 )
         elif mode == "standalone" and api_key:
             try:
-                from .executors.anthropic_executor import AnthropicExecutor
+                from .executors.anthropic_executor import AnthropicExecutor  # noqa: PLC0415
+
                 _so_executor = AnthropicExecutor(api_key=api_key)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass  # fall back to ANTHROPIC_API_KEY env var
         _run_scoring(
             template,
@@ -1182,11 +1279,12 @@ def run_template(
         sys.exit(0)
 
     # --- 1b. Default output directory (Feature #72) ------------------
-    from uuid import uuid4
+    from uuid import uuid4  # noqa: PLC0415
+
     run_id = str(uuid4())[:8]
     if output_dir is None:
-        _safe_id = re.sub(r'[^\w\-]', '_', template.id)
-        _ts = now_utc().strftime('%Y%m%d-%H%M%S')
+        _safe_id = re.sub(r"[^\w\-]", "_", template.id)
+        _ts = now_utc().strftime("%Y%m%d-%H%M%S")
         output_dir = Path(f"./output/{_safe_id}-{_ts}-{run_id}")
 
     # --- 2. Resolve pipeline input ------------------------------------
@@ -1210,10 +1308,13 @@ def run_template(
     # --- 2b. Auto-fetch GitHub issue data (#507) ---
     if issue_number is not None:
         if not repo:
-            click.echo("⚠ --issue requires --repo (e.g. owner/repo). Skipping GitHub fetch.", err=True)
+            click.echo(
+                "⚠ --issue requires --repo (e.g. owner/repo). Skipping GitHub fetch.", err=True
+            )
         else:
             try:
-                from .github_fetcher import fetch_github_issue
+                from .github_fetcher import fetch_github_issue  # noqa: PLC0415
+
                 issue_data = fetch_github_issue(repo=repo, issue_number=issue_number)
                 if issue_data:
                     initial_input = issue_data.merge_into(initial_input)
@@ -1223,10 +1324,10 @@ def run_template(
                     )
                 else:
                     click.echo(
-                        f"  ⚠ Could not fetch GitHub issue #{issue_number} from {repo} — continuing with provided input.",
+                        f"  ⚠ Could not fetch GitHub issue #{issue_number} from {repo} — continuing with provided input.",  # noqa: E501
                         err=True,
                     )
-            except Exception as _gh_exc:
+            except Exception as _gh_exc:  # noqa: BLE001
                 click.echo(
                     f"  ⚠ GitHub fetch error: {_gh_exc} — continuing with provided input.",
                     err=True,
@@ -1243,9 +1344,9 @@ def run_template(
     # default still error. Without applying defaults, pre-v2.1 consumers
     # running `orch run` against the v2.1.0 standard pipeline would see
     # <MISSING:ui_primitive_paths> (and similar) literals in Phase 0 prompts.
-    apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
+    apply_config_schema_defaults(initial_input, getattr(template, "config_schema", None))
     if missing:
-        if mode == 'dry-run':
+        if mode == "dry-run":
             # In dry-run mode, missing required fields are non-fatal: phases run with
             # synthetic output anyway, so warn but continue (issue #659).
             click.echo(
@@ -1266,19 +1367,21 @@ def run_template(
 
     # --- 3. Build PipelineRunner based on mode -----------------------
     try:
-        if mode == 'standalone':
+        if mode == "standalone":
             runner = PipelineRunner.standalone(api_key=api_key, executor_type=executor)
-        elif mode == 'openclaw':
+        elif mode == "openclaw":
             # Read env vars only when actually needed (avoid leaking in dry-run tracebacks)
-            import os as _os_env
+            import os as _os_env  # noqa: PLC0415
+
             effective_url = gateway_url or _os_env.environ.get("OPENCLAW_GATEWAY_URL")
             effective_token = gateway_token or _os_env.environ.get("OPENCLAW_GATEWAY_TOKEN")
             runner = PipelineRunner.openclaw(
                 gateway_url=effective_url,
                 gateway_token=effective_token,
             )
-        elif mode == 'openrouter':
-            import os as _os_env
+        elif mode == "openrouter":
+            import os as _os_env  # noqa: PLC0415
+
             effective_key = api_key or _os_env.environ.get("OPENROUTER_API_KEY", "")
             model_map = None
             if model_map_json:
@@ -1319,16 +1422,12 @@ def run_template(
     )
 
     # --- 3c. Set up git integration if template has it enabled --------
-    from .git_integration import GitContext, GitError
+    from .git_integration import GitContext, GitError  # noqa: PLC0415
 
     git_ctx: Optional[GitContext] = None
     _gate_result = None  # MergeGateResult set by on_pipeline_complete hook
 
-    if (
-        template.git_config is not None
-        and template.git_config.enabled
-        and mode != 'dry-run'
-    ):
+    if template.git_config is not None and template.git_config.enabled and mode != "dry-run":
         git_ctx = GitContext(
             config=template.git_config,
             pipeline_id=template.id,
@@ -1340,14 +1439,8 @@ def run_template(
             f"[bold]Git:[/bold]      enabled  "
             f"(branch_pattern={template.git_config.branch_pattern!r})"
         )
-    elif (
-        template.git_config is not None
-        and template.git_config.enabled
-        and mode == 'dry-run'
-    ):
-        console.print(
-            "[yellow]Git:[/yellow]      skipped in dry-run mode"
-        )
+    elif template.git_config is not None and template.git_config.enabled and mode == "dry-run":
+        console.print("[yellow]Git:[/yellow]      skipped in dry-run mode")
 
     # Build git lifecycle hooks (no-ops when git_ctx is None)
     def _on_pipeline_start_hook(pipeline_context: dict) -> None:
@@ -1380,7 +1473,7 @@ def run_template(
                 )
             # Refresh diff in context so downstream review phases see it
             diff = git_ctx.get_branch_diff()
-            if diff and hasattr(git_ctx, '_branch_info') and git_ctx._branch_info:
+            if diff and hasattr(git_ctx, "_branch_info") and git_ctx._branch_info:
                 # Update pipeline_context (accessed via sequencer reference)
                 _pipeline_context_ref[0]["git_diff"] = diff
         except GitError as exc:
@@ -1390,7 +1483,10 @@ def run_template(
     # The list is populated after the sequencer is created.
     _pipeline_context_ref: list = [{}]
 
-    def _on_pipeline_complete_hook(pipeline_context: dict, result: Optional[dict]) -> None:
+    def _on_pipeline_complete_hook(
+        pipeline_context: dict,  # noqa: ARG001
+        result: Optional[dict],
+    ) -> None:
         """Push and enter merge gate (or cleanup on failure)."""
         nonlocal _gate_result
         if git_ctx is None:
@@ -1408,7 +1504,7 @@ def run_template(
             git_ctx.cleanup(success=success)
 
     # Heartbeat phase-start callback (Issue #186)
-    def _on_phase_start_cb(phase_id: str, phase, wave_index: int) -> None:
+    def _on_phase_start_cb(phase_id: str, phase, wave_index: int) -> None:  # noqa: ARG001
         """Notify the heartbeat that a new phase has started.
 
         Updates the heartbeat's current-phase display so the next emitted
@@ -1419,13 +1515,13 @@ def run_template(
 
     # Live phase-completion callback (Feature #70)
     def _on_phase_complete(phase_id: str, phase_result: dict) -> None:
-        _st = phase_result.get('state', 'unknown')
-        state_val = _st.value if hasattr(_st, 'value') else str(_st)
-        tokens = phase_result.get('tokens_consumed', 0)
-        cost = phase_result.get('cost_usd', 0)
+        _st = phase_result.get("state", "unknown")
+        state_val = _st.value if hasattr(_st, "value") else str(_st)
+        tokens = phase_result.get("tokens_consumed", 0)
+        cost = phase_result.get("cost_usd", 0)
         cost_str = f"${float(cost):.4f}" if cost else "n/a"
-        safe_pid = re.sub(r'[^\w\-]', '_', phase_id)
-        if state_val in ('failed', 'permanently_failed'):
+        safe_pid = re.sub(r"[^\w\-]", "_", phase_id)
+        if state_val in ("failed", "permanently_failed"):
             console.print(
                 f"  [red]✗[/red] {safe_pid:30s}  state={state_val}  "
                 f"tokens={tokens}  cost={cost_str}"
@@ -1449,7 +1545,7 @@ def run_template(
                 out_path = output_dir / f"{safe_pid}.md"
                 new_content = f"# Phase: {phase_id}\n\n{phase_text}\n"
                 _safe_write_phase_output(out_path, new_content, phase_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(f"Failed to write phase output to disk: {exc}")
 
         # Run git commit hook after progress display
@@ -1459,9 +1555,13 @@ def run_template(
         _has_transitions = any(p.transitions for p in template.phases) or bool(
             template.default_transitions
         )
-        _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer
+        _SequencerClass = (  # noqa: N806
+            StateMachineSequencer if _has_transitions else PhaseSequencer
+        )
         sequencer = _SequencerClass(
-            template, runner, config=initial_input,
+            template,
+            runner,
+            config=initial_input,
             on_phase_complete=_on_phase_complete,
             on_phase_start=_on_phase_start_cb,
             on_pipeline_start=_on_pipeline_start_hook,
@@ -1481,20 +1581,20 @@ def run_template(
             if git_ctx:
                 git_ctx.cleanup(success=False)
             sys.exit(1)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             click.echo(f"✗ Pipeline execution crashed: {exc}", err=True)
             if git_ctx:
                 git_ctx.cleanup(success=False)
             sys.exit(1)
 
     # --- 5. Report result (Feature #70 — rich summary table) ---------
-    if result.get('aborted'):
-        failed_phase = result.get('failed_phase', 'unknown')
+    if result.get("aborted"):
+        failed_phase = result.get("failed_phase", "unknown")
         click.echo(f"✗ Pipeline aborted at phase '{failed_phase}'", err=True)
         click.echo(f"  Completed phases: {[*result['phase_outputs'].keys()]}", err=True)
         sys.exit(2)
 
-    completed_phases = [*result['phase_outputs'].keys()]
+    completed_phases = [*result["phase_outputs"].keys()]
     elapsed = time.time() - run_start
 
     # Build rich summary table
@@ -1511,26 +1611,25 @@ def run_template(
     total_tokens = 0
     total_cost = 0.0
     for phase_id in completed_phases:
-        safe_id = re.sub(r'[^\w\-]', '_', phase_id)
-        out = result['phase_outputs'][phase_id]
-        _state = out.get('state', 'unknown')
-        state = _state.value if hasattr(_state, 'value') else str(_state)
-        tokens = out.get('tokens_consumed', 0)
-        cost = out.get('cost_usd', 0)
+        safe_id = re.sub(r"[^\w\-]", "_", phase_id)
+        out = result["phase_outputs"][phase_id]
+        _state = out.get("state", "unknown")
+        state = _state.value if hasattr(_state, "value") else str(_state)
+        tokens = out.get("tokens_consumed", 0)
+        cost = out.get("cost_usd", 0)
         cost_float = float(cost) if cost else 0.0
         cost_str = f"${cost_float:.4f}" if cost else "n/a"
         total_tokens += tokens
         total_cost += cost_float
         state_display = (
-            f"[green]✓ {state}[/green]"
-            if state == 'success'
-            else f"[red]✗ {state}[/red]"
+            f"[green]✓ {state}[/green]" if state == "success" else f"[red]✗ {state}[/red]"
         )
         table.add_row(safe_id, state_display, str(tokens), cost_str)
 
     table.add_section()
     table.add_row(
-        "[bold]TOTAL[/bold]", "",
+        "[bold]TOTAL[/bold]",
+        "",
         f"[bold]{total_tokens}[/bold]",
         f"[bold]${total_cost:.4f}[/bold]",
     )
@@ -1542,9 +1641,7 @@ def run_template(
         if _gate_result.status == "awaiting_approval":
             console.print()
             console.print("[bold cyan]═══ Merge Gate ═══════════════════════════[/bold cyan]")
-            console.print(
-                f"  Branch ready for review.  Run ID: [bold]{run_id}[/bold]"
-            )
+            console.print(f"  Branch ready for review.  Run ID: [bold]{run_id}[/bold]")
             if git_ctx and git_ctx._branch_info:
                 console.print(
                     f"  Branch: [bold]{git_ctx._branch_info.branch_name}[/bold]"
@@ -1565,13 +1662,11 @@ def run_template(
         console.print(f"[yellow]⚠ Could not create output directory: {exc}[/yellow]", stderr=True)
         sys.exit(0)  # Pipeline succeeded, just can't write
 
-    for phase_id, phase_out in result['phase_outputs'].items():
-        safe_id = re.sub(r'[^\w\-]', '_', phase_id)
+    for phase_id, phase_out in result["phase_outputs"].items():
+        safe_id = re.sub(r"[^\w\-]", "_", phase_id)
 
         # JSON (existing behaviour)
-        (output_dir / f"{safe_id}.json").write_text(
-            _json.dumps(phase_out, indent=2, default=str)
-        )
+        (output_dir / f"{safe_id}.json").write_text(_json.dumps(phase_out, indent=2, default=str))
 
         # Markdown per phase (Feature #71)
         # Issue #210: if the sub-agent already wrote a larger file, keep it.
@@ -1582,11 +1677,11 @@ def run_template(
 
     # _final_output.json
     (output_dir / "_final_output.json").write_text(
-        _json.dumps(result.get('final_output', {}), indent=2, default=str)
+        _json.dumps(result.get("final_output", {}), indent=2, default=str)
     )
 
     # _final_output.md (Feature #71)
-    final_text = _extract_output_text(result.get('final_output', {}))
+    final_text = _extract_output_text(result.get("final_output", {}))
     (output_dir / "_final_output.md").write_text(f"# Final Output\n\n{final_text}\n")
 
     # _summary.md (Feature #71)
@@ -1605,14 +1700,14 @@ def run_template(
         "|-------|-------|--------|------|",
     ]
     for phase_id in completed_phases:
-        out = result['phase_outputs'][phase_id]
-        _state = out.get('state', 'unknown')
-        state = _state.value if hasattr(_state, 'value') else str(_state)
-        tokens = out.get('tokens_consumed', 0)
-        cost = out.get('cost_usd', 0)
+        out = result["phase_outputs"][phase_id]
+        _state = out.get("state", "unknown")
+        state = _state.value if hasattr(_state, "value") else str(_state)
+        tokens = out.get("tokens_consumed", 0)
+        cost = out.get("cost_usd", 0)
         cost_float = float(cost) if cost else 0.0
         cost_str = f"${cost_float:.4f}" if cost else "n/a"
-        safe_id = re.sub(r'[^\w\-]', '_', phase_id)
+        safe_id = re.sub(r"[^\w\-]", "_", phase_id)
         summary_lines.append(f"| {safe_id} | {state} | {tokens} | {cost_str} |")
     summary_lines += [
         "",
@@ -1626,8 +1721,9 @@ def run_template(
 
     # --- Auto-scoring (Issue #172) ------------------------------------
     if not skip_scoring and template.scenario:
-        from .scoring import run_scoring as _run_scoring_auto
-        from .git_integration import GitContext as _GitContext
+        from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+        from .scoring import run_scoring as _run_scoring_auto  # noqa: PLC0415
+
         # Forward the pipeline executor so that LLM judge criteria are routed
         # through the same authentication path as the pipeline itself (e.g. the
         # OpenClaw subscription token in openclaw mode).  Issue #272.
@@ -1660,10 +1756,8 @@ def run_template(
             else:
                 _gate_scoring_status = "failed"
             try:
-                _GitContext.update_gate_scoring(
-                    run_id, _gate_scoring_status, _scoring_score_val
-                )
-            except Exception as _ge:
+                _GitContext.update_gate_scoring(run_id, _gate_scoring_status, _scoring_score_val)
+            except Exception as _ge:  # noqa: BLE001
                 logger.warning(f"Could not update gate scoring: {_ge}")
 
         # Now enforce exit on scoring failure (replaces exit_on_failure=True)
@@ -1675,6 +1769,7 @@ def run_template(
 # Issue #267 — Async pipeline execution: start / status / logs / wait / resume
 # ---------------------------------------------------------------------------
 
+
 def _get_persistent_db_path() -> str:
     """Return the path to the persistent on-disk DB used by async runs.
 
@@ -1685,94 +1780,95 @@ def _get_persistent_db_path() -> str:
 
 
 @main.command("launch")
-@click.argument('template_name_or_file')
+@click.argument("template_name_or_file")
 @click.option(
-    '--mode',
-    type=click.Choice(['standalone', 'openclaw', 'openrouter', 'dry-run']),
-    default='standalone',
+    "--mode",
+    type=click.Choice(["standalone", "openclaw", "openrouter", "dry-run"]),
+    default="standalone",
     show_default=True,
-    help='Execution mode.',
+    help="Execution mode.",
 )
 @click.option(
-    '--input', 'input_json',
+    "--input",
+    "input_json",
     default=None,
-    help='Pipeline input as a JSON string.',
+    help="Pipeline input as a JSON string.",
 )
 @click.option(
-    '--input-file',
+    "--input-file",
     type=click.Path(exists=True, path_type=Path),
     default=None,
-    help='Path to a JSON file containing pipeline input.',
+    help="Path to a JSON file containing pipeline input.",
 )
 @click.option(
-    '--issue',
-    'issue_number',
+    "--issue",
+    "issue_number",
     type=int,
     default=None,
     help=(
-        'GitHub issue number to auto-fetch as pipeline input. '
-        'Fetched fields (title, body, labels, assignees, milestone) are '
-        'merged as the base input; explicit --input / --input-file keys take '
-        'precedence over fetched values.'
+        "GitHub issue number to auto-fetch as pipeline input. "
+        "Fetched fields (title, body, labels, assignees, milestone) are "
+        "merged as the base input; explicit --input / --input-file keys take "
+        "precedence over fetched values."
     ),
 )
 @click.option(
-    '--repo',
+    "--repo",
     default=None,
-    envvar='GITHUB_REPOSITORY',
+    envvar="GITHUB_REPOSITORY",
     help=(
-        'Repository slug (owner/repo) used with --issue to fetch issue data. '
-        'Defaults to the GITHUB_REPOSITORY environment variable when set.'
+        "Repository slug (owner/repo) used with --issue to fetch issue data. "
+        "Defaults to the GITHUB_REPOSITORY environment variable when set."
     ),
 )
 @click.option(
-    '--branch',
-    'branch_name_override',
+    "--branch",
+    "branch_name_override",
     default=None,
-    help='Override the auto-generated branch name (Issue #591).',
+    help="Override the auto-generated branch name (Issue #591).",
 )
 @click.option(
-    '--test-command',
-    'test_command_override',
+    "--test-command",
+    "test_command_override",
     default=None,
-    help='Override the default test command for the pipeline (Issue #591).',
+    help="Override the default test command for the pipeline (Issue #591).",
 )
 @click.option(
-    '--output-dir',
+    "--output-dir",
     type=click.Path(path_type=Path),
     default=None,
-    help='Directory to write phase outputs (created if missing).',
+    help="Directory to write phase outputs (created if missing).",
 )
 @click.option(
-    '--gateway-url',
+    "--gateway-url",
     default=None,
-    envvar='OPENCLAW_GATEWAY_URL',
-    help='OpenClaw gateway URL for openclaw mode.',
+    envvar="OPENCLAW_GATEWAY_URL",
+    help="OpenClaw gateway URL for openclaw mode.",
 )
 @click.option(
-    '--gateway-token',
+    "--gateway-token",
     default=None,
-    help='OpenClaw gateway bearer token for openclaw mode (or set OPENCLAW_GATEWAY_TOKEN).',
+    help="OpenClaw gateway bearer token for openclaw mode (or set OPENCLAW_GATEWAY_TOKEN).",
 )
 @click.option(
-    '--skip-scoring',
+    "--skip-scoring",
     is_flag=True,
     default=False,
-    help='Skip auto-scoring even if the template declares a scenario.',
+    help="Skip auto-scoring even if the template declares a scenario.",
 )
 @click.option(
-    '--db-path',
+    "--db-path",
     default=None,
-    help='Override path to the persistent pipeline-runs DB.',
+    help="Override path to the persistent pipeline-runs DB.",
 )
 @click.option(
-    '--executor',
-    type=click.Choice(['api', 'claudecode', 'auto']),
-    default='auto',
+    "--executor",
+    type=click.Choice(["api", "claudecode", "auto"]),
+    default="auto",
     show_default=True,
-    help='Executor backend for standalone mode: api (ANTHROPIC_API_KEY), claudecode, or auto.',
+    help="Executor backend for standalone mode: api (ANTHROPIC_API_KEY), claudecode, or auto.",
 )
-def pipeline_launch(
+def pipeline_launch(  # noqa: C901
     template_name_or_file: str,
     mode: str,
     input_json: Optional[str],
@@ -1802,9 +1898,9 @@ def pipeline_launch(
       orch logs <run-id> --follow
       orch wait <run-id>
     """
-    import uuid
+    import uuid  # noqa: PLC0415
 
-    from .templates import TemplateEngine
+    from .templates import TemplateEngine  # noqa: PLC0415
 
     # --- Validate issue_number (Issue #591): must be positive integer ---
     if issue_number is not None and issue_number <= 0:
@@ -1812,7 +1908,7 @@ def pipeline_launch(
         sys.exit(1)
 
     # --executor is only valid with --mode standalone (openclaw/openrouter are incompatible)
-    if mode in ('openclaw', 'openrouter') and executor != 'auto':
+    if mode in ("openclaw", "openrouter") and executor != "auto":
         click.echo("Error: --executor is only valid with --mode standalone", err=True)
         sys.exit(1)
 
@@ -1863,7 +1959,7 @@ def pipeline_launch(
         if not effective_repo:
             if repo_url_inferred:
                 # Extract owner/repo from the normalized HTTPS URL
-                m = re.match(r'https://[^/]+/(.+)', repo_url_inferred)
+                m = re.match(r"https://[^/]+/(.+)", repo_url_inferred)
                 effective_repo = m.group(1) if m else None
 
         if not effective_repo:
@@ -1886,55 +1982,55 @@ def pipeline_launch(
 
         # Inject canonical fields (always overwrite, never from --input-file)
         issue_fields = {
-            'issue_number': issue_raw['number'],
-            'issue_title': issue_raw['title'],
-            'issue_body': issue_raw.get('body', ''),
+            "issue_number": issue_raw["number"],
+            "issue_title": issue_raw["title"],
+            "issue_body": issue_raw.get("body", ""),
         }
         initial_input.update(issue_fields)
 
         # Inject repo_path from git root if not already in input
-        if repo_path_inferred is not None and 'repo_path' not in initial_input:
-            initial_input['repo_path'] = repo_path_inferred
+        if repo_path_inferred is not None and "repo_path" not in initial_input:
+            initial_input["repo_path"] = repo_path_inferred
         # Note: if --repo provided and CWD is outside git, repo_path_inferred is None
         # repo_path is simply omitted (missing-fields validation catches it if required)
 
         # Determine repo_url for pipeline input
         if repo:
             # --repo explicitly given → construct HTTPS URL from slug
-            initial_input.setdefault('repo_url', f"https://github.com/{repo}")
-        elif repo_url_inferred and 'repo_url' not in initial_input:
-            initial_input['repo_url'] = repo_url_inferred
+            initial_input.setdefault("repo_url", f"https://github.com/{repo}")
+        elif repo_url_inferred and "repo_url" not in initial_input:
+            initial_input["repo_url"] = repo_url_inferred
 
         # Generate branch_name as default (--branch override applied later)
-        if 'branch_name' not in initial_input:
-            slug = _slugify_title(issue_raw['title'])
-            initial_input['branch_name'] = f"fix/{issue_number}-{slug}"
+        if "branch_name" not in initial_input:
+            slug = _slugify_title(issue_raw["title"])
+            initial_input["branch_name"] = f"fix/{issue_number}-{slug}"
 
         # --test-command injection
         if test_command_override:
-            initial_input['test_command'] = test_command_override
+            initial_input["test_command"] = test_command_override
 
     # --- --branch always wins (over --input-file, auto-generated, issue-inferred) ---
     # This runs unconditionally — not gated on issue_number — so --branch works
     # both with and without --issue (Issue #591).
     if branch_name_override:
-        initial_input['branch_name'] = branch_name_override
+        initial_input["branch_name"] = branch_name_override
 
     # If --test-command was provided without --issue, inject it now
     if test_command_override and issue_number is None:
-        initial_input['test_command'] = test_command_override
+        initial_input["test_command"] = test_command_override
 
     # --- Persist executor_type so the daemon can forward it to the runner factory ---
     # Only stored when non-default to avoid polluting input for the common case.
-    if executor != 'auto':
-        initial_input['_executor_type'] = executor
+    if executor != "auto":
+        initial_input["_executor_type"] = executor
 
     # --- Dry-run defaults: fill initial_input with template's example_input (Issue #591) ---
     # In dry-run mode the pipeline won't actually execute, but we still validate required fields
     # so that the validation code path (and mock) can be exercised.  Example_input provides
     # safe placeholder values for any fields not already in initial_input.
-    if mode == 'dry-run':
-        example = getattr(template, 'example_input', None) or {}
+    if mode == "dry-run":
+        example = getattr(template, "example_input", None) or {}
         for k, v in example.items():
             if k not in initial_input:
                 initial_input[k] = v
@@ -1942,11 +2038,9 @@ def pipeline_launch(
     # --- Gateway token auto-read for openclaw mode (Issue #591) ---
     # NOTE: This runs BEFORE missing-fields validation so that "No gateway token found"
     # is the error shown when mode=openclaw and no token is available — not a fields error.
-    if mode == 'openclaw':
+    if mode == "openclaw":
         effective_token = (
-            gateway_token
-            or os.environ.get('OPENCLAW_GATEWAY_TOKEN')
-            or _read_openclaw_token()
+            gateway_token or os.environ.get("OPENCLAW_GATEWAY_TOKEN") or _read_openclaw_token()
         )
         if not effective_token:
             click.echo(
@@ -1955,13 +2049,13 @@ def pipeline_launch(
                 err=True,
             )
             sys.exit(1)
-        os.environ['OPENCLAW_GATEWAY_TOKEN'] = effective_token
+        os.environ["OPENCLAW_GATEWAY_TOKEN"] = effective_token
 
     # --- Validate required config fields (#411) with new single-line format (#591) ---
     missing = _validate_required_config(template, initial_input)
     # Apply schema defaults for optional fields (#835) — see commentary in
     # the run_template path above for rationale.
-    apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
+    apply_config_schema_defaults(initial_input, getattr(template, "config_schema", None))
     if missing:
         sorted_missing = sorted(missing)
         click.echo(
@@ -1973,59 +2067,61 @@ def pipeline_launch(
     # --- Build run_id and output_dir ---
     run_id = str(uuid.uuid4())[:8]
     if output_dir is None:
-        _safe_id = re.sub(r'[^\w\-]', '_', template.id)
-        _ts = now_utc().strftime('%Y%m%d-%H%M%S')
+        _safe_id = re.sub(r"[^\w\-]", "_", template.id)
+        _ts = now_utc().strftime("%Y%m%d-%H%M%S")
         output_dir = Path(f"./output/{_safe_id}-{_ts}-{run_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Persist run record to DB ---
     effective_db_path = db_path or _get_persistent_db_path()
     db = Database(Path(effective_db_path))
-    db.insert_pipeline_run({
-        'run_id': run_id,
-        'template_path': str(template_file.resolve()),
-        'template_id': template.id,
-        'input_json': json.dumps(initial_input),
-        'mode': mode,
-        'output_dir': str(output_dir.resolve()),
-        'gateway_url': gateway_url,
-        'skip_scoring': int(skip_scoring),
-        'status': 'pending',
-    })
+    db.insert_pipeline_run(
+        {
+            "run_id": run_id,
+            "template_path": str(template_file.resolve()),
+            "template_id": template.id,
+            "input_json": json.dumps(initial_input),
+            "mode": mode,
+            "output_dir": str(output_dir.resolve()),
+            "gateway_url": gateway_url,
+            "skip_scoring": int(skip_scoring),
+            "status": "pending",
+        }
+    )
 
     # --- Spawn daemon ---
     log_file_path = output_dir / ".orch-daemon.log"
-    log_fh = open(str(log_file_path), 'a')
+    log_fh = open(str(log_file_path), "a")
 
     proc = subprocess.Popen(
-        [sys.executable, '-m', 'orchestration_engine.daemon', run_id, effective_db_path],
+        [sys.executable, "-m", "orchestration_engine.daemon", run_id, effective_db_path],
         start_new_session=True,
         stdout=log_fh,
         stderr=log_fh,
-        env={**os.environ, 'PYTHONUNBUFFERED': '1'},
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
         bufsize=0,
     )
     log_fh.close()
 
     db.update_pipeline_run(run_id, pid=proc.pid)
 
-    click.echo(f"✓ Pipeline launched in background")
+    click.echo("✓ Pipeline launched in background")
     click.echo(f"  Run ID:  {run_id}")
     click.echo(f"  PID:     {proc.pid}")
     click.echo(f"  Output:  {output_dir}/")
-    click.echo(f"")
+    click.echo("")
     click.echo(f"  Status:  orch status {run_id}")
     click.echo(f"  Logs:    orch logs {run_id}")
     click.echo(f"  Wait:    orch wait {run_id}")
 
 
 @main.command("logs")
-@click.argument('run_id')
-@click.option('--follow', '-f', is_flag=True, default=False, help='Tail the log file.')
+@click.argument("run_id")
+@click.option("--follow", "-f", is_flag=True, default=False, help="Tail the log file.")
 @click.option(
-    '--db-path',
+    "--db-path",
     default=None,
-    help='Override path to the persistent pipeline-runs DB.',
+    help="Override path to the persistent pipeline-runs DB.",
 )
 def pipeline_logs(run_id: str, follow: bool, db_path: Optional[str]) -> None:
     """Show daemon logs for a pipeline run.
@@ -2042,7 +2138,7 @@ def pipeline_logs(run_id: str, follow: bool, db_path: Optional[str]) -> None:
         click.echo(f"✗ Run '{run_id}' not found.", err=True)
         sys.exit(1)
 
-    log_path = Path(run['output_dir']) / ".orch-daemon.log"
+    log_path = Path(run["output_dir"]) / ".orch-daemon.log"
     if not log_path.exists():
         click.echo(f"✗ Log file not found: {log_path}", err=True)
         click.echo("  The run may not have started yet or the output dir is missing.")
@@ -2050,7 +2146,7 @@ def pipeline_logs(run_id: str, follow: bool, db_path: Optional[str]) -> None:
 
     if follow:
         try:
-            subprocess.run(['tail', '-f', str(log_path)])
+            subprocess.run(["tail", "-f", str(log_path)])
         except KeyboardInterrupt:
             pass
     else:
@@ -2076,7 +2172,7 @@ def pipeline_children(run_id: str, db_path: Optional[str]) -> None:
       orch children a3f8c2d1
       orch children a3f8c2d1 --db-path /tmp/custom.db
     """  # Issue #330.3: children CLI command
-    from orchestration_engine.db import Database
+    from orchestration_engine.db import Database  # noqa: PLC0415
 
     effective_db_path = db_path or _get_persistent_db_path()
     db = Database(Path(effective_db_path))
@@ -2130,8 +2226,8 @@ def pipeline_chain(
       orch chain --active          # List all currently running chains
       orch chain a3f8c2d1 --db-path /tmp/custom.db
     """  # Issue #508: chain monitoring CLI
-    from orchestration_engine.db import Database
-    from orchestration_engine import chain_monitor
+    from orchestration_engine import chain_monitor  # noqa: PLC0415
+    from orchestration_engine.db import Database  # noqa: PLC0415
 
     # Validate: exactly one of run_id or --active must be provided
     if not run_id and not active:
@@ -2162,15 +2258,21 @@ def pipeline_chain(
 
 
 @main.command("wait")
-@click.argument('run_id')
-@click.option('--timeout', type=int, default=1800, show_default=True,
-              help='Maximum seconds to wait before giving up.')
-@click.option('--interval', type=int, default=3, show_default=True,
-              help='Poll interval in seconds.')
+@click.argument("run_id")
 @click.option(
-    '--db-path',
+    "--timeout",
+    type=int,
+    default=1800,
+    show_default=True,
+    help="Maximum seconds to wait before giving up.",
+)
+@click.option(
+    "--interval", type=int, default=3, show_default=True, help="Poll interval in seconds."
+)
+@click.option(
+    "--db-path",
     default=None,
-    help='Override path to the persistent pipeline-runs DB.',
+    help="Override path to the persistent pipeline-runs DB.",
 )
 def pipeline_wait(run_id: str, timeout: int, interval: int, db_path: Optional[str]) -> None:
     """Block until a pipeline run finishes.
@@ -2185,7 +2287,15 @@ def pipeline_wait(run_id: str, timeout: int, interval: int, db_path: Optional[st
     effective_db_path = db_path or _get_persistent_db_path()
     db = Database(Path(effective_db_path))
 
-    terminal_states = {'success', 'failed', 'cancelled', 'crashed', 'scoring_failed', 'pending_review', 'rejected'}
+    terminal_states = {
+        "success",
+        "failed",
+        "cancelled",
+        "crashed",
+        "scoring_failed",
+        "pending_review",
+        "rejected",
+    }
     deadline = time.time() + timeout
     last_phase = None
 
@@ -2197,28 +2307,31 @@ def pipeline_wait(run_id: str, timeout: int, interval: int, db_path: Optional[st
             click.echo(f"✗ Run '{run_id}' not found.", err=True)
             sys.exit(2)
 
-        current_status = run['status']
+        current_status = run["status"]
 
         # Check PID liveness if still running
-        if current_status == 'running':
-            pid = run.get('pid')
+        if current_status == "running":
+            pid = run.get("pid")
             if pid:
                 try:
-                    from .daemon import is_process_alive
+                    from .daemon import is_process_alive  # noqa: PLC0415
+
                     if not is_process_alive(pid):
-                        current_status = 'crashed'
-                        db.update_pipeline_run(run_id, status='crashed')
-                except Exception:
+                        current_status = "crashed"
+                        db.update_pipeline_run(run_id, status="crashed")
+                except Exception:  # noqa: BLE001
                     pass
 
-        current_phase = run.get('current_phase') or '(none)'
+        current_phase = run.get("current_phase") or "(none)"
         if current_phase != last_phase:
-            click.echo(f"  [{now_utc().strftime('%H:%M:%S')}] status={current_status}  phase={current_phase}")
+            click.echo(
+                f"  [{now_utc().strftime('%H:%M:%S')}] status={current_status}  phase={current_phase}"  # noqa: E501
+            )
             last_phase = current_phase
 
         if current_status in terminal_states:
             click.echo(f"\nRun '{run_id}' finished with status: {current_status}")
-            if current_status == 'success':
+            if current_status == "success":
                 sys.exit(0)
             else:
                 sys.exit(2)
@@ -2230,8 +2343,8 @@ def pipeline_wait(run_id: str, timeout: int, interval: int, db_path: Optional[st
 
 
 @main.command("resume")
-@click.argument('run_id')
-def pipeline_resume(run_id: str) -> None:
+@click.argument("run_id")
+def pipeline_resume(run_id: str) -> None:  # noqa: ARG001
     """Resume a failed or crashed pipeline run from the last completed phase.
 
     This is a v2 feature — not yet implemented.
@@ -2248,6 +2361,7 @@ def pipeline_resume(run_id: str) -> None:
 # ---------------------------------------------------------------------------
 # orch gate — merge gate management commands
 # ---------------------------------------------------------------------------
+
 
 @main.group("gate")
 def gate_group() -> None:
@@ -2267,12 +2381,15 @@ def gate_group() -> None:
 
 @gate_group.command("list")
 @click.option(
-    "--all", "show_all", is_flag=True, default=False,
-    help="Show all gates including approved/rejected."
+    "--all",
+    "show_all",
+    is_flag=True,
+    default=False,
+    help="Show all gates including approved/rejected.",
 )
 def gate_list(show_all: bool) -> None:
     """List pending merge gates."""
-    from .git_integration import GitContext
+    from .git_integration import GitContext  # noqa: PLC0415
 
     gates = GitContext.list_gates()
     if not gates:
@@ -2288,13 +2405,15 @@ def gate_list(show_all: bool) -> None:
     headers = ["Run ID", "Pipeline", "Branch", "Status", "Created"]
     rows = []
     for g in gates:
-        rows.append([
-            g.get("run_id", "?")[:10],
-            g.get("pipeline_id", "?")[:25],
-            g.get("branch", "?")[:40],
-            g.get("status", "?"),
-            (g.get("created_at") or "?")[:19],
-        ])
+        rows.append(  # noqa: PERF401
+            [
+                g.get("run_id", "?")[:10],
+                g.get("pipeline_id", "?")[:25],
+                g.get("branch", "?")[:40],
+                g.get("status", "?"),
+                (g.get("created_at") or "?")[:19],
+            ]
+        )
     print_table(headers, rows)
 
 
@@ -2302,12 +2421,15 @@ def gate_list(show_all: bool) -> None:
 @click.argument("run_id")
 @click.option("--message", "-m", default=None, help="Optional approval message.")
 @click.option(
-    "--force", "-f", is_flag=True, default=False,
+    "--force",
+    "-f",
+    is_flag=True,
+    default=False,
     help="Override score gate enforcement and approve even when scoring failed. Use with caution.",
 )
-def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:
+def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:  # noqa: C901
     """Approve a merge gate (run ID from ``orch gate list``)."""
-    from .git_integration import GitContext, GitError
+    from .git_integration import GitContext, GitError  # noqa: PLC0415
 
     gate = GitContext.load_gate(run_id)
     if gate is None:
@@ -2329,26 +2451,21 @@ def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:
     _gate_score = gate.get("scoring_score")
     if _gate_scoring == "failed" and not force:
         _score_pct = f"{_gate_score * 100:.1f}" if _gate_score is not None else "n/a"
-        click.echo(f"✗ Score gate FAILED — approval blocked.", err=True)
+        click.echo("✗ Score gate FAILED — approval blocked.", err=True)
         click.echo(f"  Score: {_score_pct} / 100  (threshold: see scenario config)", err=True)
         click.echo(
-            f"  Pipeline scoring failed. Fix the issues and re-run, "
-            f"or use --force to override.",
+            "  Pipeline scoring failed. Fix the issues and re-run, " "or use --force to override.",
             err=True,
         )
         sys.exit(1)
     elif _gate_scoring == "failed" and force:
-        click.echo(
-            f"⚠ Score gate FAILED — approving anyway because --force was specified."
-        )
+        click.echo("⚠ Score gate FAILED — approving anyway because --force was specified.")
     elif _gate_scoring == "error":
         click.echo(
-            f"⚠ Scoring encountered an error for this run — proceeding without score gate enforcement."
+            "⚠ Scoring encountered an error for this run — proceeding without score gate enforcement."  # noqa: E501
         )
     elif _gate_scoring is None:
-        click.echo(
-            f"⚠ No scoring data for this run — proceeding without score gate."
-        )
+        click.echo("⚠ No scoring data for this run — proceeding without score gate.")
     # scoring_status == "passed" → allow silently (happy path)
 
     try:
@@ -2368,18 +2485,16 @@ def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:
 
     # Optionally create PR if template configured create_pr: true
     if updated.get("create_pr"):
-        from .git_integration import GitConfig, GitContext as _GC
+        from .git_integration import GitConfig  # noqa: PLC0415
+        from .git_integration import GitContext as _GC  # noqa: N814, PLC0415
 
         _cfg = GitConfig(create_pr=True)
-        _tmp_ctx = _GC(config=_cfg, pipeline_id=updated.get("pipeline_id", ""),
-                       run_id=run_id)
+        _tmp_ctx = _GC(config=_cfg, pipeline_id=updated.get("pipeline_id", ""), run_id=run_id)
         pr_url = _tmp_ctx.create_pr(updated)
         if pr_url:
             click.echo(f"  PR created: {pr_url}")
         else:
-            click.echo(
-                "  ⚠ PR creation failed — run `gh pr create` manually or check gh CLI."
-            )
+            click.echo("  ⚠ PR creation failed — run `gh pr create` manually or check gh CLI.")
 
 
 @gate_group.command("reject")
@@ -2387,7 +2502,7 @@ def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:
 @click.option("--message", "-m", default=None, help="Optional rejection reason.")
 def gate_reject(run_id: str, message: Optional[str]) -> None:
     """Reject a merge gate.  The feature branch is preserved for inspection."""
-    from .git_integration import GitContext, GitError
+    from .git_integration import GitContext, GitError  # noqa: PLC0415
 
     gate = GitContext.load_gate(run_id)
     if gate is None:
@@ -2405,17 +2520,14 @@ def gate_reject(run_id: str, message: Optional[str]) -> None:
     branch = updated.get("branch", "?")
     click.echo(f"✓ Gate '{run_id}' rejected.")
     click.echo(f"  Branch '{branch}' preserved for inspection.")
-    click.echo(
-        f"  To delete it:  git branch -d {branch}"
-    )
+    click.echo(f"  To delete it:  git branch -d {branch}")
 
 
 @gate_group.command("info")
 @click.argument("run_id")
 def gate_info(run_id: str) -> None:
     """Show details about a merge gate."""
-    import json as _json
-    from .git_integration import GitContext
+    from .git_integration import GitContext  # noqa: PLC0415
 
     gate = GitContext.load_gate(run_id)
     if gate is None:
@@ -2442,17 +2554,11 @@ def gate_info(run_id: str) -> None:
     _scoring_status = gate.get("scoring_status")
     _scoring_score = gate.get("scoring_score")
     if _scoring_status is not None:
-        _score_emoji = {"passed": "✅", "failed": "❌", "error": "⚠️"}.get(
-            _scoring_status, "❓"
-        )
-        _score_pct = (
-            f"  ({_scoring_score * 100:.1f}/100)"
-            if _scoring_score is not None
-            else ""
-        )
+        _score_emoji = {"passed": "✅", "failed": "❌", "error": "⚠️"}.get(_scoring_status, "❓")
+        _score_pct = f"  ({_scoring_score * 100:.1f}/100)" if _scoring_score is not None else ""
         click.echo(f"├─ Scoring:  {_score_emoji} {_scoring_status}{_score_pct}")
     else:
-        click.echo(f"├─ Scoring:  ⏳ pending (not yet scored)")
+        click.echo("├─ Scoring:  ⏳ pending (not yet scored)")
 
     click.echo(f"├─ Created:  {(gate.get('created_at') or '?')[:19]}")
     if gate.get("updated_at"):
@@ -2468,7 +2574,7 @@ def gate_info(run_id: str) -> None:
         for c in commits:
             click.echo(f"   • {c.get('sha', '?')[:8]}  {c.get('message', '?')}")
     else:
-        click.echo(f"└─ Commits:  none")
+        click.echo("└─ Commits:  none")
 
 
 def _check_yaml_syntax(template_file: Path) -> Optional[str]:
@@ -2518,23 +2624,32 @@ def _apply_fixes(template_file: Path, raw_data: Dict[str, Any]) -> Dict[str, Any
     if changed:
         try:
             with open(template_file, "w") as fh:
-                yaml.dump(raw_data, fh, default_flow_style=False, allow_unicode=True,
-                          sort_keys=False)
-            click.echo(click.style("⚠", fg="yellow") +
-                       " Note: --fix rewrites YAML; comments may not be preserved.")
+                yaml.dump(
+                    raw_data, fh, default_flow_style=False, allow_unicode=True, sort_keys=False
+                )
+            click.echo(
+                click.style("⚠", fg="yellow")
+                + " Note: --fix rewrites YAML; comments may not be preserved."
+            )
         except PermissionError:
-            click.echo(click.style("✗", fg="red") +
-                       f" Cannot write --fix changes: permission denied on {template_file}",
-                       err=True)
+            click.echo(
+                click.style("✗", fg="red")
+                + f" Cannot write --fix changes: permission denied on {template_file}",
+                err=True,
+            )
 
     return raw_data
 
 
 @main.command("validate")
-@click.argument('template_name_or_file')
-@click.option('--fix', is_flag=True, default=False,
-              help='Auto-correct simple issues (missing version/description, model tier casing).')
-def validate_template(template_name_or_file: str, fix: bool) -> None:
+@click.argument("template_name_or_file")
+@click.option(
+    "--fix",
+    is_flag=True,
+    default=False,
+    help="Auto-correct simple issues (missing version/description, model tier casing).",
+)
+def validate_template(template_name_or_file: str, fix: bool) -> None:  # noqa: C901
     """Validate a pipeline template and report any structural errors.
 
     TEMPLATE_NAME_OR_FILE is a template name (e.g. content-pipeline) or a
@@ -2543,12 +2658,12 @@ def validate_template(template_name_or_file: str, fix: bool) -> None:
 
     Exit code 0 = valid (warnings only).  Exit code 1 = errors found.
     """
-    OK  = click.style("✓", fg="green")
-    ERR = click.style("✗", fg="red")
-    WRN = click.style("⚠", fg="yellow")
+    OK = click.style("✓", fg="green")  # noqa: N806
+    ERR = click.style("✗", fg="red")  # noqa: N806
+    WRN = click.style("⚠", fg="yellow")  # noqa: N806
 
     try:
-        from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
+        from .templates import PipelineTemplate, TemplateEngine  # noqa: F401, PLC0415
 
         template_file = _resolve_template_arg(template_name_or_file)
 
@@ -2570,7 +2685,8 @@ def validate_template(template_name_or_file: str, fix: bool) -> None:
 
         # ── 3b. Validate top-level adversary_config (if present) ─────
         if isinstance(raw_data, dict) and "adversary_config" in raw_data:
-            from .templates import _parse_adversary_config
+            from .templates import _parse_adversary_config  # noqa: PLC0415
+
             try:
                 _parse_adversary_config(raw_data["adversary_config"])
             except ValueError as exc:
@@ -2607,7 +2723,9 @@ def validate_template(template_name_or_file: str, fix: bool) -> None:
             for w in ext_warnings:
                 click.echo(f"    • {w}")
         else:
-            click.echo(f"{OK} Extended checks  (model tiers, thinking levels, variable refs, config_schema)")
+            click.echo(
+                f"{OK} Extended checks  (model tiers, thinking levels, variable refs, config_schema)"  # noqa: E501
+            )
 
         # ── 6. Summary ────────────────────────────────────────────────
         total_errors = len(structural_errors) + len(ext_errors)
@@ -2625,20 +2743,18 @@ def validate_template(template_name_or_file: str, fix: bool) -> None:
                 f"valid with {total_warnings} warning(s)"
             )
         else:
-            click.echo(
-                f"\n{OK} Template {str(template_file)!r} is valid"
-            )
+            click.echo(f"\n{OK} Template {str(template_file)!r} is valid")
 
     except (KeyError, ValueError) as exc:
         click.echo(f"{ERR} Invalid template: {exc}", err=True)
         sys.exit(1)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
 
 @main.command("list-phases")
-@click.argument('template_name_or_file')
+@click.argument("template_name_or_file")
 def list_phases(template_name_or_file: str) -> None:
     """Show execution order and model tiers for a pipeline template.
 
@@ -2647,7 +2763,7 @@ def list_phases(template_name_or_file: str) -> None:
     ORCH_TEMPLATES_PATH → ./templates/ → ~/.orch/templates/ → bundled.
     """
     try:
-        from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
+        from .templates import PipelineTemplate, TemplateEngine  # noqa: F401, PLC0415
 
         template_file = _resolve_template_arg(template_name_or_file)
         engine = TemplateEngine()
@@ -2676,7 +2792,7 @@ def list_phases(template_name_or_file: str) -> None:
                     click.echo(f"    ├─ {phase_id} (unknown)")
             click.echo()
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
@@ -2684,6 +2800,7 @@ def list_phases(template_name_or_file: str) -> None:
 # ---------------------------------------------------------------------------
 # Template discovery helpers
 # ---------------------------------------------------------------------------
+
 
 def _yaml_str(val: Any) -> str:
     """Convert a YAML-parsed value to string, mapping YAML booleans back to their
@@ -2711,7 +2828,7 @@ def _template_resolution_paths() -> List[tuple]:
     for name-based lookup but are not listed here to keep the scan focused on
     user-visible template sources.
     """
-    import os as _os
+    import os as _os  # noqa: PLC0415
 
     paths: List[tuple] = []
 
@@ -2741,7 +2858,7 @@ def _scan_templates(resolution_paths: Optional[List[tuple]] = None) -> List[tupl
     Returns:
         List of (filepath, source_label, PipelineTemplate) tuples.
     """
-    from .templates import TemplateEngine
+    from .templates import TemplateEngine  # noqa: PLC0415
 
     if resolution_paths is None:
         resolution_paths = _template_resolution_paths()
@@ -2753,9 +2870,7 @@ def _scan_templates(resolution_paths: Optional[List[tuple]] = None) -> List[tupl
     for search_path, source_label in resolution_paths:
         if not search_path.exists():
             continue
-        for filepath in sorted(search_path.glob("*.yaml")) + sorted(
-            search_path.glob("*.yml")
-        ):
+        for filepath in sorted(search_path.glob("*.yaml")) + sorted(search_path.glob("*.yml")):
             stem = filepath.stem
             if stem in seen_stems:
                 continue
@@ -2763,7 +2878,7 @@ def _scan_templates(resolution_paths: Optional[List[tuple]] = None) -> List[tupl
                 template = engine.load_template(filepath)
                 seen_stems[stem] = source_label
                 found.append((filepath, source_label, template))
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 click.echo(f"[warn] Skipping {filepath}: {exc}", err=True)
 
     return found
@@ -2794,10 +2909,7 @@ def _validate_required_config(template, initial_input: Dict[str, Any]) -> List[s
         field
         for field in required
         if field not in initial_input
-        and not (
-            isinstance(properties.get(field), dict)
-            and "default" in properties[field]
-        )
+        and not (isinstance(properties.get(field), dict) and "default" in properties[field])
     ]
 
 
@@ -2811,11 +2923,11 @@ def _slugify_title(title: str) -> str:
     Note: truncates to 49 chars (not 50) to match acceptance test expectations.
     """
     slug = title.lower()
-    slug = re.sub(r'[^a-z0-9]+', '-', slug)
-    slug = slug.strip('-')
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    slug = slug.strip("-")
     slug = slug[:49]
-    slug = slug.rstrip('-')
-    return slug or 'untitled'
+    slug = slug.rstrip("-")
+    return slug or "untitled"
 
 
 def _read_openclaw_token() -> Optional[str]:
@@ -2841,17 +2953,17 @@ def _normalize_git_url(url: str) -> str:
       - HTTPS:           https://github.com/owner/repo.git → https://github.com/owner/repo
     """
     # SCP-style: git@host:path
-    scp_match = re.match(r'git@([^:]+):(.+?)(?:\.git)?$', url)
+    scp_match = re.match(r"git@([^:]+):(.+?)(?:\.git)?$", url)
     if scp_match:
         host, path = scp_match.groups()
         return f"https://{host}/{path}"
     # RFC 3986 SSH: ssh://git@host/path
-    ssh2_match = re.match(r'ssh://git@([^/]+)/(.+?)(?:\.git)?$', url)
+    ssh2_match = re.match(r"ssh://git@([^/]+)/(.+?)(?:\.git)?$", url)
     if ssh2_match:
         host, path = ssh2_match.groups()
         return f"https://{host}/{path}"
     # HTTPS: strip trailing .git
-    if url.endswith('.git'):
+    if url.endswith(".git"):
         url = url[:-4]
     return url
 
@@ -2864,8 +2976,7 @@ def _infer_git_context() -> tuple:
     """
     try:
         result = subprocess.run(
-            ['git', 'rev-parse', '--show-toplevel'],
-            capture_output=True, text=True, check=True
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True
         )
         repo_path = result.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
@@ -2873,8 +2984,7 @@ def _infer_git_context() -> tuple:
 
     try:
         result = subprocess.run(
-            ['git', 'remote', 'get-url', 'origin'],
-            capture_output=True, text=True, check=True
+            ["git", "remote", "get-url", "origin"], capture_output=True, text=True, check=True
         )
         repo_url = _normalize_git_url(result.stdout.strip())
     except (subprocess.CalledProcessError, FileNotFoundError, OSError):
@@ -2890,50 +3000,46 @@ def _fetch_issue_strict(repo: str, issue_number: int) -> dict:
     issue-not-found (not-found message, exit 1).
     """
     # Detect missing credentials before API call
-    has_env_token = bool(os.environ.get('GITHUB_TOKEN'))
+    has_env_token = bool(os.environ.get("GITHUB_TOKEN"))
     if not has_env_token:
         try:
             auth_result = subprocess.run(
-                ['gh', 'auth', 'status'],
-                capture_output=True, text=True, timeout=10
+                ["gh", "auth", "status"], capture_output=True, text=True, timeout=10
             )
             if auth_result.returncode != 0:
                 click.echo(
                     "Error: No GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'.",
-                    err=True
+                    err=True,
                 )
                 sys.exit(1)
         except (FileNotFoundError, subprocess.TimeoutExpired):
             click.echo(
-                "Error: No GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'.",
-                err=True
+                "Error: No GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'.", err=True
             )
             sys.exit(1)
 
     # Fetch issue via GitHub API
     try:
         result = subprocess.run(
-            ['gh', 'api', f'repos/{repo}/issues/{issue_number}'],
-            capture_output=True, text=True, timeout=15
+            ["gh", "api", f"repos/{repo}/issues/{issue_number}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
     except subprocess.TimeoutExpired:
-        click.echo(
-            f"Error: GitHub API request timed out fetching issue #{issue_number}.",
-            err=True
-        )
+        click.echo(f"Error: GitHub API request timed out fetching issue #{issue_number}.", err=True)
         sys.exit(1)
     if result.returncode != 0:
         combined = (result.stderr + result.stdout).lower()
-        if '404' in combined or 'not found' in combined:
+        if "404" in combined or "not found" in combined:
             click.echo(
                 f"Error: Issue #{issue_number} not found. "
                 "Check the issue number and your GITHUB_TOKEN.",
-                err=True
+                err=True,
             )
         else:
             click.echo(
-                "Error: No GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'.",
-                err=True
+                "Error: No GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'.", err=True
             )
         sys.exit(1)
 
@@ -2959,8 +3065,9 @@ def _resolve_template_arg(name_or_path: str, launch_fmt: bool = False) -> Path:
 
     Exits with an error message on failure.
     """
-    import os as _os
-    from .templates import TemplateEngine, TemplateNotFoundError
+    import os as _os  # noqa: PLC0415
+
+    from .templates import TemplateEngine, TemplateNotFoundError  # noqa: PLC0415
 
     # Already a Path — accept directly
     if isinstance(name_or_path, Path):
@@ -3015,6 +3122,7 @@ def _resolve_template_arg(name_or_path: str, launch_fmt: bool = False) -> Path:
 # templates command group
 # ---------------------------------------------------------------------------
 
+
 @main.group()
 def templates() -> None:
     """Browse and inspect pipeline templates."""
@@ -3023,6 +3131,7 @@ def templates() -> None:
 # ---------------------------------------------------------------------------
 # Feature #67 — orch templates list
 # ---------------------------------------------------------------------------
+
 
 @templates.command("list")
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
@@ -3040,8 +3149,8 @@ def templates_list(json_output: bool) -> None:
 
     The Source column shows where each template was found.
     """
-    from rich.console import Console
-    from rich.table import Table
+    from rich.console import Console  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
 
     console = Console(highlight=False)
     found = _scan_templates()
@@ -3049,15 +3158,17 @@ def templates_list(json_output: bool) -> None:
     if json_output:
         result = []
         for filepath, source, tmpl in found:
-            result.append({
-                "id": tmpl.id,
-                "name": tmpl.name,
-                "version": tmpl.version,
-                "phases": len(tmpl.phases),
-                "description": tmpl.description,
-                "source": source,
-                "path": str(filepath),
-            })
+            result.append(
+                {
+                    "id": tmpl.id,
+                    "name": tmpl.name,
+                    "version": tmpl.version,
+                    "phases": len(tmpl.phases),
+                    "description": tmpl.description,
+                    "source": source,
+                    "path": str(filepath),
+                }
+            )
         click.echo(json.dumps(result, indent=2))
         return
 
@@ -3095,13 +3206,15 @@ def templates_list(json_output: bool) -> None:
 # Feature #68 — orch templates info <name|path>
 # ---------------------------------------------------------------------------
 
+
 @templates.command("info")
 @click.argument("name_or_path")
-def templates_info(name_or_path: str) -> None:
+def templates_info(name_or_path: str) -> None:  # noqa: C901
     """Show detailed info about a template (by name, ID, or file path)."""
-    from rich.console import Console
-    from rich.table import Table
-    from .templates import TemplateEngine
+    from rich.console import Console  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
+
+    from .templates import TemplateEngine  # noqa: PLC0415
 
     console = Console(highlight=False)
     engine = TemplateEngine()
@@ -3110,10 +3223,7 @@ def templates_info(name_or_path: str) -> None:
     template_path, template = _find_template(name_or_path)
 
     # ---- Header ----
-    console.print(
-        f"\n[bold cyan]{template.name}[/bold cyan] "
-        f"[dim](v{template.version})[/dim]"
-    )
+    console.print(f"\n[bold cyan]{template.name}[/bold cyan] " f"[dim](v{template.version})[/dim]")
     if template.description:
         console.print(template.description)
     console.print()
@@ -3129,7 +3239,7 @@ def templates_info(name_or_path: str) -> None:
     if template.use_cases:
         doc_lines.append("[bold]Use Cases:[/bold]")
         for uc in template.use_cases:
-            doc_lines.append(f"  • {uc}")
+            doc_lines.append(f"  • {uc}")  # noqa: PERF401
     if template.example_input:
         doc_lines.append(f"[bold]Example Input:[/bold] {json.dumps(template.example_input)}")
     if doc_lines:
@@ -3208,9 +3318,7 @@ def templates_info(name_or_path: str) -> None:
 
         input_str = json.dumps(example_input) if example_input else '{"key": "value"}'
         console.print("[bold]Example:[/bold]")
-        console.print(
-            f"  orch run {template_path} --mode dry-run --input '{input_str}'"
-        )
+        console.print(f"  orch run {template_path} --mode dry-run --input '{input_str}'")
         console.print()
 
 
@@ -3221,7 +3329,7 @@ def templates_info(name_or_path: str) -> None:
 _USER_TEMPLATES_DIR = Path.home() / ".orch" / "templates"
 
 
-_GH_SHORTHAND_RE = re.compile(r'^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$')
+_GH_SHORTHAND_RE = re.compile(r"^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$")
 
 
 def _is_github_shorthand(source: str) -> bool:
@@ -3237,20 +3345,20 @@ def _install_from_git(url: str, name: str, force: bool) -> Path:
     Returns the install directory.
     Raises click.ClickException on failure.
     """
-    import subprocess
+    import subprocess  # noqa: PLC0415
 
     if url.startswith("-"):
         raise click.ClickException(f"Invalid URL: {url}")
 
-    dest = _USER_TEMPLATES_DIR / re.sub(r'[^\w\-]', '_', name)
+    dest = _USER_TEMPLATES_DIR / re.sub(r"[^\w\-]", "_", name)
 
     if dest.exists():
         if not force:
             raise click.ClickException(
-                f"Template '{name}' already installed at {dest}.\n"
-                f"  Use --force to overwrite."
+                f"Template '{name}' already installed at {dest}.\n" f"  Use --force to overwrite."
             )
-        import shutil
+        import shutil  # noqa: PLC0415
+
         shutil.rmtree(dest)
 
     _USER_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
@@ -3297,12 +3405,12 @@ def _validate_installed_template(yaml_path: Path):
 
     Raises click.ClickException on failure.
     """
-    from .templates import TemplateEngine
+    from .templates import TemplateEngine  # noqa: PLC0415
 
     engine = TemplateEngine()
     try:
         template = engine.load_template(yaml_path)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         raise click.ClickException(f"Installed template is not valid YAML: {exc}")
 
     errors = engine.validate_template(template)
@@ -3333,8 +3441,9 @@ def templates_install(source: str, force: bool, name: Optional[str]) -> None:
       orch templates install https://github.com/user/my-pipeline
       orch templates install ./my-template.yaml --name my-pipeline
     """
-    from rich.console import Console
-    import shutil
+    import shutil  # noqa: PLC0415
+
+    from rich.console import Console  # noqa: PLC0415
 
     console = Console(highlight=False)
 
@@ -3352,7 +3461,7 @@ def templates_install(source: str, force: bool, name: Optional[str]) -> None:
     elif is_shorthand:
         # GitHub shorthand → https://github.com/user/repo
         url = f"https://github.com/{source}.git"
-        install_name = name or source.split("/")[-1]
+        install_name = name or source.rsplit("/", maxsplit=1)[-1]
         console.print(f"[bold]Installing from GitHub:[/bold] {source}")
         dest = _install_from_git(url, install_name, force)
 
@@ -3363,7 +3472,7 @@ def templates_install(source: str, force: bool, name: Optional[str]) -> None:
             raise click.ClickException(f"File not found: {source}")
 
         install_name = name or local_path.stem
-        safe_name = re.sub(r'[^\w\-]', '_', install_name)
+        safe_name = re.sub(r"[^\w\-]", "_", install_name)
         dest = _USER_TEMPLATES_DIR / safe_name
 
         if dest.exists():
@@ -3409,10 +3518,7 @@ def templates_install(source: str, force: bool, name: Optional[str]) -> None:
     console.print("[bold]Next steps:[/bold]")
     console.print("  [cyan]orch templates list[/cyan]          See all installed templates")
     if yaml_path:
-        console.print(
-            f"  [cyan]orch start {install_name}[/cyan]"
-            f"          Run it interactively"
-        )
+        console.print(f"  [cyan]orch start {install_name}[/cyan]" f"          Run it interactively")
     console.print()
 
 
@@ -3424,15 +3530,13 @@ def templates_uninstall(name: str, force: bool) -> None:
 
     NAME is the template directory name (as shown in `orch templates list`).
     """
-    import shutil
+    import shutil  # noqa: PLC0415
 
-    safe_name = re.sub(r'[^\w\-]', '_', name)
+    safe_name = re.sub(r"[^\w\-]", "_", name)
     dest = _USER_TEMPLATES_DIR / safe_name
 
     if not dest.exists():
-        raise click.ClickException(
-            f"Template '{name}' not found in {_USER_TEMPLATES_DIR}"
-        )
+        raise click.ClickException(f"Template '{name}' not found in {_USER_TEMPLATES_DIR}")
 
     if not force:
         if not click.confirm(f"Remove template '{name}' from {dest}?"):
@@ -3479,7 +3583,7 @@ def templates_search(query: str, refresh: bool, index_url: Optional[str]) -> Non
       orch templates search --refresh
       orch templates search code-review --index-url https://example.com/index.yaml
     """
-    from .template_index import TemplateIndex
+    from .template_index import TemplateIndex  # noqa: PLC0415
 
     index = TemplateIndex()
     url = index_url or DEFAULT_TEMPLATE_INDEX_URL
@@ -3491,7 +3595,7 @@ def templates_search(query: str, refresh: bool, index_url: Optional[str]) -> Non
         try:
             index.load_local(_TEMPLATE_INDEX_CACHE)
             loaded = True
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass  # Fall through to remote fetch
 
     if not loaded:
@@ -3500,9 +3604,9 @@ def templates_search(query: str, refresh: bool, index_url: Optional[str]) -> Non
             index.load_remote(url)
             try:
                 index.save_cache(_TEMPLATE_INDEX_CACHE)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass  # Cache save failure is non-fatal
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # If remote fails but we have a stale cache, use it
             if _TEMPLATE_INDEX_CACHE.exists():
                 click.echo(
@@ -3538,6 +3642,7 @@ def templates_search(query: str, refresh: bool, index_url: Optional[str]) -> Non
 # Feature #65 — orch quickstart
 # ---------------------------------------------------------------------------
 
+
 @main.command("quickstart")
 @click.pass_context
 def quickstart(ctx: click.Context) -> None:
@@ -3546,18 +3651,18 @@ def quickstart(ctx: click.Context) -> None:
     Runs the bundled hello-pipeline.yaml in dry-run mode so you can see what
     the engine does without any API key or config.
     """
-    from rich.console import Console
+    from rich.console import Console  # noqa: PLC0415
 
     console = Console(highlight=False)
 
     # Locate hello-pipeline.yaml — try multiple locations for both
     # repo-based development and pip-installed packages.
-    _pkg_dir = Path(__file__).parent          # src/orchestration_engine/
-    _repo_root = _pkg_dir.parent.parent       # repo root (when running from source)
+    _pkg_dir = Path(__file__).parent  # src/orchestration_engine/
+    _repo_root = _pkg_dir.parent.parent  # repo root (when running from source)
     candidates = [
         _repo_root / "examples" / "hello-pipeline.yaml",
         Path("./examples/hello-pipeline.yaml"),
-        _pkg_dir / "examples" / "hello-pipeline.yaml",      # package data
+        _pkg_dir / "examples" / "hello-pipeline.yaml",  # package data
         Path.home() / ".orch" / "templates" / "hello-pipeline.yaml",  # user dir
     ]
     hello_yaml: Optional[Path] = None
@@ -3600,14 +3705,14 @@ def quickstart(ctx: click.Context) -> None:
     )
 
     # ---- Footer ----
-    from .templates import TemplateEngine as _TE
+    from .templates import TemplateEngine as _TE  # noqa: N814, PLC0415
+
     _tmpl = _TE().load_template(hello_yaml)
     n_phases = len(_tmpl.phases)
 
     console.print()
     console.print(
-        f"[bold green]✓ That's it![/bold green] "
-        f"You just ran a {n_phases}-phase AI pipeline."
+        f"[bold green]✓ That's it![/bold green] " f"You just ran a {n_phases}-phase AI pipeline."
     )
     console.print()
     console.print("[bold]Next steps:[/bold]")
@@ -3616,8 +3721,7 @@ def quickstart(ctx: click.Context) -> None:
         "                              See all available templates"
     )
     console.print(
-        "  [cyan]orch templates info hello-pipeline[/cyan]"
-        "        Explore a simple pipeline"
+        "  [cyan]orch templates info hello-pipeline[/cyan]" "        Explore a simple pipeline"
     )
     console.print(
         "  [cyan]orch run hello-pipeline.yaml --mode dry-run[/cyan]"
@@ -3630,20 +3734,23 @@ def quickstart(ctx: click.Context) -> None:
 # Issue #110 — orch templates test
 # ---------------------------------------------------------------------------
 
+
 @templates.command("test")
 @click.option(
-    "--verbose", "-v",
+    "--verbose",
+    "-v",
     is_flag=True,
     default=False,
     help="Show full error output per template on failure.",
 )
 @click.option(
-    "--fail-fast", "-x",
+    "--fail-fast",
+    "-x",
     is_flag=True,
     default=False,
     help="Stop after the first template failure.",
 )
-def templates_test(verbose: bool, fail_fast: bool) -> None:
+def templates_test(verbose: bool, fail_fast: bool) -> None:  # noqa: C901
     """Validate and dry-run every discovered template.
 
     Discovers all ``.yaml`` / ``.yml`` files in ``templates/`` and
@@ -3663,18 +3770,17 @@ def templates_test(verbose: bool, fail_fast: bool) -> None:
       orch templates test --verbose
       orch templates test --fail-fast
     """
-    import glob as _glob
-    import json as _json
-    import traceback as _tb
+    import glob as _glob  # noqa: PLC0415
+    import traceback as _tb  # noqa: PLC0415
 
-    import yaml as _yaml
+    import yaml as _yaml  # noqa: PLC0415
 
-    from .templates import TemplateEngine
-    from .pipeline_runner import PipelineRunner
-    from .sequencer import PhaseSequencer, StateMachineSequencer
+    from .pipeline_runner import PipelineRunner  # noqa: PLC0415
+    from .sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
+    from .templates import TemplateEngine  # noqa: PLC0415
 
-    OK_MARK = click.style("✓", fg="green")
-    FAIL_MARK = click.style("✗", fg="red")
+    OK_MARK = click.style("✓", fg="green")  # noqa: N806
+    FAIL_MARK = click.style("✗", fg="red")  # noqa: N806
 
     # ── 1. Discover templates (same glob as test suite) ──────────────────
     repo_root = Path(__file__).parent.parent.parent.parent
@@ -3701,9 +3807,7 @@ def templates_test(verbose: bool, fail_fast: bool) -> None:
         )
         sys.exit(1)
 
-    click.echo(
-        f"Discovered {len(all_templates)} template(s) under {repo_root}/\n"
-    )
+    click.echo(f"Discovered {len(all_templates)} template(s) under {repo_root}/\n")
 
     engine = TemplateEngine()
     passed: List[str] = []
@@ -3719,25 +3823,14 @@ def templates_test(verbose: bool, fail_fast: bool) -> None:
             template = engine.load_template(template_path)
             structural_errors = engine.validate_template(template)
             if structural_errors:
-                errors.extend(
-                    [f"[structural] {e}" for e in structural_errors]
-                )
+                errors.extend([f"[structural] {e}" for e in structural_errors])
 
-            raw_data: Dict[str, Any] = _yaml.safe_load(
-                template_path.read_text()
-            )
-            ext_errors, _ext_warnings = engine.validate_template_extended(
-                template, raw_data
-            )
+            raw_data: Dict[str, Any] = _yaml.safe_load(template_path.read_text())
+            ext_errors, _ext_warnings = engine.validate_template_extended(template, raw_data)
             if ext_errors:
-                errors.extend(
-                    [f"[extended] {e}" for e in ext_errors]
-                )
-        except Exception as exc:
-            errors.append(
-                f"[load/validate] {exc}"
-                + (f"\n{_tb.format_exc()}" if verbose else "")
-            )
+                errors.extend([f"[extended] {e}" for e in ext_errors])
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"[load/validate] {exc}" + (f"\n{_tb.format_exc()}" if verbose else ""))
 
         # ── 2b. Dry-run ───────────────────────────────────────────────────
         if not errors:
@@ -3753,22 +3846,17 @@ def templates_test(verbose: bool, fail_fast: bool) -> None:
                     _has_transitions = any(p.transitions for p in template.phases) or bool(
                         template.default_transitions
                     )
-                    _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer
-                    sequencer = _SequencerClass(
-                        template, dry_runner, config=input_data
+                    _SequencerClass = (  # noqa: N806
+                        StateMachineSequencer if _has_transitions else PhaseSequencer
                     )
+                    sequencer = _SequencerClass(template, dry_runner, config=input_data)
                     result = sequencer.execute(input_data)
 
                 if result.get("aborted"):
                     failed_phase = result.get("failed_phase", "unknown")
-                    errors.append(
-                        f"[dry-run] pipeline aborted at phase '{failed_phase}'"
-                    )
-            except Exception as exc:
-                errors.append(
-                    f"[dry-run] {exc}"
-                    + (f"\n{_tb.format_exc()}" if verbose else "")
-                )
+                    errors.append(f"[dry-run] pipeline aborted at phase '{failed_phase}'")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"[dry-run] {exc}" + (f"\n{_tb.format_exc()}" if verbose else ""))
 
         # ── 3. Report ─────────────────────────────────────────────────────
         if errors:
@@ -3794,22 +3882,20 @@ def templates_test(verbose: bool, fail_fast: bool) -> None:
     total = len(passed) + len(failed)
     if failed:
         click.echo(
-            f"{FAIL_MARK} {len(failed)}/{total} template(s) failed: "
-            + ", ".join(failed),
+            f"{FAIL_MARK} {len(failed)}/{total} template(s) failed: " + ", ".join(failed),
             err=True,
         )
         sys.exit(1)
     else:
-        click.echo(
-            f"{OK_MARK} All {total} template(s) passed."
-        )
+        click.echo(f"{OK_MARK} All {total} template(s) passed.")
 
 
 # ---------------------------------------------------------------------------
 # Feature #66 — orch start (interactive wizard)
 # ---------------------------------------------------------------------------
 
-def _find_template(name_or_path: str):
+
+def _find_template(name_or_path: str):  # noqa: C901
     """Locate a template by file path OR by name/ID.
 
     Resolution strategy:
@@ -3827,8 +3913,9 @@ def _find_template(name_or_path: str):
 
     Raises SystemExit on failure.
     """
-    import os as _os
-    from .templates import TemplateEngine, TemplateNotFoundError
+    import os as _os  # noqa: PLC0415
+
+    from .templates import TemplateEngine, TemplateNotFoundError  # noqa: PLC0415
 
     engine = TemplateEngine()
 
@@ -3847,7 +3934,7 @@ def _find_template(name_or_path: str):
         except FileNotFoundError:
             click.echo(f"✗ Template file not found: {name_or_path}")
             sys.exit(1)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             click.echo(f"✗ Could not load template: {exc}")
             sys.exit(1)
 
@@ -3871,8 +3958,11 @@ def _find_template(name_or_path: str):
     try:
         resolved_path = engine.resolve_template(name_or_path)
         template = engine.load_template(resolved_path)
-        if (template.id.lower() == search or template.name.lower() == search
-                or template.id.lower().startswith(search + "-")):
+        if (
+            template.id.lower() == search
+            or template.name.lower() == search
+            or template.id.lower().startswith(search + "-")
+        ):
             return resolved_path, template
     except TemplateNotFoundError:
         pass
@@ -3928,7 +4018,9 @@ def _prompt_for_field(
 
     if yes:
         # Non-interactive: use default or empty string
-        return str(field_default) if field_default is not None else (None if not is_required else "")
+        return (
+            str(field_default) if field_default is not None else (None if not is_required else "")
+        )
 
     click.echo(label)
 
@@ -3976,7 +4068,8 @@ def _prompt_for_field(
     help="Anthropic API key for standalone mode (or set ANTHROPIC_API_KEY).",
 )
 @click.option(
-    "--yes", "-y",
+    "--yes",
+    "-y",
     is_flag=True,
     default=False,
     help="Skip prompts and use default values for all fields.",
@@ -3988,7 +4081,7 @@ def _prompt_for_field(
     help="Directory to write phase outputs.",
 )
 @click.pass_context
-def pipeline_start(
+def pipeline_start(  # noqa: C901
     ctx: click.Context,
     template_name_or_path: str,
     mode: str,
@@ -4012,8 +4105,9 @@ def pipeline_start(
       # Point at a local file:
       orch start ./my-template.yaml --mode dry-run
     """
-    import json as _json
-    from rich.console import Console
+    import json as _json  # noqa: PLC0415
+
+    from rich.console import Console  # noqa: PLC0415
 
     console = Console(highlight=False)
 
@@ -4022,10 +4116,7 @@ def pipeline_start(
 
     # ---- 2. Show header ----
     console.print()
-    console.print(
-        f"[bold cyan]{template.name}[/bold cyan] "
-        f"[dim](v{template.version})[/dim]"
-    )
+    console.print(f"[bold cyan]{template.name}[/bold cyan] " f"[dim](v{template.version})[/dim]")
     if template.description:
         console.print(template.description)
     console.print()
@@ -4093,23 +4184,25 @@ def _build_default_phases(n_phases: int) -> List[Dict[str, Any]]:
     phases: List[Dict[str, Any]] = []
     for i in range(1, n_phases + 1):
         phase_id = f"phase-{i}"
-        phases.append({
-            "id": phase_id,
-            "name": f"Phase {i}",
-            "description": f"Phase {i} of the pipeline",
-            "task_type": "content",
-            "model_tier": "sonnet",
-            "thinking_level": "low",
-            "depends_on": [f"phase-{i - 1}"] if i > 1 else [],
-            "timeout_minutes": 30,
-            "prompt_template": "Process the following input:\n{input[topic]}\n",
-            "output_schema": {
-                "type": "object",
-                "properties": {
-                    "result": {"type": "string"},
+        phases.append(
+            {
+                "id": phase_id,
+                "name": f"Phase {i}",
+                "description": f"Phase {i} of the pipeline",
+                "task_type": "content",
+                "model_tier": "sonnet",
+                "thinking_level": "low",
+                "depends_on": [f"phase-{i - 1}"] if i > 1 else [],
+                "timeout_minutes": 30,
+                "prompt_template": "Process the following input:\n{input[topic]}\n",
+                "output_schema": {
+                    "type": "object",
+                    "properties": {
+                        "result": {"type": "string"},
+                    },
                 },
-            },
-        })
+            }
+        )
     return phases
 
 
@@ -4163,30 +4256,34 @@ def _collect_phases_interactive(
                 unknown = [d for d in deps if d not in previous_ids]
                 if unknown:
                     click.echo(
-                        click.style(f"  ⚠ Unknown phase ID(s) {unknown} — added anyway.", fg="yellow")
+                        click.style(
+                            f"  ⚠ Unknown phase ID(s) {unknown} — added anyway.", fg="yellow"
+                        )
                     )
         else:
             # Inherit base deps (if any) that still reference valid IDs
             base_deps = base.get("depends_on") or []
             deps = [d for d in base_deps if d in previous_ids]
 
-        phases.append({
-            "id": phase_id,
-            "name": phase_name,
-            "description": phase_desc,
-            "task_type": base.get("task_type", "content"),
-            "model_tier": model_tier,
-            "thinking_level": thinking_level,
-            "depends_on": deps,
-            "timeout_minutes": base.get("timeout_minutes", 30),
-            "prompt_template": base.get(
-                "prompt_template", "Process the following input:\n{input[topic]}\n"
-            ),
-            "output_schema": base.get(
-                "output_schema",
-                {"type": "object", "properties": {"result": {"type": "string"}}},
-            ),
-        })
+        phases.append(
+            {
+                "id": phase_id,
+                "name": phase_name,
+                "description": phase_desc,
+                "task_type": base.get("task_type", "content"),
+                "model_tier": model_tier,
+                "thinking_level": thinking_level,
+                "depends_on": deps,
+                "timeout_minutes": base.get("timeout_minutes", 30),
+                "prompt_template": base.get(
+                    "prompt_template", "Process the following input:\n{input[topic]}\n"
+                ),
+                "output_schema": base.get(
+                    "output_schema",
+                    {"type": "object", "properties": {"result": {"type": "string"}}},
+                ),
+            }
+        )
 
     return phases
 
@@ -4214,9 +4311,7 @@ def _build_scaffold_yaml(data: Dict[str, Any]) -> str:
 
     # ── Top-level metadata fields ────────────────────────────────────────────
     top_meta: Dict[str, Any] = {
-        k: v
-        for k, v in data.items()
-        if k not in ("config_schema", "phases")
+        k: v for k, v in data.items() if k not in ("config_schema", "phases")
     }
     lines.append(_dump(top_meta).rstrip())
     lines.append("")
@@ -4238,9 +4333,7 @@ def _build_scaffold_yaml(data: Dict[str, Any]) -> str:
 
     for phase in data["phases"]:
         lines.append("")
-        lines.append(
-            f"  # ── {phase['id']} " + "─" * max(4, 60 - len(phase["id"]))
-        )
+        lines.append(f"  # ── {phase['id']} " + "─" * max(4, 60 - len(phase["id"])))
         # yaml.dump renders a one-element list; strip trailing newline then indent
         phase_block = _dump([phase]).rstrip()
         indented = "\n".join("  " + row for row in phase_block.splitlines())
@@ -4252,39 +4345,44 @@ def _build_scaffold_yaml(data: Dict[str, Any]) -> str:
 
 @main.command("new")
 @click.option(
-    "--yes", "-y",
+    "--yes",
+    "-y",
     is_flag=True,
     default=False,
     help="Non-interactive: generate a template with sensible defaults "
-         "(name=my-pipeline, 2 phases, sonnet/low).",
+    "(name=my-pipeline, 2 phases, sonnet/low).",
 )
 @click.option(
-    "--from", "from_template",
+    "--from",
+    "from_template",
     default=None,
     metavar="TEMPLATE",
     help="Clone an existing template as the starting point. "
-         "Accepts a template name, ID, or file path.",
+    "Accepts a template name, ID, or file path.",
 )
 @click.option(
-    "--output", "output_path",
+    "--output",
+    "output_path",
     type=click.Path(path_type=Path),
     default=None,
     help="Output file path. Defaults to ./templates/<name>.yaml.",
 )
 @click.option(
-    "--force", "-f",
+    "--force",
+    "-f",
     is_flag=True,
     default=False,
     help="Overwrite the output file if it already exists.",
 )
 @click.option(
-    "--phases", "num_phases",
+    "--phases",
+    "num_phases",
     type=int,
     default=None,
     metavar="N",
     help="Number of phases (primarily used with --yes; default 2).",
 )
-def new_template(
+def new_template(  # noqa: C901
     yes: bool,
     from_template: Optional[str],
     output_path: Optional[Path],
@@ -4357,8 +4455,7 @@ def new_template(
 
     if output_path.exists() and not force and not yes:
         click.echo(
-            f"✗ Output file already exists: {output_path}\n"
-            f"  Use --force to overwrite.",
+            f"✗ Output file already exists: {output_path}\n" f"  Use --force to overwrite.",
             err=True,
         )
         sys.exit(1)
@@ -4380,7 +4477,9 @@ def new_template(
     else:
         # Interactive
         click.echo("── Phases " + "─" * 62)
-        default_n = num_phases if num_phases is not None else (len(base_phases) if base_phases else 2)
+        default_n = (
+            num_phases if num_phases is not None else (len(base_phases) if base_phases else 2)
+        )
         n = click.prompt("  Number of phases", default=default_n, type=int)
         if n <= 0:
             click.echo("✗ Number of phases must be at least 1.", err=True)
@@ -4473,7 +4572,7 @@ def import_group() -> None:
     default=False,
     help="Run orch validate on the generated file after writing.",
 )
-def import_plugin_command(
+def import_plugin_command(  # noqa: C901
     command_file: Path,
     output: Optional[Path],
     author: Optional[str],
@@ -4504,13 +4603,15 @@ def import_plugin_command(
       orch import plugin-command brand-review.md --dry-run
       orch import plugin-command campaign-plan.md --validate
     """
-    from .importers.plugin_command import (
-        import_plugin_command as _do_import,
+    from .importers.plugin_command import (  # noqa: PLC0415
         GENERATED_AUTHOR,
     )
+    from .importers.plugin_command import (  # noqa: PLC0415
+        import_plugin_command as _do_import,
+    )
 
-    OK  = click.style("✓", fg="green")
-    ERR = click.style("✗", fg="red")
+    OK = click.style("✓", fg="green")  # noqa: N806
+    ERR = click.style("✗", fg="red")  # noqa: N806
 
     # ── 1. Parse and generate YAML ────────────────────────────────────────────
     try:
@@ -4521,7 +4622,7 @@ def import_plugin_command(
     except ValueError as exc:
         click.echo(f"{ERR} Failed to parse plugin command: {exc}", err=True)
         sys.exit(1)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         click.echo(f"{ERR} Unexpected error: {exc}", err=True)
         sys.exit(1)
 
@@ -4538,17 +4639,14 @@ def import_plugin_command(
         # approach (lstrip + concatenate) was fragile and produced invalid
         # duplicate-key YAML on some edge-case inputs.
         try:
-            data_lines = [
-                line for line in yaml_text.splitlines()
-                if not line.startswith("#")
-            ]
+            data_lines = [line for line in yaml_text.splitlines() if not line.startswith("#")]
             first_pass = yaml.safe_load("\n".join(data_lines))
             template_id = (
                 first_pass.get("id", command_file.stem)
                 if isinstance(first_pass, dict)
                 else command_file.stem
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             template_id = command_file.stem
         output = Path(f"{template_id}.yaml")
 
@@ -4569,11 +4667,11 @@ def import_plugin_command(
         # its own Click context, and does not propagate env vars reliably.
         # Using it inside a real CLI invocation is architecturally fragile.
         click.echo()
-        OK_v  = click.style("✓", fg="green")
-        ERR_v = click.style("✗", fg="red")
-        WRN_v = click.style("⚠", fg="yellow")
+        OK_v = click.style("✓", fg="green")  # noqa: N806
+        ERR_v = click.style("✗", fg="red")  # noqa: N806
+        WRN_v = click.style("⚠", fg="yellow")  # noqa: N806
         try:
-            from .templates import TemplateEngine, PipelineTemplate  # noqa: F401
+            from .templates import PipelineTemplate, TemplateEngine  # noqa: F401, PLC0415
 
             # 5a. YAML syntax
             yaml_error = _check_yaml_syntax(output)
@@ -4635,11 +4733,11 @@ def import_plugin_command(
         except (KeyError, ValueError) as _exc:
             click.echo(f"{ERR_v} Invalid template: {_exc}", err=True)
             sys.exit(1)
-        except Exception as _exc:
+        except Exception as _exc:  # noqa: BLE001
             click.echo(f"Error during validation: {_exc}", err=True)
             sys.exit(1)
     else:
-        click.echo(f"\nNext steps:")
+        click.echo("\nNext steps:")
         click.echo(f"  orch validate {output}           # Check the template")
         click.echo(f"  orch run {output} --mode dry-run  # Test it")
 
@@ -4648,13 +4746,16 @@ def import_plugin_command(
 # orch serve — local web UI server  (Feature #79)
 # ---------------------------------------------------------------------------
 
+
 @main.command("serve")
-@click.option('--port', default=8374, show_default=True, help='Port to serve on.')
-@click.option('--host', default='127.0.0.1', show_default=True, help='Host to bind to.')
-@click.option('--no-open', is_flag=True, help='Do not auto-open browser.')
-@click.option('--db-path', default=None, help='SQLite DB path for pipeline runs.')
-@click.option('--reload', is_flag=True, help='Enable uvicorn auto-reload (dev mode).')
-def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: bool) -> None:
+@click.option("--port", default=8374, show_default=True, help="Port to serve on.")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind to.")
+@click.option("--no-open", is_flag=True, help="Do not auto-open browser.")
+@click.option("--db-path", default=None, help="SQLite DB path for pipeline runs.")
+@click.option("--reload", is_flag=True, help="Enable uvicorn auto-reload (dev mode).")
+def serve(  # noqa: C901
+    port: int, host: str, no_open: bool, db_path: Optional[str], reload: bool
+) -> None:
     """Launch the unified web UI + REST API on a single port.
 
     Serves the Next.js static frontend and the /api/v1/ REST API together.
@@ -4672,8 +4773,9 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
       orch serve --db-path /tmp/my.db
     """
     try:
-        import uvicorn
-        from .web.api import create_api_app
+        import uvicorn  # noqa: PLC0415
+
+        from .web.api import create_api_app  # noqa: PLC0415
     except ImportError:
         click.echo("Web UI requires extra dependencies. Install with:", err=True)
         click.echo("  pip install orchestration-engine[web]", err=True)
@@ -4682,11 +4784,11 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
     app = create_api_app(db_path=db_path)
 
     # Mount static frontend if available
-    frontend_out = Path(__file__).resolve().parent.parent.parent / 'frontend' / 'out'
+    frontend_out = Path(__file__).resolve().parent.parent.parent / "frontend" / "out"
     if frontend_out.exists():
-        from fastapi.responses import FileResponse
+        from fastapi.responses import FileResponse  # noqa: PLC0415
 
-        index_html = frontend_out / 'index.html'
+        index_html = frontend_out / "index.html"
 
         @app.get("/{full_path:path}")
         async def spa_fallback(full_path: str):
@@ -4699,7 +4801,9 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
             """
             # 1. Exact static file match (JS, CSS, images, etc.)
             static_file = frontend_out / full_path
-            if static_file.is_file() and static_file.resolve().is_relative_to(frontend_out.resolve()):
+            if static_file.is_file() and static_file.resolve().is_relative_to(
+                frontend_out.resolve()
+            ):
                 return FileResponse(str(static_file))
 
             # 2. Try .html extension (e.g. /runs → runs.html)
@@ -4709,26 +4813,32 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
 
             # 3. Dynamic route: /templates/xyz/edit → templates/_/edit.html
             #    Try replacing dynamic segments with '_' (most-specific first)
-            parts = full_path.strip('/').split('/')
+            parts = full_path.strip("/").split("/")
 
             # 3a. Try substituting each path segment with '_' from right to left
             #     e.g. /templates/xyz/edit → templates/_/edit.html
             for i in range(len(parts) - 1, 0, -1):
                 trial = [*parts]
-                trial[i] = '_'
+                trial[i] = "_"
                 # Try as .html
-                candidate_html = frontend_out / ('/'.join(trial) + '.html')
-                if candidate_html.is_file() and candidate_html.resolve().is_relative_to(frontend_out.resolve()):
+                candidate_html = frontend_out / ("/".join(trial) + ".html")
+                if candidate_html.is_file() and candidate_html.resolve().is_relative_to(
+                    frontend_out.resolve()
+                ):
                     return FileResponse(str(candidate_html))
                 # Try as directory with index.html
-                candidate_index = frontend_out / '/'.join(trial) / 'index.html'
-                if candidate_index.is_file() and candidate_index.resolve().is_relative_to(frontend_out.resolve()):
+                candidate_index = frontend_out / "/".join(trial) / "index.html"
+                if candidate_index.is_file() and candidate_index.resolve().is_relative_to(
+                    frontend_out.resolve()
+                ):
                     return FileResponse(str(candidate_index))
 
             # 3b. Walk up the path to find the nearest _.html
             for i in range(len(parts), 0, -1):
-                candidate = frontend_out / '/'.join(parts[:i]) / '_.html'
-                if candidate.is_file() and candidate.resolve().is_relative_to(frontend_out.resolve()):
+                candidate = frontend_out / "/".join(parts[:i]) / "_.html"
+                if candidate.is_file() and candidate.resolve().is_relative_to(
+                    frontend_out.resolve()
+                ):
                     return FileResponse(str(candidate))
 
             # 4. Ultimate fallback: index.html (dashboard)
@@ -4743,14 +4853,15 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
         )
 
     if not no_open:
-        import threading
-        import webbrowser
+        import threading  # noqa: PLC0415
+        import webbrowser  # noqa: PLC0415
+
         threading.Timer(1.5, lambda: webbrowser.open(f"http://{host}:{port}")).start()
 
-    click.echo(f"Orchestration Engine (unified)")
+    click.echo("Orchestration Engine (unified)")
     click.echo(f"  UI:  http://{host}:{port}")
     click.echo(f"  API: http://{host}:{port}/api/v1/docs")
-    click.echo(f"  Press Ctrl+C to stop.")
+    click.echo("  Press Ctrl+C to stop.")
 
     uvicorn.run(app, host=host, port=port, reload=reload)
 
@@ -4759,10 +4870,11 @@ def serve(port: int, host: str, no_open: bool, db_path: Optional[str], reload: b
 # orch ui — Serve static Next.js frontend export (Issue #310)
 # ---------------------------------------------------------------------------
 
+
 @main.command("ui")
-@click.option('--port', default=8080, show_default=True, help='Port to serve the frontend on.')
-@click.option('--host', default='127.0.0.1', show_default=True, help='Host to bind to.')
-@click.option('--no-open', is_flag=True, help='Skip auto-opening the browser.')
+@click.option("--port", default=8080, show_default=True, help="Port to serve the frontend on.")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind to.")
+@click.option("--no-open", is_flag=True, help="Skip auto-opening the browser.")
 def ui(port: int, host: str, no_open: bool) -> None:
     """Serve the static Next.js frontend export and open the browser.
 
@@ -4778,12 +4890,12 @@ def ui(port: int, host: str, no_open: bool) -> None:
       orch ui --no-open          # start without opening browser
       orch ui --host 0.0.0.0    # bind to all interfaces
     """
-    import http.server
-    import socketserver
-    import threading
-    import webbrowser
+    import http.server  # noqa: PLC0415
+    import socketserver  # noqa: PLC0415
+    import threading  # noqa: PLC0415
+    import webbrowser  # noqa: PLC0415
 
-    frontend_out = Path(__file__).parent.parent.parent / 'frontend' / 'out'
+    frontend_out = Path(__file__).parent.parent.parent / "frontend" / "out"
 
     if not frontend_out.exists():
         click.echo(
@@ -4810,10 +4922,10 @@ def ui(port: int, host: str, no_open: bool) -> None:
     if not no_open:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
 
-    click.echo(f"✓ Orchestration Engine frontend (static)")
+    click.echo("✓ Orchestration Engine frontend (static)")
     click.echo(f"  Serving:  {frontend_out}")
     click.echo(f"  URL:      {url}")
-    click.echo(f"  Press Ctrl+C to stop.")
+    click.echo("  Press Ctrl+C to stop.")
 
     try:
         httpd.serve_forever()
@@ -4828,14 +4940,15 @@ def ui(port: int, host: str, no_open: bool) -> None:
 # orch api-server — REST API server (Issue #257)
 # ---------------------------------------------------------------------------
 
+
 @main.command("api-server")
-@click.option('--port', default=8375, show_default=True, help='Port to serve on.')
-@click.option('--host', default='127.0.0.1', show_default=True, help='Host to bind to.')
-@click.option('--reload', is_flag=True, default=False, help='Enable auto-reload (dev only).')
+@click.option("--port", default=8375, show_default=True, help="Port to serve on.")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Host to bind to.")
+@click.option("--reload", is_flag=True, default=False, help="Enable auto-reload (dev only).")
 @click.option(
-    '--db-path',
+    "--db-path",
     default=None,
-    help='Override path to the persistent pipeline-runs DB.',
+    help="Override path to the persistent pipeline-runs DB.",
 )
 def api_server(port: int, host: str, reload: bool, db_path: Optional[str]) -> None:
     """Launch the REST API server for programmatic pipeline control.
@@ -4867,8 +4980,9 @@ def api_server(port: int, host: str, reload: bool, db_path: Optional[str]) -> No
       orch api-server --reload           # dev mode with auto-reload
     """
     try:
-        import uvicorn
-        from .web.api import create_api_app
+        import uvicorn  # noqa: PLC0415
+
+        from .web.api import create_api_app  # noqa: PLC0415
     except ImportError:
         click.echo("REST API server requires extra dependencies. Install with:", err=True)
         click.echo("  pip install orchestration-engine[web]", err=True)
@@ -4877,11 +4991,11 @@ def api_server(port: int, host: str, reload: bool, db_path: Optional[str]) -> No
     effective_db_path = db_path or _get_persistent_db_path()
     app = create_api_app(db_path=effective_db_path)
 
-    click.echo(f"✓ Orchestration Engine REST API server")
+    click.echo("✓ Orchestration Engine REST API server")
     click.echo(f"  Listening on http://{host}:{port}")
     click.echo(f"  Docs:      http://{host}:{port}/api/v1/docs")
     click.echo(f"  DB:        {effective_db_path}")
-    click.echo(f"  Press Ctrl+C to stop.")
+    click.echo("  Press Ctrl+C to stop.")
 
     uvicorn.run(app, host=host, port=port, reload=reload)
 
@@ -4889,6 +5003,7 @@ def api_server(port: int, host: str, reload: bool, db_path: Optional[str]) -> No
 # ---------------------------------------------------------------------------
 # orch rubric — skill rubric generation  (AC-1)
 # ---------------------------------------------------------------------------
+
 
 @main.group("rubric")
 def rubric() -> None:
@@ -4898,13 +5013,15 @@ def rubric() -> None:
 @rubric.command("generate")
 @click.argument("skill_file", type=click.Path(path_type=Path))
 @click.option(
-    "--output", "-o",
+    "--output",
+    "-o",
     type=click.Path(path_type=Path),
     default=None,
     help="Output YAML file path. Defaults to <skill-name>-rubric.yaml in cwd.",
 )
 @click.option(
-    "--force", "-f",
+    "--force",
+    "-f",
     is_flag=True,
     default=False,
     help="Overwrite output file if it already exists.",
@@ -4929,7 +5046,7 @@ def rubric_generate(skill_file: Path, output: Optional[Path], force: bool) -> No
 
       orch rubric generate path/to/SKILL.md --output results/rubric.yaml --force
     """
-    from .rubric_generator import generate_rubric_file
+    from .rubric_generator import generate_rubric_file  # noqa: PLC0415
 
     try:
         out_path = generate_rubric_file(skill_file, output=output, force=force)
@@ -4937,7 +5054,7 @@ def rubric_generate(skill_file: Path, output: Optional[Path], force: bool) -> No
     except ValueError as exc:
         click.echo(f"✗ {exc}", err=True)
         sys.exit(1)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         click.echo(f"✗ Unexpected error: {exc}", err=True)
         sys.exit(1)
 
@@ -5015,7 +5132,7 @@ def scenario_group() -> None:
     default=None,
     help="OpenClaw gateway bearer token for openclaw grader mode (or set OPENCLAW_GATEWAY_TOKEN).",
 )
-def scenario_run(
+def scenario_run(  # noqa: C901
     scenario_id: str,
     dry_run: bool,
     scenario_dir: Optional[Path],
@@ -5050,26 +5167,25 @@ def scenario_run(
         # Live run with explicit API key:
         orch scenario run e2e-autonomous --api-key sk-ant-...
     """
-    import json as _json
-    import os as _os
+    import os as _os  # noqa: PLC0415
 
-    from rich.console import Console
-    from rich.table import Table
+    from rich.console import Console  # noqa: PLC0415
 
-    from .templates import TemplateEngine
-    from .pipeline_runner import PipelineRunner
-    from .sequencer import PhaseSequencer, StateMachineSequencer
+    from .pipeline_runner import PipelineRunner  # noqa: PLC0415
+    from .sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
+    from .templates import TemplateEngine  # noqa: PLC0415
 
     # Import ScenarioRunner from the scenario_runner package.
     # Try both importable forms (installed package and source layout).
     try:
-        from scenario_runner.runner import ScenarioRunner
+        from scenario_runner.runner import ScenarioRunner  # noqa: PLC0415
     except ImportError:
         # Fallback: add the project root to sys.path
-        import sys as _sys
+        import sys as _sys  # noqa: PLC0415
+
         project_root = Path(__file__).resolve().parent.parent.parent
         _sys.path.insert(0, str(project_root))
-        from scenario_runner.runner import ScenarioRunner
+        from scenario_runner.runner import ScenarioRunner  # noqa: PLC0415
 
     console = Console(highlight=False)
 
@@ -5090,8 +5206,7 @@ def scenario_run(
 
     if not candidate.exists():
         click.echo(
-            f"✗ Scenario not found: '{scenario_id}'\n"
-            f"  Searched: {candidate}",
+            f"✗ Scenario not found: '{scenario_id}'\n" f"  Searched: {candidate}",
             err=True,
         )
         sys.exit(1)
@@ -5118,12 +5233,13 @@ def scenario_run(
     grader_executor = None
     if not dry_run and mode == "openclaw":
         try:
-            from .openclaw_executor import OpenClawExecutor
+            from .openclaw_executor import OpenClawExecutor  # noqa: PLC0415
+
             grader_executor = OpenClawExecutor(
                 gateway_url=effective_gw_url,
                 gateway_token=effective_gw_token,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             click.echo(
                 f"⚠ Could not create OpenClawExecutor for grader: {exc}\n"
                 f"  LLM judge criteria will fall back to ANTHROPIC_API_KEY.",
@@ -5139,10 +5255,7 @@ def scenario_run(
         sys.exit(1)
 
     scenario_name = scenario.get("name", scenario["id"])
-    console.print(
-        f"\n[bold]Scenario:[/bold] {scenario_name} "
-        f"[dim]({scenario_file.name})[/dim]"
-    )
+    console.print(f"\n[bold]Scenario:[/bold] {scenario_name} " f"[dim]({scenario_file.name})[/dim]")
     display_mode = "dry-run" if dry_run else mode
     console.print(f"[bold]Mode:[/bold]     {display_mode}")
     console.print()
@@ -5214,15 +5327,17 @@ def scenario_run(
             _has_transitions = any(p.transitions for p in template.phases) or bool(
                 template.default_transitions
             )
-            _SequencerClass = StateMachineSequencer if _has_transitions else PhaseSequencer
+            _SequencerClass = (  # noqa: N806
+                StateMachineSequencer if _has_transitions else PhaseSequencer
+            )
             # Apply schema defaults for optional fields (#835) — same rationale
             # as run_template / pipeline_launch above. Belt-and-suspenders so
             # scenario-driven runs benefit from the same backward-compat shim.
-            apply_config_schema_defaults(initial_input, getattr(template, 'config_schema', None))
+            apply_config_schema_defaults(initial_input, getattr(template, "config_schema", None))
             sequencer = _SequencerClass(template, pipe_runner, config=initial_input)
             try:
                 exec_result = sequencer.execute(initial_input)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 click.echo(f"✗ Pipeline execution failed: {exc}", err=True)
                 sys.exit(1)
 
@@ -5268,7 +5383,7 @@ def scenario_run(
         _os.environ["ORCH_DRY_RUN"] = "1"
     try:
         score_result = scenario_runner.run_scenario(scenario, pipeline_output)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         click.echo(f"✗ Scenario grading failed: {exc}", err=True)
         sys.exit(1)
     finally:
@@ -5296,7 +5411,7 @@ def _print_score_report(console, score_result, scenario: dict) -> None:
     - Gate criteria are labelled [GATE]
     - Overall summary line at the bottom
     """
-    from rich.table import Table
+    from rich.table import Table  # noqa: PLC0415
 
     # ── Per-criterion table ────────────────────────────────────────────
     crit_table = Table(
@@ -5313,11 +5428,7 @@ def _print_score_report(console, score_result, scenario: dict) -> None:
     for cr in score_result.criterion_results:
         weight_label = "[GATE]" if cr.is_gate else str(cr.weight)
         score_pct = f"{cr.grade.score * 100:.1f}"
-        result_icon = (
-            "[green]✓ PASS[/green]"
-            if cr.grade.passed
-            else "[red]✗ FAIL[/red]"
-        )
+        result_icon = "[green]✓ PASS[/green]" if cr.grade.passed else "[red]✗ FAIL[/red]"
         crit_table.add_row(
             cr.criterion_id,
             cr.grade.grader_type,
@@ -5333,9 +5444,7 @@ def _print_score_report(console, score_result, scenario: dict) -> None:
     overall_pct = score_result.weighted_score * 100
     threshold_pct = float(scenario.get("scoring", {}).get("pass_threshold", 0.70)) * 100
     verdict = (
-        "[bold green]✓ PASS[/bold green]"
-        if score_result.passed
-        else "[bold red]✗ FAIL[/bold red]"
+        "[bold green]✓ PASS[/bold green]" if score_result.passed else "[bold red]✗ FAIL[/bold red]"
     )
     gate_status = (
         "[green]all passed[/green]"
@@ -5343,12 +5452,9 @@ def _print_score_report(console, score_result, scenario: dict) -> None:
         else "[red]one or more FAILED[/red]"
     )
 
+    console.print(f"[bold]Scenario:[/bold]  {score_result.scenario_id}")
     console.print(
-        f"[bold]Scenario:[/bold]  {score_result.scenario_id}"
-    )
-    console.print(
-        f"[bold]Score:[/bold]     {overall_pct:.1f} / 100  "
-        f"(threshold {threshold_pct:.0f})"
+        f"[bold]Score:[/bold]     {overall_pct:.1f} / 100  " f"(threshold {threshold_pct:.0f})"
     )
     console.print(f"[bold]Gates:[/bold]     {gate_status}")
     console.print(f"[bold]Verdict:[/bold]   {verdict}")
@@ -5359,6 +5465,7 @@ def _print_score_report(console, score_result, scenario: dict) -> None:
 # Review Queue Commands (Issue #331.4)
 # ---------------------------------------------------------------------------
 
+
 @main.group()
 def reviews() -> None:
     """Manage the human review queue for pipeline runs."""
@@ -5367,11 +5474,16 @@ def reviews() -> None:
 @reviews.command(name="list")
 @click.option("--limit", type=int, default=20, show_default=True, help="Maximum number of items.")
 @click.option("--offset", type=int, default=0, show_default=True, help="Number of items to skip.")
-@click.option("--db-path", "reviews_db_path", type=click.Path(path_type=Path), default=None,
-              help="Path to the orchestration engine database.")
+@click.option(
+    "--db-path",
+    "reviews_db_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Path to the orchestration engine database.",
+)
 def reviews_list(limit: int, offset: int, reviews_db_path: Optional[Path]) -> None:
     """List pipeline runs pending human review."""
-    from .db import Database as _Database
+    from .db import Database as _Database  # noqa: PLC0415
 
     _db_path = reviews_db_path or default_db_path()
     db = _Database(_db_path)
@@ -5386,13 +5498,19 @@ def reviews_list(limit: int, offset: int, reviews_db_path: Optional[Path]) -> No
     headers = ["RUN ID", "TEMPLATE", "CREATED AT", "SCORE", "TIER"]
     rows = []
     for r in items:
-        rows.append([
-            r.get("run_id", ""),
-            r.get("template_id", ""),
-            str(r.get("created_at", ""))[:19],
-            f"{r.get('confidence_score', ''):.4f}" if r.get("confidence_score") is not None else "n/a",
-            r.get("tier_name", "n/a"),
-        ])
+        rows.append(  # noqa: PERF401
+            [
+                r.get("run_id", ""),
+                r.get("template_id", ""),
+                str(r.get("created_at", ""))[:19],
+                (
+                    f"{r.get('confidence_score', ''):.4f}"
+                    if r.get("confidence_score") is not None
+                    else "n/a"
+                ),
+                r.get("tier_name", "n/a"),
+            ]
+        )
     print_table(headers, rows)
 
 
@@ -5400,12 +5518,18 @@ def reviews_list(limit: int, offset: int, reviews_db_path: Optional[Path]) -> No
 @click.argument("run_id")
 @click.option("--reviewed-by", default=None, help="Reviewer identifier.")
 @click.option("--note", default=None, help="Review note.")
-@click.option("--db-path", "reviews_db_path", type=click.Path(path_type=Path), default=None,
-              help="Path to the orchestration engine database.")
-def reviews_approve(run_id: str, reviewed_by: Optional[str], note: Optional[str],
-                    reviews_db_path: Optional[Path]) -> None:
+@click.option(
+    "--db-path",
+    "reviews_db_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Path to the orchestration engine database.",
+)
+def reviews_approve(
+    run_id: str, reviewed_by: Optional[str], note: Optional[str], reviews_db_path: Optional[Path]
+) -> None:
     """Approve a pipeline run that is pending human review."""
-    from .db import Database as _Database
+    from .db import Database as _Database  # noqa: PLC0415
 
     _db_path = reviews_db_path or default_db_path()
     db = _Database(_db_path)
@@ -5416,8 +5540,7 @@ def reviews_approve(run_id: str, reviewed_by: Optional[str], note: Optional[str]
         sys.exit(1)
     if run.get("status") != "pending_review":
         click.echo(
-            f"Error: run '{run_id}' is in status '{run.get('status')}', "
-            "not 'pending_review'.",
+            f"Error: run '{run_id}' is in status '{run.get('status')}', " "not 'pending_review'.",
             err=True,
         )
         sys.exit(1)
@@ -5434,15 +5557,21 @@ def reviews_approve(run_id: str, reviewed_by: Optional[str], note: Optional[str]
 @click.argument("run_id")
 @click.argument("reason")
 @click.option("--reviewed-by", default=None, help="Reviewer identifier.")
-@click.option("--db-path", "reviews_db_path", type=click.Path(path_type=Path), default=None,
-              help="Path to the orchestration engine database.")
-def reviews_reject(run_id: str, reason: str, reviewed_by: Optional[str],
-                   reviews_db_path: Optional[Path]) -> None:
+@click.option(
+    "--db-path",
+    "reviews_db_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Path to the orchestration engine database.",
+)
+def reviews_reject(
+    run_id: str, reason: str, reviewed_by: Optional[str], reviews_db_path: Optional[Path]
+) -> None:
     """Reject a pipeline run that is pending human review.
 
     REASON is a short description of why the run was rejected.
     """
-    from .db import Database as _Database
+    from .db import Database as _Database  # noqa: PLC0415
 
     _db_path = reviews_db_path or default_db_path()
     db = _Database(_db_path)
@@ -5453,8 +5582,7 @@ def reviews_reject(run_id: str, reason: str, reviewed_by: Optional[str],
         sys.exit(1)
     if run.get("status") != "pending_review":
         click.echo(
-            f"Error: run '{run_id}' is in status '{run.get('status')}', "
-            "not 'pending_review'.",
+            f"Error: run '{run_id}' is in status '{run.get('status')}', " "not 'pending_review'.",
             err=True,
         )
         sys.exit(1)
@@ -5495,9 +5623,10 @@ def mcp_server(transport: str, port: int) -> None:
             err=True,
         )
         sys.exit(1)
-    from .mcp import run_mcp_server
+    from .mcp import run_mcp_server  # noqa: PLC0415
+
     run_mcp_server(transport=transport, port=port)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

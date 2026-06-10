@@ -34,8 +34,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from orchestration_engine.errors import OrchestratorError
 from orchestration_engine.ipc import (
@@ -43,10 +42,12 @@ from orchestration_engine.ipc import (
     HealthResult,
     IPCError,
     IPCProtocolError,
-    ValidationRequest as IPCValidationRequest,
     ValidationResult,
     deserialize_response,
     serialize_request,
+)
+from orchestration_engine.ipc import (
+    ValidationRequest as IPCValidationRequest,
 )
 
 __all__ = [
@@ -309,9 +310,7 @@ class ExternalValidator:
 
         if not isinstance(result, HealthResult) or result.status != "ok":
             self._kill_process()
-            raise ValidatorError(
-                f"health check failed: unexpected response: {result}"
-            )
+            raise ValidatorError(f"health check failed: unexpected response: {result}")
 
     def validate(self, request: ValidationRequest) -> ValidationResult:
         """Run acceptance tests in the validator subprocess.
@@ -331,9 +330,7 @@ class ExternalValidator:
                 valid JSON-RPC.
         """
         if self._process is None:
-            raise ValidatorError(
-                "not spawned: call spawn() before validate()"
-            )
+            raise ValidatorError("not spawned: call spawn() before validate()")
 
         # Convert to IPC-level ValidationRequest
         ipc_request = IPCValidationRequest(
@@ -362,9 +359,7 @@ class ExternalValidator:
             )
 
         if response is None or response == b"":
-            raise ValidatorError(
-                "invalid response: subprocess closed stdout unexpectedly"
-            )
+            raise ValidatorError("invalid response: subprocess closed stdout unexpectedly")
 
         try:
             line = response.decode("utf-8", errors="replace")

@@ -113,14 +113,12 @@ class GitHandoff:
             return True
 
         except FileNotFoundError:
-            logger.warning(
-                "Git handoff: git binary not found — falling back to file-based mode"
-            )
+            logger.warning("Git handoff: git binary not found — falling back to file-based mode")
             return False
         except subprocess.CalledProcessError as exc:
             logger.warning("Git handoff: initialisation failed — %s", exc)
             return False
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Git handoff: unexpected error during init — %s", exc)
             return False
 
@@ -140,9 +138,7 @@ class GitHandoff:
     # Commit operations
     # ------------------------------------------------------------------
 
-    def commit_phase_output(
-        self, phase_id: str, round_num: int, output_text: str
-    ) -> Optional[str]:
+    def commit_phase_output(self, phase_id: str, round_num: int, output_text: str) -> Optional[str]:
         """Write phase output to the run dir, commit it, return the SHA.
 
         Returns ``None`` if the handoff is inactive or the commit fails.
@@ -172,7 +168,7 @@ class GitHandoff:
             self.commit_log.setdefault(phase_id, {})[round_num] = sha
             return sha
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Git handoff: commit failed for %s round %d — deactivating. %s",
                 phase_id,
@@ -190,9 +186,7 @@ class GitHandoff:
         """Return the commit SHA for a phase+round, or ``None``."""
         return self.commit_log.get(phase_id, {}).get(round_num)
 
-    def get_diff(
-        self, phase_id: str, from_round: int, to_round: int
-    ) -> str:
+    def get_diff(self, phase_id: str, from_round: int, to_round: int) -> str:
         """Return the git diff between two rounds for a phase.
 
         Truncates to ``_DIFF_TRUNCATION_LIMIT`` characters.
@@ -210,7 +204,12 @@ class GitHandoff:
             filename = self._safe_filename(phase_id)
             rel_path = self.run_dir.relative_to(self.repo_path) / filename
             result = self._git(
-                "diff", "--no-color", from_sha, to_sha, "--", str(rel_path),
+                "diff",
+                "--no-color",
+                from_sha,
+                to_sha,
+                "--",
+                str(rel_path),
                 check=False,
             )
             diff = result.stdout
@@ -224,7 +223,7 @@ class GitHandoff:
             if last_nl > _DIFF_TRUNCATION_LIMIT // 2:
                 truncated = truncated[: last_nl + 1]
             return truncated
-        except Exception:
+        except Exception:  # noqa: BLE001
             return ""
 
     def get_diff_for_member(self, member_id: str, current_round: int) -> str:
@@ -280,7 +279,8 @@ class GitHandoff:
 
             # Commit on target branch
             self._git(
-                "commit", "-m",
+                "commit",
+                "-m",
                 f"[spec-loop] finalise spec artifacts (run {self.run_id})",
                 "--allow-empty",
             )
@@ -289,9 +289,7 @@ class GitHandoff:
             self._git("branch", "-D", self.branch_name, check=False)
 
         except Exception as exc:
-            raise GitHandoffError(
-                f"Finalize failed for run {self.run_id}: {exc}"
-            ) from exc
+            raise GitHandoffError(f"Finalize failed for run {self.run_id}: {exc}") from exc
 
     def cleanup(self, preserve: bool = False) -> None:
         """Checkout the original branch and optionally delete the temp branch.
@@ -305,5 +303,5 @@ class GitHandoff:
 
             if not preserve:
                 self._git("branch", "-D", self.branch_name, check=False)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Git handoff cleanup warning: %s", exc)

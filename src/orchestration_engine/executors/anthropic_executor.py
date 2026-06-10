@@ -11,16 +11,15 @@ Usage:
 import json
 import logging
 import os
-import time
-import urllib.request
 import urllib.error
+import urllib.request
 from typing import Any, Dict, Optional
 
 from ..model_registry import bare_id
 from ..schemas import ModelTier, TaskError, TaskResult, TaskSpec, TaskState, TaskType
 from ..timestamps import now_utc
-from ._common import BaseExecutor, _PRICING
-from ._thinking import THINKING_BUDGET, DEFAULT_THINKING_BUDGET
+from ._common import _PRICING, BaseExecutor
+from ._thinking import DEFAULT_THINKING_BUDGET, THINKING_BUDGET
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +68,7 @@ class AnthropicExecutor(BaseExecutor):
                 "The executor will fail on real calls."
             )
 
-    def can_handle(self, task_type: TaskType) -> bool:
+    def can_handle(self, task_type: TaskType) -> bool:  # noqa: ARG002
         """This executor can handle all task types."""
         return True
 
@@ -86,7 +85,7 @@ class AnthropicExecutor(BaseExecutor):
     def execute(
         self,
         task: TaskSpec,
-        worker_id: str = "anthropic-worker",
+        worker_id: str = "anthropic-worker",  # noqa: ARG002
         model_tier: str = None,
         thinking_level: str = None,
     ) -> TaskResult:
@@ -105,11 +104,15 @@ class AnthropicExecutor(BaseExecutor):
         task_id = self._resolve_task_id(task)
 
         # Resolve model
-        tier = model_tier or (
-            task.preferred_model.value
-            if hasattr(task.preferred_model, "value")
-            else task.preferred_model
-        ) or "sonnet"
+        tier = (
+            model_tier
+            or (
+                task.preferred_model.value
+                if hasattr(task.preferred_model, "value")
+                else task.preferred_model
+            )
+            or "sonnet"
+        )
         model = _MODEL_MAP.get(tier, _MODEL_MAP.get(ModelTier.SONNET))
 
         # Extract prompt from payload
@@ -183,7 +186,7 @@ class AnthropicExecutor(BaseExecutor):
                 ),
             )
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             elapsed = (now_utc() - start_time).total_seconds()
             logger.error(f"API call failed for task {task_id}: {exc}")
 
@@ -229,9 +232,7 @@ class AnthropicExecutor(BaseExecutor):
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Anthropic API error {e.code}: {error_body}"
-            ) from e
+            raise RuntimeError(f"Anthropic API error {e.code}: {error_body}") from e
 
     @staticmethod
     def _try_parse_json(text: str) -> Optional[dict]:

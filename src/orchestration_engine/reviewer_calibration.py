@@ -44,7 +44,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     from .db import Database
@@ -91,25 +91,23 @@ class CalibrationMetrics:
     approve_accuracy: Optional[float] = None
     request_changes_accuracy: Optional[float] = None
     overall_accuracy: Optional[float] = None
-    computed_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    computed_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     aggregation_window: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain-dict representation suitable for DB insertion."""
         return {
-            "reviewer_model":              self.reviewer_model,
-            "total_reviews":               self.total_reviews,
-            "approve_count":               self.approve_count,
-            "request_changes_count":       self.request_changes_count,
-            "approve_held_up_count":       self.approve_held_up_count,
+            "reviewer_model": self.reviewer_model,
+            "total_reviews": self.total_reviews,
+            "approve_count": self.approve_count,
+            "request_changes_count": self.request_changes_count,
+            "approve_held_up_count": self.approve_held_up_count,
             "request_changes_valid_count": self.request_changes_valid_count,
-            "approve_accuracy":            self.approve_accuracy,
-            "request_changes_accuracy":    self.request_changes_accuracy,
-            "overall_accuracy":            self.overall_accuracy,
-            "computed_at":                 self.computed_at,
-            "aggregation_window":          self.aggregation_window,
+            "approve_accuracy": self.approve_accuracy,
+            "request_changes_accuracy": self.request_changes_accuracy,
+            "overall_accuracy": self.overall_accuracy,
+            "computed_at": self.computed_at,
+            "aggregation_window": self.aggregation_window,
         }
 
 
@@ -208,7 +206,7 @@ class ReviewerCalibrator:
             for metrics in metrics_map.values():
                 try:
                     self._db.insert_calibration_snapshot(metrics.to_dict())
-                except Exception:
+                except Exception:  # noqa: PERF203
                     logger.exception(
                         "Failed to persist calibration snapshot for model %r",
                         metrics.reviewer_model,
@@ -248,9 +246,7 @@ class ReviewerCalibrator:
 
         # Compute rates — None when denominator is zero
         approve_accuracy: Optional[float] = (
-            approve_held_up_count / approve_count
-            if approve_count > 0
-            else None
+            approve_held_up_count / approve_count if approve_count > 0 else None
         )
         request_changes_accuracy: Optional[float] = (
             request_changes_valid_count / request_changes_count

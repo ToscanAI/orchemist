@@ -43,10 +43,7 @@ from typing import Any, Dict, List, Optional
 try:
     import yaml
 except ImportError:  # pragma: no cover — yaml is a project dependency
-    raise ImportError(
-        "PyYAML is required by cost_tracker. "
-        "Install it with: pip install pyyaml"
-    )
+    raise ImportError("PyYAML is required by cost_tracker. " "Install it with: pip install pyyaml")
 
 from .db import Database
 
@@ -122,16 +119,12 @@ class PricingTable:
         """Load and validate the pricing YAML file."""
         path = Path(self._pricing_path)
         if not path.exists():
-            raise FileNotFoundError(
-                f"Pricing YAML not found at: {path}"
-            )
+            raise FileNotFoundError(f"Pricing YAML not found at: {path}")
         with path.open("r", encoding="utf-8") as fh:
             raw = yaml.safe_load(fh)
 
         if not isinstance(raw, dict) or "models" not in raw:
-            raise ValueError(
-                f"Pricing YAML at {path} must contain a top-level 'models' key."
-            )
+            raise ValueError(f"Pricing YAML at {path} must contain a top-level 'models' key.")
 
         models = raw["models"]
         if not isinstance(models, dict):
@@ -152,9 +145,7 @@ class PricingTable:
                     "output_per_million": float(entry["output_per_million"]),
                 }
             except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"Invalid pricing entry for '{model_name}': {exc}"
-                ) from exc
+                raise ValueError(f"Invalid pricing entry for '{model_name}': {exc}") from exc
 
         self._data = parsed
         logger.debug(
@@ -187,9 +178,7 @@ class PricingTable:
                 model,
             )
             return self._data["default"]
-        raise KeyError(
-            f"Model '{model}' not in pricing table and no 'default' fallback defined."
-        )
+        raise KeyError(f"Model '{model}' not in pricing table and no 'default' fallback defined.")
 
     def compute_cost(
         self,
@@ -222,10 +211,9 @@ class PricingTable:
             raise ValueError(f"output_tokens must be >= 0, got {output_tokens}")
 
         pricing = self.get_pricing(model)
-        cost = (
-            (input_tokens / 1_000_000) * pricing["input_per_million"]
-            + (output_tokens / 1_000_000) * pricing["output_per_million"]
-        )
+        cost = (input_tokens / 1_000_000) * pricing["input_per_million"] + (
+            output_tokens / 1_000_000
+        ) * pricing["output_per_million"]
         return round(cost, 10)  # avoid floating-point drift in storage
 
     @property

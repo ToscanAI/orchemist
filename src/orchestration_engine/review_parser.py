@@ -38,7 +38,6 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -63,9 +62,7 @@ logger = logging.getLogger(__name__)
 # Group 1 → severity token (upper-cased before Enum lookup)
 # Group 2 → category label (stripped)
 # Group 3 → description (stripped)
-_ISSUE_RE = re.compile(
-    r"^\s*\[([A-Za-z]+)\]\[([^\]]+)\]\s+(.+)$"
-)
+_ISSUE_RE = re.compile(r"^\s*\[([A-Za-z]+)\]\[([^\]]+)\]\s+(.+)$")
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +248,7 @@ def parse_review_output(text: str) -> ReviewResult:
     if not isinstance(text, str):
         try:
             text = str(text)
-        except Exception:
+        except Exception:  # noqa: BLE001
             text = ""
 
     lines = text.splitlines()
@@ -277,9 +274,7 @@ def parse_review_output(text: str) -> ReviewResult:
     for line in lines:
         m = _ISSUE_RE.match(line)
         if not m:
-            logger.debug(
-                "review_parser: skipping non-tag line: %r", line.strip()[:80]
-            )
+            logger.debug("review_parser: skipping non-tag line: %r", line.strip()[:80])
             continue
 
         severity_token = m.group(1).upper()

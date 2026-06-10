@@ -189,7 +189,8 @@ class GitHubIssueFetcher:
         try:
             result = subprocess.run(
                 [
-                    "gh", "api",
+                    "gh",
+                    "api",
                     f"repos/{repo}/issues/{issue_number}",
                 ],
                 capture_output=True,
@@ -198,9 +199,7 @@ class GitHubIssueFetcher:
                 check=False,
             )
         except FileNotFoundError:
-            logger.warning(
-                "GitHubIssueFetcher: 'gh' CLI not found — cannot fetch issue"
-            )
+            logger.warning("GitHubIssueFetcher: 'gh' CLI not found — cannot fetch issue")
             return None
         except subprocess.TimeoutExpired:
             logger.warning(
@@ -256,11 +255,13 @@ class GitHubIssueFetcher:
             defaults.
         """
         labels: List[str] = [
-            lbl.get("name", "") for lbl in (data.get("labels") or [])
+            lbl.get("name", "")
+            for lbl in (data.get("labels") or [])
             if isinstance(lbl, dict) and lbl.get("name")
         ]
         assignees: List[str] = [
-            usr.get("login", "") for usr in (data.get("assignees") or [])
+            usr.get("login", "")
+            for usr in (data.get("assignees") or [])
             if isinstance(usr, dict) and usr.get("login")
         ]
         milestone_obj = data.get("milestone") or {}

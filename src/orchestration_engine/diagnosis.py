@@ -6,15 +6,17 @@ LLM-based diagnostician (phase 3.1.2+) and persisted via the Database
 CRUD methods in db.py.
 """
 
+# E501 residuals here are long prompt/JSON-template string literals black
+# cannot wrap; a line-level noqa is inert inside a string literal.
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
 import re
-import os
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -270,7 +272,7 @@ class DiagnosisEngine:
             # Extract JSON from between markdown code fences if present.
             # Handles: ```json\n{...}\n```, ```\n{...}\n```,
             # and responses with preamble prose before the fence.
-            fence_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
+            fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
             if fence_match:
                 text = fence_match.group(1).strip()
             data = json.loads(text)
@@ -284,7 +286,7 @@ class DiagnosisEngine:
                 confidence=confidence,
                 explanation=explanation,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Failed to parse LLM diagnosis response: %s — raw text: %.200s",
                 exc,
@@ -334,7 +336,7 @@ class DiagnosisEngine:
             recommended remediation.
         """
         # Lazy import to avoid circular dependency at module load time.
-        from .schemas import Priority, TaskSpec, TaskType
+        from .schemas import Priority, TaskSpec, TaskType  # noqa: PLC0415
 
         phase_context = self._collect_phase_context(output_dir)
         prompt = self._build_prompt(error_message or "", phase_context)
@@ -352,10 +354,8 @@ class DiagnosisEngine:
                 worker_id="diagnosis-engine",
                 model_tier=self.DEFAULT_MODEL_TIER,
             )
-        except Exception as exc:
-            _logger.error(
-                "Executor call failed during diagnosis for run %s: %s", run_id, exc
-            )
+        except Exception as exc:  # noqa: BLE001
+            _logger.error("Executor call failed during diagnosis for run %s: %s", run_id, exc)
             fallback = DiagnosisResult(
                 failure_class=FailureClass.INFRA_ISSUE,
                 remediation=Remediation.ESCALATE_TO_HUMAN,
@@ -366,7 +366,9 @@ class DiagnosisEngine:
             return fallback
 
         # Handle non-success executor states.
-        if exec_result.state not in ("success", "SUCCESS") and getattr(exec_result.state, "value", None) not in ("success",):
+        if exec_result.state not in ("success", "SUCCESS") and getattr(
+            exec_result.state, "value", None
+        ) not in ("success",):
             _logger.warning(
                 "Executor returned non-success state %s for run %s",
                 exec_result.state,
@@ -416,10 +418,8 @@ class DiagnosisEngine:
                     failure_class=final.failure_class.value,
                     error_message=error_message or "",
                 )
-            except Exception as exc:
-                _logger.warning(
-                    "FailurePatternTracker.track failed (non-fatal): %s", exc
-                )
+            except Exception as exc:  # noqa: BLE001
+                _logger.warning("FailurePatternTracker.track failed (non-fatal): %s", exc)
 
         return final
 
@@ -547,8 +547,7 @@ class FailurePatternTracker:
 
         if record.get("is_systemic"):
             self._logger.warning(
-                "Systemic failure detected — template=%s  class=%s  "
-                "occurrences=%s  hash=%s",
+                "Systemic failure detected — template=%s  class=%s  " "occurrences=%s  hash=%s",
                 template_id,
                 failure_class,
                 record.get("occurrence_count"),

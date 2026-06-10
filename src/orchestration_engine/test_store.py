@@ -33,6 +33,10 @@ The root directory for all test stores is resolved as follows:
 2. Otherwise, the default is ``~/.orchemist/test_store/``.
 """
 
+# E501 residual here is a long import example inside the module docstring
+# black cannot wrap; a line-level noqa is inert inside a string literal.
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import json
@@ -40,7 +44,6 @@ import os
 import shutil
 import stat
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
@@ -144,9 +147,7 @@ def _validate_run_id(run_id: str) -> None:
         raise TestStoreError("invalid run_id: must not be empty")
     p = Path(run_id)
     if p.is_absolute() or ".." in p.parts:
-        raise TestStoreError(
-            f"invalid run_id: '{run_id}' contains path traversal or is absolute"
-        )
+        raise TestStoreError(f"invalid run_id: '{run_id}' contains path traversal or is absolute")
 
 
 # ---------------------------------------------------------------------------
@@ -380,9 +381,7 @@ class TestStore:
         # Check manifest version before constructing the dataclass
         version = data["manifest_version"]
         if version not in SUPPORTED_MANIFEST_VERSIONS:
-            raise TestStoreError(
-                f"Unsupported manifest version '{version}' for run '{run_id}'"
-            )
+            raise TestStoreError(f"Unsupported manifest version '{version}' for run '{run_id}'")
 
         return TestManifest(
             run_id=data["run_id"],

@@ -56,15 +56,15 @@ from .confidence import ConfidenceSignal
 #: Unknown severities fall back to ``0.10``.
 SEVERITY_WEIGHTS: dict[str, float] = {
     "BLOCKER": 1.00,
-    "MAJOR":   0.75,
-    "MINOR":   0.25,
+    "MAJOR": 0.75,
+    "MINOR": 0.25,
     "NITPICK": 0.10,
 }
 
 # Internal sub-score weights (must sum to 1.0).
 _W_FIX_VERIFICATION: float = 0.40
-_W_CATCH_RATE:       float = 0.40
-_W_FP_PENALTY:       float = 0.20
+_W_CATCH_RATE: float = 0.40
+_W_FP_PENALTY: float = 0.20
 
 # Neutral score returned when there are no outcomes to evaluate.
 _NEUTRAL_SCORE: float = 0.5
@@ -73,6 +73,7 @@ _NEUTRAL_SCORE: float = 0.5
 # ---------------------------------------------------------------------------
 # Calculator
 # ---------------------------------------------------------------------------
+
 
 class ReviewCatchValueCalculator:
     """Compute a ``"review_catch_value"`` :class:`~confidence.ConfidenceSignal`.
@@ -106,9 +107,7 @@ class ReviewCatchValueCalculator:
         severity_weights: dict[str, float] | None = None,
     ) -> None:
         if weight < 0:
-            raise ValueError(
-                f"ReviewCatchValueCalculator weight must be >= 0, got {weight}"
-            )
+            raise ValueError(f"ReviewCatchValueCalculator weight must be >= 0, got {weight}")
         #: Signal weight embedded in the returned :class:`~confidence.ConfidenceSignal`.
         self.weight: float = weight
         self._severity_weights: dict[str, float] = {**SEVERITY_WEIGHTS}
@@ -149,11 +148,11 @@ class ReviewCatchValueCalculator:
                 value=_NEUTRAL_SCORE,
                 weight=self.weight,
                 raw_value={
-                    "fix_verification_rate":  _NEUTRAL_SCORE,
-                    "weighted_catch_rate":    _NEUTRAL_SCORE,
-                    "false_positive_rate":    0.0,
+                    "fix_verification_rate": _NEUTRAL_SCORE,
+                    "weighted_catch_rate": _NEUTRAL_SCORE,
+                    "false_positive_rate": 0.0,
                     "false_positive_penalty": 1.0,
-                    "outcomes_count":         0,
+                    "outcomes_count": 0,
                 },
                 source="0 review outcome(s) — neutral score",
             )
@@ -165,9 +164,7 @@ class ReviewCatchValueCalculator:
         # Ratio of outcomes where fix_verified is True.
         # Range: [0, 1]
         # ------------------------------------------------------------------
-        fix_verification_rate: float = (
-            sum(1 for o in outcomes if o.get("fix_verified")) / n
-        )
+        fix_verification_rate: float = sum(1 for o in outcomes if o.get("fix_verified")) / n
 
         # ------------------------------------------------------------------
         # Sub-score 2: weighted_catch_rate
@@ -188,9 +185,7 @@ class ReviewCatchValueCalculator:
             if o.get("fix_verified")
             for issue in o.get("issues_found", [])
         )
-        weighted_catch_rate: float = (
-            verified_weight / total_weight if total_weight > 0 else 0.5
-        )
+        weighted_catch_rate: float = verified_weight / total_weight if total_weight > 0 else 0.5
 
         # ------------------------------------------------------------------
         # Sub-score 3: false_positive_rate / false_positive_penalty
@@ -202,9 +197,7 @@ class ReviewCatchValueCalculator:
         # Range: [0, 1]
         # ------------------------------------------------------------------
         fp_count: int = sum(
-            1
-            for o in outcomes
-            if o.get("issues_found") and o.get("verdict") == "APPROVE"
+            1 for o in outcomes if o.get("issues_found") and o.get("verdict") == "APPROVE"
         )
         false_positive_rate: float = fp_count / n
         false_positive_penalty: float = 1.0 - false_positive_rate
@@ -222,11 +215,11 @@ class ReviewCatchValueCalculator:
         score: float = max(0.0, min(1.0, raw_score))
 
         raw_value: dict[str, Any] = {
-            "fix_verification_rate":  fix_verification_rate,
-            "weighted_catch_rate":    weighted_catch_rate,
-            "false_positive_rate":    false_positive_rate,
+            "fix_verification_rate": fix_verification_rate,
+            "weighted_catch_rate": weighted_catch_rate,
+            "false_positive_rate": false_positive_rate,
             "false_positive_penalty": false_positive_penalty,
-            "outcomes_count":         n,
+            "outcomes_count": n,
         }
 
         return ConfidenceSignal(

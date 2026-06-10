@@ -167,7 +167,7 @@ def parse_adversary_output(text) -> AcceptanceTestAdversaryVerdict:
     if not isinstance(text, str):
         try:
             raw_text = str(text)
-        except Exception:
+        except Exception:  # noqa: BLE001
             raw_text = ""
     else:
         raw_text = text

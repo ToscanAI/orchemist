@@ -137,7 +137,7 @@ def parse_adversary_output(text) -> AdversaryVerdict:
     if not isinstance(text, str):
         try:
             raw_text = str(text)
-        except Exception:
+        except Exception:  # noqa: BLE001
             raw_text = ""
     else:
         raw_text = text
@@ -155,9 +155,7 @@ def parse_adversary_output(text) -> AdversaryVerdict:
     for line in lines:
         m = FINDING_RE.match(line)
         if not m:
-            logger.debug(
-                "spec_adversary: skipping non-finding line: %r", line.strip()[:80]
-            )
+            logger.debug("spec_adversary: skipping non-finding line: %r", line.strip()[:80])
             continue
         category_token = m.group(1).lower()
         description = m.group(2).strip()
@@ -175,8 +173,7 @@ def parse_adversary_output(text) -> AdversaryVerdict:
     # ── Safe default: no verdict found → REQUEST_CHANGES + explanatory finding
     if verdict is None:
         logger.warning(
-            "spec_adversary: no recognisable verdict found in output "
-            "(first 120 chars): %r",
+            "spec_adversary: no recognisable verdict found in output " "(first 120 chars): %r",
             raw_text[:120],
         )
         explanatory_finding = AdversaryFinding(
@@ -269,8 +266,7 @@ def persist_reward(output_dir, verdict: AdversaryVerdict, reward: int) -> None:
         "reward_score": reward,
         "findings_count": len(verdict.findings),
         "findings": [
-            {"category": f.category, "description": f.description}
-            for f in verdict.findings
+            {"category": f.category, "description": f.description} for f in verdict.findings
         ],
         "persisted_at": datetime.now(tz=timezone.utc).isoformat(),
     }
@@ -279,14 +275,13 @@ def persist_reward(output_dir, verdict: AdversaryVerdict, reward: int) -> None:
     try:
         reward_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         logger.info(
-            "spec_adversary: reward persisted to %r "
-            "(verdict=%s, reward=%d, findings=%d)",
+            "spec_adversary: reward persisted to %r " "(verdict=%s, reward=%d, findings=%d)",
             str(reward_path),
             verdict.verdict,
             reward,
             len(verdict.findings),
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "spec_adversary: failed to write %r — %s",
             str(reward_path),

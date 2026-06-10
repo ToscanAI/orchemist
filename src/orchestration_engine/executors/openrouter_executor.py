@@ -34,7 +34,6 @@ from typing import Any, Dict, List, Optional
 from ..command_security import check_shell_command
 from ..config import _DEFAULT_OR_TIMEOUT
 from ..model_registry import prefixed_id
-from ..timestamps import now_utc
 from ..schemas import (
     ModelTier,
     TaskError,
@@ -43,11 +42,12 @@ from ..schemas import (
     TaskState,
     TaskType,
 )
-from ._common import BaseExecutor, _PRICING
-from ._thinking import THINKING_BUDGET, DEFAULT_THINKING_BUDGET
+from ..timestamps import now_utc
+from ._common import _PRICING, BaseExecutor
+from ._thinking import DEFAULT_THINKING_BUDGET, THINKING_BUDGET
 from .openrouter_tools import (
-    TOOL_SCHEMAS,
     TOOL_DISPATCH,
+    TOOL_SCHEMAS,
     iso_now,
     normalise_sandbox_roots,
     summarise_args,
@@ -121,7 +121,7 @@ class _CancellationContext:
             except (ValueError, OSError):
                 pass
 
-    def _on_sigint(self, signum: int, frame: Any) -> None:
+    def _on_sigint(self, signum: int, frame: Any) -> None:  # noqa: ARG002
         self._event.set()
 
     @property
@@ -172,7 +172,7 @@ class OpenRouterExecutor(BaseExecutor):
 
     _COMMAND_TASK_TYPES = frozenset({TaskType.COMMAND, TaskType.ACCEPTANCE_RUN})
 
-    def can_handle(self, task_type: TaskType) -> bool:
+    def can_handle(self, task_type: TaskType) -> bool:  # noqa: ARG002
         return True
 
     def estimate_cost(self, task: TaskSpec) -> float:
@@ -225,8 +225,13 @@ class OpenRouterExecutor(BaseExecutor):
             cmd = payload.get("command", "")
             if cmd:
                 return self._execute_command_locally(
-                    cmd, payload.get("working_dir") or os.getcwd(),
-                    task, worker_id, start_time, phase_id, payload,
+                    cmd,
+                    payload.get("working_dir") or os.getcwd(),
+                    task,
+                    worker_id,
+                    start_time,
+                    phase_id,
+                    payload,
                 )
 
         # Normalise sandbox_roots once up front; detect fallback and warn ONCE per instance.
@@ -244,13 +249,20 @@ class OpenRouterExecutor(BaseExecutor):
 
         logger.info(
             "OpenRouterExecutor: task=%s, model=%s, thinking=%s, disable_tools=%s, prompt_len=%d",
-            task_id, model, thinking, disable_tools, len(prompt),
+            task_id,
+            model,
+            thinking,
+            disable_tools,
+            len(prompt),
         )
 
         if disable_tools:
             # Legacy single-shot path — byte-identical to pre-#794 behaviour.
             body = self._build_request_body(
-                model, prompt, use_thinking, thinking,
+                model,
+                prompt,
+                use_thinking,
+                thinking,
                 tools_enabled=False,
             )
             result = self._call_api(body, task, worker_id, model, start_time)
@@ -259,9 +271,7 @@ class OpenRouterExecutor(BaseExecutor):
                 and use_thinking
                 and any(e.code == "bad_request" for e in (result.errors or []))
             ):
-                body = self._build_request_body(
-                    model, prompt, False, "off", tools_enabled=False
-                )
+                body = self._build_request_body(model, prompt, False, "off", tools_enabled=False)
                 result = self._call_api(body, task, worker_id, model, start_time)
             # Annotate metadata with zeroed-out tool-loop fields for shape consistency.
             result = _enrich_single_shot_metadata(result)
@@ -283,7 +293,7 @@ class OpenRouterExecutor(BaseExecutor):
 
     # ── Tool loop ─────────────────────────────────────────────────────
 
-    def _run_tool_loop(
+    def _run_tool_loop(  # noqa: C901
         self,
         task: TaskSpec,
         worker_id: str,
@@ -316,17 +326,25 @@ class OpenRouterExecutor(BaseExecutor):
         with _CancellationContext() as cancel:
             for iteration in range(1, MAX_TOOL_ITERATIONS + 1):
                 if cancel.cancelled:
-                    return self._aborted_result(task, worker_id, start_time, {
-                        "tool_call_count": tool_call_count,
-                        "round_trip_count": round_trip_count,
-                        "retry_count": retry_count_total,
-                        "xml_leak_detected": xml_leak_detected,
-                        "parallel_tool_calls_observed": parallel_tool_calls_observed,
-                        "jsonl_write_failed": jsonl_write_failed,
-                    })
+                    return self._aborted_result(
+                        task,
+                        worker_id,
+                        start_time,
+                        {
+                            "tool_call_count": tool_call_count,
+                            "round_trip_count": round_trip_count,
+                            "retry_count": retry_count_total,
+                            "xml_leak_detected": xml_leak_detected,
+                            "parallel_tool_calls_observed": parallel_tool_calls_observed,
+                            "jsonl_write_failed": jsonl_write_failed,
+                        },
+                    )
 
                 body = self._build_request_body(
-                    model, prompt, use_thinking, thinking_level,
+                    model,
+                    prompt,
+                    use_thinking,
+                    thinking_level,
                     tools_enabled=True,
                     messages=messages,
                 )
@@ -342,18 +360,25 @@ class OpenRouterExecutor(BaseExecutor):
                 round_trip_count += 1
 
                 if call_result.aborted:
-                    return self._aborted_result(task, worker_id, start_time, {
-                        "tool_call_count": tool_call_count,
-                        "round_trip_count": round_trip_count,
-                        "retry_count": retry_count_total,
-                        "xml_leak_detected": xml_leak_detected,
-                        "parallel_tool_calls_observed": parallel_tool_calls_observed,
-                        "jsonl_write_failed": jsonl_write_failed,
-                    })
+                    return self._aborted_result(
+                        task,
+                        worker_id,
+                        start_time,
+                        {
+                            "tool_call_count": tool_call_count,
+                            "round_trip_count": round_trip_count,
+                            "retry_count": retry_count_total,
+                            "xml_leak_detected": xml_leak_detected,
+                            "parallel_tool_calls_observed": parallel_tool_calls_observed,
+                            "jsonl_write_failed": jsonl_write_failed,
+                        },
+                    )
 
                 if call_result.error is not None:
                     return self._failed_mid_loop_result(
-                        task, worker_id, start_time,
+                        task,
+                        worker_id,
+                        start_time,
                         error_code=call_result.error_code or "openrouter_error_mid_loop",
                         error_message=call_result.error or "",
                         metadata={
@@ -396,24 +421,26 @@ class OpenRouterExecutor(BaseExecutor):
                         # Contract: XML leak without tool_calls must NOT terminate the loop.
                         # Append the assistant turn + a short nudge and go another round.
                         messages.append(_assistant_message_from_choice(message))
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                "Your previous response included <tool_call> XML in the text. "
-                                "Please use the native tool-calling API (tool_calls field) or, "
-                                "if no tool is needed, return only plain text."
-                            ),
-                        })
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Your previous response included <tool_call> XML in the text. "
+                                    "Please use the native tool-calling API (tool_calls field) or, "
+                                    "if no tool is needed, return only plain text."
+                                ),
+                            }
+                        )
                         continue
                     final_text = content
                     final_captured = True
                     break
 
-                # Parallel tool_calls observed when the model returns >1 despite parallel_tool_calls=false
+                # Parallel tool_calls observed when the model returns >1 despite parallel_tool_calls=false  # noqa: E501
                 if len(tool_calls) > 1:
                     parallel_tool_calls_observed = True
                     logger.warning(
-                        "model returned %d tool_calls despite parallel_tool_calls: false; processing sequentially",
+                        "model returned %d tool_calls despite parallel_tool_calls: false; processing sequentially",  # noqa: E501
                         len(tool_calls),
                     )
 
@@ -421,7 +448,9 @@ class OpenRouterExecutor(BaseExecutor):
                 if iteration == MAX_TOOL_ITERATIONS:
                     pending_tool_calls = tool_calls
                     return self._failed_iteration_cap_result(
-                        task, worker_id, start_time,
+                        task,
+                        worker_id,
+                        start_time,
                         metadata={
                             "tool_call_count": tool_call_count,
                             "round_trip_count": round_trip_count,
@@ -437,20 +466,27 @@ class OpenRouterExecutor(BaseExecutor):
                 messages.append(_assistant_message_from_choice(message))
                 for tc in tool_calls:
                     if cancel.cancelled:
-                        return self._aborted_result(task, worker_id, start_time, {
-                            "tool_call_count": tool_call_count,
-                            "round_trip_count": round_trip_count,
-                            "retry_count": retry_count_total,
-                            "xml_leak_detected": xml_leak_detected,
-                            "parallel_tool_calls_observed": parallel_tool_calls_observed,
-                            "jsonl_write_failed": jsonl_write_failed,
-                        })
+                        return self._aborted_result(
+                            task,
+                            worker_id,
+                            start_time,
+                            {
+                                "tool_call_count": tool_call_count,
+                                "round_trip_count": round_trip_count,
+                                "retry_count": retry_count_total,
+                                "xml_leak_detected": xml_leak_detected,
+                                "parallel_tool_calls_observed": parallel_tool_calls_observed,
+                                "jsonl_write_failed": jsonl_write_failed,
+                            },
+                        )
                     tool_id = tc.get("id") or f"call_{tool_call_count}"
-                    fn = (tc.get("function") or {})
+                    fn = tc.get("function") or {}
                     tool_name = fn.get("name") or ""
                     raw_args = fn.get("arguments") or "{}"
                     try:
-                        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                        tool_args = (
+                            json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+                        )
                     except json.JSONDecodeError:
                         tool_args = {}
 
@@ -460,14 +496,17 @@ class OpenRouterExecutor(BaseExecutor):
                     tool_call_count += 1
 
                     if jsonl_path is not None:
-                        ok = _append_jsonl(jsonl_path, {
-                            "iteration": tool_call_count,
-                            "ts": iso_now(),
-                            "tool": tool_name,
-                            "args_summary": summarise_args(tool_args),
-                            "result_summary": summarise_result(tool_name, tool_result),
-                            "duration_ms": tool_dt_ms,
-                        })
+                        ok = _append_jsonl(
+                            jsonl_path,
+                            {
+                                "iteration": tool_call_count,
+                                "ts": iso_now(),
+                                "tool": tool_name,
+                                "args_summary": summarise_args(tool_args),
+                                "result_summary": summarise_result(tool_name, tool_result),
+                                "duration_ms": tool_dt_ms,
+                            },
+                        )
                         if not ok:
                             jsonl_write_failed = True
 
@@ -488,18 +527,22 @@ class OpenRouterExecutor(BaseExecutor):
                                 full_content, self.tool_result_cap, str(spill_path)
                             )
                         # else: spill write failed -> keep full_content, no marker.
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_id,
-                        "content": content,
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "content": content,
+                        }
+                    )
             # End for loop.
             # If we got here without final_captured, every iteration was an XML-leak
             # nudge that never produced a real final response. Surface as failure
             # rather than returning empty output masquerading as success.
             if not final_captured:
                 return self._failed_mid_loop_result(
-                    task, worker_id, start_time,
+                    task,
+                    worker_id,
+                    start_time,
                     error_code="xml_leak_loop_exhausted",
                     error_message=(
                         f"model emitted <tool_call> XML as text for all {MAX_TOOL_ITERATIONS} "
@@ -555,18 +598,18 @@ class OpenRouterExecutor(BaseExecutor):
             }
         try:
             return handler(args, roots, is_cancelled=lambda: cancel.cancelled)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("tool handler %s raised: %s", tool_name, exc)
             return {"error": "tool_internal_error", "message": str(exc)}
 
     # ── HTTP call helpers ─────────────────────────────────────────────
 
-    def _call_api_with_retry(
+    def _call_api_with_retry(  # noqa: C901
         self,
         body: Dict[str, Any],
-        model: str,
+        model: str,  # noqa: ARG002
         use_thinking: bool,
-        thinking_level: str,
+        thinking_level: str,  # noqa: ARG002
         cancel: _CancellationContext,
     ) -> "_CallResult":
         """Single logical round-trip: initial attempt + up to 3 retries on 5xx/429.
@@ -579,14 +622,26 @@ class OpenRouterExecutor(BaseExecutor):
         thinking_stripped = False
         last_error_msg = ""
         retries_completed = 0
-        MAX_RETRIES = 3
+        MAX_RETRIES = 3  # noqa: N806
 
         while True:  # manual attempt counting so free thinking-strip doesn't cost a slot
             if cancel.cancelled:
-                return _CallResult(response=None, error=None, error_code=None, retries=retries_completed, aborted=True)
+                return _CallResult(
+                    response=None,
+                    error=None,
+                    error_code=None,
+                    retries=retries_completed,
+                    aborted=True,
+                )
             try:
                 response = self._do_post(attempt_body)
-                return _CallResult(response=response, error=None, error_code=None, retries=retries_completed, aborted=False)
+                return _CallResult(
+                    response=response,
+                    error=None,
+                    error_code=None,
+                    retries=retries_completed,
+                    aborted=False,
+                )
             except urllib.error.HTTPError as http_err:
                 code = http_err.code
                 err_text = _read_http_error_body(http_err)
@@ -604,39 +659,51 @@ class OpenRouterExecutor(BaseExecutor):
                 if code in (429, 500, 502, 503, 504):
                     if retries_completed >= MAX_RETRIES:
                         return _CallResult(
-                            response=None, error=last_error_msg,
+                            response=None,
+                            error=last_error_msg,
                             error_code="openrouter_error_mid_loop",
-                            retries=retries_completed, aborted=False,
+                            retries=retries_completed,
+                            aborted=False,
                         )
                     backoff = RETRY_BACKOFF_SECONDS[retries_completed]
                     cancelled = cancel.sleep(backoff)
                     if cancelled:
                         return _CallResult(
-                            response=None, error=None, error_code=None,
-                            retries=retries_completed, aborted=True,
+                            response=None,
+                            error=None,
+                            error_code=None,
+                            retries=retries_completed,
+                            aborted=True,
                         )
                     retries_completed += 1
                     continue
                 # Non-retriable (other 4xx).
                 return _CallResult(
-                    response=None, error=last_error_msg,
+                    response=None,
+                    error=last_error_msg,
                     error_code="openrouter_error_mid_loop",
-                    retries=retries_completed, aborted=False,
+                    retries=retries_completed,
+                    aborted=False,
                 )
             except (urllib.error.URLError, TimeoutError, OSError) as net_err:
                 last_error_msg = f"network error: {net_err}"
                 if retries_completed >= MAX_RETRIES:
                     return _CallResult(
-                        response=None, error=last_error_msg,
+                        response=None,
+                        error=last_error_msg,
                         error_code="openrouter_error_mid_loop",
-                        retries=retries_completed, aborted=False,
+                        retries=retries_completed,
+                        aborted=False,
                     )
                 backoff = RETRY_BACKOFF_SECONDS[retries_completed]
                 cancelled = cancel.sleep(backoff)
                 if cancelled:
                     return _CallResult(
-                        response=None, error=None, error_code=None,
-                        retries=retries_completed, aborted=True,
+                        response=None,
+                        error=None,
+                        error_code=None,
+                        retries=retries_completed,
+                        aborted=True,
                     )
                 retries_completed += 1
                 continue
@@ -646,13 +713,18 @@ class OpenRouterExecutor(BaseExecutor):
     _MAX_COMMAND_OUTPUT_BYTES = 1_000_000  # 1 MB — matches CommandExecutor.MAX_OUTPUT_BYTES
 
     # Exit-code sentinels (disambiguate failure modes in metadata["exit_code"]).
-    _EXIT_TIMEOUT: int = -1   # TimeoutExpired (preserves pre-existing -1 contract)
+    _EXIT_TIMEOUT: int = -1  # TimeoutExpired (preserves pre-existing -1 contract)
     _EXIT_EXEC_ERR: int = -2  # other exec-level exception (OSError, etc.)
     _EXIT_SECURITY: int = -1  # security gate blocked before the shell ran
 
     def _execute_command_locally(
-        self, command: str, working_dir: str,
-        task: TaskSpec, worker_id: str, start_time: float, phase_id: str,
+        self,
+        command: str,
+        working_dir: str,
+        task: TaskSpec,
+        worker_id: str,
+        start_time: float,
+        phase_id: str,
         payload: Optional[Dict[str, Any]] = None,
     ) -> TaskResult:
         """Run a shell command locally via subprocess — zero token cost.
@@ -664,7 +736,7 @@ class OpenRouterExecutor(BaseExecutor):
         for the actual run because the shipped tamper/maintenance gates depend on
         shell operators.
         """
-        import subprocess as _sp
+        import subprocess as _sp  # noqa: PLC0415
 
         logger.info("OpenRouterExecutor: local command for phase %s: %s", phase_id, command[:200])
 
@@ -676,36 +748,53 @@ class OpenRouterExecutor(BaseExecutor):
             error_code, security_message = security_block
             logger.warning(
                 "OpenRouterExecutor: SECURITY — command blocked for phase %s: %s",
-                phase_id, command[:200],
+                phase_id,
+                command[:200],
             )
             duration = time.time() - start_time
             return TaskResult(
-                task_id=task.id, task_type=task.type, state=TaskState.FAILED,
+                task_id=task.id,
+                task_type=task.type,
+                state=TaskState.FAILED,
                 confidence=0.0,
-                result={"output": security_message}, model_used="local-subprocess",
-                execution_time_seconds=duration, tokens_consumed=0, cost_usd=Decimal("0"),
-                started_at=now_utc(), completed_at=now_utc(),
-                errors=[TaskError(
-                    code=error_code,
-                    message=security_message,
-                    severity="error",
-                )],
+                result={"output": security_message},
+                model_used="local-subprocess",
+                execution_time_seconds=duration,
+                tokens_consumed=0,
+                cost_usd=Decimal("0"),
+                started_at=now_utc(),
+                completed_at=now_utc(),
+                errors=[
+                    TaskError(
+                        code=error_code,
+                        message=security_message,
+                        severity="error",
+                    )
+                ],
                 metadata={
-                    "worker_id": worker_id, "exit_code": self._EXIT_SECURITY,
-                    "stdout_chars": 0, "stderr_chars": len(security_message),
+                    "worker_id": worker_id,
+                    "exit_code": self._EXIT_SECURITY,
+                    "stdout_chars": 0,
+                    "stderr_chars": len(security_message),
                     "command": command[:200],
-                    "tool_call_count": 0, "round_trip_count": 0, "retry_count": 0,
-                    "xml_leak_detected": False, "xml_leak_content_snippet": "",
-                    "parallel_tool_calls_observed": False, "jsonl_write_failed": False,
+                    "tool_call_count": 0,
+                    "round_trip_count": 0,
+                    "retry_count": 0,
+                    "xml_leak_detected": False,
+                    "xml_leak_content_snippet": "",
+                    "parallel_tool_calls_observed": False,
+                    "jsonl_write_failed": False,
                 },
             )
 
         cwd = working_dir or os.getcwd()
         error_code: Optional[str] = None
         try:
-            proc = _sp.run(command, shell=True, cwd=cwd, capture_output=True, timeout=self.timeout_seconds)
-            stdout_raw = proc.stdout[:self._MAX_COMMAND_OUTPUT_BYTES]
-            stderr_raw = proc.stderr[:self._MAX_COMMAND_OUTPUT_BYTES]
+            proc = _sp.run(
+                command, shell=True, cwd=cwd, capture_output=True, timeout=self.timeout_seconds
+            )
+            stdout_raw = proc.stdout[: self._MAX_COMMAND_OUTPUT_BYTES]
+            stderr_raw = proc.stderr[: self._MAX_COMMAND_OUTPUT_BYTES]
             stdout = stdout_raw.decode("utf-8", errors="replace")
             stderr = stderr_raw.decode("utf-8", errors="replace")
             exit_code = proc.returncode
@@ -713,12 +802,16 @@ class OpenRouterExecutor(BaseExecutor):
             if state == TaskState.FAILED:
                 error_code = "command_failed"
         except _sp.TimeoutExpired as exc:
-            stdout = ((exc.stdout or b"")[:self._MAX_COMMAND_OUTPUT_BYTES]).decode("utf-8", errors="replace")
-            stderr = ((exc.stderr or b"")[:self._MAX_COMMAND_OUTPUT_BYTES]).decode("utf-8", errors="replace")
+            stdout = ((exc.stdout or b"")[: self._MAX_COMMAND_OUTPUT_BYTES]).decode(
+                "utf-8", errors="replace"
+            )
+            stderr = ((exc.stderr or b"")[: self._MAX_COMMAND_OUTPUT_BYTES]).decode(
+                "utf-8", errors="replace"
+            )
             exit_code = self._EXIT_TIMEOUT
             state = TaskState.FAILED
             error_code = "command_timeout"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             stdout, stderr = "", str(exc)
             exit_code = self._EXIT_EXEC_ERR
             state = TaskState.FAILED
@@ -728,25 +821,39 @@ class OpenRouterExecutor(BaseExecutor):
         output_text = stdout if stdout else stderr
         errors = []
         if state == TaskState.FAILED:
-            errors.append(TaskError(
-                code=error_code or "command_failed",
-                message=f"exit {exit_code}: {stderr[:500]}" if stderr else f"exit {exit_code}",
-                severity="error",
-            ))
+            errors.append(
+                TaskError(
+                    code=error_code or "command_failed",
+                    message=f"exit {exit_code}: {stderr[:500]}" if stderr else f"exit {exit_code}",
+                    severity="error",
+                )
+            )
         return TaskResult(
-            task_id=task.id, task_type=task.type, state=state,
+            task_id=task.id,
+            task_type=task.type,
+            state=state,
             confidence=1.0 if state == TaskState.SUCCESS else 0.0,
-            result={"output": output_text}, model_used="local-subprocess",
-            execution_time_seconds=duration, tokens_consumed=0, cost_usd=Decimal("0"),
-            started_at=now_utc(), completed_at=now_utc(),
+            result={"output": output_text},
+            model_used="local-subprocess",
+            execution_time_seconds=duration,
+            tokens_consumed=0,
+            cost_usd=Decimal("0"),
+            started_at=now_utc(),
+            completed_at=now_utc(),
             errors=errors if errors else [],
             metadata={
-                "worker_id": worker_id, "exit_code": exit_code,
-                "stdout_chars": len(stdout), "stderr_chars": len(stderr),
+                "worker_id": worker_id,
+                "exit_code": exit_code,
+                "stdout_chars": len(stdout),
+                "stderr_chars": len(stderr),
                 "command": command[:200],
-                "tool_call_count": 0, "round_trip_count": 0, "retry_count": 0,
-                "xml_leak_detected": False, "xml_leak_content_snippet": "",
-                "parallel_tool_calls_observed": False, "jsonl_write_failed": False,
+                "tool_call_count": 0,
+                "round_trip_count": 0,
+                "retry_count": 0,
+                "xml_leak_detected": False,
+                "xml_leak_content_snippet": "",
+                "parallel_tool_calls_observed": False,
+                "jsonl_write_failed": False,
             },
         )
 
@@ -782,7 +889,9 @@ class OpenRouterExecutor(BaseExecutor):
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             duration = time.time() - start_time
             logger.error("OpenRouter network error for task: %s", e)
-            return self._make_failed_result(task, worker_id, duration, "timeout", f"Network error: {e}")
+            return self._make_failed_result(
+                task, worker_id, duration, "timeout", f"Network error: {e}"
+            )
         return self._parse_response(resp_data, task, worker_id, model, start_time)
 
     # ── Request body ──────────────────────────────────────────────────
@@ -826,13 +935,24 @@ class OpenRouterExecutor(BaseExecutor):
             confidence=0.0,
             result={},
             execution_time_seconds=duration,
-            errors=[TaskError(code="tool_iteration_aborted", message="user cancelled", severity="error")],
-            metadata={"worker_id": worker_id, **metadata, "xml_leak_content_snippet": metadata.get("xml_leak_content_snippet", "")},
+            errors=[
+                TaskError(code="tool_iteration_aborted", message="user cancelled", severity="error")
+            ],
+            metadata={
+                "worker_id": worker_id,
+                **metadata,
+                "xml_leak_content_snippet": metadata.get("xml_leak_content_snippet", ""),
+            },
         )
 
     def _failed_mid_loop_result(
-        self, task: TaskSpec, worker_id: str, start_time: float,
-        error_code: str, error_message: str, metadata: dict,
+        self,
+        task: TaskSpec,
+        worker_id: str,
+        start_time: float,
+        error_code: str,
+        error_message: str,
+        metadata: dict,
     ) -> TaskResult:
         duration = time.time() - start_time
         return TaskResult(
@@ -843,11 +963,19 @@ class OpenRouterExecutor(BaseExecutor):
             result={},
             execution_time_seconds=duration,
             errors=[TaskError(code=error_code, message=error_message, severity="error")],
-            metadata={"worker_id": worker_id, **metadata, "xml_leak_content_snippet": metadata.get("xml_leak_content_snippet", "")},
+            metadata={
+                "worker_id": worker_id,
+                **metadata,
+                "xml_leak_content_snippet": metadata.get("xml_leak_content_snippet", ""),
+            },
         )
 
     def _failed_iteration_cap_result(
-        self, task: TaskSpec, worker_id: str, start_time: float, metadata: dict,
+        self,
+        task: TaskSpec,
+        worker_id: str,
+        start_time: float,
+        metadata: dict,
     ) -> TaskResult:
         duration = time.time() - start_time
         return TaskResult(
@@ -857,12 +985,18 @@ class OpenRouterExecutor(BaseExecutor):
             confidence=0.0,
             result={},
             execution_time_seconds=duration,
-            errors=[TaskError(
-                code="tool_iteration_limit_exceeded",
-                message=f"hit {MAX_TOOL_ITERATIONS} tool-call iterations without final response",
-                severity="error",
-            )],
-            metadata={"worker_id": worker_id, **metadata, "xml_leak_content_snippet": metadata.get("xml_leak_content_snippet", "")},
+            errors=[
+                TaskError(
+                    code="tool_iteration_limit_exceeded",
+                    message=f"hit {MAX_TOOL_ITERATIONS} tool-call iterations without final response",  # noqa: E501
+                    severity="error",
+                )
+            ],
+            metadata={
+                "worker_id": worker_id,
+                **metadata,
+                "xml_leak_content_snippet": metadata.get("xml_leak_content_snippet", ""),
+            },
         )
 
     # ── Legacy single-shot helpers ────────────────────────────────────
@@ -879,7 +1013,10 @@ class OpenRouterExecutor(BaseExecutor):
         choices = resp_data.get("choices", [])
         if not choices:
             return self._make_failed_result(
-                task, worker_id, duration, "empty_response",
+                task,
+                worker_id,
+                duration,
+                "empty_response",
                 "API returned empty choices array",
             )
         content = choices[0].get("message", {}).get("content", "")
@@ -985,7 +1122,7 @@ def _read_http_error_body(err: urllib.error.HTTPError) -> str:
                 return inner.get("message", "") or str(body)
             return str(body)
         return str(body)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return str(err)
 
 

@@ -134,8 +134,9 @@ class GitError(RuntimeError):
         stderr:   Captured stderr output from git, if available.
     """
 
-    def __init__(self, message: str, command: Optional[List[str]] = None,
-                 stderr: Optional[str] = None) -> None:
+    def __init__(
+        self, message: str, command: Optional[List[str]] = None, stderr: Optional[str] = None
+    ) -> None:
         super().__init__(message)
         self.command = command or []
         self.stderr = stderr or ""
@@ -143,7 +144,9 @@ class GitError(RuntimeError):
     def __str__(self) -> str:
         parts = [super().__str__()]
         if self.command:
-            parts.append(f"  Command: git {' '.join(self.command[1:] if self.command[0] == 'git' else self.command)}")
+            parts.append(
+                f"  Command: git {' '.join(self.command[1:] if self.command[0] == 'git' else self.command)}"  # noqa: E501
+            )
         if self.stderr:
             parts.append(f"  git stderr: {self.stderr.strip()}")
         return "\n".join(parts)
@@ -231,13 +234,11 @@ class GitContext:
             base_branch=base_branch,
             created_at=datetime.now(tz=timezone.utc),
         )
-        logger.info(
-            f"Git: created branch '{actual_branch_name}' from '{base_branch}'"
-        )
+        logger.info(f"Git: created branch '{actual_branch_name}' from '{base_branch}'")
         return self._branch_info
 
     def on_phase_complete(
-        self, phase_id: str, phase_output: Dict[str, Any]
+        self, phase_id: str, phase_output: Dict[str, Any]  # noqa: ARG002
     ) -> Optional[CommitInfo]:
         """Stage and commit working-directory changes after a code phase.
 
@@ -282,15 +283,11 @@ class GitContext:
             logger.info(f"Git: phase '{phase_id}' — nothing to commit, skipping")
             return None
 
-        message = (
-            f"[orch] Phase '{phase_id}' — {self.pipeline_id} (run {self.run_id})"
-        )
+        message = f"[orch] Phase '{phase_id}' — {self.pipeline_id} (run {self.run_id})"
         self._run_git(["git", "commit", "-m", message], cwd=working_dir)
 
         # Retrieve the commit SHA
-        sha_result = self._run_git(
-            ["git", "rev-parse", "HEAD"], cwd=working_dir
-        )
+        sha_result = self._run_git(["git", "rev-parse", "HEAD"], cwd=working_dir)
         sha = sha_result.stdout.strip()
 
         # Count files changed in last commit
@@ -299,9 +296,11 @@ class GitContext:
             cwd=working_dir,
             check=False,
         )
-        files_changed = len(
-            [l for l in diff_result.stdout.strip().splitlines() if l.strip()]
-        ) if diff_result.returncode == 0 else 0
+        files_changed = (
+            len([line for line in diff_result.stdout.strip().splitlines() if line.strip()])
+            if diff_result.returncode == 0
+            else 0
+        )
 
         commit_info = CommitInfo(
             sha=sha,
@@ -310,10 +309,7 @@ class GitContext:
             phase_id=phase_id,
         )
         self._commits.append(commit_info)
-        logger.info(
-            f"Git: committed phase '{phase_id}' → {sha[:8]}  "
-            f"({files_changed} file(s))"
-        )
+        logger.info(f"Git: committed phase '{phase_id}' → {sha[:8]}  " f"({files_changed} file(s))")
         return commit_info
 
     def get_branch_diff(self) -> str:
@@ -379,7 +375,7 @@ class GitContext:
 
         # Write gate file
         diff_stats = self._get_diff_stats(working_dir)
-        gate_data = self._write_gate_file(diff_stats)
+        self._write_gate_file(diff_stats)
 
         logger.info(
             f"Git: merge gate created (run_id={self.run_id}).  "
@@ -414,9 +410,7 @@ class GitContext:
 
         working_dir = self._repo_root or Path(self.config.working_dir).resolve()
         base = self._branch_info.base_branch
-        logger.info(
-            f"Git: pipeline failed — checking out base branch '{base}'"
-        )
+        logger.info(f"Git: pipeline failed — checking out base branch '{base}'")
         try:
             self._run_git(["git", "checkout", base], cwd=working_dir)
         except GitError as exc:
@@ -436,7 +430,8 @@ class GitContext:
         if self._branch_info is None:
             raise GitError(
                 "Cannot write gate file: no branch info (on_pipeline_start not called)",
-                command=[], stderr="",
+                command=[],
+                stderr="",
             )
 
         gate_data: Dict[str, Any] = {
@@ -599,7 +594,7 @@ class GitContext:
             try:
                 data = json.loads(gate_file.read_text())
                 gates.append(data)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError):  # noqa: PERF203
                 pass
         return gates
 
@@ -673,9 +668,7 @@ class GitContext:
         """
         gate_file = cls.GATES_DIR / f"{run_id}.json"
         if not gate_file.exists():
-            logger.warning(
-                f"Git: update_gate_scoring — no gate file for run_id '{run_id}'"
-            )
+            logger.warning(f"Git: update_gate_scoring — no gate file for run_id '{run_id}'")
             return None
         try:
             data = json.loads(gate_file.read_text())
@@ -735,9 +728,7 @@ class GitContext:
         """
         gate_file = cls.GATES_DIR / f"{run_id}.json"
         if not gate_file.exists():
-            logger.warning(
-                f"Git: update_gate_status_scoring — no gate file for run_id '{run_id}'"
-            )
+            logger.warning(f"Git: update_gate_status_scoring — no gate file for run_id '{run_id}'")
             return None
         try:
             data = json.loads(gate_file.read_text())
@@ -802,10 +793,7 @@ class GitContext:
             f"**Run ID:** {run_id}\n"
             f"**Branch:** {branch}\n\n"
             f"Commits:\n"
-            + "\n".join(
-                f"- {c['sha'][:8]} {c['message']}"
-                for c in gate_data.get("commits", [])
-            )
+            + "\n".join(f"- {c['sha'][:8]} {c['message']}" for c in gate_data.get("commits", []))
         )
 
         # Append GitHub closing keyword so merging the PR auto-closes the issue.
@@ -815,11 +803,19 @@ class GitContext:
 
         try:
             result = subprocess.run(
-                ["gh", "pr", "create",
-                 "--title", title,
-                 "--body", body,
-                 "--base", base,
-                 "--head", branch],
+                [
+                    "gh",
+                    "pr",
+                    "create",
+                    "--title",
+                    title,
+                    "--body",
+                    body,
+                    "--base",
+                    base,
+                    "--head",
+                    branch,
+                ],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -835,9 +831,7 @@ class GitContext:
                 )
                 return None
         except FileNotFoundError:
-            logger.warning(
-                "Git: 'gh' CLI not found.  Install GitHub CLI or set create_pr: false."
-            )
+            logger.warning("Git: 'gh' CLI not found.  Install GitHub CLI or set create_pr: false.")
             return None
         except subprocess.TimeoutExpired:
             logger.warning("Git: gh pr create timed out")
@@ -884,7 +878,9 @@ class GitContext:
         strategy_flag = flag_map.get(strategy_lower, "--squash")
 
         cmd = [
-            "gh", "pr", "merge",
+            "gh",
+            "pr",
+            "merge",
             strategy_flag,
             "--delete-branch",
             branch_name,
@@ -893,7 +889,9 @@ class GitContext:
         cwd = working_dir or Path.cwd()
         logger.info(
             "Git: auto-merging PR for run '%s' — branch '%s' (strategy=%s)",
-            run_id, branch_name, strategy_lower,
+            run_id,
+            branch_name,
+            strategy_lower,
         )
 
         try:
@@ -907,7 +905,8 @@ class GitContext:
             if result.returncode == 0:
                 logger.info(
                     "Git: auto-merge SUCCESS for run '%s' — %s",
-                    run_id, result.stdout.strip() or "PR merged",
+                    run_id,
+                    result.stdout.strip() or "PR merged",
                 )
             else:
                 stderr = result.stderr.strip()
@@ -926,7 +925,8 @@ class GitContext:
         except subprocess.TimeoutExpired:
             logger.warning(
                 "Git: gh pr merge timed out for run '%s' — branch '%s'",
-                run_id, branch_name,
+                run_id,
+                branch_name,
             )
 
     # ------------------------------------------------------------------
@@ -1044,14 +1044,10 @@ class GitContext:
             ["git", "status", "--porcelain"],
             cwd=working_dir,
         )
-        dirty_lines = [l for l in result.stdout.splitlines() if l.strip()]
+        dirty_lines = [line for line in result.stdout.splitlines() if line.strip()]
         if dirty_lines:
             dirty_summary = "\n  ".join(dirty_lines[:10])
-            extra = (
-                f"\n  ... and {len(dirty_lines) - 10} more"
-                if len(dirty_lines) > 10
-                else ""
-            )
+            extra = f"\n  ... and {len(dirty_lines) - 10} more" if len(dirty_lines) > 10 else ""
             raise GitError(
                 f"Working directory is dirty.  Commit or stash your changes "
                 f"before running a git-enabled pipeline.\n\n"
@@ -1112,7 +1108,7 @@ class GitContext:
         return sanitized
 
     def _create_branch(
-        self, working_dir: Path, branch_name: str, base_branch: str
+        self, working_dir: Path, branch_name: str, base_branch: str  # noqa: ARG002
     ) -> str:
         """Create the feature branch, retrying with a numeric suffix on collision.
 
@@ -1141,8 +1137,7 @@ class GitContext:
             if attempt < max_retries:
                 attempt_name = f"{branch_name}-{attempt + 2}"
                 logger.warning(
-                    f"Git: branch '{branch_name}' already exists — "
-                    f"trying '{attempt_name}'"
+                    f"Git: branch '{branch_name}' already exists — " f"trying '{attempt_name}'"
                 )
             else:
                 raise GitError(
@@ -1163,7 +1158,8 @@ class GitContext:
         if self._branch_info is None:
             raise GitError(
                 "Cannot push: no branch info (on_pipeline_start not called)",
-                command=[], stderr="",
+                command=[],
+                stderr="",
             )
 
         # Check whether a remote named 'origin' exists
@@ -1173,9 +1169,7 @@ class GitContext:
             check=False,
         )
         if remote_result.returncode != 0:
-            logger.warning(
-                "Git: no remote 'origin' configured — branch created locally only."
-            )
+            logger.warning("Git: no remote 'origin' configured — branch created locally only.")
             return
 
         branch_name = self._branch_info.branch_name
@@ -1199,7 +1193,7 @@ class GitContext:
             # Permission / auth errors
             if "permission denied" in exc.stderr.lower() or "authentication" in exc.stderr.lower():
                 raise GitError(
-                    f"Push failed — check your git credentials and remote permissions.",
+                    "Push failed — check your git credentials and remote permissions.",
                     command=exc.command,
                     stderr=exc.stderr,
                 ) from exc
@@ -1215,8 +1209,12 @@ class GitContext:
             return "no changes"
 
         result = self._run_git(
-            ["git", "diff", "--stat",
-             f"{self._branch_info.base_branch}...{self._branch_info.branch_name}"],
+            [
+                "git",
+                "diff",
+                "--stat",
+                f"{self._branch_info.base_branch}...{self._branch_info.branch_name}",
+            ],
             cwd=working_dir,
             check=False,
         )
@@ -1224,16 +1222,14 @@ class GitContext:
             return "no changes"
 
         # The last line of git diff --stat is the summary line
-        lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
+        lines = [line for line in result.stdout.strip().splitlines() if line.strip()]
         return lines[-1].strip() if lines else "no changes"
 
     # ------------------------------------------------------------------
     # Regression detection helpers (used by RegressionDetector)
     # ------------------------------------------------------------------
 
-    def get_commit_range(
-        self, last_green_sha: str, head_sha: str, repo_path: Path
-    ) -> List[str]:
+    def get_commit_range(self, last_green_sha: str, head_sha: str, repo_path: Path) -> List[str]:
         """Return ordered list of commit SHAs between ``last_green_sha`` and ``head_sha``.
 
         Runs ``git log --oneline {last_green_sha}..{head_sha}`` and returns SHAs
@@ -1267,7 +1263,7 @@ class GitContext:
                     result.stderr.strip(),
                 )
                 return []
-            lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+            lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
             shas = [line.split()[0] for line in lines if line]
             return shas[:50]  # cap at 50
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
@@ -1303,7 +1299,7 @@ class GitContext:
                     result.stderr.strip(),
                 )
                 return []
-            files = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+            files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
             return files
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
             logger.warning("RegressionDetector: get_commit_files error: %s", exc)

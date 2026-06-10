@@ -4,6 +4,7 @@ These functions are called by the sequencer to silently verify that
 nominated files have not been modified between pipeline phases.
 No information about the verification mechanism is exposed to running agents.
 """
+
 import hashlib
 import logging
 import os
@@ -25,6 +26,7 @@ DEFAULT_EXCLUDE_SUFFIXES: List[str] = [".pyc"]
 
 class FileGuardError(Exception):
     """Raised when a protected file's hash does not match the expected value."""
+
     pass
 
 
@@ -49,7 +51,7 @@ def compute_hash(path: Union[str, Path]) -> str:
     return h.hexdigest()
 
 
-def compute_directory_hash(
+def compute_directory_hash(  # noqa: C901
     path: Union[str, Path],
     exclude_patterns: Optional[List[str]] = None,
     exclude_suffixes: Optional[List[str]] = None,
@@ -91,14 +93,10 @@ def compute_directory_hash(
     root = Path(path)
 
     if not root.exists():
-        _logger.warning(
-            "compute_directory_hash: path does not exist: %s — skipping.", root
-        )
+        _logger.warning("compute_directory_hash: path does not exist: %s — skipping.", root)
         return None
     if not root.is_dir():
-        _logger.warning(
-            "compute_directory_hash: path is not a directory: %s — skipping.", root
-        )
+        _logger.warning("compute_directory_hash: path is not a directory: %s — skipping.", root)
         return None
 
     # Collect (relative_path_str, is_symlink, symlink_target_or_None) for all
@@ -107,10 +105,7 @@ def compute_directory_hash(
 
     for dirpath, dirnames, filenames in os.walk(str(root), followlinks=False):
         # Prune excluded directories in-place so os.walk skips them entirely.
-        dirnames[:] = sorted(
-            d for d in dirnames
-            if d not in exclude_patterns
-        )
+        dirnames[:] = sorted(d for d in dirnames if d not in exclude_patterns)
 
         for filename in sorted(filenames):
             full = Path(dirpath) / filename
@@ -147,7 +142,8 @@ def compute_directory_hash(
                 # unexpected permission/IO issues in the guarded directory.
                 _logger.debug(
                     "compute_directory_hash: skipping unreadable file %s (%s)",
-                    full, exc,
+                    full,
+                    exc,
                 )
 
         h.update(b"\xff")  # separator between entries
@@ -175,6 +171,5 @@ def verify_hash(path: Union[str, Path], expected: str) -> None:
     if actual != expected:
         name = Path(path).name
         raise FileGuardError(
-            f"Protected file modified: {name} "
-            f"(expected sha256:{expected}, got sha256:{actual})"
+            f"Protected file modified: {name} " f"(expected sha256:{expected}, got sha256:{actual})"
         )

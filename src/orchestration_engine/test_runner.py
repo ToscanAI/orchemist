@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 # Data model
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TestRunResult:
     """Structured result of a pytest execution.
@@ -63,6 +64,7 @@ class TestRunResult:
 # ---------------------------------------------------------------------------
 # Core parsing function
 # ---------------------------------------------------------------------------
+
 
 def parse_pytest_output(stdout: str, returncode: int) -> TestRunResult:
     """Parse pytest ``-v --tb=short`` stdout into a ``TestRunResult``.
@@ -143,6 +145,7 @@ def _extract_failure_details(stdout: str) -> str:
 # Subprocess runner
 # ---------------------------------------------------------------------------
 
+
 def run_pytest(
     test_file: str,
     timeout_seconds: int = 300,
@@ -187,7 +190,10 @@ def run_pytest(
         msg = f"pytest timed out after {exc.timeout}s"
         logger.warning("test_runner: %s", msg)
         return TestRunResult(
-            passed=0, failed=0, errors=1, total=1,
+            passed=0,
+            failed=0,
+            errors=1,
+            total=1,
             pass_rate=0.0,
             failure_details=msg,
             full_output=f"TIMEOUT: {msg}",
@@ -198,7 +204,10 @@ def run_pytest(
         msg = f"python3 not found: {exc}"
         logger.error("test_runner: %s", msg)
         return TestRunResult(
-            passed=0, failed=0, errors=1, total=1,
+            passed=0,
+            failed=0,
+            errors=1,
+            total=1,
             pass_rate=0.0,
             failure_details=msg,
             full_output=f"ERROR: {msg}",
@@ -209,7 +218,10 @@ def run_pytest(
         msg = f"unexpected error running pytest: {exc}"
         logger.error("test_runner: %s", msg)
         return TestRunResult(
-            passed=0, failed=0, errors=1, total=1,
+            passed=0,
+            failed=0,
+            errors=1,
+            total=1,
             pass_rate=0.0,
             failure_details=msg,
             full_output=f"ERROR: {msg}",
@@ -220,6 +232,7 @@ def run_pytest(
 # ---------------------------------------------------------------------------
 # Result persistence
 # ---------------------------------------------------------------------------
+
 
 def write_acceptance_results(
     result: TestRunResult,
@@ -276,13 +289,18 @@ def write_acceptance_results(
 
     logger.info(
         "test_runner: wrote %s (status=%s, passed=%d, failed=%d, errors=%d)",
-        out_path, status, result.passed, result.failed, result.errors,
+        out_path,
+        status,
+        result.passed,
+        result.failed,
+        result.errors,
     )
 
 
 # ---------------------------------------------------------------------------
 # Feedback formatting
 # ---------------------------------------------------------------------------
+
 
 def format_failure_summary(result: TestRunResult) -> str:
     """Build a human-readable markdown failure summary for feedback context.

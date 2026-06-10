@@ -40,7 +40,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from orchestration_engine.notifications import NotificationDispatcher
 
@@ -89,23 +89,23 @@ VALID_CLASSIFICATION_TYPES: frozenset = frozenset(
 
 #: Maps a classification type to its recommended pipeline template.
 CLASSIFICATION_TEMPLATE_MAP: Dict[str, str] = {
-    "bug":      "coding-pipeline-standard",
-    "feature":  "coding-pipeline-standard",
+    "bug": "coding-pipeline-standard",
+    "feature": "coding-pipeline-standard",
     "refactor": "coding-pipeline-standard",
-    "docs":     "content-pipeline-v27",
+    "docs": "content-pipeline-v27",
     "research": "research-competitive",
-    "content":  "content-pipeline-v27",
+    "content": "content-pipeline-v27",
 }
 
 #: Default mapping used by TemplateSelector.
 #: Maps classification types to abstract pipeline template names.
 #: These use version-agnostic names; callers resolve to concrete versioned templates.
 DEFAULT_TEMPLATE_MAPPING: Dict[str, str] = {
-    "bug":      "coding-pipeline",
-    "feature":  "coding-pipeline",
+    "bug": "coding-pipeline",
+    "feature": "coding-pipeline",
     "refactor": "coding-pipeline",
-    "docs":     "content-pipeline",
-    "content":  "content-pipeline",
+    "docs": "content-pipeline",
+    "content": "content-pipeline",
     "research": "research-pipeline",
 }
 
@@ -182,9 +182,7 @@ class IssueClassification:
     status: str = "classified"
     id: Optional[int] = None
     run_id: Optional[str] = None
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a plain-dict representation suitable for DB insertion.
@@ -194,15 +192,15 @@ class IssueClassification:
             for unsaved instances.
         """
         return {
-            "id":                  self.id,
-            "issue_number":        self.issue_number,
-            "repo":                self.repo,
+            "id": self.id,
+            "issue_number": self.issue_number,
+            "repo": self.repo,
             "classification_type": self.classification_type,
-            "confidence":          self.confidence,
-            "template_id":         self.template_id,
-            "run_id":              self.run_id,
-            "status":              self.status,
-            "created_at":          self.created_at,
+            "confidence": self.confidence,
+            "template_id": self.template_id,
+            "run_id": self.run_id,
+            "status": self.status,
+            "created_at": self.created_at,
         }
 
 
@@ -387,14 +385,14 @@ class IssueClassifier:
             Raw string output from the LLM (or stub JSON on error).
         """
         if self._executor is None:
-            logger.debug(
-                "IssueClassifier: no executor configured — returning stub response"
+            logger.debug("IssueClassifier: no executor configured — returning stub response")
+            return json.dumps(
+                {
+                    "classification_type": self._STUB_CLASSIFICATION,
+                    "confidence": self._STUB_CONFIDENCE,
+                    "reasoning": "Stub mode — no executor configured.",
+                }
             )
-            return json.dumps({
-                "classification_type": self._STUB_CLASSIFICATION,
-                "confidence":          self._STUB_CONFIDENCE,
-                "reasoning":           "Stub mode — no executor configured.",
-            })
 
         try:
             result = self._executor.execute(prompt)
@@ -405,16 +403,18 @@ class IssueClassifier:
             if hasattr(result, "text") and result.text is not None:
                 return result.text
             return str(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "IssueClassifier: executor.execute() raised %s — falling back to stub",
                 exc,
             )
-            return json.dumps({
-                "classification_type": self._STUB_CLASSIFICATION,
-                "confidence":          self._STUB_CONFIDENCE,
-                "reasoning":           f"Executor error: {type(exc).__name__}",
-            })
+            return json.dumps(
+                {
+                    "classification_type": self._STUB_CLASSIFICATION,
+                    "confidence": self._STUB_CONFIDENCE,
+                    "reasoning": f"Executor error: {type(exc).__name__}",
+                }
+            )
 
     def _parse_output(self, raw: str) -> Tuple[str, float, str]:
         """Parse LLM output and extract ``(classification_type, confidence, reasoning)``.
@@ -438,7 +438,7 @@ class IssueClassifier:
             parsed = json.loads(text)
         except json.JSONDecodeError:
             # 2. Search for first {…} object in the output
-            match = re.search(r'\{[^{}]+\}', text, re.DOTALL)
+            match = re.search(r"\{[^{}]+\}", text, re.DOTALL)
             if match:
                 try:
                     parsed = json.loads(match.group())
@@ -456,8 +456,7 @@ class IssueClassifier:
         cls_type = str(parsed.get("classification_type", "feature")).lower().strip()
         if cls_type not in VALID_CLASSIFICATION_TYPES:
             logger.warning(
-                "IssueClassifier: unknown classification_type %r — "
-                "defaulting to 'feature'",
+                "IssueClassifier: unknown classification_type %r — " "defaulting to 'feature'",
                 cls_type,
             )
             cls_type = "feature"
@@ -682,9 +681,7 @@ class InputExtractor:
             Raw string output from the LLM (or stub JSON on error).
         """
         if self._executor is None:
-            logger.debug(
-                "InputExtractor: no executor configured — returning stub response"
-            )
+            logger.debug("InputExtractor: no executor configured — returning stub response")
             return json.dumps(self._STUB_RESULT)
 
         try:
@@ -696,7 +693,7 @@ class InputExtractor:
             if hasattr(result, "text") and result.text is not None:
                 return result.text
             return str(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "InputExtractor: executor.execute() raised %s — falling back to stub",
                 exc,
@@ -727,7 +724,7 @@ class InputExtractor:
             pass
 
         # 2. Search for first {…} object in the output
-        match = re.search(r'\{[^{}]+\}', text, re.DOTALL)
+        match = re.search(r"\{[^{}]+\}", text, re.DOTALL)
         if match:
             try:
                 parsed = json.loads(match.group())
@@ -770,16 +767,20 @@ def post_github_comment(repo: str, issue_number: int, body: str) -> Optional[str
         if url:
             print(f"Comment posted at {url}")
     """
-    import subprocess
+    import subprocess  # noqa: PLC0415
 
     try:
         result = subprocess.run(
             [
-                "gh", "api",
+                "gh",
+                "api",
                 f"repos/{repo}/issues/{issue_number}/comments",
-                "--method", "POST",
-                "--field", f"body={body}",
-                "--jq", ".html_url",
+                "--method",
+                "POST",
+                "--field",
+                f"body={body}",
+                "--jq",
+                ".html_url",
             ],
             capture_output=True,
             text=True,
@@ -804,8 +805,7 @@ def post_github_comment(repo: str, issue_number: int, body: str) -> Optional[str
 # ---------------------------------------------------------------------------
 
 
-from .text_utils import slugify_branch  # noqa: F401 — re-export for backward compat
-
+from .text_utils import slugify_branch  # noqa: E402, F401 — re-export for backward compat
 
 # ---------------------------------------------------------------------------
 # generate_pipeline_input — build coding-pipeline-v1 input dict (Issue #511)
@@ -891,8 +891,8 @@ def remove_github_label(repo: str, issue_number: int, label: str) -> bool:
         ok = remove_github_label("owner/repo", 42, "pipeline-ready")
         # ok == True when the label was successfully removed
     """
-    import subprocess
-    from urllib.parse import quote
+    import subprocess  # noqa: PLC0415
+    from urllib.parse import quote  # noqa: PLC0415
 
     encoded_label = quote(label, safe="")
     endpoint = f"repos/{repo}/issues/{issue_number}/labels/{encoded_label}"
@@ -943,13 +943,12 @@ def add_github_label(repo: str, issue_number: int, label: str) -> bool:
         ok = add_github_label("owner/repo", 42, "pipeline-ready")
         # ok == True when the label was successfully applied
     """
-    import subprocess
+    import subprocess  # noqa: PLC0415
 
     endpoint = f"repos/{repo}/issues/{issue_number}/labels"
     try:
         result = subprocess.run(
-            ["gh", "api", endpoint, "--method", "POST",
-             "--field", f"labels[]={label}"],
+            ["gh", "api", endpoint, "--method", "POST", "--field", f"labels[]={label}"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -988,7 +987,7 @@ def get_github_issue_labels(repo: str, issue_number: int) -> list:
         labels = get_github_issue_labels("owner/repo", 42)
         # e.g. ["pipeline-ready", "bug"]
     """
-    import subprocess
+    import subprocess  # noqa: PLC0415
 
     endpoint = f"repos/{repo}/issues/{issue_number}"
     try:
@@ -1050,7 +1049,7 @@ def create_pr_for_issue(
         if url:
             print(f"PR opened: {url}")
     """
-    import subprocess
+    import subprocess  # noqa: PLC0415
 
     # Only append "Closes #N" if not already present to avoid duplication.
     _closes_marker = f"Closes #{issue_number}"
@@ -1061,12 +1060,19 @@ def create_pr_for_issue(
     try:
         result = subprocess.run(
             [
-                "gh", "pr", "create",
-                "--repo", repo,
-                "--base", "main",
-                "--head", branch_name,
-                "--title", title,
-                "--body", pr_body,
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                repo,
+                "--base",
+                "main",
+                "--head",
+                branch_name,
+                "--title",
+                title,
+                "--body",
+                pr_body,
             ],
             capture_output=True,
             text=True,
@@ -1105,7 +1111,7 @@ def _truncate_title(text: str, limit: int = 80) -> str:
     if len(text) <= limit:
         return text
     truncated = text[:limit]
-    cut = truncated.rfind(' ')
+    cut = truncated.rfind(" ")
     if cut > 0:
         truncated = truncated[:cut]
     return truncated.rstrip()
@@ -1148,9 +1154,9 @@ def create_content_pr(
         The PR HTML URL string on success, ``None`` on any failure — errors
         are logged as warnings so callers can continue without a PR.
     """
-    import subprocess
+    import subprocess  # noqa: PLC0415
 
-    topic_truncated = _truncate_title(topic.strip()) if topic else 'content'
+    topic_truncated = _truncate_title(topic.strip()) if topic else "content"
     title = f"{prefix}: {topic_truncated}"
     pr_body = f"{body}\n\n---\n*Run ID: `{run_id}`*"
     if issue_number is not None:
@@ -1161,12 +1167,19 @@ def create_content_pr(
     try:
         result = subprocess.run(
             [
-                "gh", "pr", "create",
-                "--repo", repo,
-                "--base", "main",
-                "--head", branch_name,
-                "--title", title,
-                "--body", pr_body,
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                repo,
+                "--base",
+                "main",
+                "--head",
+                branch_name,
+                "--title",
+                title,
+                "--body",
+                pr_body,
             ],
             capture_output=True,
             text=True,
@@ -1290,7 +1303,11 @@ def post_failure_summary_comment(
         if remediation:
             lines.append(f"- **Remediation:** {remediation}")
         if confidence is not None:
-            lines.append(f"- **Confidence:** {confidence:.0%}" if isinstance(confidence, float) else f"- **Confidence:** {confidence}")
+            lines.append(
+                f"- **Confidence:** {confidence:.0%}"
+                if isinstance(confidence, float)
+                else f"- **Confidence:** {confidence}"
+            )
 
     lines.append(f"\n---\n*Run ID: `{run_id}`*")
 
@@ -1356,16 +1373,16 @@ def post_result_to_issue(
             result_text="Here are the findings...",
         )
     """
-    if final_status == 'failed':
+    if final_status == "failed":
         return post_failure_summary_comment(
             repo=repo,
             issue_number=issue_number,
-            error_message=error_message or 'Unknown error',
+            error_message=error_message or "Unknown error",
             run_id=run_id,
             diagnosis=diagnosis,
         )
 
-    if classification_type in ('bug', 'feature', 'refactor'):
+    if classification_type in ("bug", "feature", "refactor"):
         return create_pr_for_issue(
             repo=repo,
             issue_number=issue_number,
@@ -1374,7 +1391,7 @@ def post_result_to_issue(
             body=result_text,
         )
 
-    if classification_type in ('content', 'docs', 'research'):
+    if classification_type in ("content", "docs", "research"):
         truncated = result_text[:_RESULT_TEXT_MAX_CHARS]
         return post_pipeline_result_comment(
             repo=repo,
@@ -1548,7 +1565,7 @@ class IssueAutomation:
                     ),
                     tier="escalation",
                 )
-            escalated = True
+            escalated = True  # noqa: F841 — escalation outcome flag, kept intentional
 
             # Update DB status to 'escalated' so the row reflects the outcome.
             if db is not None and classification.id is not None:
@@ -1588,7 +1605,7 @@ class IssueAutomation:
                 template_path_obj = template_resolver(template_name)
                 template_obj = template_engine.load_template(template_path_obj)
                 config_schema = template_obj.config_schema or {}
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "IssueAutomation: could not load template schema for %r: %s",
                     template_name,
@@ -1626,7 +1643,7 @@ class IssueAutomation:
                     repo,
                     run_id,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "IssueAutomation: failed to launch pipeline for issue #%d: %s",
                     issue_number,
@@ -1658,7 +1675,7 @@ class IssueAutomation:
 
     def _build_comment(
         self,
-        issue_number: int,
+        issue_number: int,  # noqa: ARG002
         classification: "IssueClassification",
         template_name: str,
         run_id: Optional[str],
@@ -1688,9 +1705,7 @@ class IssueAutomation:
                 f"⚠️ **Confidence too low for automatic launch** "
                 f"(`{classification.confidence:.0%}` < threshold)"
             )
-            lines.append(
-                "This issue has been escalated to human review via Telegram."
-            )
+            lines.append("This issue has been escalated to human review via Telegram.")
         else:
             lines.append(f"**Pipeline:** `{template_name}`")
             if run_id:

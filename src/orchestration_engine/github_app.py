@@ -20,6 +20,10 @@ Usage::
     access_token = token_data["token"]
 """
 
+# E501 residual here is a long `:class:` reference inside a docstring black
+# cannot wrap; a line-level noqa is inert inside a string literal.
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import hashlib
@@ -117,7 +121,7 @@ class GitHubApp:
                 ``pip install 'orchestration-engine[github]'``
         """
         try:
-            import jwt as pyjwt  # PyJWT ≥ 2.x
+            import jwt as pyjwt  # PyJWT ≥ 2.x  # noqa: PLC0415
         except ImportError as exc:
             raise RuntimeError(
                 "PyJWT is required for GitHub App JWT generation. "
@@ -167,10 +171,7 @@ class GitHubApp:
         if jwt is None:
             jwt = self.generate_jwt()
 
-        url = (
-            f"https://api.github.com/app/installations/"
-            f"{installation_id}/access_tokens"
-        )
+        url = f"https://api.github.com/app/installations/" f"{installation_id}/access_tokens"
         headers = {
             "Authorization": f"Bearer {jwt}",
             "Accept": "application/vnd.github+json",
@@ -181,9 +182,7 @@ class GitHubApp:
             # Injected client (used in tests / alternative HTTP libraries)
             resp = http_client.post(url, headers=headers)
             if resp.status_code not in (200, 201):
-                raise GitHubAppAuthError(
-                    f"Token exchange failed: HTTP {resp.status_code}"
-                )
+                raise GitHubAppAuthError(f"Token exchange failed: HTTP {resp.status_code}")
             return resp.json()
 
         # Default path: stdlib urllib — no third-party HTTP library required
@@ -192,9 +191,7 @@ class GitHubApp:
             with urllib.request.urlopen(req) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
-            raise GitHubAppAuthError(
-                f"Token exchange failed: HTTP {exc.code}"
-            ) from exc
+            raise GitHubAppAuthError(f"Token exchange failed: HTTP {exc.code}") from exc
 
     # ------------------------------------------------------------------
     # Webhook signature verification (static — no instance state needed)
@@ -231,7 +228,7 @@ class GitHubApp:
             return False
         if not sig_header.startswith("sha256="):
             return False
-        expected = sig_header[len("sha256="):]
+        expected = sig_header[len("sha256=") :]
         computed = hmac.new(
             secret.encode("utf-8"),
             payload_bytes,

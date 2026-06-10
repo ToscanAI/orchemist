@@ -71,7 +71,7 @@ def _load_pipeline_output(output_dir: Path) -> Dict[str, Any]:
     return {"final": final_output, "phases": phases}
 
 
-def run_scoring(
+def run_scoring(  # noqa: C901
     template: Any,
     output_dir: Path,
     console: Optional[Any] = None,
@@ -134,7 +134,8 @@ def run_scoring(
 
     # ── 1. Set up console ─────────────────────────────────────────────
     if console is None:
-        from rich.console import Console
+        from rich.console import Console  # noqa: PLC0415
+
         console = Console(highlight=False)
 
     # ── 2. Resolve scenario file path ─────────────────────────────────
@@ -166,22 +167,22 @@ def run_scoring(
 
     if not scenario_path.exists():
         raise FileNotFoundError(
-            f"Scenario file not found: '{template.scenario}' "
-            f"(resolved to '{scenario_path}')"
+            f"Scenario file not found: '{template.scenario}' " f"(resolved to '{scenario_path}')"
         )
 
     # ── 3. Import ScenarioRunner ──────────────────────────────────────
     try:
-        from scenario_runner.runner import ScenarioRunner
+        from scenario_runner.runner import ScenarioRunner  # noqa: PLC0415
     except ImportError:
         # Fallback: add project root to sys.path
-        import sys as _sys
+        import sys as _sys  # noqa: PLC0415
+
         project_root = Path(__file__).resolve().parent.parent.parent
         _sys.path.insert(0, str(project_root))
-        from scenario_runner.runner import ScenarioRunner  # type: ignore[no-redef]
+        from scenario_runner.runner import ScenarioRunner  # type: ignore[no-redef]  # noqa: PLC0415
 
     # ── 4. Load scenario ──────────────────────────────────────────────
-    import yaml
+    import yaml  # noqa: PLC0415
 
     scenario_runner = ScenarioRunner(scenarios_dir=scenario_path.parent, executor=executor)
     try:
@@ -198,8 +199,7 @@ def run_scoring(
     scenario_name = scenario.get("name", scenario.get("id", scenario_path.stem))
     console.print()
     console.print(
-        f"[bold]Auto-scoring:[/bold] {scenario_name} "
-        f"[dim]({scenario_path.name})[/dim]"
+        f"[bold]Auto-scoring:[/bold] {scenario_name} " f"[dim]({scenario_path.name})[/dim]"
     )
 
     # ── 5. Load pipeline output ───────────────────────────────────────
@@ -234,7 +234,7 @@ def run_scoring(
     return score_result.passed, score_result.weighted_score
 
 
-def _run_adversarial_audit(
+def _run_adversarial_audit(  # noqa: C901
     output_dir: Path,
     executor: Optional[Any],
     console: Optional[Any],
@@ -251,7 +251,7 @@ def _run_adversarial_audit(
         executor:   Optional executor to use for the audit LLM call.
         console:    Rich Console for formatted output.
     """
-    from .audit import AuditPhase
+    from .audit import AuditPhase  # noqa: PLC0415
 
     try:
         # Reconstruct a minimal review_outcome from the output directory.
@@ -274,7 +274,8 @@ def _run_adversarial_audit(
                         elif "result" in data and isinstance(data["result"], dict):
                             text = data["result"].get("text", "")
                             if text:
-                                from .review_parser import parse_review_output
+                                from .review_parser import parse_review_output  # noqa: PLC0415
+
                                 parsed = parse_review_output(text)
                                 review_outcome["verdict"] = parsed.verdict
                                 review_outcome["issues_found"] = [
@@ -287,7 +288,7 @@ def _run_adversarial_audit(
                                     for i in parsed.issues
                                 ]
                         break
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     logger.debug("Could not read review output %s: %s", json_file.name, exc)
 
         auditor = AuditPhase(executor=executor, model=getattr(executor, "model", "audit-model"))
@@ -298,8 +299,7 @@ def _run_adversarial_audit(
 
         # Log the audit result
         logger.info(
-            "Adversarial audit complete: run_id=%s accuracy=%.2f false_approval=%s "
-            "issues=%d",
+            "Adversarial audit complete: run_id=%s accuracy=%.2f false_approval=%s " "issues=%d",
             audit_result.run_id,
             audit_result.reviewer_accuracy_score,
             audit_result.false_approval,
@@ -309,7 +309,7 @@ def _run_adversarial_audit(
         if console is not None:
             _print_audit_summary(console, audit_result)
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Adversarial audit failed: %s", exc)
         if console is not None:
             console.print(
@@ -329,14 +329,14 @@ def _print_audit_summary(console: Any, audit_result: Any) -> None:
     verdict_icon = (
         "[green]APPROVE[/green]"
         if audit_result.audit_verdict == "APPROVE"
-        else "[red]REQUEST_CHANGES[/red]"
-        if audit_result.audit_verdict == "REQUEST_CHANGES"
-        else "[dim]unknown[/dim]"
+        else (
+            "[red]REQUEST_CHANGES[/red]"
+            if audit_result.audit_verdict == "REQUEST_CHANGES"
+            else "[dim]unknown[/dim]"
+        )
     )
     false_approval_tag = (
-        " [bold red](FALSE APPROVAL DETECTED)[/bold red]"
-        if audit_result.false_approval
-        else ""
+        " [bold red](FALSE APPROVAL DETECTED)[/bold red]" if audit_result.false_approval else ""
     )
 
     console.print()
@@ -366,7 +366,7 @@ def _print_score_report(console: Any, score_result: Any, scenario: dict) -> None
         score_result: A :class:`~scenario_runner.models.ScenarioResult`.
         scenario: The raw scenario dict (for threshold extraction).
     """
-    from rich.table import Table
+    from rich.table import Table  # noqa: PLC0415
 
     # ── Per-criterion table ────────────────────────────────────────────
     crit_table = Table(
@@ -383,11 +383,7 @@ def _print_score_report(console: Any, score_result: Any, scenario: dict) -> None
     for cr in score_result.criterion_results:
         weight_label = "[GATE]" if cr.is_gate else str(cr.weight)
         score_pct = f"{cr.grade.score * 100:.1f}"
-        result_icon = (
-            "[green]✓ PASS[/green]"
-            if cr.grade.passed
-            else "[red]✗ FAIL[/red]"
-        )
+        result_icon = "[green]✓ PASS[/green]" if cr.grade.passed else "[red]✗ FAIL[/red]"
         crit_table.add_row(
             cr.criterion_id,
             cr.grade.grader_type,
@@ -403,9 +399,7 @@ def _print_score_report(console: Any, score_result: Any, scenario: dict) -> None
     overall_pct = score_result.weighted_score * 100
     threshold_pct = float(scenario.get("scoring", {}).get("pass_threshold", 0.70)) * 100
     verdict = (
-        "[bold green]✓ PASS[/bold green]"
-        if score_result.passed
-        else "[bold red]✗ FAIL[/bold red]"
+        "[bold green]✓ PASS[/bold green]" if score_result.passed else "[bold red]✗ FAIL[/bold red]"
     )
     gate_status = (
         "[green]all passed[/green]"
@@ -415,8 +409,7 @@ def _print_score_report(console: Any, score_result: Any, scenario: dict) -> None
 
     console.print(f"[bold]Scenario:[/bold]  {score_result.scenario_id}")
     console.print(
-        f"[bold]Score:[/bold]     {overall_pct:.1f} / 100  "
-        f"(threshold {threshold_pct:.0f})"
+        f"[bold]Score:[/bold]     {overall_pct:.1f} / 100  " f"(threshold {threshold_pct:.0f})"
     )
     console.print(f"[bold]Gates:[/bold]     {gate_status}")
     console.print(f"[bold]Verdict:[/bold]   {verdict}")
