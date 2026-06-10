@@ -4,6 +4,12 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 
 ## [Unreleased]
 
+### Changed
+- **Bundled templates migrated to `adversary_config`; legacy adversary path retired** (#703, epic #700 Phase 3) — the `spec_adversary` phase in `coding-pipeline-standard.yaml` (→2.3.0), `coding-pipeline-maintenance.yaml` (→1.1.0), and `docs-pipeline-v1.yaml` (→1.1.0) now carries an `adversary_config:` block, so the generic `adversary_parser` is the ONLY adversary path. standard/maintenance keep the spec 5-set (`vague, trivial, missing_edge_case, leakage, divergence`); docs gets its own set (`vague, missing, inaccurate, scope_creep, missing_reference`) matching its prompt — correcting a latent under-count where the legacy shared 5-set silently dropped docs' categories (the migrated docs reward now counts its full vocabulary; `reward_score` widens int→float, numerically equal). `adversary_config` is parity-invisible (only `prompt_template` + `model_tier` are cross-repo locked). `orch validate` now emits a deprecation WARNING (not error — still exit 0) for any bare `spec_adversary` phase lacking `adversary_config`.
+
+### Removed
+- **Legacy adversary parser modules + sequencer shim deleted** (#703) — `spec_adversary.py` and `acceptance_test_adversary.py` are gone (zero remaining imports). The `_record_adversary_outcome` legacy-fallback shim is replaced by a clear, surfacing `ValueError` (it names `adversary_config` as the fix) for a bare `spec_adversary` phase; the escalation second shim now requires `adversary_config` (skips with a warning when absent). Epic #700's "zero hardcoded adversary phase IDs in dispatch" criterion is met.
+
 ## [0.13.1] - 2026-06-10
 
 > Supersedes the abandoned `v0.13.0` tag: that tag was never published — the publish workflow's FAIL-closed signature gate failed on its own first live firing (see the workflow fix below) before any build or upload, so PyPI never saw 0.13.0. This release carries the identical content plus the workflow fix.

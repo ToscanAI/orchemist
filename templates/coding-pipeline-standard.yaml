@@ -2,7 +2,7 @@ id: coding-pipeline-standard
 name: "Coding Pipeline Standard"
 description: "Coding pipeline with 12 phase definitions (10 happy-path phases + 2 exhaustion postmortems). Phase 0 (existing_symbols_inventory) produces a sticky `existing_symbols.md` artifact that SPEC, BEHAVIORAL, SPEC_ADVERSARY, ACCEPTANCE_TEST, IMPLEMENT, REVIEW, and FIX all read to prevent sub-check 7d (re-implementation of existing symbols). 3-phase spec loop: spec → behavioral → adversary. Each agent writes ONE file, eliminating the bifurcation bug where secondary artifacts (spec-behavioral.md) were never written to disk. Adversarial spec review, engine-verified behavioral validation after EVERY code change."
 author: "Toscan"
-version: "2.2.0"
+version: "2.3.0"
 category: "code"
 tags: [code, development, review, testing, pipeline]
 use_cases:
@@ -456,6 +456,11 @@ phases:
       failed: spec_adversary
       timeout: spec_adversary
       success: spec  # fallback: if verdict extraction fails, loop back conservatively (issue #680)
+    adversary_config:
+      valid_categories: [vague, trivial, missing_edge_case, leakage, divergence]
+      fallback_category: vague
+      verdict_scan: last
+      reward_enabled: true
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the ADVERSARY phase (1c/3) of the spec loop. Your verdict determines whether behavioral contracts are strong enough to drive acceptance tests. On REQUEST_CHANGES, both the spec and behavioral agents will see your findings. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 

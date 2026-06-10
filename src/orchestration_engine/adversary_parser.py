@@ -38,8 +38,8 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 # Tagged finding-line matcher ([category] description) is the canonical
-# ``FINDING_RE`` imported from :mod:`text_utils` (single source of truth shared
-# with spec_adversary). The separator is the canonical ``\s+`` (>=1 whitespace);
+# ``FINDING_RE`` imported from :mod:`text_utils` (single source of truth).
+# The separator is the canonical ``\s+`` (>=1 whitespace);
 # the captured description (group 2) is still preserved verbatim (NOT stripped)
 # at the call site below. For the single-space lines that adversary phases emit,
 # this is byte-identical to the former literal-space pattern; the only delta is
@@ -218,11 +218,9 @@ def parse_adversary_output(text: Any, config: AdversaryConfig) -> AdversaryVerdi
 def compute_reward(verdict: AdversaryVerdict, config: AdversaryConfig) -> float:
     """Compute the reward score for an adversary verdict (Issue #702).
 
-    Score logic is identical to ``spec_adversary.compute_reward``:
-    APPROVE → 0.0; any other verdict → ``len(verdict.findings)``. Returned as a
-    float per the generic API contract (numerically equal to the legacy int
-    score). ``config`` is accepted for API symmetry / future weighting and is
-    not consulted for the current scoring.
+    Score logic: APPROVE → 0.0; any other verdict → ``len(verdict.findings)``.
+    Returned as a float per the generic API contract. ``config`` is accepted for
+    API symmetry / future weighting and is not consulted for the current scoring.
 
     Args:
         verdict: A parsed :class:`AdversaryVerdict`.
@@ -242,11 +240,10 @@ def persist_reward(
 ) -> None:
     """Write adversary reward data to ``config.reward_filename`` in *output_dir*.
 
-    Payload shape matches ``spec_adversary.persist_reward`` exactly:
+    Payload shape:
     ``{verdict, reward_score, findings_count, findings:[{category,description}],
-    persisted_at}``. The only delta from the legacy function is the filename
-    source: ``config.reward_filename`` instead of a hardcoded
-    ``adversary_reward.json``. Graceful degradation: output_dir None →
+    persisted_at}``. The filename is sourced from ``config.reward_filename``
+    (default ``adversary_reward.json``). Graceful degradation: output_dir None →
     warn+return; dir missing → warn+return; I/O error → caught, warned,
     swallowed (never raises).
 

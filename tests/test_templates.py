@@ -15,7 +15,9 @@ from src.orchestration_engine.templates import (
     PhaseDefinition,
     PipelineTemplate,
     TemplateEngine,
+    load_template,
 )
+from src.orchestration_engine.adversary_parser import AdversaryConfig
 from src.orchestration_engine.sequencer import PhaseSequencer, _SafeDict
 from src.orchestration_engine.pipeline_runner import PipelineRunner
 from src.orchestration_engine.runner import DryRunExecutor
@@ -915,3 +917,108 @@ class TestEscalationPartnerField:
             assert (
                 "escalation_partner" not in record.message
             ), f"Unexpected warning naming escalation_partner: {record.message}"
+
+
+# ---------------------------------------------------------------------------
+# #703 — spec_adversary deprecation warning + migrated bundled-template config
+# ---------------------------------------------------------------------------
+
+_DEP = (
+    "Phase 'spec_adversary' uses deprecated hardcoded dispatch — "
+    "add adversary_config to use the generic path"
+)
+_DEP_SUB = "deprecated hardcoded dispatch"
+# CWD-relative bundled-template paths (pytest CWD == repo root), matching the
+# behavioral §0 loading convention; avoids hardcoding a Path into templates/
+# (lint guard #632 / test_lint_no_templates_hardcode.py).
+_BUNDLED = "templates/{}"
+_STD_CATS = ["vague", "trivial", "missing_edge_case", "leakage", "divergence"]
+_DOCS_CATS = ["vague", "missing", "inaccurate", "scope_creep", "missing_reference"]
+
+
+def _raw_for(template):
+    return {
+        "id": template.id,
+        "name": template.name,
+        "phases": [{"id": p.id, "name": p.name} for p in template.phases],
+    }
+
+
+class TestSpecAdversaryDeprecationWarning:
+    """#703: validate_template_extended warns (not errors) on a bare spec_adversary phase."""
+
+    def test_deprecation_present_in_warnings_not_errors_for_bare_spec_adversary(self):
+        """A bare spec_adversary phase (no adversary_config) yields the exact DEP string in
+        `warnings`, NOT in `errors`, and NOT in validate_template's errors-only output."""
+        tmpl = PipelineTemplate(
+            id="t", name="T", phases=[PhaseDefinition(id="spec_adversary", name="adv")]
+        )
+        errors, warnings = TemplateEngine().validate_template_extended(tmpl, _raw_for(tmpl))
+        assert _DEP in warnings
+        assert _DEP not in errors
+        assert _DEP not in TemplateEngine().validate_template(tmpl)
+
+    def test_no_deprecation_for_non_spec_adversary_phase(self):
+        """A phase whose id != 'spec_adversary' (no adversary_config) emits no deprecation."""
+        tmpl = PipelineTemplate(
+            id="t", name="T", phases=[PhaseDefinition(id="some_reviewer", name="rev")]
+        )
+        errors, warnings = TemplateEngine().validate_template_extended(tmpl, _raw_for(tmpl))
+        assert not any(_DEP_SUB in w for w in warnings)
+
+    def test_no_deprecation_for_spec_adversary_with_adversary_config(self):
+        """A spec_adversary phase that DOES carry adversary_config emits no deprecation."""
+        phase = PhaseDefinition(
+            id="spec_adversary",
+            name="adv",
+            adversary_config=AdversaryConfig(valid_categories=["vague"]),
+        )
+        tmpl = PipelineTemplate(id="t", name="T", phases=[phase])
+        errors, warnings = TemplateEngine().validate_template_extended(tmpl, _raw_for(tmpl))
+        assert not any(_DEP_SUB in w for w in warnings)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "coding-pipeline-standard.yaml",
+            "coding-pipeline-maintenance.yaml",
+            "docs-pipeline-v1.yaml",
+        ],
+    )
+    def test_migrated_bundled_templates_have_no_deprecation_warning(self, name):
+        """Each migrated bundled template validates with errors == [] and NO deprecation
+        warning (pre-existing cycle advisories are out of scope — we do NOT assert
+        warnings == [])."""
+        path = _BUNDLED.format(name)
+        tmpl = load_template(path)
+        raw = yaml.safe_load(Path(path).read_text())
+        errors, warnings = TemplateEngine().validate_template_extended(tmpl, raw)
+        assert errors == []
+        assert not any(_DEP_SUB in w for w in warnings)
+
+
+class TestMigratedBundledTemplateAdversaryConfig:
+    """#703: the three migrated bundled templates parse to the expected AdversaryConfig."""
+
+    @pytest.mark.parametrize(
+        "name, expected_cats",
+        [
+            ("coding-pipeline-standard.yaml", _STD_CATS),
+            ("coding-pipeline-maintenance.yaml", _STD_CATS),
+            ("docs-pipeline-v1.yaml", _DOCS_CATS),
+        ],
+    )
+    def test_migrated_spec_adversary_config_exact(self, name, expected_cats):
+        """The loaded spec_adversary phase carries a non-None AdversaryConfig whose fields
+        equal the migrated values (standard/maintenance share the spec 5-set; docs uses its
+        own 5-set), fallback 'vague', verdict_scan 'last', reward_enabled True. The default
+        reward_filename is preserved (NOT explicitly set in YAML)."""
+        path = _BUNDLED.format(name)
+        tmpl = load_template(path)
+        cfg = next(p for p in tmpl.phases if p.id == "spec_adversary").adversary_config
+        assert cfg is not None
+        assert cfg.valid_categories == expected_cats
+        assert cfg.fallback_category == "vague"
+        assert cfg.verdict_scan == "last"
+        assert cfg.reward_enabled is True
+        assert cfg.reward_filename == "adversary_reward.json"

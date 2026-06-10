@@ -2,7 +2,7 @@ id: docs-pipeline-v1
 name: "Documentation Pipeline v1"
 description: "6-phase documentation pipeline: spec → spec_adversary → write → review → fix → test. Designed for technical documentation — no acceptance tests or test runners. Opus review checks accuracy, completeness, and consistency. Git integration produces a feature branch and PR."
 author: "Toscan"
-version: "1.0.0"
+version: "1.1.0"
 category: "docs"
 tags: [docs, documentation, markdown, reference, tutorial]
 use_cases:
@@ -129,6 +129,11 @@ phases:
       approve: write
       request_changes: spec
       failed: spec_adversary
+    adversary_config:
+      valid_categories: [vague, missing, inaccurate, scope_creep, missing_reference]
+      fallback_category: vague
+      verdict_scan: last
+      reward_enabled: true
     prompt_template: |
       [PIPELINE CONTEXT] You are executing the SPEC_ADVERSARY phase of a documentation pipeline. Your verdict determines whether the doc plan is strong enough to drive accurate writing. Do not ask questions or send messages. Deliver a structured verdict. [/PIPELINE CONTEXT]
 

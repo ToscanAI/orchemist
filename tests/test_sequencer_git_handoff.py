@@ -17,10 +17,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from orchestration_engine.adversary_parser import AdversaryConfig
 from orchestration_engine.schemas import TaskResult, TaskState, TaskType
 from orchestration_engine.sequencer import StateMachineSequencer
 from orchestration_engine.templates import PhaseDefinition, PipelineTemplate
 from orchestration_engine.transitions import PhaseOutcome
+
+# #703: bare ``spec_adversary`` phases now raise at dispatch (the legacy shim was
+# removed). These git-handoff tests use ``spec_adversary`` as a realistic loop
+# terminus; attach a minimal generic-path AdversaryConfig (reward_enabled defaults
+# to False → no reward file written) so ``execute()`` stays runnable without
+# changing any prompt/commit assertion.
+_SPEC_ADVERSARY_TEST_CONFIG = AdversaryConfig(
+    valid_categories=["vague", "trivial", "missing_edge_case", "leakage", "divergence"],
+    fallback_category="vague",
+    verdict_scan="last",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +94,7 @@ def _make_loop_template(
             ),
             transitions=transitions,
             max_iterations=max_iterations,
+            adversary_config=(_SPEC_ADVERSARY_TEST_CONFIG if pid == "spec_adversary" else None),
         )
         phases.append(phase)
 
@@ -1056,6 +1069,7 @@ class TestNoOpScenarios:
                 prompt_template="Review: {input[phase_name]} {iteration_history}{phase_diff}{previous_commit}",
                 transitions={"request_changes": "spec"},
                 max_iterations=2,
+                adversary_config=_SPEC_ADVERSARY_TEST_CONFIG,
             ),
         ]
         template = PipelineTemplate(

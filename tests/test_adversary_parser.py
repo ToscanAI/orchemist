@@ -8,7 +8,6 @@ import json
 
 import pytest
 
-from orchestration_engine import spec_adversary as legacy
 from orchestration_engine.adversary_parser import (
     AdversaryConfig,
     AdversaryFinding,
@@ -273,31 +272,58 @@ def test_compute_reward_request_changes_returns_findings_count_float(
     assert isinstance(result, float)
 
 
-def test_compute_reward_parity_with_legacy(basic_config: AdversaryConfig) -> None:
-    """Generic compute_reward is numerically equal to legacy spec_adversary.compute_reward.
+def test_compute_reward_pinned_values(basic_config: AdversaryConfig) -> None:
+    """Generic compute_reward is pinned to literal expected floats (#703).
 
-    Documents the int→float widening: scores are equal, only the type differs.
+    Once the legacy spec_adversary reference implementation is deleted, the
+    surviving contract is "generic compute_reward = float(len(findings)) on
+    REQUEST_CHANGES, 0.0 on APPROVE". Pin it to constants (the previous parity
+    test compared against the now-deleted legacy module).
     """
     cases = [
-        ("VERDICT: APPROVE\nlooks good", "APPROVE", []),
-        ("VERDICT: REQUEST_CHANGES", "REQUEST_CHANGES", []),
-        ("VERDICT: REQUEST_CHANGES\n[trivial] one", "REQUEST_CHANGES", ["a"]),
-        (
-            "VERDICT: REQUEST_CHANGES\n[trivial] a\n[vague] b\n[divergence] c",
-            "REQUEST_CHANGES",
-            ["a", "b", "c"],
-        ),
+        ("APPROVE", [], 0.0),
+        ("REQUEST_CHANGES", [], 0.0),
+        ("REQUEST_CHANGES", ["a"], 1.0),
+        ("REQUEST_CHANGES", ["a", "b", "c"], 3.0),
     ]
-    for legacy_text, verdict_str, descs in cases:
-        generic_verdict = AdversaryVerdict(
+    for verdict_str, descs, expected in cases:
+        verdict = AdversaryVerdict(
             verdict=verdict_str,
             findings=[AdversaryFinding("coverage", d) for d in descs],
         )
-        generic_score = compute_reward(generic_verdict, basic_config)
-        legacy_verdict = legacy.parse_adversary_output(legacy_text)
-        legacy_score = legacy.compute_reward(legacy_verdict)
-        assert generic_score == float(legacy_score)
-        assert isinstance(generic_score, float)
+        result = compute_reward(verdict, basic_config)
+        assert result == expected
+        assert isinstance(result, float)
+
+
+def test_compute_reward_request_changes_zero_findings_is_zero_float(
+    basic_config: AdversaryConfig,
+) -> None:
+    """Ported from legacy: REQUEST_CHANGES with zero findings → 0.0 (a float)."""
+    verdict = AdversaryVerdict(verdict="REQUEST_CHANGES", findings=[])
+    result = compute_reward(verdict, basic_config)
+    assert result == 0.0
+    assert isinstance(result, float)
+
+
+def test_compute_reward_approve_with_findings_is_zero_float(
+    basic_config: AdversaryConfig,
+) -> None:
+    """Ported from legacy: APPROVE with a finding still scores 0.0 (verdict-gated)."""
+    verdict = AdversaryVerdict(verdict="APPROVE", findings=[AdversaryFinding("coverage", "x")])
+    result = compute_reward(verdict, basic_config)
+    assert result == 0.0
+    assert isinstance(result, float)
+
+
+def test_compute_reward_equals_findings_count_float(basic_config: AdversaryConfig) -> None:
+    """Ported from legacy (loop n=0..4): reward == float(n) for n REQUEST_CHANGES findings."""
+    for n in range(5):
+        findings = [AdversaryFinding("coverage", f"t{i}") for i in range(n)]
+        verdict = AdversaryVerdict(verdict="REQUEST_CHANGES", findings=findings)
+        result = compute_reward(verdict, basic_config)
+        assert result == float(n)
+        assert isinstance(result, float)
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +371,49 @@ def test_persist_reward_payload_shape(tmp_path) -> None:
     assert len(payload["findings"]) == 3
     for f in payload["findings"]:
         assert set(f.keys()) == {"category", "description"}
+
+
+def test_persist_reward_default_filename(tmp_path) -> None:
+    """Ported from legacy (test_writes_correct_file): with a default-filename config,
+    persist_reward writes 'adversary_reward.json' with reward_score 1.0 for a
+    1-finding REQUEST_CHANGES verdict."""
+    config = AdversaryConfig(valid_categories=["vague"])  # default reward_filename
+    verdict = AdversaryVerdict(
+        verdict="REQUEST_CHANGES",
+        findings=[AdversaryFinding("vague", "too vague")],
+    )
+
+    persist_reward(str(tmp_path), verdict, 1.0, config)
+
+    artifact = tmp_path / "adversary_reward.json"
+    assert artifact.exists()
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["verdict"] == "REQUEST_CHANGES"
+    assert payload["reward_score"] == 1.0
+    assert payload["findings_count"] == 1
+    assert len(payload["findings"]) == 1
+    assert "persisted_at" in payload
+
+
+def test_persist_reward_findings_serialization_order(tmp_path) -> None:
+    """Ported from legacy (test_findings_serialized_correctly): findings serialize in
+    order with category + description preserved per-element."""
+    config = AdversaryConfig(valid_categories=["vague", "leakage"])
+    verdict = AdversaryVerdict(
+        verdict="REQUEST_CHANGES",
+        findings=[
+            AdversaryFinding("vague", "Contract A"),
+            AdversaryFinding("leakage", "Contract B"),
+        ],
+    )
+
+    persist_reward(str(tmp_path), verdict, 2.0, config)
+
+    payload = json.loads((tmp_path / "adversary_reward.json").read_text(encoding="utf-8"))
+    assert payload["findings"][0]["category"] == "vague"
+    assert payload["findings"][0]["description"] == "Contract A"
+    assert payload["findings"][1]["category"] == "leakage"
+    assert payload["findings"][1]["description"] == "Contract B"
 
 
 def test_persist_reward_none_output_dir_no_raise(tmp_path) -> None:
