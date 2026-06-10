@@ -568,6 +568,14 @@ class PhaseDefinition:
     are subject to protection.
     """
 
+    # Escalation partner — the reviewed phase names its adversary phase (Issue #702)
+    escalation_partner: Optional[str] = None
+    """ID of the adversary phase whose verdict drives escalation when THIS phase
+    exhausts its max_iterations. When set and that phase's output is present in
+    ``self.phase_outputs`` with a REQUEST_CHANGES verdict, the sequencer flags
+    ``escalation_required`` on the abort result. ``None`` (default) disables
+    escalation detection for this phase."""
+
     def __post_init__(self) -> None:  # noqa: C901
         # Normalise None values that YAML might produce for optional fields
         if self.depends_on is None:
@@ -1321,6 +1329,8 @@ class TemplateEngine:
                 "protected_paths",
                 # Protect-on-approve paths for adversary approval locking (#718)
                 "protect_on_approve",
+                # Escalation partner — reviewed phase names its adversary (#702)
+                "escalation_partner",
                 # Dialogue phase config (Track B / #677)
                 "dialogue_config",
             }

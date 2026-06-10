@@ -474,8 +474,8 @@ class PhaseSequencer:
             # Record review outcome durably (Issue #4.1.2) — sequential path
             self._record_review_outcome(phase, result)
 
-            # Record spec_adversary reward (Issue #546) — sequential path
-            self._record_spec_adversary_outcome(phase, result)
+            # Record adversary reward (Issue #546 / #702) — sequential path
+            self._record_adversary_outcome(phase, result)
 
             # Notify caller (e.g. CLI progress display)
             self._invoke_on_phase_complete(phase_id, result)
@@ -730,8 +730,8 @@ class PhaseSequencer:
             # Record review outcome durably (Issue #4.1.2) — parallel path
             self._record_review_outcome(phase, result)
 
-            # Record spec_adversary reward (Issue #546) — parallel path
-            self._record_spec_adversary_outcome(phase, result)
+            # Record adversary reward (Issue #546 / #702) — parallel path
+            self._record_adversary_outcome(phase, result)
 
             # Notify caller
             self._invoke_on_phase_complete(phase_id, result)
@@ -881,18 +881,58 @@ class PhaseSequencer:
                 f"({len(disk_text)} bytes > {len(chat_text)} bytes)"
             )
 
-    def _record_spec_adversary_outcome(self, phase: PhaseDefinition, result: dict) -> None:
-        """Parse adversary verdict and persist reward score when output_dir is available.
+    def _record_adversary_outcome(self, phase: PhaseDefinition, result: dict) -> None:
+        """Parse adversary verdict and persist reward when output_dir is available.
 
-        Only acts on phases whose ID is ``spec_adversary``.  All errors are
-        swallowed so a reward-persist failure never crashes the pipeline.
+        Dispatch (Issue #702): a phase carrying ``adversary_config`` uses the
+        generic ``adversary_parser`` path; a legacy ``spec_adversary`` phase with
+        no ``adversary_config`` falls back to the old ``spec_adversary`` module.
+        All errors are swallowed so a reward-persist failure never crashes the
+        pipeline.
 
         Args:
             phase:  The :class:`~.templates.PhaseDefinition` that just completed.
             result: The phase result dict (as returned by :meth:`_execute_and_wait`).
         """
+        if phase.adversary_config is not None:
+            # ── Generic path (Issue #702) ──────────────────────────────────
+            if not self.output_dir:
+                logger.warning(
+                    "Adversary phase %r completed but output_dir is None "
+                    "— skipping reward persist",
+                    phase.id,
+                )
+                return
+            try:
+                from .adversary_parser import (  # noqa: PLC0415
+                    compute_reward,
+                    parse_adversary_output,
+                    persist_reward,
+                )
+
+                raw_text = _extract_phase_text(result)
+                verdict = parse_adversary_output(raw_text, phase.adversary_config)
+                if phase.adversary_config.reward_enabled:
+                    reward = compute_reward(verdict, phase.adversary_config)
+                    persist_reward(str(self.output_dir), verdict, reward, phase.adversary_config)
+                    logger.info(
+                        f"Pipeline {self.template.id}: {phase.id} verdict={verdict.verdict} "
+                        f"reward={reward} findings={len(verdict.findings)}"
+                    )
+                else:
+                    logger.info(
+                        f"Pipeline {self.template.id}: {phase.id} verdict={verdict.verdict} "
+                        f"findings={len(verdict.findings)} (reward_enabled=False — no persist)"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"Pipeline {self.template.id}: {phase.id} reward persist failed: {exc}"
+                )
+            return
+
         if phase.id != "spec_adversary":
             return
+        # ── Legacy fallback path (unchanged semantics) ────────────────────
         if not self.output_dir:
             logger.warning(
                 "spec_adversary phase completed but output_dir is None " "— skipping reward persist"
@@ -3954,31 +3994,52 @@ class StateMachineSequencer(PhaseSequencer):
                             self.output_dir, current_phase_id, phase.max_iterations
                         )
                         abort_result["finding_analysis"] = _finding_analysis
-                        # ── Escalation detection: spec→adversary→spec loop exhausted
-                        if current_phase_id == "spec" and "spec_adversary" in self.phase_outputs:
-                            try:
-                                from .spec_adversary import parse_adversary_output  # noqa: PLC0415
-
-                                adv_raw = _extract_phase_text(self.phase_outputs["spec_adversary"])
-                                adv_verdict = parse_adversary_output(adv_raw)
-                                if adv_verdict.verdict == "REQUEST_CHANGES":
-                                    abort_result["escalation_required"] = True
-                                    abort_result["escalation_reason"] = (
-                                        "spec_adversary_loop_exhausted"
-                                    )
-                                    abort_result["adversary_findings"] = [
-                                        {"category": f.category, "description": f.description}
-                                        for f in adv_verdict.findings
-                                    ]
-                                    logger.error(
-                                        f"Pipeline {self.template.id}: spec_adversary loop exhausted "  # noqa: E501
-                                        f"after {phase.max_iterations} iterations — human review required. "  # noqa: E501
-                                        f"Findings: {len(adv_verdict.findings)}"
-                                    )
-                            except Exception as exc:  # noqa: BLE001
+                        # ── Escalation detection (Issue #702): the exhausted phase
+                        #    names its adversary via escalation_partner.
+                        if phase.escalation_partner is not None:
+                            partner_id = phase.escalation_partner
+                            if partner_id not in self.phase_outputs:
                                 logger.warning(
-                                    f"Pipeline {self.template.id}: escalation detection failed: {exc}"  # noqa: E501
+                                    f"Pipeline {self.template.id}: escalation_partner "  # noqa: E501
+                                    f"{partner_id!r} for exhausted phase {current_phase_id!r} "  # noqa: E501
+                                    f"has no output — skipping escalation detection."  # noqa: E501
                                 )
+                            else:
+                                try:
+                                    adv_raw = _extract_phase_text(self.phase_outputs[partner_id])
+                                    if phase.adversary_config is not None:
+                                        from .adversary_parser import (  # noqa: PLC0415
+                                            parse_adversary_output,
+                                        )
+
+                                        adv_verdict = parse_adversary_output(
+                                            adv_raw, phase.adversary_config
+                                        )
+                                    else:
+                                        from .spec_adversary import (  # noqa: PLC0415
+                                            parse_adversary_output,
+                                        )
+
+                                        adv_verdict = parse_adversary_output(adv_raw)
+                                    if adv_verdict.verdict == "REQUEST_CHANGES":
+                                        abort_result["escalation_required"] = True
+                                        abort_result["escalation_reason"] = (
+                                            f"{partner_id}_loop_exhausted"
+                                        )
+                                        abort_result["adversary_findings"] = [
+                                            {"category": f.category, "description": f.description}
+                                            for f in adv_verdict.findings
+                                        ]
+                                        logger.error(
+                                            f"Pipeline {self.template.id}: {partner_id} loop "  # noqa: E501
+                                            f"exhausted after {phase.max_iterations} iterations "  # noqa: E501
+                                            f"— human review required. "  # noqa: E501
+                                            f"Findings: {len(adv_verdict.findings)}"
+                                        )
+                                except Exception as exc:  # noqa: BLE001
+                                    logger.warning(
+                                        f"Pipeline {self.template.id}: escalation detection failed: {exc}"  # noqa: E501
+                                    )
                         self._safe_call_hook(
                             self.on_pipeline_complete,
                             self.pipeline_context,
@@ -4260,8 +4321,8 @@ class StateMachineSequencer(PhaseSequencer):
                     with self._phase_outputs_lock:
                         self.phase_outputs[current_phase_id] = result
 
-                # ── Record spec_adversary reward (Issue #546) ─────────────────
-                self._record_spec_adversary_outcome(phase, result)
+                # ── Record adversary reward (Issue #546 / #702) ───────────────
+                self._record_adversary_outcome(phase, result)
 
                 # ── on_phase_complete callback ────────────────────────────────
                 self._invoke_on_phase_complete(current_phase_id, result)

@@ -21,7 +21,6 @@ from src.orchestration_engine.pipeline_runner import PipelineRunner
 from src.orchestration_engine.runner import DryRunExecutor
 from src.orchestration_engine.schemas import TaskType
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -30,9 +29,7 @@ from src.orchestration_engine.schemas import TaskType
 @pytest.fixture
 def fast_runner():
     """PipelineRunner with a zero-delay, zero-failure-rate DryRunExecutor."""
-    return PipelineRunner(
-        executors=[DryRunExecutor(delay_seconds=0.0, failure_rate=0.0)]
-    )
+    return PipelineRunner(executors=[DryRunExecutor(delay_seconds=0.0, failure_rate=0.0)])
 
 
 @pytest.fixture
@@ -51,9 +48,7 @@ def engine(templates_dir):
 @pytest.fixture
 def content_pipeline_yaml(templates_dir):
     """Write the project's real content-pipeline.yaml into the temp dir."""
-    repo_template = (
-        Path(__file__).parent.parent .joinpath("templates") / "content-pipeline.yaml"
-    )
+    repo_template = Path(__file__).parent.parent.joinpath("templates") / "content-pipeline.yaml"
     dest = templates_dir / "content-pipeline.yaml"
     dest.write_text(repo_template.read_text())
     return dest
@@ -226,7 +221,9 @@ class TestExecutionOrder:
     def test_linear_chain_separate_waves(self, engine):
         """A → B → C produces three single-phase waves."""
         tpl = _simple_template(
-            "a", "b", "c",
+            "a",
+            "b",
+            "c",
             depends_on_map={"b": ["a"], "c": ["b"]},
         )
         order = engine.get_execution_order(tpl)
@@ -235,7 +232,9 @@ class TestExecutionOrder:
     def test_parallel_phases_same_wave(self, engine):
         """B and C both depend on A → wave 1 = [A], wave 2 = [B, C]."""
         tpl = _simple_template(
-            "a", "b", "c",
+            "a",
+            "b",
+            "c",
             depends_on_map={"b": ["a"], "c": ["a"]},
         )
         order = engine.get_execution_order(tpl)
@@ -244,7 +243,10 @@ class TestExecutionOrder:
     def test_diamond_dependency(self, engine):
         """Classic diamond: A → B, A → C, B + C → D."""
         tpl = _simple_template(
-            "a", "b", "c", "d",
+            "a",
+            "b",
+            "c",
+            "d",
             depends_on_map={"b": ["a"], "c": ["a"], "d": ["b", "c"]},
         )
         order = engine.get_execution_order(tpl)
@@ -268,7 +270,8 @@ class TestExecutionOrder:
         """A cycle means not all phases appear in the execution order."""
         # A depends on B, B depends on A → cycle
         tpl = _simple_template(
-            "a", "b",
+            "a",
+            "b",
             depends_on_map={"a": ["b"], "b": ["a"]},
         )
         order = engine.get_execution_order(tpl)
@@ -321,7 +324,8 @@ class TestTemplateValidation:
     def test_cycle_two_phases_detected(self, engine):
         """Mutual dependency cycle between two phases is detected."""
         tpl = _simple_template(
-            "a", "b",
+            "a",
+            "b",
             depends_on_map={"a": ["b"], "b": ["a"]},
         )
         errors = engine.validate_template(tpl)
@@ -330,7 +334,9 @@ class TestTemplateValidation:
     def test_cycle_three_phases_detected(self, engine):
         """Three-phase cycle A→B→C→A is detected."""
         tpl = _simple_template(
-            "a", "b", "c",
+            "a",
+            "b",
+            "c",
             depends_on_map={"b": ["a"], "c": ["b"], "a": ["c"]},
         )
         errors = engine.validate_template(tpl)
@@ -350,9 +356,9 @@ class TestTemplateValidation:
         tpl.category = "code"
         tpl.scenario = None
         errors = engine.validate_template(tpl)
-        assert not any("scenario" in e.lower() for e in errors), (
-            f"Unexpected scenario-related error for code template without scenario: {errors}"
-        )
+        assert not any(
+            "scenario" in e.lower() for e in errors
+        ), f"Unexpected scenario-related error for code template without scenario: {errors}"
 
     def test_code_category_with_scenario_no_error(self, engine):
         """A category=code template WITH a scenario must produce no scenario-related error."""
@@ -360,9 +366,9 @@ class TestTemplateValidation:
         tpl.category = "code"
         tpl.scenario = "scenarios/quality.yaml"
         errors = engine.validate_template(tpl)
-        assert not any("require a scenario" in e for e in errors), (
-            f"Unexpected 'require a scenario' error when scenario is set: {errors}"
-        )
+        assert not any(
+            "require a scenario" in e for e in errors
+        ), f"Unexpected 'require a scenario' error when scenario is set: {errors}"
 
     def test_non_code_category_without_scenario_no_error(self, engine):
         """A non-code category template (e.g. content) does NOT require a scenario."""
@@ -370,9 +376,9 @@ class TestTemplateValidation:
         tpl.category = "content"
         tpl.scenario = None
         errors = engine.validate_template(tpl)
-        assert not any("require a scenario" in e for e in errors), (
-            f"'require a scenario' error should only fire for code category: {errors}"
-        )
+        assert not any(
+            "require a scenario" in e for e in errors
+        ), f"'require a scenario' error should only fire for code category: {errors}"
 
     def test_empty_category_without_scenario_no_error(self, engine):
         """A template with no category set does NOT require a scenario."""
@@ -389,9 +395,9 @@ class TestTemplateValidation:
             tpl.category = cat
             tpl.scenario = None
             errors = engine.validate_template(tpl)
-            assert not any("scenario" in e.lower() for e in errors), (
-                f"Unexpected scenario error for category={cat!r}: {errors}"
-            )
+            assert not any(
+                "scenario" in e.lower() for e in errors
+            ), f"Unexpected scenario error for category={cat!r}: {errors}"
 
 
 # ===========================================================================
@@ -493,22 +499,31 @@ class TestPhaseSequencerExecution:
 
     def test_all_phases_present_in_output(self, fast_runner):
         """All seven content-pipeline phases appear in phase_outputs."""
-        repo_template = Path(__file__).parent.parent .joinpath("templates") / "content-pipeline.yaml"
+        repo_template = Path(__file__).parent.parent.joinpath("templates") / "content-pipeline.yaml"
         engine = TemplateEngine()
         tpl = engine.load_template(repo_template)
 
-        seq = PhaseSequencer(tpl, fast_runner, config={
-            "topic": "The future of AI",
-            "author_name": "Test Author",
-            "author_facts": "Test author background.",
-            "voice_style": "Direct and witty.",
-            "source_material": "Test source material.",
-        })
+        seq = PhaseSequencer(
+            tpl,
+            fast_runner,
+            config={
+                "topic": "The future of AI",
+                "author_name": "Test Author",
+                "author_facts": "Test author background.",
+                "voice_style": "Direct and witty.",
+                "source_material": "Test source material.",
+            },
+        )
         result = seq.execute({})
 
         assert set(result["phase_outputs"].keys()) == {
-            "research", "draft", "fact_check", "red_team",
-            "apply_fixes", "voice_check", "final_polish"
+            "research",
+            "draft",
+            "fact_check",
+            "red_team",
+            "apply_fixes",
+            "voice_check",
+            "final_polish",
         }
 
     def test_phase_output_forwarded_to_next(self, fast_runner):
@@ -559,7 +574,9 @@ class TestPhaseSequencerExecution:
 
         try:
             tpl = _simple_template(
-                "first", "second", "third",
+                "first",
+                "second",
+                "third",
                 depends_on_map={"second": ["first"], "third": ["second"]},
             )
             seq = PhaseSequencer(tpl, fast_runner)
@@ -576,9 +593,7 @@ class TestPhaseSequencerExecution:
         from orchestration_engine.runner import DryRunExecutor
 
         # Runner whose executor always fails
-        runner = PipelineRunner(
-            executors=[DryRunExecutor(delay_seconds=0.0, failure_rate=1.0)]
-        )
+        runner = PipelineRunner(executors=[DryRunExecutor(delay_seconds=0.0, failure_rate=1.0)])
 
         tpl = _simple_template("a", "b", depends_on_map={"b": ["a"]})
         seq = PhaseSequencer(tpl, runner)
@@ -602,9 +617,7 @@ class TestPhaseSequencerExecution:
         from orchestration_engine.pipeline_runner import PipelineRunner
         from orchestration_engine.runner import DryRunExecutor
 
-        runner = PipelineRunner(
-            executors=[DryRunExecutor(delay_seconds=0.0, failure_rate=0.0)]
-        )
+        runner = PipelineRunner(executors=[DryRunExecutor(delay_seconds=0.0, failure_rate=0.0)])
 
         phase = PhaseDefinition(
             id="test",
@@ -655,6 +668,7 @@ class TestAutoMergeConfig:
 
     def test_defaults(self):
         from orchestration_engine.templates import AutoMergeConfig
+
         cfg = AutoMergeConfig()
         assert cfg.enabled is False
         assert cfg.min_score == 0.90
@@ -664,6 +678,7 @@ class TestAutoMergeConfig:
 
     def test_custom_values(self):
         from orchestration_engine.templates import AutoMergeConfig
+
         cfg = AutoMergeConfig(enabled=True, min_score=0.75, strategy="merge", require_approve=False)
         assert cfg.enabled is True
         assert cfg.min_score == 0.75
@@ -672,26 +687,31 @@ class TestAutoMergeConfig:
 
     def test_invalid_strategy_raises(self):
         from orchestration_engine.templates import AutoMergeConfig
+
         with pytest.raises(ValueError, match="strategy"):
             AutoMergeConfig(strategy="cherry-pick")
 
     def test_score_clamped_below_zero(self):
         from orchestration_engine.templates import AutoMergeConfig
+
         cfg = AutoMergeConfig(min_score=-0.5)
         assert cfg.min_score == 0.0
 
     def test_score_clamped_above_one(self):
         from orchestration_engine.templates import AutoMergeConfig
+
         cfg = AutoMergeConfig(min_score=1.5)
         assert cfg.min_score == 1.0
 
     def test_strategy_normalised_lowercase(self):
         from orchestration_engine.templates import AutoMergeConfig
+
         cfg = AutoMergeConfig(strategy="REBASE")
         assert cfg.strategy == "rebase"
 
     def test_all_valid_strategies_accepted(self):
         from orchestration_engine.templates import AutoMergeConfig
+
         for s in ("squash", "merge", "rebase"):
             cfg = AutoMergeConfig(strategy=s)
             assert cfg.strategy == s
@@ -702,16 +722,19 @@ class TestParseAutoMergeConfig:
 
     def test_none_input_returns_none(self):
         from orchestration_engine.templates import _parse_auto_merge_config
+
         assert _parse_auto_merge_config(None) is None
 
     def test_non_dict_returns_none(self):
         from orchestration_engine.templates import _parse_auto_merge_config
+
         assert _parse_auto_merge_config("enabled") is None
         assert _parse_auto_merge_config(True) is None
         assert _parse_auto_merge_config(42) is None
 
     def test_empty_dict_returns_defaults(self):
         from orchestration_engine.templates import _parse_auto_merge_config
+
         cfg = _parse_auto_merge_config({})
         assert cfg is not None
         assert cfg.enabled is False
@@ -719,13 +742,16 @@ class TestParseAutoMergeConfig:
 
     def test_valid_dict_parsed_correctly(self):
         from orchestration_engine.templates import _parse_auto_merge_config
-        cfg = _parse_auto_merge_config({
-            "enabled": True,
-            "min_score": 0.85,
-            "strategy": "rebase",
-            "require_approve": False,
-            "review_phase_id": "my_review",
-        })
+
+        cfg = _parse_auto_merge_config(
+            {
+                "enabled": True,
+                "min_score": 0.85,
+                "strategy": "rebase",
+                "require_approve": False,
+                "review_phase_id": "my_review",
+            }
+        )
         assert cfg is not None
         assert cfg.enabled is True
         assert cfg.min_score == 0.85
@@ -736,6 +762,7 @@ class TestParseAutoMergeConfig:
     def test_unknown_fields_warn_and_ignored(self, caplog):
         import logging
         from orchestration_engine.templates import _parse_auto_merge_config
+
         with caplog.at_level(logging.WARNING):
             cfg = _parse_auto_merge_config({"enabled": True, "unknown_field": "boom"})
         assert cfg is not None
@@ -816,6 +843,7 @@ class TestPhaseDefinitionMinOutputLength:
         path.write_text(yaml_content)
         eng = TemplateEngine(templates_dir=templates_dir)
         import logging
+
         with caplog.at_level(logging.WARNING, logger="orchestration_engine.templates"):
             try:
                 tpl = eng.load_template("len-check")
@@ -827,3 +855,63 @@ class TestPhaseDefinitionMinOutputLength:
             assert not (
                 "min_output_length" in record.message and "unknown" in record.message.lower()
             ), f"Unexpected warning: {record.message}"
+
+
+# ===========================================================================
+# escalation_partner field (Issue #702)
+# ===========================================================================
+
+
+class TestEscalationPartnerField:
+    """Tests for the PhaseDefinition.escalation_partner field (#702)."""
+
+    def test_phase_definition_escalation_partner_defaults_none(self):
+        """A directly-constructed phase without escalation_partner defaults to None."""
+        phase = PhaseDefinition(id="spec", name="spec")
+        assert phase.escalation_partner is None
+
+    def test_phase_definition_escalation_partner_parsed_from_yaml(self, engine, templates_dir):
+        """A YAML phase with escalation_partner: spec_adversary parses to that string;
+        a phase omitting it defaults to None."""
+        path = _make_simple_yaml(
+            templates_dir,
+            """
+            id: t
+            name: T
+            phases:
+              - id: spec
+                name: spec
+                escalation_partner: spec_adversary
+              - id: other
+                name: other
+            """,
+        )
+        tpl = engine.load_template(path)
+        by_id = {p.id: p for p in tpl.phases}
+        assert by_id["spec"].escalation_partner == "spec_adversary"
+        assert by_id["other"].escalation_partner is None
+
+    def test_escalation_partner_in_known_fields_no_unknown_warning(self, templates_dir, caplog):
+        """Loading a template with escalation_partner emits no 'unknown fields' warning
+        naming escalation_partner."""
+        import logging
+
+        path = _make_simple_yaml(
+            templates_dir,
+            """
+            id: t
+            name: T
+            phases:
+              - id: spec
+                name: spec
+                escalation_partner: spec_adversary
+            """,
+        )
+        eng = TemplateEngine(templates_dir=templates_dir)
+        with caplog.at_level(logging.WARNING, logger="orchestration_engine.templates"):
+            tpl = eng.load_template(path)
+        assert tpl.phases[0].escalation_partner == "spec_adversary"
+        for record in caplog.records:
+            assert (
+                "escalation_partner" not in record.message
+            ), f"Unexpected warning naming escalation_partner: {record.message}"

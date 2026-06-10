@@ -16,8 +16,11 @@ No third-party dependencies — stdlib only.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, List, Optional
 
 from .text_utils import FINDING_RE
@@ -27,7 +30,9 @@ __all__ = [
     "AdversaryConfig",
     "AdversaryFinding",
     "AdversaryVerdict",
+    "compute_reward",
     "parse_adversary_output",
+    "persist_reward",
 ]
 
 logger = logging.getLogger(__name__)
@@ -208,3 +213,88 @@ def parse_adversary_output(text: Any, config: AdversaryConfig) -> AdversaryVerdi
         )
 
     return AdversaryVerdict(verdict=verdict, findings=findings, raw_text=raw_text)
+
+
+def compute_reward(verdict: AdversaryVerdict, config: AdversaryConfig) -> float:
+    """Compute the reward score for an adversary verdict (Issue #702).
+
+    Score logic is identical to ``spec_adversary.compute_reward``:
+    APPROVE → 0.0; any other verdict → ``len(verdict.findings)``. Returned as a
+    float per the generic API contract (numerically equal to the legacy int
+    score). ``config`` is accepted for API symmetry / future weighting and is
+    not consulted for the current scoring.
+
+    Args:
+        verdict: A parsed :class:`AdversaryVerdict`.
+        config:  The :class:`AdversaryConfig` (reserved for future weighting).
+
+    Returns:
+        Non-negative float reward score.
+    """
+    _ = config  # reserved for future reward weighting; satisfies ARG001
+    if verdict.verdict == "APPROVE":
+        return 0.0
+    return float(len(verdict.findings))
+
+
+def persist_reward(
+    output_dir: str, verdict: AdversaryVerdict, reward: float, config: AdversaryConfig
+) -> None:
+    """Write adversary reward data to ``config.reward_filename`` in *output_dir*.
+
+    Payload shape matches ``spec_adversary.persist_reward`` exactly:
+    ``{verdict, reward_score, findings_count, findings:[{category,description}],
+    persisted_at}``. The only delta from the legacy function is the filename
+    source: ``config.reward_filename`` instead of a hardcoded
+    ``adversary_reward.json``. Graceful degradation: output_dir None →
+    warn+return; dir missing → warn+return; I/O error → caught, warned,
+    swallowed (never raises).
+
+    Args:
+        output_dir: Path (string) to the output directory.  May be ``None``.
+        verdict:    The :class:`AdversaryVerdict` to persist.
+        reward:     Pre-computed reward score (output of :func:`compute_reward`).
+        config:     The :class:`AdversaryConfig` supplying ``reward_filename``.
+    """
+    if output_dir is None:
+        logger.warning(
+            "adversary_parser: persist_reward called with output_dir=None "
+            "— skipping reward file write."
+        )
+        return
+
+    dir_path = Path(output_dir)
+    if not dir_path.exists():
+        logger.warning(
+            "adversary_parser: persist_reward — output_dir %r does not exist "
+            "— skipping reward file write.",
+            str(output_dir),
+        )
+        return
+
+    payload = {
+        "verdict": verdict.verdict,
+        "reward_score": reward,
+        "findings_count": len(verdict.findings),
+        "findings": [
+            {"category": f.category, "description": f.description} for f in verdict.findings
+        ],
+        "persisted_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+
+    reward_path = dir_path / config.reward_filename
+    try:
+        reward_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        logger.info(
+            "adversary_parser: reward persisted to %r (verdict=%s, reward=%s, findings=%d)",
+            str(reward_path),
+            verdict.verdict,
+            reward,
+            len(verdict.findings),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "adversary_parser: failed to write %r — %s",
+            str(reward_path),
+            exc,
+        )
