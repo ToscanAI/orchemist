@@ -175,7 +175,11 @@ def check_workflow(path: Path) -> list[str]:
             "(docs-only gate)"
         )
 
-    # All four docs-only globs present
+    # All four docs-only globs present — as NEGATED patterns since the
+    # 2026-06-10 inversion (#958): the filter is `non_docs` with
+    # `predicate-quantifier: every`, so each doc class appears as `!<glob>`.
+    # A bare (un-negated) glob here would mean the broken any-match
+    # semantics are back — flag it explicitly.
     if has_dorny_pw:
         filters = _extract_dorny_filters(pw_steps)
         all_globs: list[str] = []
@@ -184,12 +188,37 @@ def check_workflow(path: Path) -> list[str]:
                 all_globs.extend(v)
             elif isinstance(v, str):
                 all_globs.append(v)
-        needed = {"**.md", "docs/**", "LICENSE", ".github/ISSUE_TEMPLATE/**"}
+        needed = {"!**.md", "!docs/**", "!LICENSE", "!.github/ISSUE_TEMPLATE/**"}
         missing_globs = needed - set(all_globs)
         if missing_globs:
             missing.append(
                 f"MISSING: jobs.playwright-e2e dorny/paths-filter.with.filters — "
-                f"missing globs: {sorted(missing_globs)}"
+                f"missing negated globs: {sorted(missing_globs)}"
+            )
+        unnegated = {g.lstrip("!") for g in needed} & set(all_globs)
+        if unnegated:
+            missing.append(
+                f"MISSING: jobs.playwright-e2e dorny/paths-filter.with.filters — "
+                f"un-negated doc globs present (any-match regression, see #958): "
+                f"{sorted(unnegated)}"
+            )
+        # Negated globs only invert per-file under `predicate-quantifier:
+        # every`; under the default `some` they degrade to matching nearly
+        # every file (gate never skips — fail-safe but wasteful and a sign
+        # the inversion contract was broken).
+        quantifier = next(
+            (
+                s.get("with", {}).get("predicate-quantifier")
+                for s in pw_steps
+                if s.get("uses", "").startswith("dorny/paths-filter@")
+            ),
+            None,
+        )
+        if quantifier != "every":
+            missing.append(
+                f"MISSING: jobs.playwright-e2e dorny/paths-filter.with."
+                f"predicate-quantifier — expected 'every', got {quantifier!r} "
+                f"(required for the negated non_docs filter, see #958)"
             )
 
     # wait_for_url.sh invoked >= 2 times (engine + Next dev)
