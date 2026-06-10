@@ -1,17 +1,22 @@
 """Unit tests for parse_adversary_output from orchestration_engine.adversary_parser.
 
-Covers all 9 behavioral contracts defined in the spec for Issue #720.
+Covers all 9 behavioral contracts defined in the spec for Issue #720, plus the
+generic reward functions (compute_reward / persist_reward) added by Issue #702.
 """
+
+import json
 
 import pytest
 
+from orchestration_engine import spec_adversary as legacy
 from orchestration_engine.adversary_parser import (
     AdversaryConfig,
     AdversaryFinding,
     AdversaryVerdict,
+    compute_reward,
     parse_adversary_output,
+    persist_reward,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -78,13 +83,7 @@ def test_verdict_scan_first_picks_first_verdict(basic_config: AdversaryConfig) -
     parse_adversary_output returns the verdict from the FIRST matching line.
     """
     assert basic_config.verdict_scan == "first"
-    text = (
-        "Line one.\n"
-        "VERDICT: APPROVE\n"
-        "Middle text.\n"
-        "VERDICT: REQUEST_CHANGES\n"
-        "End."
-    )
+    text = "Line one.\n" "VERDICT: APPROVE\n" "Middle text.\n" "VERDICT: REQUEST_CHANGES\n" "End."
     result = parse_adversary_output(text, basic_config)
     assert result.verdict == "APPROVE"
 
@@ -99,13 +98,7 @@ def test_verdict_scan_last_picks_last_verdict(last_scan_config: AdversaryConfig)
     parse_adversary_output returns the verdict from the LAST matching line.
     """
     assert last_scan_config.verdict_scan == "last"
-    text = (
-        "Line one.\n"
-        "VERDICT: APPROVE\n"
-        "Middle text.\n"
-        "VERDICT: REQUEST_CHANGES\n"
-        "End."
-    )
+    text = "Line one.\n" "VERDICT: APPROVE\n" "Middle text.\n" "VERDICT: REQUEST_CHANGES\n" "End."
     result = parse_adversary_output(text, last_scan_config)
     assert result.verdict == "REQUEST_CHANGES"
 
@@ -151,9 +144,9 @@ def test_category_filtering_valid_included_invalid_excluded_on_approve(
     assert "coverage" in categories, f"Expected 'coverage' in findings but got: {categories}"
     assert "typo" not in categories, f"'typo' should be excluded but appeared in: {categories}"
     descriptions = [f.description for f in result.findings]
-    assert not any("Spelling mistake found" in d for d in descriptions), (
-        "Typo finding text appeared in findings — it was not silently skipped"
-    )
+    assert not any(
+        "Spelling mistake found" in d for d in descriptions
+    ), "Typo finding text appeared in findings — it was not silently skipped"
 
 
 # ---------------------------------------------------------------------------
@@ -220,12 +213,12 @@ def test_empty_string_input_returns_request_changes_with_finding(
     """
     result = parse_adversary_output("", basic_config)
     assert isinstance(result, AdversaryVerdict)
-    assert result.verdict == "REQUEST_CHANGES", (
-        f"Expected 'REQUEST_CHANGES' for empty input, got: {result.verdict!r}"
-    )
-    assert len(result.findings) >= 1, (
-        "Expected at least one finding for empty input (no-verdict fallback)"
-    )
+    assert (
+        result.verdict == "REQUEST_CHANGES"
+    ), f"Expected 'REQUEST_CHANGES' for empty input, got: {result.verdict!r}"
+    assert (
+        len(result.findings) >= 1
+    ), "Expected at least one finding for empty input (no-verdict fallback)"
 
 
 # ---------------------------------------------------------------------------
@@ -242,9 +235,146 @@ def test_none_input_returns_request_changes_with_finding(
     """
     result = parse_adversary_output(None, basic_config)
     assert isinstance(result, AdversaryVerdict)
-    assert result.verdict == "REQUEST_CHANGES", (
-        f"Expected 'REQUEST_CHANGES' for None input, got: {result.verdict!r}"
+    assert (
+        result.verdict == "REQUEST_CHANGES"
+    ), f"Expected 'REQUEST_CHANGES' for None input, got: {result.verdict!r}"
+    assert (
+        len(result.findings) >= 1
+    ), "Expected at least one finding for None input (no-verdict fallback)"
+
+
+# ---------------------------------------------------------------------------
+# Issue #702 — generic compute_reward
+# ---------------------------------------------------------------------------
+
+
+def test_compute_reward_approve_returns_zero_float(basic_config: AdversaryConfig) -> None:
+    """APPROVE → 0.0 as a float."""
+    verdict = AdversaryVerdict(verdict="APPROVE", findings=[])
+    result = compute_reward(verdict, basic_config)
+    assert result == 0.0
+    assert isinstance(result, float)
+
+
+def test_compute_reward_request_changes_returns_findings_count_float(
+    basic_config: AdversaryConfig,
+) -> None:
+    """REQUEST_CHANGES with N findings → float(N)."""
+    verdict = AdversaryVerdict(
+        verdict="REQUEST_CHANGES",
+        findings=[
+            AdversaryFinding("coverage", "a"),
+            AdversaryFinding("coverage", "b"),
+            AdversaryFinding("security", "c"),
+        ],
     )
-    assert len(result.findings) >= 1, (
-        "Expected at least one finding for None input (no-verdict fallback)"
+    result = compute_reward(verdict, basic_config)
+    assert result == 3.0
+    assert isinstance(result, float)
+
+
+def test_compute_reward_parity_with_legacy(basic_config: AdversaryConfig) -> None:
+    """Generic compute_reward is numerically equal to legacy spec_adversary.compute_reward.
+
+    Documents the int→float widening: scores are equal, only the type differs.
+    """
+    cases = [
+        ("VERDICT: APPROVE\nlooks good", "APPROVE", []),
+        ("VERDICT: REQUEST_CHANGES", "REQUEST_CHANGES", []),
+        ("VERDICT: REQUEST_CHANGES\n[trivial] one", "REQUEST_CHANGES", ["a"]),
+        (
+            "VERDICT: REQUEST_CHANGES\n[trivial] a\n[vague] b\n[divergence] c",
+            "REQUEST_CHANGES",
+            ["a", "b", "c"],
+        ),
+    ]
+    for legacy_text, verdict_str, descs in cases:
+        generic_verdict = AdversaryVerdict(
+            verdict=verdict_str,
+            findings=[AdversaryFinding("coverage", d) for d in descs],
+        )
+        generic_score = compute_reward(generic_verdict, basic_config)
+        legacy_verdict = legacy.parse_adversary_output(legacy_text)
+        legacy_score = legacy.compute_reward(legacy_verdict)
+        assert generic_score == float(legacy_score)
+        assert isinstance(generic_score, float)
+
+
+# ---------------------------------------------------------------------------
+# Issue #702 — generic persist_reward
+# ---------------------------------------------------------------------------
+
+
+def test_persist_reward_uses_config_filename(tmp_path) -> None:
+    """persist_reward writes to config.reward_filename, not the default name."""
+    config = AdversaryConfig(valid_categories=["x"], reward_filename="custom_reward.json")
+    verdict = AdversaryVerdict(verdict="APPROVE", findings=[])
+
+    persist_reward(str(tmp_path), verdict, 0.0, config)
+
+    assert (tmp_path / "custom_reward.json").exists()
+    assert not (tmp_path / "adversary_reward.json").exists()
+
+
+def test_persist_reward_payload_shape(tmp_path) -> None:
+    """Payload has the documented keys; reward_score for a 3-finding REQUEST_CHANGES is 3.0."""
+    config = AdversaryConfig(valid_categories=["x"], reward_filename="custom_reward.json")
+    verdict = AdversaryVerdict(
+        verdict="REQUEST_CHANGES",
+        findings=[
+            AdversaryFinding("x", "a"),
+            AdversaryFinding("x", "b"),
+            AdversaryFinding("x", "c"),
+        ],
     )
+
+    persist_reward(str(tmp_path), verdict, 3.0, config)
+
+    payload = json.loads((tmp_path / "custom_reward.json").read_text(encoding="utf-8"))
+    assert set(payload.keys()) == {
+        "verdict",
+        "reward_score",
+        "findings_count",
+        "findings",
+        "persisted_at",
+    }
+    assert payload["verdict"] == "REQUEST_CHANGES"
+    assert payload["findings_count"] == 3
+    assert payload["reward_score"] == 3.0
+    assert isinstance(payload["findings"], list)
+    assert len(payload["findings"]) == 3
+    for f in payload["findings"]:
+        assert set(f.keys()) == {"category", "description"}
+
+
+def test_persist_reward_none_output_dir_no_raise(tmp_path) -> None:
+    """output_dir=None returns without raising and writes nothing."""
+    config = AdversaryConfig(valid_categories=["x"], reward_filename="custom_reward.json")
+    verdict = AdversaryVerdict(verdict="APPROVE", findings=[])
+
+    ret = persist_reward(None, verdict, 0.0, config)
+
+    assert ret is None
+    assert not (tmp_path / "custom_reward.json").exists()
+
+
+def test_persist_reward_nonexistent_dir_no_raise(tmp_path) -> None:
+    """A nonexistent output_dir returns without raising and creates no file/dir."""
+    config = AdversaryConfig(valid_categories=["x"], reward_filename="custom_reward.json")
+    verdict = AdversaryVerdict(verdict="APPROVE", findings=[])
+    missing = tmp_path / "missing"
+
+    ret = persist_reward(str(missing), verdict, 0.0, config)
+
+    assert ret is None
+    assert not missing.exists()
+
+
+def test_module_exports_compute_and_persist_reward() -> None:
+    """compute_reward and persist_reward are exported via __all__ and importable."""
+    import orchestration_engine.adversary_parser as ap
+
+    assert "compute_reward" in ap.__all__
+    assert "persist_reward" in ap.__all__
+    assert callable(ap.compute_reward)
+    assert callable(ap.persist_reward)
