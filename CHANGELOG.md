@@ -4,7 +4,9 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 
 ## [Unreleased]
 
-## [0.13.0] - 2026-06-10
+## [0.13.1] - 2026-06-10
+
+> Supersedes the abandoned `v0.13.0` tag: that tag was never published — the publish workflow's FAIL-closed signature gate failed on its own first live firing (see the workflow fix below) before any build or upload, so PyPI never saw 0.13.0. This release carries the identical content plus the workflow fix.
 
 ### Added
 - **Tool-result truncation** (#800 via #939) — large tool results are truncated before being appended to executor message history, preventing context blowouts in long agentic phases.
@@ -17,6 +19,7 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 - **Signed-tag publish gate is FAIL-closed** (#890 follow-up via #935, #936) — `publish.yaml` imports the committed release-signing public key (`.github/release-signing-pubkey.asc`) and `git tag -v` blocks build + publish on unsigned or unverifiable tags (previously WARN-only).
 
 ### Fixed
+- **Release workflow: signed-tag verification now works on tag-push events** — `actions/checkout` materializes `refs/tags/<tag>` as the peeled *commit* (GITHUB_SHA), so the FAIL-closed `git tag -v` gate (#935) failed with `cannot verify a non-tag object of type commit` on its first live firing (the abandoned, never-published `v0.13.0` tag). The verify step now re-fetches the real annotated tag object from origin and asserts the ref is a `tag` object (lightweight tags also fail) before verifying the signature.
 - **Config-schema defaults merged on the web launch path + `<MISSING:>` rejection** (#676, #535 via #937) — phases can no longer dispatch with unrendered `<MISSING:...>` placeholders.
 - **`queue.py` health metrics** (#932 item 1 via #940) — wired to real `task_runs` aggregation instead of returning zeroed metrics.
 - **Issues-launch endpoint NameError + `PUT /templates/{name}` extended validation restored** (#642 via #944) — invalid template updates 422 again (regression from PR #634).
