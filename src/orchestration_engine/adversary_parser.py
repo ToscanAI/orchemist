@@ -151,7 +151,7 @@ def parse_adversary_output(text: Any, config: AdversaryConfig) -> AdversaryVerdi
     else:
         try:
             raw_text = str(text)
-        except Exception:
+        except Exception:  # noqa: BLE001
             raw_text = ""
 
     # ── Step 2: extract verdict via shared parser ─────────────────────────────

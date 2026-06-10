@@ -156,7 +156,7 @@ def _is_safe_path(path: str) -> bool:
     # write_text() to raise IsADirectoryError — reject it explicitly.
     try:
         normalised = PurePosixPath(path)
-    except Exception:
+    except Exception:  # noqa: BLE001
         logger.warning("output_parser: rejected unparseable path: %r", path)
         return False
 
@@ -227,7 +227,7 @@ def parse_output(text: str) -> ParsedOutput:
     if not isinstance(text, str):
         try:
             text = str(text)
-        except Exception:
+        except Exception:  # noqa: BLE001
             text = ""
 
     files: list[FileBlock] = []
@@ -331,7 +331,7 @@ def extract_and_write(text: str, output_dir: Path | str) -> list[FileBlock]:
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("extract_and_write: cannot create output_dir %r: %s", str(output_dir), exc)
         return []
 
@@ -359,7 +359,7 @@ def extract_and_write(text: str, output_dir: Path | str) -> list[FileBlock]:
             target.write_text(fb.content, encoding="utf-8")
             written.append(fb)
             logger.debug("extract_and_write: wrote %s", target)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("extract_and_write: failed to write %r: %s", str(target), exc)
 
     return written

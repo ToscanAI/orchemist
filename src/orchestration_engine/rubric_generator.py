@@ -203,7 +203,7 @@ def _extract_we_are_blocks(text: str) -> List[Dict[str, str]]:
     return pairs
 
 
-def _extract_tables(
+def _extract_tables(  # noqa: C901
     text: str,
     warnings_out: List[str],
 ) -> Tuple[List[CriteriaTable], List[Dict[str, str]]]:
@@ -290,7 +290,7 @@ def _extract_tables(
             name = base if cnt == 1 else f"{base} ({cnt})"
             criteria_tables.append(CriteriaTable(name=name, columns=header_cells, rows=data_rows))
 
-        except Exception as exc:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover  # noqa: BLE001
             warnings_out.append(f"Skipping malformed table near '{current_heading}': {exc}")
 
     return criteria_tables, terminology_pairs
@@ -312,7 +312,7 @@ def _build_criteria_list(data: SkillData) -> List[Dict]:
     criteria: List[Dict] = []
 
     for item in data.checklist_items:
-        criteria.append(
+        criteria.append(  # noqa: PERF401
             {
                 "type": "checklist",
                 "text": item["text"],
@@ -321,7 +321,7 @@ def _build_criteria_list(data: SkillData) -> List[Dict]:
         )
 
     for pair in data.do_dont_pairs:
-        criteria.append(
+        criteria.append(  # noqa: PERF401
             {
                 "type": "do_dont",
                 "do": pair.get("do", ""),
@@ -332,7 +332,7 @@ def _build_criteria_list(data: SkillData) -> List[Dict]:
 
     for tbl in data.criteria_tables:
         for row in tbl.rows:
-            criteria.append(
+            criteria.append(  # noqa: PERF401
                 {
                     "type": "table_row",
                     "table": tbl.name,
@@ -407,11 +407,11 @@ def _make_scale(data: SkillData) -> str:
         half = max(1, n // 2)
         bands = [
             f"**1.0 — Excellent:** All {n} checklist items satisfied. No quality gaps detected.",
-            f"**0.8 — Good:** At least {p90} of {n} items satisfied. Minor gaps; core conclusions unaffected.",
+            f"**0.8 — Good:** At least {p90} of {n} items satisfied. Minor gaps; core conclusions unaffected.",  # noqa: E501
             "**0.6 — Acceptable:** Most major checks pass. 1–2 significant items missed.",
             f"**0.4 — Poor:** {p60} or fewer items satisfied. Multiple significant checks missing.",
-            f"**0.2 — Very Poor:** Fewer than {half} items satisfied. High risk of material errors.",
-            "**0.0 — Unacceptable:** Critical quality checks ignored. Content should not be shared.",
+            f"**0.2 — Very Poor:** Fewer than {half} items satisfied. High risk of material errors.",  # noqa: E501
+            "**0.0 — Unacceptable:** Critical quality checks ignored. Content should not be shared.",  # noqa: E501
         ]
     elif data.criteria_tables:
         names = ", ".join(t.name for t in data.criteria_tables[:2])

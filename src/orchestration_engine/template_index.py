@@ -156,7 +156,7 @@ class TemplateIndex:
             raw_entries = data.get("templates", []) or []
         else:
             raise ValueError(
-                f"Unexpected template index format: expected a list or dict, got {type(data).__name__}"
+                f"Unexpected template index format: expected a list or dict, got {type(data).__name__}"  # noqa: E501
             )
 
         self.entries = [TemplateEntry.from_dict(e) for e in raw_entries if isinstance(e, dict)]

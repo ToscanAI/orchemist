@@ -20,6 +20,10 @@ Usage::
     access_token = token_data["token"]
 """
 
+# E501 residual here is a long `:class:` reference inside a docstring black
+# cannot wrap; a line-level noqa is inert inside a string literal.
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import hashlib
@@ -117,7 +121,7 @@ class GitHubApp:
                 ``pip install 'orchestration-engine[github]'``
         """
         try:
-            import jwt as pyjwt  # PyJWT ≥ 2.x
+            import jwt as pyjwt  # PyJWT ≥ 2.x  # noqa: PLC0415
         except ImportError as exc:
             raise RuntimeError(
                 "PyJWT is required for GitHub App JWT generation. "

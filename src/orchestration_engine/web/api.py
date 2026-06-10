@@ -305,7 +305,7 @@ class _SseConnectionLimiter:
     """
 
     def __init__(self) -> None:
-        import threading
+        import threading  # noqa: PLC0415
 
         self._lock = threading.Lock()
         self._active_total: int = 0
@@ -381,7 +381,7 @@ class _SseConnectionLimiter:
 _SSE_LIMITER = _SseConnectionLimiter()
 
 
-def create_api_app(
+def create_api_app(  # noqa: C901
     db_path: Optional[str] = None,
     user_templates_dir: Optional["Path"] = None,  # type: ignore[name-defined]
 ) -> "FastAPI":  # noqa: F821 (type hint only)
@@ -398,27 +398,30 @@ def create_api_app(
     Returns:
         Configured ``FastAPI`` instance.
     """
-    import asyncio
+    import asyncio  # noqa: PLC0415
 
-    from fastapi import FastAPI, HTTPException, Request, Response
-    from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse
-    from pydantic import BaseModel
-    from sse_starlette.sse import EventSourceResponse
+    from fastapi import FastAPI, HTTPException, Request, Response  # noqa: PLC0415
+    from fastapi.middleware.cors import CORSMiddleware  # noqa: PLC0415
+    from fastapi.responses import JSONResponse  # noqa: PLC0415
+    from pydantic import BaseModel  # noqa: PLC0415
+    from sse_starlette.sse import EventSourceResponse  # noqa: PLC0415
 
-    from orchestration_engine import __version__
-    from orchestration_engine.db import TERMINAL_STATUSES, Database
-    from orchestration_engine.templates import TemplateEngine, TemplateNotFoundError
-    from orchestration_engine.timestamps import (
+    from orchestration_engine import __version__  # noqa: PLC0415
+    from orchestration_engine.db import TERMINAL_STATUSES, Database  # noqa: PLC0415
+    from orchestration_engine.templates import (  # noqa: PLC0415
+        TemplateEngine,
+        TemplateNotFoundError,
+    )
+    from orchestration_engine.timestamps import (  # noqa: PLC0415
         normalize_row as _normalize_row,
     )
-    from orchestration_engine.timestamps import (
+    from orchestration_engine.timestamps import (  # noqa: PLC0415
         normalize_ts as _normalize_ts,
     )
-    from orchestration_engine.timestamps import (
+    from orchestration_engine.timestamps import (  # noqa: PLC0415
         now_utc as _now_utc,
     )
-    from orchestration_engine.webhooks import InputMapper, TriggerMatcher
+    from orchestration_engine.webhooks import InputMapper, TriggerMatcher  # noqa: PLC0415
 
     effective_db_path = db_path or _get_persistent_db_path()
 
@@ -451,7 +454,7 @@ def create_api_app(
         try:
             try:
                 return engine.load_template(tmp_path)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 raise HTTPException(
                     status_code=422,
                     detail={"message": "Template load error", "errors": [str(exc)]},
@@ -499,7 +502,7 @@ def create_api_app(
                 )
             else:
                 logger.debug("Startup sweep: marked 0 zombie pipeline runs (clean state; #754)")
-        except Exception as _exc:  # pragma: no cover — last-resort guard
+        except Exception as _exc:  # pragma: no cover — last-resort guard  # noqa: BLE001
             logger.error(
                 "Startup sweep failed (server will still start): %s: %s",
                 type(_exc).__name__,
@@ -543,7 +546,7 @@ def create_api_app(
         """Executor backend for standalone mode (api/claudecode/auto)."""
 
         api_key: Optional[str] = None
-        """API key passed to daemon as env var. ANTHROPIC_API_KEY (standalone) or OPENROUTER_API_KEY (openrouter). Never persisted."""
+        """API key passed to daemon as env var. ANTHROPIC_API_KEY (standalone) or OPENROUTER_API_KEY (openrouter). Never persisted."""  # noqa: E501
 
         model_map: Optional[Dict[str, str]] = None
         """Custom model tier overrides for openrouter mode."""
@@ -779,7 +782,7 @@ def create_api_app(
             try:
                 resolved.relative_to(directory.resolve())
                 return label
-            except ValueError:
+            except ValueError:  # noqa: PERF203
                 continue
         return "unknown"
 
@@ -1030,7 +1033,7 @@ def create_api_app(
         return JSONResponse({"status": "ok", "version": __version__})
 
     @app.get("/api/v1/health/webhook")
-    async def webhook_health() -> JSONResponse:
+    async def webhook_health() -> JSONResponse:  # noqa: C901
         """Return health status for the regression CI webhook trigger.
 
         Checks two things:
@@ -1067,11 +1070,11 @@ def create_api_app(
                     hook not found.
                 ``"error"`` — trigger is not registered in the DB.
         """
-        _KNOWN_REGRESSION_TEMPLATE_IDS = {
+        _KNOWN_REGRESSION_TEMPLATE_IDS = {  # noqa: N806
             "regression-pipeline-v1",
             "regression-fix-pipeline-v1",
         }
-        _REGRESSION_WEBHOOK_PATH_SUFFIX = "/api/v1/webhooks/"
+        _REGRESSION_WEBHOOK_PATH_SUFFIX = "/api/v1/webhooks/"  # noqa: N806
 
         # 1. Determine which trigger ID to look up
         trigger_id = os.environ.get("REGRESSION_TRIGGER_ID", "regression-ci-trigger")
@@ -1115,7 +1118,12 @@ def create_api_app(
                                 github_webhook_id = hook.get("id")
                                 github_webhook_active = bool(hook.get("active"))
                                 break
-            except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
+            except (
+                FileNotFoundError,
+                subprocess.TimeoutExpired,
+                json.JSONDecodeError,
+                Exception,  # noqa: BLE001
+            ):
                 # gh unavailable or any other failure — skip GitHub check gracefully
                 pass
 
@@ -1165,7 +1173,7 @@ def create_api_app(
                 config_schema = tpl.config_schema or {}
                 category = tpl.category or (tpl.phases[0].task_type if tpl.phases else "general")
                 author = tpl.author or ""
-            except Exception:
+            except Exception:  # noqa: BLE001
                 phases_summary = []
                 config_schema = {}
                 category = "general"
@@ -1208,7 +1216,7 @@ def create_api_app(
                     try:
                         template_path = Path(entry["path"])
                         template = engine.load_template(template_path)
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         pass
                     break
 
@@ -1316,7 +1324,7 @@ def create_api_app(
                 if entry["id"] == pipeline:
                     try:
                         template = engine.load_template(Path(entry["path"]))
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         pass
                     break
         if template is None:
@@ -1364,7 +1372,7 @@ def create_api_app(
         # 1. Parse YAML
         try:
             raw = yaml.safe_load(req.content)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=422,
                 detail={"message": "YAML parse error", "errors": [str(exc)], "warnings": []},
@@ -1401,7 +1409,7 @@ def create_api_app(
         if req.extended:
             try:
                 ext_errors, warnings = engine.validate_template_extended(template, raw)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 warnings = [f"Extended validation error: {exc}"]
 
         # Merge structural + extended errors for the final verdict.
@@ -1438,7 +1446,7 @@ def create_api_app(
         # 1. Parse YAML
         try:
             raw = yaml.safe_load(req.content)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=422,
                 detail={"message": "YAML parse error", "errors": [str(exc)]},
@@ -1466,7 +1474,7 @@ def create_api_app(
         warnings: List[str] = []
         try:
             ext_errors, warnings = engine.validate_template_extended(template, raw)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             ext_errors = [f"Extended validation error: {exc}"]
 
         if ext_errors:
@@ -1553,7 +1561,7 @@ def create_api_app(
         # 3. Parse YAML — capture raw_data for extended validation below.
         try:
             raw = yaml.safe_load(req.content)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=422,
                 detail={"message": "YAML parse error", "errors": [str(exc)]},
@@ -1588,7 +1596,7 @@ def create_api_app(
         warnings: List[str] = []
         try:
             ext_errors, warnings = engine.validate_template_extended(template, raw)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             ext_errors = [f"Extended validation error: {exc}"]
 
         if ext_errors:
@@ -1679,7 +1687,7 @@ def create_api_app(
         existing_path = _resolve_template(name)
         try:
             template = engine.load_template(existing_path)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=400,
                 detail=f"Failed to load template: {exc}",
@@ -1738,7 +1746,7 @@ def create_api_app(
         # 6. Load the new template and return full detail
         try:
             new_template = engine.load_template(dest)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=500,
                 detail=f"Duplicate was written but failed to load: {exc}",
@@ -1801,7 +1809,7 @@ def create_api_app(
         engine = TemplateEngine()
         try:
             template = engine.load_template(template_file)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"Invalid template: {exc}")
 
         errors = engine.validate_template(template)
@@ -1847,7 +1855,7 @@ def create_api_app(
         return JSONResponse(run_dict, status_code=201)
 
     @app.post("/api/v1/webhooks/{trigger_id}")
-    async def handle_webhook(trigger_id: str, request: Request) -> JSONResponse:
+    async def handle_webhook(trigger_id: str, request: Request) -> JSONResponse:  # noqa: C901
         """Receive an incoming webhook and fire the associated pipeline.
 
         Looks up the trigger configuration, verifies the HMAC-SHA256 signature
@@ -1957,7 +1965,7 @@ def create_api_app(
         engine = TemplateEngine()
         try:
             template = engine.load_template(template_file)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"Invalid template: {exc}")
 
         # 9. Record invocation (after all guards pass, before launching)
@@ -2008,7 +2016,10 @@ def create_api_app(
             - **400** when the trigger config fails validation.
             - **409** when a trigger with the same ``id`` already exists.
         """
-        from orchestration_engine.webhooks import TriggerConfig, TriggerValidationError
+        from orchestration_engine.webhooks import (  # noqa: PLC0415
+            TriggerConfig,
+            TriggerValidationError,
+        )
 
         db = Database(Path(effective_db_path))
 
@@ -2028,7 +2039,7 @@ def create_api_app(
         except TriggerValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
-        import sqlite3
+        import sqlite3  # noqa: PLC0415
 
         try:
             db.create_trigger(cfg.to_dict())
@@ -2123,7 +2134,7 @@ def create_api_app(
             - **400** when validation fails.
             - **404** when the trigger is not found.
         """
-        from orchestration_engine.webhooks import TriggerValidationError
+        from orchestration_engine.webhooks import TriggerValidationError  # noqa: PLC0415
 
         db = Database(Path(effective_db_path))
 
@@ -2152,7 +2163,7 @@ def create_api_app(
 
         if update_kwargs:
             # Validate the merged result before writing
-            from orchestration_engine.webhooks import TriggerConfig
+            from orchestration_engine.webhooks import TriggerConfig  # noqa: PLC0415
 
             merged = {**existing, **update_kwargs}
             try:
@@ -2238,12 +2249,12 @@ def create_api_app(
         # PID liveness check
         if run.get("status") == "running" and run.get("pid"):
             try:
-                from orchestration_engine.daemon import is_process_alive
+                from orchestration_engine.daemon import is_process_alive  # noqa: PLC0415
 
                 if not is_process_alive(run["pid"]):
                     db.update_pipeline_run(run_id, status="crashed")
                     run["status"] = "crashed"
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
 
         return JSONResponse(_run_to_dict(run))
@@ -2318,7 +2329,7 @@ def create_api_app(
     # inventory + dialogue artifacts are typically 2-10 KB; spec / behavioral
     # / review markdown are 3-50 KB; even an aggressive run rarely exceeds
     # 200 KB total. 1 MiB is a comfortable ceiling.
-    _ARTIFACT_MAX_BYTES = 1024 * 1024
+    _ARTIFACT_MAX_BYTES = 1024 * 1024  # noqa: N806
 
     def _resolve_output_dir(run: Dict[str, Any]) -> Path:
         """Return the run's output_dir as a resolved absolute Path.
@@ -2484,7 +2495,7 @@ def create_api_app(
         # Parse the four standard sections. Headings come from the v4.2 YAML
         # ("## 1. UI primitives", "## 2. Project shared libraries", etc.).
         # We split on the next "## " heading after each section's start.
-        import re as _re
+        import re as _re  # noqa: PLC0415
 
         section_specs: List[Tuple[str, str]] = [
             ("ui_primitives", r"^##\s+1\.\s+UI primitives"),
@@ -2584,7 +2595,7 @@ def create_api_app(
         # Parse rounds. The dialogue phase writes one section per turn
         # with a heading like "## Round N · DRAFTER (model)" or
         # "## Round N · REVIEWER (model) · VERDICT".
-        import re as _re
+        import re as _re  # noqa: PLC0415
 
         rounds: List[Dict[str, Any]] = []
         round_re = _re.compile(
@@ -2810,9 +2821,9 @@ def create_api_app(
         - flag values that aren't bools (coerced via `_strict_coerce_bool`)
         - unknown extra keys (preserved under ``"extra"``)
         """
-        import json as _json
+        import json as _json  # noqa: PLC0415
 
-        from .. import feature_flags as _ff
+        from .. import feature_flags as _ff  # noqa: PLC0415
 
         admin_path = _ff._admin_json_path()  # honours ORCH_ADMIN_PATH (#840)
         raw_loaded: Any = None
@@ -2844,7 +2855,7 @@ def create_api_app(
         )
 
     @app.put("/api/v1/admin/feature-flags")
-    async def update_feature_flags(request: Request) -> JSONResponse:
+    async def update_feature_flags(request: Request) -> JSONResponse:  # noqa: C901
         """Persist a feature-flag patch to `admin.json` with atomic write.
 
         Body: ``{"phase0_hard_gate": true, ...}`` — any subset of the known
@@ -2869,13 +2880,13 @@ def create_api_app(
         through ``_merge_feature_flags_with_passthrough``. Known flags are
         always normalised to ``bool``.
         """
-        import json as _json
-        import os as _os
-        import tempfile as _tempfile
+        import json as _json  # noqa: PLC0415
+        import os as _os  # noqa: PLC0415
+        import tempfile as _tempfile  # noqa: PLC0415
 
         try:
             body = await request.json()
-        except Exception:
+        except Exception:  # noqa: BLE001
             raise HTTPException(status_code=400, detail="Invalid JSON body")
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="Body must be a JSON object")
@@ -2900,7 +2911,7 @@ def create_api_app(
                 )
             patch[k] = coerced
 
-        from .. import feature_flags as _ff
+        from .. import feature_flags as _ff  # noqa: PLC0415
 
         admin_path = _ff._admin_json_path()  # honours ORCH_ADMIN_PATH (#840)
         admin_dir = admin_path.parent
@@ -3043,7 +3054,7 @@ def create_api_app(
         return JSONResponse(_sse_limiter.metrics())
 
     @app.get("/api/v1/runs/{run_id}/stream")
-    async def stream_run(run_id: str, request: Request) -> EventSourceResponse:
+    async def stream_run(run_id: str, request: Request) -> EventSourceResponse:  # noqa: C901
         """Stream live phase-transition events for a pipeline run via SSE.
 
         Connects to the ``pipeline_run_events`` table and emits fine-grained
@@ -3078,8 +3089,8 @@ def create_api_app(
         ``error`` event rather than an HTTP error so the EventSource protocol
         stays clean).
         """
-        _TERMINAL_STATES = TERMINAL_STATUSES
-        _POLL_INTERVAL = 1.0  # seconds between DB polls
+        _TERMINAL_STATES = TERMINAL_STATUSES  # noqa: N806
+        _POLL_INTERVAL = 1.0  # seconds between DB polls  # noqa: N806
 
         # ── SSE connection limits (#841) ─────────────────────────────
         # Check limits BEFORE opening the stream. On hit, return 429
@@ -3414,8 +3425,8 @@ def create_api_app(
     # Cost API endpoints (Issue #5.2.3)
     # ------------------------------------------------------------------
 
-    _VALID_GROUP_BY = {"day", "template", "model"}
-    _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    _VALID_GROUP_BY = {"day", "template", "model"}  # noqa: N806
+    _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")  # noqa: N806
 
     @app.get("/api/v1/costs/summary")
     async def cost_summary(
@@ -3600,7 +3611,7 @@ def create_api_app(
                 detail=f"Trust profile '{profile_id}' not found",
             )
 
-        from ..trust import TrustCalibrator
+        from ..trust import TrustCalibrator  # noqa: PLC0415
 
         old_score = float(profile["trust_score"])
         new_score = body.trust_score
@@ -3749,7 +3760,7 @@ def create_api_app(
         bot_token = os.environ.get("NOTIFY_TELEGRAM_BOT_TOKEN", "")
         chat_id = os.environ.get("NOTIFY_TELEGRAM_CHAT_ID", "")
 
-        from orchestration_engine.notifications import TelegramCallbackHandler
+        from orchestration_engine.notifications import TelegramCallbackHandler  # noqa: PLC0415
 
         handler = TelegramCallbackHandler(
             db_path=db_path,
@@ -3770,7 +3781,7 @@ def create_api_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/v1/github/issues", status_code=202)
-    async def handle_github_issues(request: Request) -> JSONResponse:
+    async def handle_github_issues(request: Request) -> JSONResponse:  # noqa: C901
         """Receive GitHub ``issues`` webhook events and launch pipelines automatically.
 
         Triggered when a GitHub issue is **opened** or **labeled** with the
@@ -3800,14 +3811,14 @@ def create_api_app(
             - **400** when the request body is not valid JSON or required
               payload fields are missing.
         """
-        from orchestration_engine.issue_automation import (
+        from orchestration_engine.issue_automation import (  # noqa: PLC0415
             InputExtractor,
             IssueAutomation,
             IssueClassifier,
             TemplateSelector,
             post_github_comment,
         )
-        from orchestration_engine.notifications import NotificationDispatcher
+        from orchestration_engine.notifications import NotificationDispatcher  # noqa: PLC0415
 
         # 1. Validate event type header
         event_type = request.headers.get("X-GitHub-Event", "")
@@ -3821,7 +3832,7 @@ def create_api_app(
         _body_bytes = await request.body()
 
         # 1c. GitHub App webhook signature verification (opt-in)
-        from orchestration_engine.config import get_global_config
+        from orchestration_engine.config import get_global_config  # noqa: PLC0415
 
         cfg = get_global_config()
         if cfg.github_app and cfg.github_app.webhook_secret:
@@ -3963,7 +3974,7 @@ def create_api_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/v1/github/issues/pipeline-ready", status_code=202)
-    async def handle_github_issues_pipeline_ready(request: Request) -> JSONResponse:
+    async def handle_github_issues_pipeline_ready(request: Request) -> JSONResponse:  # noqa: C901
         """Receive GitHub ``issues`` webhook events for the ``pipeline-ready`` label.
 
         Triggered when a GitHub issue is labeled with ``pipeline-ready``.
@@ -3984,7 +3995,7 @@ def create_api_app(
             - **202** when the pipeline was launched.
             - **400** when the request body is invalid.
         """
-        from orchestration_engine.issue_automation import (
+        from orchestration_engine.issue_automation import (  # noqa: PLC0415
             post_github_comment,
             remove_github_label,
         )
@@ -4001,7 +4012,7 @@ def create_api_app(
         _body_bytes = await request.body()
 
         # Signature verification (opt-in, same as handle_github_issues)
-        from orchestration_engine.config import get_global_config
+        from orchestration_engine.config import get_global_config  # noqa: PLC0415
 
         _cfg = get_global_config()
         if _cfg.github_app and _cfg.github_app.webhook_secret:
@@ -4095,7 +4106,7 @@ def create_api_app(
         engine = TemplateEngine()
         try:
             template = engine.load_template(template_file)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=f"Invalid template: {exc}")
 
         # 10. Launch pipeline
@@ -4115,7 +4126,7 @@ def create_api_app(
 
         # 12. Post comment with run ID (best-effort)
         comment_body = (
-            f"🤖 **Orchemist** detected `pipeline-ready` label and launched the coding pipeline.\n\n"
+            f"🤖 **Orchemist** detected `pipeline-ready` label and launched the coding pipeline.\n\n"  # noqa: E501
             f"**Branch:** `{branch_name}`\n"
             f"**Run ID:** `{run_id}`\n\n"
             f"Progress can be tracked via `orch status {run_id}`."
@@ -4204,7 +4215,7 @@ def create_api_app(
         offset: int = 0,
     ):
         """List all merge gates with optional status filter and pagination."""
-        from ..git_integration import GitContext
+        from ..git_integration import GitContext  # noqa: PLC0415
 
         all_gates = GitContext.list_gates()
         if status:
@@ -4216,7 +4227,7 @@ def create_api_app(
     @app.get("/api/v1/gates/{run_id}")
     async def get_gate(run_id: str):
         """Get a single gate by run ID."""
-        from ..git_integration import GitContext
+        from ..git_integration import GitContext  # noqa: PLC0415
 
         gate = GitContext.load_gate(run_id)
         if gate is None:
@@ -4226,7 +4237,7 @@ def create_api_app(
     @app.post("/api/v1/gates/{run_id}/approve")
     async def approve_gate(run_id: str, req: GateApproveRequest = GateApproveRequest()):
         """Approve a merge gate."""
-        from ..git_integration import GitContext, GitError
+        from ..git_integration import GitContext, GitError  # noqa: PLC0415
 
         gate = GitContext.load_gate(run_id)
         if gate is None:
@@ -4236,7 +4247,7 @@ def create_api_app(
         if current_status != "awaiting_approval":
             raise HTTPException(
                 status_code=409,
-                detail=f"Gate is in status '{current_status}', can only approve 'awaiting_approval' gates",
+                detail=f"Gate is in status '{current_status}', can only approve 'awaiting_approval' gates",  # noqa: E501
             )
 
         scoring_status = gate.get("scoring_status")
@@ -4258,7 +4269,7 @@ def create_api_app(
     @app.post("/api/v1/gates/{run_id}/reject")
     async def reject_gate(run_id: str, req: GateRejectRequest = GateRejectRequest()):
         """Reject a merge gate."""
-        from ..git_integration import GitContext, GitError
+        from ..git_integration import GitContext, GitError  # noqa: PLC0415
 
         gate = GitContext.load_gate(run_id)
         if gate is None:
@@ -4268,7 +4279,7 @@ def create_api_app(
         if current_status != "awaiting_approval":
             raise HTTPException(
                 status_code=409,
-                detail=f"Gate is in status '{current_status}', can only reject 'awaiting_approval' gates",
+                detail=f"Gate is in status '{current_status}', can only reject 'awaiting_approval' gates",  # noqa: E501
             )
 
         try:

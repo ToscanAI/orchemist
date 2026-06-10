@@ -6,6 +6,10 @@ executor used by tests and CI. Concrete production executors live in their own
 modules (``openclaw_executor``, ``executors/anthropic_executor``, etc.).
 """
 
+# Long lines below are prompt/instruction string literals black cannot wrap
+# (this module is prompt-template-dense); a file-level header avoids per-line noise.
+# ruff: noqa: E501
+
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -64,7 +68,7 @@ def _dry_run_synthetic_text(task_type: "TaskType") -> str:
         A synthetic plain-prose string safe for all routing consumers.
     """
     # Task-type-specific body text (makes logs more readable without affecting routing)
-    _BODY_MAP = {
+    _BODY_MAP = {  # noqa: N806
         "content": "Synthetic content output generated in dry-run mode. The requested content has been produced according to the provided instructions.",
         "code": "Synthetic code output generated in dry-run mode. The implementation matches the specification and all edge cases are handled.",
         "research": "Synthetic research output generated in dry-run mode. The topic has been researched and relevant findings are documented.",
@@ -103,10 +107,14 @@ class DryRunExecutor(TaskExecutor):
         self.failure_rate = failure_rate
 
     def execute(
-        self, task: TaskSpec, worker_id: str, model_tier: str = None, thinking_level: str = None
+        self,
+        task: TaskSpec,
+        worker_id: str,
+        model_tier: str = None,
+        thinking_level: str = None,  # noqa: ARG002
     ) -> TaskResult:
         """Execute task with mock behavior."""
-        import random
+        import random  # noqa: PLC0415
 
         start_time = now_utc()
 
@@ -156,10 +164,10 @@ class DryRunExecutor(TaskExecutor):
             cost_usd=random.uniform(0.01, 0.10),
         )
 
-    def can_handle(self, task_type: TaskType) -> bool:
+    def can_handle(self, task_type: TaskType) -> bool:  # noqa: ARG002
         """Dry run executor can handle all task types."""
         return True
 
-    def estimate_cost(self, task: TaskSpec) -> float:
+    def estimate_cost(self, task: TaskSpec) -> float:  # noqa: ARG002
         """Estimate mock cost."""
         return 0.05  # Mock cost estimate

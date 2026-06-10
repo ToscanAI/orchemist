@@ -385,7 +385,7 @@ class AuditPhase:
             if hasattr(result, "text"):
                 return str(result.text)
             return str(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "AuditPhase: executor.execute() raised %s — falling back to APPROVE",
                 exc,

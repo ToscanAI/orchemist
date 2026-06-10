@@ -75,7 +75,7 @@ class PipelineRunner:
         api_key: Optional[str] = None,
         max_tokens: int = 4096,
         db_path: str = ":memory:",
-        executor_type: Optional[str] = None,
+        executor_type: Optional[str] = None,  # noqa: ARG003
     ) -> "PipelineRunner":
         """Create a PipelineRunner using AnthropicExecutor (direct API calls).
 
@@ -89,9 +89,9 @@ class PipelineRunner:
         Raises:
             ValueError: If no API key is found anywhere.
         """
-        import os
+        import os  # noqa: PLC0415
 
-        from .executors.anthropic_executor import AnthropicExecutor
+        from .executors.anthropic_executor import AnthropicExecutor  # noqa: PLC0415
 
         resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         if not resolved_key:
@@ -107,7 +107,7 @@ class PipelineRunner:
     @classmethod
     def from_template(
         cls,
-        template,
+        template,  # noqa: ARG003
         api_key: Optional[str] = None,
         max_tokens: int = 4096,
         db_path: str = ":memory:",
@@ -149,7 +149,7 @@ class PipelineRunner:
             dry_run:           Skip real HTTP calls and return mock output.
             db_path:           SQLite path.
         """
-        from .openclaw_executor import OpenClawExecutor
+        from .openclaw_executor import OpenClawExecutor  # noqa: PLC0415
 
         executor = OpenClawExecutor(
             gateway_url=gateway_url,
@@ -182,9 +182,9 @@ class PipelineRunner:
         Raises:
             ValueError: If no API key is found anywhere.
         """
-        import os
+        import os  # noqa: PLC0415
 
-        from .executors.openrouter_executor import OpenRouterExecutor
+        from .executors.openrouter_executor import OpenRouterExecutor  # noqa: PLC0415
 
         resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         if not resolved_key:
@@ -217,7 +217,7 @@ class PipelineRunner:
             failure_rate:  Probability [0.0-1.0] of simulated phase failure.
             db_path:       SQLite path.
         """
-        from .runner import DryRunExecutor
+        from .runner import DryRunExecutor  # noqa: PLC0415
 
         executor = DryRunExecutor(
             delay_seconds=delay_seconds,
@@ -246,7 +246,7 @@ class PipelineRunner:
             ValueError: If mcp_server is None or lacks get_context.
                         Propagated directly from ClaudeCodeExecutor.__init__.
         """
-        from .executors.claudecode_executor import ClaudeCodeExecutor
+        from .executors.claudecode_executor import ClaudeCodeExecutor  # noqa: PLC0415
 
         executor = ClaudeCodeExecutor(mcp_server=mcp_server)
         return cls(executors=[executor], db_path=db_path)
@@ -265,7 +265,7 @@ class PipelineRunner:
         """Release database connections and clean up temp files."""
         try:
             self._db.close()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         if self._tmp_dir is not None:
             self._tmp_dir.cleanup()

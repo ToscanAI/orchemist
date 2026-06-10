@@ -64,20 +64,20 @@ class ClaudeCodeExecutor(BaseExecutor):
             raise ValueError("ClaudeCodeExecutor requires an active MCP server context")
         self._mcp_server = mcp_server
 
-    def can_handle(self, task_type: TaskType) -> bool:
+    def can_handle(self, task_type: TaskType) -> bool:  # noqa: ARG002
         """This executor handles all task types."""
         return True
 
-    def estimate_cost(self, task: TaskSpec) -> float:
+    def estimate_cost(self, task: TaskSpec) -> float:  # noqa: ARG002
         """Subscription-based execution — no per-token cost."""
         return 0.0
 
     def execute(
         self,
         task: TaskSpec,
-        worker_id: str = "claudecode-worker",
-        model_tier: str = None,
-        thinking_level: str = None,
+        worker_id: str = "claudecode-worker",  # noqa: ARG002
+        model_tier: str = None,  # noqa: ARG002
+        thinking_level: str = None,  # noqa: ARG002
     ) -> TaskResult:
         """Execute a task by routing it through the Claude Code MCP session.
 
@@ -112,7 +112,7 @@ class ClaudeCodeExecutor(BaseExecutor):
             return self._make_failed(
                 task_id, task, start_time, "Empty response from Claude Code session"
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return self._make_failed(task_id, task, start_time, f"MCP session error: {exc}")
 
         elapsed = (now_utc() - start_time).total_seconds()
@@ -151,7 +151,7 @@ class ClaudeCodeExecutor(BaseExecutor):
     async def _sample(self, prompt: str) -> str:
         """Perform the async MCP sampling call."""
         try:
-            from mcp.types import SamplingMessage, TextContent
+            from mcp.types import SamplingMessage, TextContent  # noqa: PLC0415
         except ImportError as exc:
             raise ImportError(
                 "The 'mcp' package is required for MCP sampling. "

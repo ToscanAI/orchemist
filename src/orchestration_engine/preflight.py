@@ -275,7 +275,7 @@ class PreflightChecker:
                         message="Working tree clean",
                     )
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             result.add_check(
                 CheckItem(
                     name="git_clean",
@@ -307,7 +307,7 @@ class PreflightChecker:
                     CheckItem(
                         name="git_main_current",
                         passed=False,
-                        message=f"Local is {behind} commit(s) behind origin/main. Run 'git pull origin main'.",
+                        message=f"Local is {behind} commit(s) behind origin/main. Run 'git pull origin main'.",  # noqa: E501
                         severity="warning",
                     )
                 )
@@ -319,7 +319,7 @@ class PreflightChecker:
                         message="Main branch is up to date",
                     )
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             result.add_check(
                 CheckItem(
                     name="git_main_current",
@@ -369,7 +369,7 @@ class PreflightChecker:
                     run_repo = run_input.get("repo_url", "")
                     if run_issue == issue_number and run_repo == repo_url:
                         duplicates.append(run["run_id"][:8])
-                except (json.JSONDecodeError, KeyError):
+                except (json.JSONDecodeError, KeyError):  # noqa: PERF203
                     continue
 
             if duplicates:
@@ -389,7 +389,7 @@ class PreflightChecker:
                         message=f"No active runs for issue #{issue_number}",
                     )
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             result.add_check(
                 CheckItem(
                     name="dedup",
@@ -424,7 +424,7 @@ class PreflightChecker:
                 CheckItem(
                     name="dependencies",
                     passed=True,
-                    message=f"Dependencies found ({', '.join('#'+d for d in deps)}) but no repo_url to verify",
+                    message=f"Dependencies found ({', '.join('#'+d for d in deps)}) but no repo_url to verify",  # noqa: E501
                     severity="warning",
                 )
             )
@@ -457,7 +457,7 @@ class PreflightChecker:
                 state = check.stdout.strip()
                 if state != "CLOSED":
                     unmerged.append(f"#{dep_num} ({state})")
-            except Exception:
+            except Exception:  # noqa: BLE001, PERF203
                 # Can't verify, skip
                 continue
 
@@ -498,7 +498,7 @@ class PreflightChecker:
 
         try:
             today_cost = self.cost_tracker.get_daily_cost()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             result.add_check(
                 CheckItem(
                     name="daily_budget",

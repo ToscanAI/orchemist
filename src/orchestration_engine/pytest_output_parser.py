@@ -54,7 +54,7 @@ class _PytestCounts(NamedTuple):
     pass_rate: float
 
 
-def count_pytest_results(stdout: str, returncode: int) -> _PytestCounts:
+def count_pytest_results(stdout: str, returncode: int) -> _PytestCounts:  # noqa: ARG001
     """Extract pass/fail/error counts from ``pytest -v --tb=short`` output.
 
     Handles:

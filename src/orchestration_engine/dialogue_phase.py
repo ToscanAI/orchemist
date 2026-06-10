@@ -26,6 +26,10 @@ already reflects ``usage.total_cost`` from the OpenRouter response when
 present) and never apply a $10/Mtok fallback inflator.
 """
 
+# E501 residual here is a long docstring parameter description black cannot
+# wrap; a line-level noqa is inert inside a string literal.
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import logging
@@ -280,7 +284,6 @@ class DialogueRunner:
         """
         rounds: List[DialogueRound] = []
         history: List[Dict[str, Any]] = []
-        prior_review: Optional[str] = None
         prior_draft: Optional[str] = None
         convergence_stall = False
         consecutive_drift_hits = 0
@@ -310,7 +313,7 @@ class DialogueRunner:
                     prompt=drafter_prompt,
                     worker_id=f"dialogue-drafter-{round_num}",
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "Dialogue %s round %d: drafter executor failed: %s",
                     self.run_id or self.phase_id,
@@ -387,7 +390,7 @@ class DialogueRunner:
                     prompt=reviewer_prompt,
                     worker_id=f"dialogue-reviewer-{round_num}",
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "Dialogue %s round %d: reviewer executor failed: %s",
                     self.run_id or self.phase_id,
@@ -483,7 +486,6 @@ class DialogueRunner:
             rounds.append(round_record)
 
             prior_draft = draft_text
-            prior_review = review_text
 
             if approved:
                 logger.info(
@@ -645,7 +647,6 @@ class DialogueRunner:
             return False
 
         signal = self.config.convergence_signal.upper()
-        upper = review_text.upper()
 
         # Pass 1: simple substring on a meaningful line — fast path.
         for line in review_text.splitlines():
@@ -807,7 +808,7 @@ def _safe_cost(result: TaskResult) -> Decimal:
         return Decimal("0")
     try:
         return Decimal(str(cost))
-    except Exception:
+    except Exception:  # noqa: BLE001
         return Decimal("0")
 
 

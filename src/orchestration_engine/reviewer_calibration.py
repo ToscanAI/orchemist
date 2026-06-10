@@ -206,7 +206,7 @@ class ReviewerCalibrator:
             for metrics in metrics_map.values():
                 try:
                     self._db.insert_calibration_snapshot(metrics.to_dict())
-                except Exception:
+                except Exception:  # noqa: PERF203
                     logger.exception(
                         "Failed to persist calibration snapshot for model %r",
                         metrics.reviewer_model,

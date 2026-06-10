@@ -21,14 +21,14 @@ from .templates import (
 
 
 def PhaseDefinition(  # noqa: N802 — intentionally matches class-like name
-    id: str,
+    id: str,  # noqa: A002
     name: str = "",
     *,
     model: str = "sonnet",
     model_tier: str = "",
     prompt_template: str = "",
     max_iterations: int = 0,
-    next_phases: Any = None,  # ignored — transitions dict is used instead
+    next_phases: Any = None,  # ignored — transitions dict is used instead  # noqa: ARG001
     transitions: Optional[dict] = None,
     **kwargs: Any,
 ) -> _PhaseDefinition:
@@ -66,11 +66,12 @@ def PhaseDefinition(  # noqa: N802 — intentionally matches class-like name
 
 
 def PipelineTemplate(  # noqa: N802 — intentionally matches class-like name
-    id: str,
+    id: str,  # noqa: A002
     name: str = "",
     *,
     phases: Optional[List[_PhaseDefinition]] = None,
-    entry_point: Optional[str] = None,  # accepted, ignored (first phase is entry point)
+    # entry_point is accepted but ignored (the first phase is the entry point)
+    entry_point: Optional[str] = None,  # noqa: ARG001
     **kwargs: Any,
 ) -> _PipelineTemplate:
     """Create a :class:`~orchestration_engine.templates.PipelineTemplate`.

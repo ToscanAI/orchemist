@@ -568,7 +568,7 @@ class PhaseDefinition:
     are subject to protection.
     """
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: C901
         # Normalise None values that YAML might produce for optional fields
         if self.depends_on is None:
             self.depends_on = []
@@ -726,7 +726,7 @@ class PipelineTemplate:
     time.  Used by :meth:`TemplateEngine.validate_template` to enrich
     transition-target errors when the target was excluded."""
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: C901
         if self.phases is None:
             self.phases = []
         if self.config_schema is None:
@@ -869,7 +869,7 @@ class TemplateEngine:
     # Name-based resolution
     # ------------------------------------------------------------------
 
-    def resolve_template(self, name: str) -> Path:
+    def resolve_template(self, name: str) -> Path:  # noqa: C901
         """Resolve a template *name* to an absolute :class:`Path`.
 
         Searches ``get_search_paths()`` in order.  The *name* is matched
@@ -920,7 +920,7 @@ class TemplateEngine:
                             filepath,
                         )
                         return filepath.resolve()
-                except Exception:
+                except Exception:  # noqa: BLE001, PERF203
                     continue
 
         raise TemplateNotFoundError(name, searched)
@@ -964,7 +964,7 @@ class TemplateEngine:
             for filepath in sorted(directory.glob("*.yaml")) + sorted(directory.glob("*.yml")):
                 try:
                     template = self.load_template(filepath)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     logger.warning("list_templates: skipping %s — %s", filepath, exc)
                     continue
 
@@ -1003,7 +1003,7 @@ class TemplateEngine:
     # Template composition (Issue #704)
     # ------------------------------------------------------------------
 
-    def _merge_extends(
+    def _merge_extends(  # noqa: C901
         self,
         child_data: Dict[str, Any],
         extends_id: str,
@@ -1181,7 +1181,7 @@ class TemplateEngine:
     # Public API
     # ------------------------------------------------------------------
 
-    def load_template(self, template_path: Path) -> PipelineTemplate:
+    def load_template(self, template_path: Path) -> PipelineTemplate:  # noqa: C901
         """Load a pipeline template from a YAML file.
 
         Supports the new parallel-execution fields (Issue #102):
@@ -1258,7 +1258,7 @@ class TemplateEngine:
             phase_data.setdefault("output_schema", {})
 
             # Accept common field aliases (postmortem fix 2026-02-26)
-            _PHASE_ALIASES: Dict[str, str] = {
+            _PHASE_ALIASES: Dict[str, str] = {  # noqa: N806
                 "prompt": "prompt_template",
                 "model": "model_tier",
             }
@@ -1507,7 +1507,7 @@ class TemplateEngine:
         return result
 
     @staticmethod
-    def _detect_transition_cycles(
+    def _detect_transition_cycles(  # noqa: C901
         effective_transitions: Dict[str, Dict[str, str]],
         all_phase_ids: Set[str],
     ) -> List[List[str]]:
@@ -1529,8 +1529,8 @@ class TemplateEngine:
             for target in eff.values():
                 if target in all_phase_ids and target not in graph[pid]:
                     graph[pid].append(target)
-        for pid in graph:
-            graph[pid].sort()
+        for adj in graph.values():  # PLC0206: sort each adjacency list in place
+            adj.sort()
 
         visited: Set[str] = set()
         rec_stack: Set[str] = set()
@@ -1557,7 +1557,7 @@ class TemplateEngine:
 
         return cycles
 
-    def validate_template(self, template: PipelineTemplate) -> List[str]:
+    def validate_template(self, template: PipelineTemplate) -> List[str]:  # noqa: C901
         """Validate a pipeline template for structural errors.
 
         Checks performed:
@@ -1586,7 +1586,9 @@ class TemplateEngine:
         for phase in template.phases:
             for dep in phase.depends_on:
                 if dep not in all_ids:
-                    errors.append(f"Phase '{phase.id}' depends on unknown phase '{dep}'")
+                    errors.append(  # noqa: PERF401
+                        f"Phase '{phase.id}' depends on unknown phase '{dep}'"
+                    )
 
         # Check for cycles only when there are no missing-dep errors
         # (missing deps can make the cycle detector give false positives)
@@ -1676,7 +1678,7 @@ class TemplateEngine:
             gc = template.git_config
             for cp in gc.commit_phases:
                 if cp not in all_ids:
-                    errors.append(
+                    errors.append(  # noqa: PERF401
                         f"git.commit_phases references unknown phase '{cp}' "
                         f"(known phases: {sorted(all_ids)})"
                     )
@@ -1684,7 +1686,7 @@ class TemplateEngine:
         # Check for empty prompt_template (postmortem fix 2026-02-26)
         # Exception: command and acceptance_run phases use engine dispatch instead of a prompt
         # command (#190), acceptance_run (#532)
-        _NO_PROMPT_TASK_TYPES = {"command", "acceptance_run"}
+        _NO_PROMPT_TASK_TYPES = {"command", "acceptance_run"}  # noqa: N806
         for phase in template.phases:
             if phase.task_type in _NO_PROMPT_TASK_TYPES:
                 continue  # these phases are engine-executed, not LLM-prompted
@@ -1762,7 +1764,7 @@ class TemplateEngine:
                             continue
                         if not entry.template or not isinstance(entry.template, str):
                             errors.append(
-                                f"on_complete.{list_name}[{idx}]: template must be a non-empty string"
+                                f"on_complete.{list_name}[{idx}]: template must be a non-empty string"  # noqa: E501
                             )
                         if not isinstance(entry.input_map, dict):
                             errors.append(
@@ -1784,14 +1786,14 @@ class TemplateEngine:
                         if entry.template == template.id:
                             errors.append(
                                 f"on_complete.{list_name}[{idx}]: template '{entry.template}' "
-                                f"references this template itself (self-referential chain is an error)"
+                                f"references this template itself (self-referential chain is an error)"  # noqa: E501
                             )
 
         # Issue #331.2: Validate routing_config threshold integrity
         if template.routing_config is not None:
             routing_errors = RoutingEngine(template.routing_config).validate_thresholds()
             for re_msg in routing_errors:
-                errors.append(f"routing_config: {re_msg}")
+                errors.append(f"routing_config: {re_msg}")  # noqa: PERF401
 
         return errors
 
@@ -1799,7 +1801,7 @@ class TemplateEngine:
     # Chain DAG validation  (Issue #330.3)
     # ------------------------------------------------------------------
 
-    def validate_chain_dag(self, template: "PipelineTemplate") -> List[str]:
+    def validate_chain_dag(self, template: "PipelineTemplate") -> List[str]:  # noqa: C901
         """Validate the full chain graph rooted at *template* for cycles.
 
         Traces all transitive ``on_complete`` references by loading each
@@ -1834,7 +1836,7 @@ class TemplateEngine:
                     continue
                 for entry in entry_list:
                     if isinstance(entry, OnCompleteEntry) and entry.template:
-                        children.append(entry.template)
+                        children.append(entry.template)  # noqa: PERF401
             return children
 
         def _load_and_cache(template_id: str) -> Optional["PipelineTemplate"]:
@@ -1846,7 +1848,7 @@ class TemplateEngine:
                 tpl = self.load_template(path)
                 loaded[tpl.id] = tpl
                 return tpl
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "validate_chain_dag: could not load template '%s': %s",
                     template_id,
@@ -1870,7 +1872,7 @@ class TemplateEngine:
             graph[tid] = children
             for child_id in children:
                 if child_id not in graph:
-                    to_explore.append(child_id)
+                    to_explore.append(child_id)  # noqa: PERF401
 
         # DFS cycle detection
         visited: Set[str] = set()
@@ -1896,7 +1898,7 @@ class TemplateEngine:
                 dfs(node, [])
 
         for cycle in cycles_found:
-            errors.append(f"Cycle detected in chain DAG: {' → '.join(cycle)}")
+            errors.append(f"Cycle detected in chain DAG: {' → '.join(cycle)}")  # noqa: PERF401
 
         return errors
 
@@ -1910,7 +1912,7 @@ class TemplateEngine:
     #: Known valid thinking level values.
     KNOWN_THINKING_LEVELS: List[str] = ["off", "low", "medium", "high"]
 
-    def validate_template_extended(
+    def validate_template_extended(  # noqa: C901
         self,
         template: "PipelineTemplate",
         raw_data: Dict[str, Any],
@@ -2044,7 +2046,7 @@ class TemplateEngine:
         # advisory so authors can confirm they are intentional).
         transition_cycles = self._detect_transition_cycles(effective_transitions_ext, phase_ids)
         for cycle in transition_cycles:
-            warnings.append(
+            warnings.append(  # noqa: PERF401
                 f"Transition cycle detected: {' → '.join(cycle)} "
                 f"(valid with max_iterations, but verify this is intentional)"
             )
@@ -2059,7 +2061,7 @@ class TemplateEngine:
 
         for phase in template.phases:
             if phase.id in all_transition_targets_ext and phase.depends_on:
-                warnings.append(
+                warnings.append(  # noqa: PERF401
                     f"Phase '{phase.id}' is a transition target but also has "
                     f"depends_on={phase.depends_on} — transition routing and "
                     f"dependency ordering may conflict. Consider removing "

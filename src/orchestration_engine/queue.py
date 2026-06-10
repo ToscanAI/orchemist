@@ -4,6 +4,10 @@ Provides high-level task queue operations with retry logic, state management,
 and worker coordination on top of the SQLite database layer.
 """
 
+# Trailing whitespace below lives inside multi-line string literals;
+# ruff only offers --unsafe-fixes (string-byte edits) for it.
+# ruff: noqa: W291
+
 import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -94,7 +98,7 @@ class TaskQueue:
             self.db.update_orchestra_stats(task_spec.orchestra_id)
 
         logger.info(
-            f"Submitted task {task_id} (type={task_spec.type.value}, priority={task_spec.priority.value})"
+            f"Submitted task {task_id} (type={task_spec.type.value}, priority={task_spec.priority.value})"  # noqa: E501
         )
 
         return task_id
@@ -303,7 +307,7 @@ class TaskQueue:
             result.errors.append(
                 {
                     "code": "LOW_CONFIDENCE",
-                    "message": f"Result confidence {result.confidence} below required {min_confidence}",
+                    "message": f"Result confidence {result.confidence} below required {min_confidence}",  # noqa: E501
                     "severity": "error",
                 }
             )
@@ -648,9 +652,9 @@ class TaskQueue:
 
     def _task_data_to_spec(self, task_data: Dict[str, Any]) -> TaskSpec:
         """Convert a raw task dict from the database into a TaskSpec."""
-        from decimal import Decimal as _Decimal
+        from decimal import Decimal as _Decimal  # noqa: PLC0415
 
-        from .schemas import ModelTier
+        from .schemas import ModelTier  # noqa: PLC0415
 
         preferred = task_data.get("preferred_model")
         return TaskSpec(

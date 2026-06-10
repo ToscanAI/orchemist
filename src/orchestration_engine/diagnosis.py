@@ -6,6 +6,10 @@ LLM-based diagnostician (phase 3.1.2+) and persisted via the Database
 CRUD methods in db.py.
 """
 
+# E501 residuals here are long prompt/JSON-template string literals black
+# cannot wrap; a line-level noqa is inert inside a string literal.
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import hashlib
@@ -282,7 +286,7 @@ class DiagnosisEngine:
                 confidence=confidence,
                 explanation=explanation,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Failed to parse LLM diagnosis response: %s — raw text: %.200s",
                 exc,
@@ -332,7 +336,7 @@ class DiagnosisEngine:
             recommended remediation.
         """
         # Lazy import to avoid circular dependency at module load time.
-        from .schemas import Priority, TaskSpec, TaskType
+        from .schemas import Priority, TaskSpec, TaskType  # noqa: PLC0415
 
         phase_context = self._collect_phase_context(output_dir)
         prompt = self._build_prompt(error_message or "", phase_context)
@@ -350,7 +354,7 @@ class DiagnosisEngine:
                 worker_id="diagnosis-engine",
                 model_tier=self.DEFAULT_MODEL_TIER,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             _logger.error("Executor call failed during diagnosis for run %s: %s", run_id, exc)
             fallback = DiagnosisResult(
                 failure_class=FailureClass.INFRA_ISSUE,
@@ -414,7 +418,7 @@ class DiagnosisEngine:
                     failure_class=final.failure_class.value,
                     error_message=error_message or "",
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 _logger.warning("FailurePatternTracker.track failed (non-fatal): %s", exc)
 
         return final

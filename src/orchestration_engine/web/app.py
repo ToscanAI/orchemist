@@ -34,7 +34,7 @@ def _resolve_template_by_name_or_id(engine, name: str):
     Returns:
         ``PipelineTemplate`` instance or ``None`` when not found.
     """
-    from orchestration_engine.templates import TemplateNotFoundError
+    from orchestration_engine.templates import TemplateNotFoundError  # noqa: PLC0415
 
     # 1. Try file-stem resolution (fast path).
     try:
@@ -47,10 +47,10 @@ def _resolve_template_by_name_or_id(engine, name: str):
     for entry in engine.list_templates():
         if entry["id"] == name:
             try:
-                from pathlib import Path as _Path
+                from pathlib import Path as _Path  # noqa: PLC0415
 
                 return engine.load_template(_Path(entry["path"]))
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return None
 
     return None
@@ -62,14 +62,14 @@ def create_app():  # noqa: C901
     Returns:
         FastAPI application instance.
     """
-    from fastapi import FastAPI, HTTPException, Request
-    from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import HTMLResponse, JSONResponse
-    from pydantic import BaseModel
-    from sse_starlette.sse import EventSourceResponse
+    from fastapi import FastAPI, HTTPException, Request  # noqa: PLC0415
+    from fastapi.middleware.cors import CORSMiddleware  # noqa: PLC0415
+    from fastapi.responses import HTMLResponse, JSONResponse  # noqa: PLC0415
+    from pydantic import BaseModel  # noqa: PLC0415
+    from sse_starlette.sse import EventSourceResponse  # noqa: PLC0415
 
-    from orchestration_engine import __version__
-    from orchestration_engine.templates import TemplateEngine
+    from orchestration_engine import __version__  # noqa: PLC0415
+    from orchestration_engine.templates import TemplateEngine  # noqa: PLC0415
 
     app = FastAPI(
         title="Orchestration Engine Web UI",
@@ -148,7 +148,7 @@ def create_app():  # noqa: C901
         for t in raw_templates:
             # Load the full template object to get category, author, and phases.
             try:
-                from pathlib import Path as _Path
+                from pathlib import Path as _Path  # noqa: PLC0415
 
                 tpl = engine.load_template(_Path(t["path"]))
                 category = tpl.category or (tpl.phases[0].task_type if tpl.phases else "general")
@@ -161,7 +161,7 @@ def create_app():  # noqa: C901
                     }
                     for p in tpl.phases
                 ]
-            except Exception:
+            except Exception:  # noqa: BLE001
                 category = "general"
                 author = ""
                 phases_summary = []
@@ -191,7 +191,7 @@ def create_app():  # noqa: C901
 
         phases_data: List[Dict[str, Any]] = []
         for phase in template.phases:
-            phases_data.append(
+            phases_data.append(  # noqa: PERF401
                 {
                     "id": phase.id,
                     "name": phase.name,
@@ -395,7 +395,7 @@ def create_app():  # noqa: C901
 # ------------------------------------------------------------------ #
 
 
-async def _execute_pipeline(
+async def _execute_pipeline(  # noqa: C901
     run_id: str,
     template: Any,
     mode: str,
@@ -403,11 +403,11 @@ async def _execute_pipeline(
     active_runs: Dict[str, Any],
 ) -> None:
     """Execute a pipeline template in the background, pushing SSE events."""
-    import json as _json
+    import json as _json  # noqa: PLC0415
 
-    from orchestration_engine.daemon import apply_config_schema_defaults
-    from orchestration_engine.pipeline_runner import PipelineRunner
-    from orchestration_engine.sequencer import PhaseSequencer
+    from orchestration_engine.daemon import apply_config_schema_defaults  # noqa: PLC0415
+    from orchestration_engine.pipeline_runner import PipelineRunner  # noqa: PLC0415
+    from orchestration_engine.sequencer import PhaseSequencer  # noqa: PLC0415
 
     run = active_runs[run_id]
     run["status"] = "running"

@@ -4,6 +4,11 @@ Provides SQLite-backed persistent storage with WAL mode, proper indexing,
 connection management, and schema migrations.
 """
 
+# Trailing/blank-line whitespace and long lines below live inside triple-quoted
+# SQL DDL / docstring string literals; ruff only offers --unsafe-fixes for the
+# whitespace, and a line-level E501 noqa is inert inside a string literal.
+# ruff: noqa: W291, W293, E501
+
 import json
 import logging
 import sqlite3
@@ -22,7 +27,7 @@ logger = logging.getLogger(__name__)
 sqlite3.register_adapter(datetime, lambda val: val.isoformat())
 sqlite3.register_converter("timestamp", lambda val: datetime.fromisoformat(val.decode()))
 
-from .timestamps import normalize_ts, now_utc
+from .timestamps import normalize_ts, now_utc  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Shared terminal-state set — single source of truth used by db, api, and
@@ -1046,7 +1051,7 @@ class Database:
             cursor = conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", values)
             return cursor.rowcount > 0
 
-    def get_next_task(self, worker_id: str) -> Optional[Dict[str, Any]]:
+    def get_next_task(self, worker_id: str) -> Optional[Dict[str, Any]]:  # noqa: ARG002
         """Get the next available task for execution."""
         with self.transaction() as conn:
             # Find next task using priority and retry logic
@@ -1649,7 +1654,7 @@ class Database:
             rows = cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 
-    def sweep_zombie_runs(self, now: Optional[str] = None) -> int:
+    def sweep_zombie_runs(self, now: Optional[str] = None) -> int:  # noqa: C901
         """Sweep zombie pipeline runs whose daemons have died (Issue #754).
 
         Scans rows whose ``status`` is in the non-terminal set
@@ -1711,8 +1716,8 @@ class Database:
         # run_daemon), so a top-level `from .daemon import` would deadlock
         # at module load time.
         try:
-            from .daemon import is_process_alive
-        except Exception as exc:  # pragma: no cover — defensive
+            from .daemon import is_process_alive  # noqa: PLC0415
+        except Exception as exc:  # pragma: no cover — defensive  # noqa: BLE001
             logger.error("sweep_zombie_runs: cannot import is_process_alive: %s", exc)
             return 0
 
@@ -1789,7 +1794,7 @@ class Database:
                 )
                 if self._mark_crashed(run_id, error_message, now):
                     swept += 1
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 # Per-row containment — log and move on.
                 run_id_str = row["run_id"] if hasattr(row, "__getitem__") else "<unknown>"
                 logger.warning(
@@ -1860,7 +1865,7 @@ class Database:
         # swept) without raising — the count below proceeds either way.
         try:
             self.sweep_zombie_runs()
-        except Exception as exc:  # pragma: no cover — sweep is defensive
+        except Exception as exc:  # pragma: no cover — sweep is defensive  # noqa: BLE001
             logger.warning(
                 "count_active_pipeline_runs: sweep raised unexpectedly: %s",
                 exc,
@@ -2016,8 +2021,8 @@ class Database:
             ``True`` if the run was cancelled, ``False`` if the run was
             already in a terminal state or not found.
         """
-        import os as _os
-        import signal as _signal
+        import os as _os  # noqa: PLC0415
+        import signal as _signal  # noqa: PLC0415
 
         terminal_states = TERMINAL_STATUSES
 
@@ -2495,7 +2500,7 @@ class Database:
         ]:
             try:
                 conn.execute(f"ALTER TABLE pipeline_runs ADD COLUMN {col[0]} {col[1]}")
-            except Exception:
+            except Exception:  # noqa: BLE001, PERF203
                 pass  # column already exists
 
     def _migration_009_add_diagnosis_tables(self, conn: sqlite3.Connection) -> None:
@@ -2962,8 +2967,8 @@ class Database:
             source_pid: OS pid of the FastAPI worker process. Default
                 ``os.getpid()`` if not supplied.
         """
-        import json as _json
-        import os as _os
+        import json as _json  # noqa: PLC0415
+        import os as _os  # noqa: PLC0415
 
         pid = source_pid if source_pid is not None else _os.getpid()
         with self.transaction() as conn:
@@ -2989,7 +2994,7 @@ class Database:
         Each row is a dict with the columns of ``admin_audit_log``;
         ``before_json``/``after_json`` are parsed back into dicts (or None).
         """
-        import json as _json
+        import json as _json  # noqa: PLC0415
 
         with self.transaction() as conn:
             cur = conn.execute(
@@ -3878,7 +3883,7 @@ class Database:
         Returns:
             The ``id`` of the inserted row.
         """
-        import json as _json
+        import json as _json  # noqa: PLC0415
 
         # Normalise affected_files: accept both list and pre-serialised string.
         af = regression_data.get("affected_files", [])

@@ -403,7 +403,7 @@ class IssueClassifier:
             if hasattr(result, "text") and result.text is not None:
                 return result.text
             return str(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "IssueClassifier: executor.execute() raised %s — falling back to stub",
                 exc,
@@ -693,7 +693,7 @@ class InputExtractor:
             if hasattr(result, "text") and result.text is not None:
                 return result.text
             return str(result)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "InputExtractor: executor.execute() raised %s — falling back to stub",
                 exc,
@@ -767,7 +767,7 @@ def post_github_comment(repo: str, issue_number: int, body: str) -> Optional[str
         if url:
             print(f"Comment posted at {url}")
     """
-    import subprocess
+    import subprocess  # noqa: PLC0415
 
     try:
         result = subprocess.run(
@@ -805,7 +805,7 @@ def post_github_comment(repo: str, issue_number: int, body: str) -> Optional[str
 # ---------------------------------------------------------------------------
 
 
-from .text_utils import slugify_branch  # noqa: F401 — re-export for backward compat
+from .text_utils import slugify_branch  # noqa: E402, F401 — re-export for backward compat
 
 # ---------------------------------------------------------------------------
 # generate_pipeline_input — build coding-pipeline-v1 input dict (Issue #511)
@@ -891,8 +891,8 @@ def remove_github_label(repo: str, issue_number: int, label: str) -> bool:
         ok = remove_github_label("owner/repo", 42, "pipeline-ready")
         # ok == True when the label was successfully removed
     """
-    import subprocess
-    from urllib.parse import quote
+    import subprocess  # noqa: PLC0415
+    from urllib.parse import quote  # noqa: PLC0415
 
     encoded_label = quote(label, safe="")
     endpoint = f"repos/{repo}/issues/{issue_number}/labels/{encoded_label}"
@@ -943,7 +943,7 @@ def add_github_label(repo: str, issue_number: int, label: str) -> bool:
         ok = add_github_label("owner/repo", 42, "pipeline-ready")
         # ok == True when the label was successfully applied
     """
-    import subprocess
+    import subprocess  # noqa: PLC0415
 
     endpoint = f"repos/{repo}/issues/{issue_number}/labels"
     try:
@@ -987,7 +987,7 @@ def get_github_issue_labels(repo: str, issue_number: int) -> list:
         labels = get_github_issue_labels("owner/repo", 42)
         # e.g. ["pipeline-ready", "bug"]
     """
-    import subprocess
+    import subprocess  # noqa: PLC0415
 
     endpoint = f"repos/{repo}/issues/{issue_number}"
     try:
@@ -1049,7 +1049,7 @@ def create_pr_for_issue(
         if url:
             print(f"PR opened: {url}")
     """
-    import subprocess
+    import subprocess  # noqa: PLC0415
 
     # Only append "Closes #N" if not already present to avoid duplication.
     _closes_marker = f"Closes #{issue_number}"
@@ -1154,7 +1154,7 @@ def create_content_pr(
         The PR HTML URL string on success, ``None`` on any failure — errors
         are logged as warnings so callers can continue without a PR.
     """
-    import subprocess
+    import subprocess  # noqa: PLC0415
 
     topic_truncated = _truncate_title(topic.strip()) if topic else "content"
     title = f"{prefix}: {topic_truncated}"
@@ -1565,7 +1565,7 @@ class IssueAutomation:
                     ),
                     tier="escalation",
                 )
-            escalated = True
+            escalated = True  # noqa: F841 — escalation outcome flag, kept intentional
 
             # Update DB status to 'escalated' so the row reflects the outcome.
             if db is not None and classification.id is not None:
@@ -1605,7 +1605,7 @@ class IssueAutomation:
                 template_path_obj = template_resolver(template_name)
                 template_obj = template_engine.load_template(template_path_obj)
                 config_schema = template_obj.config_schema or {}
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "IssueAutomation: could not load template schema for %r: %s",
                     template_name,
@@ -1643,7 +1643,7 @@ class IssueAutomation:
                     repo,
                     run_id,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.error(
                     "IssueAutomation: failed to launch pipeline for issue #%d: %s",
                     issue_number,
@@ -1675,7 +1675,7 @@ class IssueAutomation:
 
     def _build_comment(
         self,
-        issue_number: int,
+        issue_number: int,  # noqa: ARG002
         classification: "IssueClassification",
         template_name: str,
         run_id: Optional[str],

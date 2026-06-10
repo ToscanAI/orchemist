@@ -68,7 +68,7 @@ class AnthropicExecutor(BaseExecutor):
                 "The executor will fail on real calls."
             )
 
-    def can_handle(self, task_type: TaskType) -> bool:
+    def can_handle(self, task_type: TaskType) -> bool:  # noqa: ARG002
         """This executor can handle all task types."""
         return True
 
@@ -85,7 +85,7 @@ class AnthropicExecutor(BaseExecutor):
     def execute(
         self,
         task: TaskSpec,
-        worker_id: str = "anthropic-worker",
+        worker_id: str = "anthropic-worker",  # noqa: ARG002
         model_tier: str = None,
         thinking_level: str = None,
     ) -> TaskResult:
@@ -186,7 +186,7 @@ class AnthropicExecutor(BaseExecutor):
                 ),
             )
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             elapsed = (now_utc() - start_time).total_seconds()
             logger.error(f"API call failed for task {task_id}: {exc}")
 

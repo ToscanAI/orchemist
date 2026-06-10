@@ -27,7 +27,7 @@ def _require_mcp() -> None:
         SystemExit: With exit code 1 when `mcp` is not installed.
     """
     try:
-        import mcp  # noqa: F401
+        import mcp  # noqa: F401, PLC0415
     except ImportError:
         print(
             "The 'mcp' package is required to run the MCP server. "
@@ -48,10 +48,10 @@ def _read_version() -> str:
         Version string (e.g. "0.3.0") or "0.0.0" on failure.
     """
     try:
-        import importlib.metadata
+        import importlib.metadata  # noqa: PLC0415
 
         return importlib.metadata.version("orchemist")
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
 
     try:
@@ -59,7 +59,7 @@ def _read_version() -> str:
         with open(_pyproject, "rb") as f:
             data = tomllib.load(f)
         return data["project"]["version"]
-    except Exception:
+    except Exception:  # noqa: BLE001
         print("Could not read version from pyproject.toml, using 0.0.0", file=sys.stderr)
         return "0.0.0"
 
@@ -89,13 +89,13 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
     if transport == "stdio":
         print("MCP server started", file=sys.stderr)
         _check_api_key()
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp import FastMCP  # noqa: PLC0415
 
         version = _read_version()
         mcp = FastMCP(name="orchemist")
         register_tools(mcp)
         mcp._mcp_server.version = version
-        import asyncio
+        import asyncio  # noqa: PLC0415
 
         asyncio.run(mcp.run_stdio_async())
 
@@ -106,7 +106,7 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
         # Pre-check port availability before attempting to start the server.
         # uvicorn catches and logs OSErrors internally rather than re-raising,
         # so we must verify the port is free before handing off to the MCP SDK.
-        import socket as _socket
+        import socket as _socket  # noqa: PLC0415
 
         _check_sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
         _check_sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 0)
@@ -122,13 +122,13 @@ def run_mcp_server(transport: str = "stdio", port: int = 8000) -> None:
         finally:
             _check_sock.close()
 
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.fastmcp import FastMCP  # noqa: PLC0415
 
         version = _read_version()
         mcp = FastMCP(name="orchemist", host="0.0.0.0", port=port)
         register_tools(mcp)
         mcp._mcp_server.version = version
-        import asyncio
+        import asyncio  # noqa: PLC0415
 
         try:
             asyncio.run(mcp.run_sse_async())

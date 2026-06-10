@@ -137,7 +137,7 @@ def parse_adversary_output(text) -> AdversaryVerdict:
     if not isinstance(text, str):
         try:
             raw_text = str(text)
-        except Exception:
+        except Exception:  # noqa: BLE001
             raw_text = ""
     else:
         raw_text = text
@@ -281,7 +281,7 @@ def persist_reward(output_dir, verdict: AdversaryVerdict, reward: int) -> None:
             reward,
             len(verdict.findings),
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "spec_adversary: failed to write %r — %s",
             str(reward_path),

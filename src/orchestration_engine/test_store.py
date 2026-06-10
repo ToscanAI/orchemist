@@ -33,6 +33,10 @@ The root directory for all test stores is resolved as follows:
 2. Otherwise, the default is ``~/.orchemist/test_store/``.
 """
 
+# E501 residual here is a long import example inside the module docstring
+# black cannot wrap; a line-level noqa is inert inside a string literal.
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import json

@@ -207,7 +207,7 @@ class CommandExecutor:
                 state=TaskState.FAILED,
                 started_at=started_at,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.error(f"CommandExecutor: unexpected error running {args!r}: {exc}")
             return self._make_result(
                 task=task,

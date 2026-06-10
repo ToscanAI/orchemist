@@ -345,7 +345,7 @@ class RoutingEngine:
                             successful_merges,
                         )
                         return RoutingEngine(trust_config).route(confidence_result)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "evaluate: trust profile lookup failed for %s/%s/%s "
                     "(falling back to default routing): %s",
@@ -484,7 +484,7 @@ def _build_trust_routing_config(
             f"must be strictly greater than human_review_threshold ({human_review_threshold})"
         )
 
-    _RETRY_FLOOR = 0.50
+    _RETRY_FLOOR = 0.50  # noqa: N806
 
     tiers: List[RoutingTier] = [
         RoutingTier(

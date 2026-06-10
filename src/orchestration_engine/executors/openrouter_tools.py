@@ -145,7 +145,7 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "grep",
-            "description": "Search for a regex pattern across files. Results capped at 1000 matches.",
+            "description": "Search for a regex pattern across files. Results capped at 1000 matches.",  # noqa: E501
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -167,7 +167,7 @@ TOOL_SCHEMAS: list[dict] = [
         "type": "function",
         "function": {
             "name": "glob",
-            "description": "Match file paths against a glob pattern. Results capped at 500 paths (sorted).",
+            "description": "Match file paths against a glob pattern. Results capped at 500 paths (sorted).",  # noqa: E501
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -219,7 +219,7 @@ def normalise_sandbox_roots(raw: Any) -> tuple[dict[str, str], bool]:
     if not normalised:
         return ({"tmp_dir": tempfile.gettempdir()}, True)
 
-    # Always ensure tmp_dir is present as a backstop even when caller only gave repo_path/output_dir.
+    # Always ensure tmp_dir is present as a backstop even when caller only gave repo_path/output_dir.  # noqa: E501
     normalised.setdefault("tmp_dir", tempfile.gettempdir())
     return (normalised, False)
 
@@ -348,7 +348,7 @@ def handle_write_file(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict
         return {"error": "write_error", "message": f"{exc}"}
 
 
-def handle_edit_file(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
+def handle_edit_file(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:  # noqa: C901
     path_arg = args.get("path", "")
     old_string = args.get("old_string")
     new_string = args.get("new_string")
@@ -511,10 +511,10 @@ def _run_bash(
                         stdout, stderr = proc.communicate(timeout=1)
                     exit_code = proc.returncode
                     break
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         try:
             _kill_tree(proc)
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         return {"error": "bash_failed", "message": f"{exc}"}
 
@@ -545,7 +545,7 @@ def _terminate_tree(proc: subprocess.Popen) -> None:
     except (ProcessLookupError, PermissionError):
         try:
             proc.terminate()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
 
@@ -555,7 +555,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     except (ProcessLookupError, PermissionError):
         try:
             proc.kill()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
 
@@ -589,7 +589,7 @@ def truncate_tool_content(content: str, cap: int, spill_path: str) -> tuple[str,
     return content[:cap] + marker, True
 
 
-def handle_grep(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:
+def handle_grep(args: dict, roots: dict[str, str], **_kwargs: Any) -> dict:  # noqa: C901
     pattern = args.get("pattern")
     if not isinstance(pattern, str) or pattern == "":
         return {"error": "invalid_tool_call", "message": "pattern argument must be non-empty"}

@@ -121,7 +121,7 @@ class _CancellationContext:
             except (ValueError, OSError):
                 pass
 
-    def _on_sigint(self, signum: int, frame: Any) -> None:
+    def _on_sigint(self, signum: int, frame: Any) -> None:  # noqa: ARG002
         self._event.set()
 
     @property
@@ -172,7 +172,7 @@ class OpenRouterExecutor(BaseExecutor):
 
     _COMMAND_TASK_TYPES = frozenset({TaskType.COMMAND, TaskType.ACCEPTANCE_RUN})
 
-    def can_handle(self, task_type: TaskType) -> bool:
+    def can_handle(self, task_type: TaskType) -> bool:  # noqa: ARG002
         return True
 
     def estimate_cost(self, task: TaskSpec) -> float:
@@ -293,7 +293,7 @@ class OpenRouterExecutor(BaseExecutor):
 
     # ── Tool loop ─────────────────────────────────────────────────────
 
-    def _run_tool_loop(
+    def _run_tool_loop(  # noqa: C901
         self,
         task: TaskSpec,
         worker_id: str,
@@ -436,11 +436,11 @@ class OpenRouterExecutor(BaseExecutor):
                     final_captured = True
                     break
 
-                # Parallel tool_calls observed when the model returns >1 despite parallel_tool_calls=false
+                # Parallel tool_calls observed when the model returns >1 despite parallel_tool_calls=false  # noqa: E501
                 if len(tool_calls) > 1:
                     parallel_tool_calls_observed = True
                     logger.warning(
-                        "model returned %d tool_calls despite parallel_tool_calls: false; processing sequentially",
+                        "model returned %d tool_calls despite parallel_tool_calls: false; processing sequentially",  # noqa: E501
                         len(tool_calls),
                     )
 
@@ -598,18 +598,18 @@ class OpenRouterExecutor(BaseExecutor):
             }
         try:
             return handler(args, roots, is_cancelled=lambda: cancel.cancelled)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("tool handler %s raised: %s", tool_name, exc)
             return {"error": "tool_internal_error", "message": str(exc)}
 
     # ── HTTP call helpers ─────────────────────────────────────────────
 
-    def _call_api_with_retry(
+    def _call_api_with_retry(  # noqa: C901
         self,
         body: Dict[str, Any],
-        model: str,
+        model: str,  # noqa: ARG002
         use_thinking: bool,
-        thinking_level: str,
+        thinking_level: str,  # noqa: ARG002
         cancel: _CancellationContext,
     ) -> "_CallResult":
         """Single logical round-trip: initial attempt + up to 3 retries on 5xx/429.
@@ -622,7 +622,7 @@ class OpenRouterExecutor(BaseExecutor):
         thinking_stripped = False
         last_error_msg = ""
         retries_completed = 0
-        MAX_RETRIES = 3
+        MAX_RETRIES = 3  # noqa: N806
 
         while True:  # manual attempt counting so free thinking-strip doesn't cost a slot
             if cancel.cancelled:
@@ -736,7 +736,7 @@ class OpenRouterExecutor(BaseExecutor):
         for the actual run because the shipped tamper/maintenance gates depend on
         shell operators.
         """
-        import subprocess as _sp
+        import subprocess as _sp  # noqa: PLC0415
 
         logger.info("OpenRouterExecutor: local command for phase %s: %s", phase_id, command[:200])
 
@@ -811,7 +811,7 @@ class OpenRouterExecutor(BaseExecutor):
             exit_code = self._EXIT_TIMEOUT
             state = TaskState.FAILED
             error_code = "command_timeout"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             stdout, stderr = "", str(exc)
             exit_code = self._EXIT_EXEC_ERR
             state = TaskState.FAILED
@@ -988,7 +988,7 @@ class OpenRouterExecutor(BaseExecutor):
             errors=[
                 TaskError(
                     code="tool_iteration_limit_exceeded",
-                    message=f"hit {MAX_TOOL_ITERATIONS} tool-call iterations without final response",
+                    message=f"hit {MAX_TOOL_ITERATIONS} tool-call iterations without final response",  # noqa: E501
                     severity="error",
                 )
             ],
@@ -1122,7 +1122,7 @@ def _read_http_error_body(err: urllib.error.HTTPError) -> str:
                 return inner.get("message", "") or str(body)
             return str(body)
         return str(body)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return str(err)
 
 

@@ -137,7 +137,7 @@ DEFAULT_WEIGHTS_V2: dict[str, float] = {
     "change_complexity": 0.02,  # ↓ Heavily reduced: task count ≠ quality indicator
     "historical_calibration": 0.02,  # Unchanged: extra_signals only
 }
-# Note: weights do not need to sum to 1.00; renormalisation in _weighted_average handles absent signals.
+# Note: weights do not need to sum to 1.00; renormalisation in _weighted_average handles absent signals.  # noqa: E501
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +255,7 @@ class ConfidenceCalculator:
     # Public API
     # ------------------------------------------------------------------
 
-    def compute_confidence(
+    def compute_confidence(  # noqa: C901
         self,
         output_dir: Path,
         review_outcomes: Optional[list[dict[str, Any]]] = None,
@@ -334,7 +334,7 @@ class ConfidenceCalculator:
                 _calibrator = ReviewerCalibrator()
                 _metrics_map = _calibrator.compute(calibration_outcomes)
                 _eff_weights = self._compute_dynamic_weights(_metrics_map)
-            except Exception as _cal_exc:
+            except Exception as _cal_exc:  # noqa: BLE001
                 logger.warning(
                     "Dynamic weight calibration failed (falling back to static weights): %s",
                     _cal_exc,
@@ -344,7 +344,9 @@ class ConfidenceCalculator:
         # Skip files starting with "_" (meta/internal files) and known signal
         # output files that are consumed separately (acceptance_results.json,
         # code_quality_results.json).
-        _SKIP_FILES = frozenset({"acceptance_results.json", "code_quality_results.json"})
+        _SKIP_FILES = frozenset(  # noqa: N806
+            {"acceptance_results.json", "code_quality_results.json"}
+        )
         task_files = sorted(
             p
             for p in output_dir.glob("*.json")
@@ -358,7 +360,7 @@ class ConfidenceCalculator:
                 data = json.loads(path.read_text())
                 if isinstance(data, dict):
                     tasks.append((path.name, data))
-            except Exception:
+            except Exception:  # noqa: BLE001, PERF203
                 pass  # Malformed or unreadable files are silently skipped
 
         signals: list[ConfidenceSignal] = []
@@ -564,7 +566,7 @@ class ConfidenceCalculator:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _extract_acceptance_pass_rate(
+    def _extract_acceptance_pass_rate(  # noqa: C901
         self,
         output_dir: Path,
         eff_weights: dict[str, float],
@@ -594,7 +596,7 @@ class ConfidenceCalculator:
 
         try:
             data = json.loads(results_file.read_text())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "acceptance_pass_rate: failed to parse %s: %s",
                 results_file,
@@ -653,7 +655,7 @@ class ConfidenceCalculator:
             source=str(results_file),
         )
 
-    def _extract_code_quality(
+    def _extract_code_quality(  # noqa: C901
         self,
         output_dir: Path,
         eff_weights: dict[str, float],
@@ -687,7 +689,7 @@ class ConfidenceCalculator:
 
         try:
             data = json.loads(results_file.read_text())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "code_quality: failed to parse %s: %s",
                 results_file,
@@ -857,7 +859,7 @@ class ConfidenceCalculator:
         if signals:
             lines.append("Signals:")
             for s in signals:
-                lines.append(
+                lines.append(  # noqa: PERF401
                     f"  [{s.name}] value={s.value:.4f}  "
                     f"weight={s.weight:.2f}  source={s.source}"
                 )

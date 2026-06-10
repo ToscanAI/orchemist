@@ -71,7 +71,7 @@ def _load_pipeline_output(output_dir: Path) -> Dict[str, Any]:
     return {"final": final_output, "phases": phases}
 
 
-def run_scoring(
+def run_scoring(  # noqa: C901
     template: Any,
     output_dir: Path,
     console: Optional[Any] = None,
@@ -134,7 +134,7 @@ def run_scoring(
 
     # ── 1. Set up console ─────────────────────────────────────────────
     if console is None:
-        from rich.console import Console
+        from rich.console import Console  # noqa: PLC0415
 
         console = Console(highlight=False)
 
@@ -172,17 +172,17 @@ def run_scoring(
 
     # ── 3. Import ScenarioRunner ──────────────────────────────────────
     try:
-        from scenario_runner.runner import ScenarioRunner
+        from scenario_runner.runner import ScenarioRunner  # noqa: PLC0415
     except ImportError:
         # Fallback: add project root to sys.path
-        import sys as _sys
+        import sys as _sys  # noqa: PLC0415
 
         project_root = Path(__file__).resolve().parent.parent.parent
         _sys.path.insert(0, str(project_root))
-        from scenario_runner.runner import ScenarioRunner  # type: ignore[no-redef]
+        from scenario_runner.runner import ScenarioRunner  # type: ignore[no-redef]  # noqa: PLC0415
 
     # ── 4. Load scenario ──────────────────────────────────────────────
-    import yaml
+    import yaml  # noqa: PLC0415
 
     scenario_runner = ScenarioRunner(scenarios_dir=scenario_path.parent, executor=executor)
     try:
@@ -234,7 +234,7 @@ def run_scoring(
     return score_result.passed, score_result.weighted_score
 
 
-def _run_adversarial_audit(
+def _run_adversarial_audit(  # noqa: C901
     output_dir: Path,
     executor: Optional[Any],
     console: Optional[Any],
@@ -251,7 +251,7 @@ def _run_adversarial_audit(
         executor:   Optional executor to use for the audit LLM call.
         console:    Rich Console for formatted output.
     """
-    from .audit import AuditPhase
+    from .audit import AuditPhase  # noqa: PLC0415
 
     try:
         # Reconstruct a minimal review_outcome from the output directory.
@@ -274,7 +274,7 @@ def _run_adversarial_audit(
                         elif "result" in data and isinstance(data["result"], dict):
                             text = data["result"].get("text", "")
                             if text:
-                                from .review_parser import parse_review_output
+                                from .review_parser import parse_review_output  # noqa: PLC0415
 
                                 parsed = parse_review_output(text)
                                 review_outcome["verdict"] = parsed.verdict
@@ -288,7 +288,7 @@ def _run_adversarial_audit(
                                     for i in parsed.issues
                                 ]
                         break
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     logger.debug("Could not read review output %s: %s", json_file.name, exc)
 
         auditor = AuditPhase(executor=executor, model=getattr(executor, "model", "audit-model"))
@@ -309,7 +309,7 @@ def _run_adversarial_audit(
         if console is not None:
             _print_audit_summary(console, audit_result)
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Adversarial audit failed: %s", exc)
         if console is not None:
             console.print(
@@ -366,7 +366,7 @@ def _print_score_report(console: Any, score_result: Any, scenario: dict) -> None
         score_result: A :class:`~scenario_runner.models.ScenarioResult`.
         scenario: The raw scenario dict (for threshold extraction).
     """
-    from rich.table import Table
+    from rich.table import Table  # noqa: PLC0415
 
     # ── Per-criterion table ────────────────────────────────────────────
     crit_table = Table(

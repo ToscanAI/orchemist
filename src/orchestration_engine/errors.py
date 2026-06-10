@@ -42,7 +42,7 @@ class ValidationError(OrchestratorError):
     """Raised when a pipeline template fails structural validation."""
 
 
-class SpawnTransportTimeout(TimeoutError):
+class SpawnTransportTimeout(TimeoutError):  # noqa: N818
     """Raised when the HTTP transport (urllib socket) times out before any
     gateway response arrives.
 
@@ -59,7 +59,7 @@ class SpawnTransportTimeout(TimeoutError):
     """
 
 
-class SpawnNoPromptDelivered(RuntimeError):
+class SpawnNoPromptDelivered(RuntimeError):  # noqa: N818
     """Raised when a session is spawned successfully (a session key is
     returned) but no first message appears in ``sessions_history`` within the
     configured startup grace period (issue #732, Bug B).
@@ -166,7 +166,7 @@ def classify_http_error(status_code: int, body: str, headers=None) -> GatewayHTT
             # Support both dict-like and http.client.HTTPMessage
             try:
                 raw = headers.get("Retry-After") or headers.get("retry-after")
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             if raw is not None:
                 try:

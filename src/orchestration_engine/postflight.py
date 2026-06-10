@@ -273,7 +273,7 @@ class PostflightChecker:
                 PostflightCheckItem(
                     name="branch_pushed",
                     passed=False,
-                    message="Cannot verify remote branch: repo_path or branch_name missing from input",
+                    message="Cannot verify remote branch: repo_path or branch_name missing from input",  # noqa: E501
                 )
             )
             return
@@ -292,7 +292,7 @@ class PostflightChecker:
                 PostflightCheckItem(
                     name="branch_pushed",
                     passed=False,
-                    message=f"Branch '{branch_name}' could not be pushed to remote — PR creation may fail",
+                    message=f"Branch '{branch_name}' could not be pushed to remote — PR creation may fail",  # noqa: E501
                 )
             )
 
@@ -365,7 +365,7 @@ class PostflightChecker:
                         message=f"Failed to post comment: {post.stderr[:200]}",
                     )
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             result.add_check(
                 PostflightCheckItem(
                     name="github_comment",

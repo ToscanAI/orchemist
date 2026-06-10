@@ -145,7 +145,7 @@ class GitError(RuntimeError):
         parts = [super().__str__()]
         if self.command:
             parts.append(
-                f"  Command: git {' '.join(self.command[1:] if self.command[0] == 'git' else self.command)}"
+                f"  Command: git {' '.join(self.command[1:] if self.command[0] == 'git' else self.command)}"  # noqa: E501
             )
         if self.stderr:
             parts.append(f"  git stderr: {self.stderr.strip()}")
@@ -238,7 +238,7 @@ class GitContext:
         return self._branch_info
 
     def on_phase_complete(
-        self, phase_id: str, phase_output: Dict[str, Any]
+        self, phase_id: str, phase_output: Dict[str, Any]  # noqa: ARG002
     ) -> Optional[CommitInfo]:
         """Stage and commit working-directory changes after a code phase.
 
@@ -297,7 +297,7 @@ class GitContext:
             check=False,
         )
         files_changed = (
-            len([l for l in diff_result.stdout.strip().splitlines() if l.strip()])
+            len([line for line in diff_result.stdout.strip().splitlines() if line.strip()])
             if diff_result.returncode == 0
             else 0
         )
@@ -375,7 +375,7 @@ class GitContext:
 
         # Write gate file
         diff_stats = self._get_diff_stats(working_dir)
-        gate_data = self._write_gate_file(diff_stats)
+        self._write_gate_file(diff_stats)
 
         logger.info(
             f"Git: merge gate created (run_id={self.run_id}).  "
@@ -594,7 +594,7 @@ class GitContext:
             try:
                 data = json.loads(gate_file.read_text())
                 gates.append(data)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError):  # noqa: PERF203
                 pass
         return gates
 
@@ -1044,7 +1044,7 @@ class GitContext:
             ["git", "status", "--porcelain"],
             cwd=working_dir,
         )
-        dirty_lines = [l for l in result.stdout.splitlines() if l.strip()]
+        dirty_lines = [line for line in result.stdout.splitlines() if line.strip()]
         if dirty_lines:
             dirty_summary = "\n  ".join(dirty_lines[:10])
             extra = f"\n  ... and {len(dirty_lines) - 10} more" if len(dirty_lines) > 10 else ""
@@ -1107,7 +1107,9 @@ class GitContext:
         sanitized = sanitized.strip("-.")
         return sanitized
 
-    def _create_branch(self, working_dir: Path, branch_name: str, base_branch: str) -> str:
+    def _create_branch(
+        self, working_dir: Path, branch_name: str, base_branch: str  # noqa: ARG002
+    ) -> str:
         """Create the feature branch, retrying with a numeric suffix on collision.
 
         Args:
@@ -1220,7 +1222,7 @@ class GitContext:
             return "no changes"
 
         # The last line of git diff --stat is the summary line
-        lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
+        lines = [line for line in result.stdout.strip().splitlines() if line.strip()]
         return lines[-1].strip() if lines else "no changes"
 
     # ------------------------------------------------------------------
@@ -1261,7 +1263,7 @@ class GitContext:
                     result.stderr.strip(),
                 )
                 return []
-            lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+            lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
             shas = [line.split()[0] for line in lines if line]
             return shas[:50]  # cap at 50
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
@@ -1297,7 +1299,7 @@ class GitContext:
                     result.stderr.strip(),
                 )
                 return []
-            files = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+            files = [line.strip() for line in result.stdout.splitlines() if line.strip()]
             return files
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
             logger.warning("RegressionDetector: get_commit_files error: %s", exc)

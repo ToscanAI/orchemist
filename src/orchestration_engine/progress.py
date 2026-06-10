@@ -4,6 +4,11 @@ Provides real-time progress updates stored in SQLite with streaming capabilities
 Tracks task lifecycle events with timestamps and contextual information.
 """
 
+# Trailing whitespace and long lines below live inside multi-line SQL / text
+# string literals; ruff only offers --unsafe-fixes for the whitespace, and a
+# line-level E501 noqa is inert inside a string literal.
+# ruff: noqa: W291, E501
+
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -162,7 +167,7 @@ class ProgressTracker:
             )
         """)
         self.db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_progress_task_time ON progress_events(task_id, timestamp)"
+            "CREATE INDEX IF NOT EXISTS idx_progress_task_time ON progress_events(task_id, timestamp)"  # noqa: E501
         )
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_progress_type ON progress_events(event_type, timestamp)"
@@ -228,7 +233,7 @@ class ProgressTracker:
 
             logger.debug(f"Recorded progress event {event.event_type} for task {event.task_id}")
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to record progress event: {e}")
 
     def _update_task_summary(self, event: ProgressEvent) -> None:

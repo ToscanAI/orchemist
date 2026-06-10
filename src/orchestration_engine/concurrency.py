@@ -4,6 +4,10 @@ Manages worker pools, resource limits, and thread-safe task assignment.
 Handles worker lifecycle, heartbeat tracking, and stale worker detection.
 """
 
+# Trailing whitespace below lives inside multi-line string literals;
+# ruff only offers --unsafe-fixes (string-byte edits) for it.
+# ruff: noqa: W291
+
 import logging
 import threading
 import time
@@ -72,7 +76,7 @@ class ResourceLimits:
 
             self._current_sessions += 1
             logger.debug(
-                f"Session acquired. Current: {self._current_sessions}/{self.config.resources.max_concurrent_sessions}"
+                f"Session acquired. Current: {self._current_sessions}/{self.config.resources.max_concurrent_sessions}"  # noqa: E501
             )
             return True
 
@@ -82,7 +86,7 @@ class ResourceLimits:
             if self._current_sessions > 0:
                 self._current_sessions -= 1
                 logger.debug(
-                    f"Session released. Current: {self._current_sessions}/{self.config.resources.max_concurrent_sessions}"
+                    f"Session released. Current: {self._current_sessions}/{self.config.resources.max_concurrent_sessions}"  # noqa: E501
                 )
 
     def check_daily_budget(self, estimated_cost_usd: float = 0.0) -> bool:
@@ -245,7 +249,7 @@ class WorkerPool:
 
             if active_workers >= self.config.queue.max_workers:
                 logger.debug(
-                    f"Cannot create worker: at limit ({active_workers}/{self.config.queue.max_workers})"
+                    f"Cannot create worker: at limit ({active_workers}/{self.config.queue.max_workers})"  # noqa: E501
                 )
                 return None
 
@@ -556,7 +560,7 @@ class WorkerPool:
                             worker.state in [WorkerState.RUNNING, WorkerState.ASSIGNED]
                             and now - worker.last_heartbeat > stale_timeout
                         ):
-                            stale_workers.append(worker.worker_id)
+                            stale_workers.append(worker.worker_id)  # noqa: PERF401
 
                 # Mark stale workers (outside lock to avoid deadlock)
                 for worker_id in stale_workers:
@@ -564,7 +568,7 @@ class WorkerPool:
 
                 time.sleep(30)  # Check every 30 seconds
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001, PERF203
                 logger.error(f"Error in heartbeat monitor: {e}")
 
     def _mark_worker_stale(self, worker_id: str) -> None:
@@ -629,7 +633,7 @@ class WorkerPool:
 
                 time.sleep(3600)  # Run cleanup every hour
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001, PERF203
                 logger.error(f"Error in cleanup monitor: {e}")
 
     def get_available_capacity(self) -> int:

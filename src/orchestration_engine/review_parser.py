@@ -248,7 +248,7 @@ def parse_review_output(text: str) -> ReviewResult:
     if not isinstance(text, str):
         try:
             text = str(text)
-        except Exception:
+        except Exception:  # noqa: BLE001
             text = ""
 
     lines = text.splitlines()

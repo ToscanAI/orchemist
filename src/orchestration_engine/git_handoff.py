@@ -118,7 +118,7 @@ class GitHandoff:
         except subprocess.CalledProcessError as exc:
             logger.warning("Git handoff: initialisation failed — %s", exc)
             return False
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Git handoff: unexpected error during init — %s", exc)
             return False
 
@@ -168,7 +168,7 @@ class GitHandoff:
             self.commit_log.setdefault(phase_id, {})[round_num] = sha
             return sha
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Git handoff: commit failed for %s round %d — deactivating. %s",
                 phase_id,
@@ -223,7 +223,7 @@ class GitHandoff:
             if last_nl > _DIFF_TRUNCATION_LIMIT // 2:
                 truncated = truncated[: last_nl + 1]
             return truncated
-        except Exception:
+        except Exception:  # noqa: BLE001
             return ""
 
     def get_diff_for_member(self, member_id: str, current_round: int) -> str:
@@ -303,5 +303,5 @@ class GitHandoff:
 
             if not preserve:
                 self._git("branch", "-D", self.branch_name, check=False)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Git handoff cleanup warning: %s", exc)

@@ -4,6 +4,11 @@ Implements intelligent error classification, exponential backoff, model tier esc
 and circuit breaker patterns based on the error recovery documentation.
 """
 
+# Trailing whitespace and long lines below live inside multi-line SQL / text
+# string literals; ruff only offers --unsafe-fixes for the whitespace, and a
+# line-level E501 noqa is inert inside a string literal.
+# ruff: noqa: W291, E501
+
 import logging
 import sqlite3
 import threading
@@ -71,7 +76,7 @@ class ExecutorRetryConfig:
     timeout (issue #732, Bug B)."""
 
 
-def classify_exception_error_type(exc: Exception) -> "ErrorType":
+def classify_exception_error_type(exc: Exception) -> "ErrorType":  # noqa: C901
     """Map an exception instance to an :class:`ErrorType` for retry decisions.
 
     Mapping rules (ordered, first match wins):
@@ -569,7 +574,7 @@ class RecoveryManager:
         # Determine if we should retry
         if error_type == ErrorType.PERMANENT or not retry_state.should_retry():
             logger.info(
-                f"Task {task_id} not retrying: error_type={error_type}, attempts={retry_state.current_attempt}"
+                f"Task {task_id} not retrying: error_type={error_type}, attempts={retry_state.current_attempt}"  # noqa: E501
             )
             return False, None, None
 
@@ -659,7 +664,7 @@ class RecoveryManager:
         return self._retry_states[task_id]
 
     def _check_circuit_breaker(
-        self, key: str, error_type: ErrorType, increment: bool = True
+        self, key: str, error_type: ErrorType, increment: bool = True  # noqa: ARG002
     ) -> bool:
         """Check if circuit breaker should prevent retry.
 
@@ -766,7 +771,7 @@ class RecoveryManager:
                     attempt.backoff_seconds,
                 ],
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to persist retry attempt for {task_id}: {e}")
 
     def _record_error_pattern(
@@ -787,7 +792,7 @@ class RecoveryManager:
             """,
                 [error_msg, error_type.value, task_type.value, model_tier],
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"Failed to record error pattern: {e}")
 
     def get_retry_queue(self) -> List[Dict[str, Any]]:

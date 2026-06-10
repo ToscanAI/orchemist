@@ -255,7 +255,7 @@ def spawn_chain_runs(
     Returns:
         List of successfully created child run IDs.
     """
-    from .templates import TemplateEngine
+    from .templates import TemplateEngine  # noqa: PLC0415
 
     engine = TemplateEngine()
     spawned_run_ids: List[str] = []
@@ -264,7 +264,7 @@ def spawn_chain_runs(
         template_name: str = config.get("template_name", "")
         try:
             template_path = _resolve_template_path(engine, template_name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Chain spawn: could not resolve template '%s' for parent '%s': %s",
                 template_name,
@@ -277,7 +277,7 @@ def spawn_chain_runs(
         try:
             child_template = engine.load_template(template_path)
             template_id = child_template.id
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Chain spawn: could not load template '%s': %s",
                 template_name,
@@ -315,7 +315,7 @@ def spawn_chain_runs(
                 run_data["chain_depth"],
                 parent_run_id,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Chain spawn: could not insert child run for template '%s': %s",
                 template_name,
@@ -328,7 +328,7 @@ def spawn_chain_runs(
             _spawn_daemon(child_run_id, db_path)
             logger.info("Chain spawn: daemon started for child run '%s'", child_run_id)
             spawned_run_ids.append(child_run_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "Chain spawn: could not start daemon for child run '%s': %s",
                 child_run_id,
@@ -336,7 +336,7 @@ def spawn_chain_runs(
             )
             # Mark as failed in DB so status queries don't stall
             try:
-                from .timestamps import now_utc
+                from .timestamps import now_utc  # noqa: PLC0415
 
                 db.update_pipeline_run(
                     child_run_id,
@@ -344,7 +344,7 @@ def spawn_chain_runs(
                     completed_at=now_utc().isoformat(),
                     error_message=f"Daemon spawn failed: {exc}",
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
 
     return spawned_run_ids
@@ -432,5 +432,5 @@ def _safe_parse_json(raw: Any) -> Dict[str, Any]:
     try:
         parsed = json.loads(raw)
         return parsed if isinstance(parsed, dict) else {}
-    except Exception:
+    except Exception:  # noqa: BLE001
         return {}

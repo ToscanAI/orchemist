@@ -51,7 +51,7 @@ def compute_hash(path: Union[str, Path]) -> str:
     return h.hexdigest()
 
 
-def compute_directory_hash(
+def compute_directory_hash(  # noqa: C901
     path: Union[str, Path],
     exclude_patterns: Optional[List[str]] = None,
     exclude_suffixes: Optional[List[str]] = None,

@@ -438,7 +438,7 @@ class OpenClawExecutor(BaseExecutor):
         try:
             self._invoke_tool("sessions_stop", {"sessionKey": session_key})
             logger.info("sessions_stop succeeded for session %s", session_key)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "sessions_stop not supported or failed for session %s (non-fatal): %s",
                 session_key,
@@ -451,7 +451,7 @@ class OpenClawExecutor(BaseExecutor):
     # TaskExecutor interface
     # ------------------------------------------------------------------
 
-    def can_handle(self, task_type: TaskType) -> bool:  # noqa: D102
+    def can_handle(self, task_type: TaskType) -> bool:  # noqa: ARG002, D102
         return True
 
     def estimate_cost(self, task: TaskSpec) -> float:  # noqa: D102
@@ -460,10 +460,10 @@ class OpenClawExecutor(BaseExecutor):
         tier = task.preferred_model or ModelTier.SONNET
         return _PRICING.compute_cost(prefixed_id(tier), 500, 2000)
 
-    def execute(
+    def execute(  # noqa: C901
         self,
         task: TaskSpec,
-        worker_id: str = "openclaw-worker",
+        worker_id: str = "openclaw-worker",  # noqa: ARG002
         model_tier: Optional[str] = None,
         thinking_level: Optional[str] = None,
     ) -> TaskResult:
@@ -660,7 +660,7 @@ class OpenClawExecutor(BaseExecutor):
                                     "Best-effort sessions_stop succeeded for " "orphan session %s",
                                     orphan_key,
                                 )
-                            except Exception as stop_exc:
+                            except Exception as stop_exc:  # noqa: BLE001
                                 # Tolerate "unsupported"/any failure — non-fatal.
                                 logger.warning(
                                     "sessions_stop not supported or failed for "
@@ -727,8 +727,8 @@ class OpenClawExecutor(BaseExecutor):
                     succeeded = True
                     break
 
-                except Exception as exc:
-                    last_exc = exc
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc  # noqa: F841 — retains last retry exception (intentional)
                     error_type = classify_exception_error_type(exc)
 
                     # Record failure in the shared circuit breaker — EXCEPT for
@@ -972,7 +972,7 @@ class OpenClawExecutor(BaseExecutor):
     # Command task handling
     # ------------------------------------------------------------------
 
-    def _execute_command_task(
+    def _execute_command_task(  # noqa: C901
         self,
         task: TaskSpec,
         start_time: datetime,
@@ -1102,7 +1102,7 @@ class OpenClawExecutor(BaseExecutor):
                 "executable_not_found",
                 f"Executable not found: {executable}",
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return self._command_error(
                 task_id,
                 task,
@@ -1190,7 +1190,9 @@ class OpenClawExecutor(BaseExecutor):
             TaskResult with pytest outcome in metadata and failure summary in
             result['text'] (for downstream prompt feedback).
         """
-        from . import test_runner  # local import to avoid circular deps at module load
+        from . import (  # noqa: PLC0415 — lazy: avoids circular dep at module load
+            test_runner,
+        )
 
         output_dir: str = task.payload.get("output_dir", "")
         timeout_sec: int = (
@@ -1249,7 +1251,7 @@ class OpenClawExecutor(BaseExecutor):
         # ── Execute pytest ────────────────────────────────────────────
         try:
             result = test_runner.run_pytest(test_file, timeout_seconds=timeout_sec)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return self._acceptance_run_error(
                 task_id, task, start_time, "execution_error", str(exc)
             )
@@ -1471,7 +1473,7 @@ class OpenClawExecutor(BaseExecutor):
         Best-effort: failures are logged but never propagated to the caller.
         """
         try:
-            from .db import Database
+            from .db import Database  # noqa: PLC0415
 
             # Use injected _db if set (e.g., for testing), otherwise create a new instance.
             db = getattr(self, "_db", None) or Database()
@@ -1491,7 +1493,7 @@ class OpenClawExecutor(BaseExecutor):
                         },
                     )
                     break
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.debug("Could not emit stall event: %s", exc)
 
     def _invoke_tool(self, tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -1527,7 +1529,7 @@ class OpenClawExecutor(BaseExecutor):
                     return item.get("text", "")
         return ""
 
-    def _run_session(
+    def _run_session(  # noqa: C901
         self,
         prompt: str,
         model: str,
@@ -1691,11 +1693,11 @@ class OpenClawExecutor(BaseExecutor):
         had_messages: bool = False
 
         # ── Rate limit / stall detection (#413) ─────────────────────────
-        # Track token progress to detect stalls (model may be thinking, initializing, or provider may be degraded).
+        # Track token progress to detect stalls (model may be thinking, initializing, or provider may be degraded).  # noqa: E501
         _last_token_count: int = 0
         _last_token_change_time: float = loop_start
         _stall_warned: bool = False
-        _STALL_THRESHOLD_SECONDS: float = 60.0  # configurable threshold
+        _STALL_THRESHOLD_SECONDS: float = 60.0  # configurable threshold  # noqa: N806
 
         while True:
             now: float = time.monotonic()
@@ -1837,7 +1839,7 @@ class OpenClawExecutor(BaseExecutor):
 
             # ── Stall detection (#413) ───────────────────────────────────
             # Extract total token count from the last assistant message's
-            # usage data to detect stalls (model may be thinking, initializing, or provider may be degraded).
+            # usage data to detect stalls (model may be thinking, initializing, or provider may be degraded).  # noqa: E501
             _current_tokens = 0
             for _msg in reversed(messages):
                 if _msg.get("role") == "assistant":
@@ -1884,7 +1886,7 @@ class OpenClawExecutor(BaseExecutor):
 
             # Check for stop reason indicating completion
             stop = last_assistant.get("stopReason", "")
-            _TERMINAL_REASONS = {"stop", "end_turn", "error", "max_tokens"}
+            _TERMINAL_REASONS = {"stop", "end_turn", "error", "max_tokens"}  # noqa: N806
             if stop not in _TERMINAL_REASONS:
                 # Not yet complete — still generating or using tools
                 logger.debug(f"Session {session_key}: stopReason='{stop}', still running...")
@@ -1896,7 +1898,7 @@ class OpenClawExecutor(BaseExecutor):
             # to capture them. The executor's timeout acts as safety net.
             if stop == "error":
                 error_msg = last_assistant.get("errorMessage", "")
-                _GATEWAY_RETRYABLE_ERRORS = {
+                _GATEWAY_RETRYABLE_ERRORS = {  # noqa: N806
                     "overloaded_error",
                     "rate_limit_error",
                     "api_error",
@@ -1997,7 +1999,7 @@ class OpenClawExecutor(BaseExecutor):
                         if sk == session_key:
                             total_tokens = s.get("totalTokens", 0)
                             break
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug(f"Could not extract token count: {exc}")
 
             # Estimate expected chars from tokens (rough heuristic: ~4 chars/token).

@@ -40,7 +40,7 @@ def _get_persistent_db_path() -> str:
 _parse_json_list = parse_json_list
 
 
-def register_tools(mcp) -> None:
+def register_tools(mcp) -> None:  # noqa: C901
     """Register all three MCP tools on the given FastMCP instance.
 
     Args:

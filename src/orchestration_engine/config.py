@@ -229,7 +229,7 @@ def load_toml_config(config_path: Optional[Union[str, Path]] = None) -> Dict[str
     try:
         with open(config_path, "rb") as f:
             return tomllib.load(f)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         raise ValueError(f"Failed to load config from {config_path}: {e}")
 
 
@@ -299,7 +299,7 @@ def get_config(config_path: Optional[Union[str, Path]] = None) -> EngineConfig:
     # Validate with Pydantic
     try:
         return EngineConfig(**config_dict)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         raise ValueError(f"Configuration validation failed: {e}")
 
 

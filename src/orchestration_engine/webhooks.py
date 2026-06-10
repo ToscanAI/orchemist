@@ -178,7 +178,7 @@ class TriggerMatcher:
     """
 
     @staticmethod
-    def matches(filters: list, payload: dict) -> bool:
+    def matches(filters: list, payload: dict) -> bool:  # noqa: C901
         """Return True when *all* filters match the payload, False otherwise.
 
         An empty ``filters`` list means "no filtering" — always returns ``True``.
@@ -220,7 +220,7 @@ class TriggerMatcher:
                 if isinstance(multi, list):
                     for lbl in multi:
                         if isinstance(lbl, dict) and "name" in lbl:
-                            payload_labels.append(lbl["name"])
+                            payload_labels.append(lbl["name"])  # noqa: PERF401
 
                 # Must have at least one matching label
                 if not any(lbl in allowed for lbl in payload_labels):

@@ -686,7 +686,7 @@ class RunnerStatus(BaseModel):
 # Re-export PhaseOutcome and determine_outcome from transitions so callers can
 # do ``from orchestration_engine.schemas import PhaseOutcome`` without needing
 # to know which module owns the definition.
-from .transitions import PhaseOutcome, determine_outcome  # noqa: F401  re-export
+from .transitions import PhaseOutcome, determine_outcome  # noqa: E402, F401 re-export
 
 
 class PipelineConfig(BaseModel):

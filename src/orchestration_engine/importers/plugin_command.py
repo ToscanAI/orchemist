@@ -122,7 +122,7 @@ class _ParsedCommand:
 
 # slugify + snake_case live in the shared text_utils module (see #813 dedup audit
 # Group 3); re-exported here so existing callers keep working unchanged.
-from ..text_utils import slugify, snake_case  # noqa: F401
+from ..text_utils import slugify, snake_case  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
 # Parsing helpers

@@ -15,6 +15,10 @@ Environment variables:
         alongside the always-present LogNotifier.
 """
 
+# E501 residuals here are long env-var help lines inside a docstring black
+# cannot wrap; a line-level noqa is inert inside a string literal.
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import json
@@ -52,12 +56,12 @@ def _is_quiet_hours(
         ``True`` when notifications should be suppressed; ``False`` otherwise.
     """
     try:
-        from zoneinfo import ZoneInfo
+        from zoneinfo import ZoneInfo  # noqa: PLC0415
 
         local_now = datetime.now(tz=ZoneInfo(tz))
     except ImportError:
         try:
-            import pytz  # type: ignore
+            import pytz  # type: ignore  # noqa: PLC0415
 
             local_now = datetime.now(tz=pytz.timezone(tz))
         except ImportError:
@@ -135,7 +139,7 @@ class TelegramNotifier(BaseNotifier):
         self.chat_id = chat_id
         self.timeout = timeout
 
-    def dispatch(
+    def dispatch(  # noqa: C901
         self,
         event: str,
         run_id: str,
@@ -168,7 +172,7 @@ class TelegramNotifier(BaseNotifier):
             confidence = kwargs.pop("confidence", "")
             score = kwargs.pop("score", None)
             tier = kwargs.pop("tier", "")
-            pr_url = kwargs.pop("pr_url", "")
+            pr_url = kwargs.pop("pr_url", "")  # noqa: F841 — kwargs.pop() drains the key
             justification = kwargs.pop("justification", "")
 
             lines = [
@@ -302,9 +306,9 @@ class TelegramCallbackHandler:
             self._answer_callback_query(callback_query_id, text="Invalid run ID")
             return {"ok": False, "error": "Empty run_id in callback_data"}
 
-        from pathlib import Path
+        from pathlib import Path  # noqa: PLC0415
 
-        from orchestration_engine.db import Database
+        from orchestration_engine.db import Database  # noqa: PLC0415
 
         db = Database(Path(self.db_path))
 
@@ -377,7 +381,7 @@ class TelegramCallbackHandler:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout):
                 pass
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("TelegramCallbackHandler: answerCallbackQuery failed: %s", exc)
 
     def _send_telegram_message(self, text: str) -> None:
@@ -395,10 +399,10 @@ class TelegramCallbackHandler:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout):
                 pass
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("TelegramCallbackHandler: confirmation send failed: %s", exc)
 
-    def _notify_openclaw(self, text: str, run_id: str, action: str) -> None:
+    def _notify_openclaw(self, text: str, run_id: str, action: str) -> None:  # noqa: ARG002
         """Post a confirmation message to the OpenClaw main session."""
         if not self.gateway_url or not self.gateway_token:
             return
@@ -421,7 +425,7 @@ class TelegramCallbackHandler:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout):
                 pass
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("TelegramCallbackHandler: OpenClaw notify failed: %s", exc)
 
 
@@ -511,19 +515,19 @@ class NotificationDispatcher:
         if self._config.get("openclaw_enabled"):
             try:
                 self._dispatch_openclaw(event=event, run_id=run_id, **kwargs)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("OpenClaw notification failed (swallowed): %s", exc)
 
         if self._config.get("webhook_enabled"):
             try:
                 self._dispatch_webhook(event=event, run_id=run_id, **kwargs)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Webhook notification failed (swallowed): %s", exc)
 
         if self._config.get("telegram_enabled"):
             try:
                 self._dispatch_telegram(event=event, run_id=run_id, **kwargs)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("Telegram notification failed (swallowed): %s", exc)
 
     # ------------------------------------------------------------------
@@ -553,8 +557,8 @@ class NotificationDispatcher:
 
     def _dispatch_webhook(self, event: str, run_id: str, **kwargs: Any) -> None:
         """POST a JSON payload to the configured webhook URL."""
-        import hashlib as _hashlib
-        import hmac as _hmac
+        import hashlib as _hashlib  # noqa: PLC0415
+        import hmac as _hmac  # noqa: PLC0415
 
         url = self._config.get("webhook_url", "")
         secret = self._config.get("webhook_secret", "")

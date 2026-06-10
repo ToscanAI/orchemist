@@ -240,7 +240,7 @@ class ProgressHeartbeat:
         )
         try:
             print(line, file=self._stream, flush=True)
-        except Exception:
+        except Exception:  # noqa: BLE001
             # Never crash the pipeline due to I/O errors in the heartbeat
             pass
 

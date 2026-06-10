@@ -26,7 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Only import from ipc, test_store, and file_guard — never from validator, sequencer, daemon, or errors
+# Only import from ipc, test_store, and file_guard — never from validator, sequencer, daemon, or errors  # noqa: E501
 from orchestration_engine.file_guard import compute_hash
 from orchestration_engine.ipc import (
     HealthRequest,
@@ -84,7 +84,7 @@ def _run_pytest_on_file(
         "--no-header",
     ]
 
-    import time as _time
+    import time as _time  # noqa: PLC0415
 
     start = _time.monotonic()
 
@@ -186,7 +186,7 @@ def _parse_pytest_output(
 
 def _extract_test_details(stdout: str) -> list[TestDetail]:
     """Extract per-test outcomes from pytest -v output."""
-    import re
+    import re  # noqa: PLC0415
 
     details: list[TestDetail] = []
     # Match lines like: "test_foo.py::test_bar PASSED" or "test_foo.py::test_baz FAILED"
@@ -234,7 +234,7 @@ def _extract_test_details(stdout: str) -> list[TestDetail]:
 # ---------------------------------------------------------------------------
 
 
-def _handle_health(request: HealthRequest) -> HealthResult:
+def _handle_health(request: HealthRequest) -> HealthResult:  # noqa: ARG001
     """Handle a health ping request."""
     return HealthResult(status="ok")
 

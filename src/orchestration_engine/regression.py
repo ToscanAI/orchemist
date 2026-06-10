@@ -355,7 +355,7 @@ class RegressionWebhookHandler:
     # Public entry point (matches Sprint 2 trigger interface)
     # ------------------------------------------------------------------
 
-    def handle_ci_failure(self, event_payload: dict) -> Optional["Regression"]:
+    def handle_ci_failure(self, event_payload: dict) -> Optional["Regression"]:  # noqa: C901
         """Process a GitHub ``check_suite.completed`` webhook payload.
 
         This is the entry point called by the webhook trigger framework.
@@ -449,7 +449,7 @@ class RegressionWebhookHandler:
                     regression.id,
                     self._repo_slug,
                 )
-            except Exception as _trust_exc:
+            except Exception as _trust_exc:  # noqa: BLE001
                 logger.warning(
                     "RegressionWebhookHandler: trust penalty failed for "
                     "regression %s (non-fatal): %s",
@@ -468,8 +468,6 @@ class RegressionWebhookHandler:
 
             # Post a PR comment if a PR is associated with this check_suite.
             failed_check_names = self._fetch_and_extract_failed_check_names(event_payload)
-            check_suite = event_payload.get("check_suite", {})
-            check_suite_id = check_suite.get("id")
             pr_number = self._extract_pr_number(event_payload)
             if pr_number is not None:
                 comment_body = self._build_pr_comment(
@@ -1328,7 +1326,7 @@ class SafetyGuard:
                         and not rec.get("fix_run_id")
                     ):
                         return (True, "flaky test detected (commit self-healed previously)")
-            except Exception:
+            except Exception:  # noqa: BLE001
                 logger.warning("SafetyGuard._is_flaky: DB query failed", exc_info=True)
         return (False, "")
 
@@ -1368,7 +1366,9 @@ def register_regression_trigger(
             TriggerConfig validation.
         sqlite3.IntegrityError: If a trigger with *trigger_id* already exists.
     """
-    from orchestration_engine.webhooks import TriggerConfig  # local import to avoid circular deps
+    from orchestration_engine.webhooks import (  # noqa: PLC0415 — lazy: avoids circular dep
+        TriggerConfig,
+    )
 
     trigger = TriggerConfig(
         id=trigger_id,
