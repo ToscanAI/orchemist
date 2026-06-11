@@ -138,6 +138,8 @@ class _CancellationContext:
 class OpenRouterExecutor(BaseExecutor):
     """Executor that calls the OpenRouter API (OpenAI-compatible)."""
 
+    provider_name = "openrouter"  # per-phase provider identity (#969)
+
     DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
     def __init__(

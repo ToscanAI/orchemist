@@ -43,9 +43,12 @@ Code skills pack (separate repo). Alpha-grade (`Development Status :: 3 - Alpha`
 | DryRunExecutor | dry-run | **Stable** | mock results |
 
 Local OpenAI-compatible endpoints (Ollama / LM Studio / vLLM) ship via
-`--base-url` ([#968](https://github.com/ToscanAI/orchemist/issues/968)); broadening
-the provider matrix further (more families, per-phase providers, polish) is tracked
-in [#101](https://github.com/ToscanAI/orchemist/issues/101).
+`--base-url` ([#968](https://github.com/ToscanAI/orchemist/issues/968)). Per-phase
+provider targeting (the `provider:` phase key — `anthropic` / `openrouter` — for
+mixed-provider pipelines) ships via
+[#969](https://github.com/ToscanAI/orchemist/issues/969); broadening the provider
+matrix further (more families, polish) is tracked in
+[#101](https://github.com/ToscanAI/orchemist/issues/101).
 
 ## Web harness
 

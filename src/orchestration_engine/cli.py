@@ -1185,15 +1185,11 @@ def run_template(  # noqa: C901
         click.echo("Error: --executor is only valid with --mode standalone", err=True)
         sys.exit(1)
 
-    # --model-map is only valid with --mode openrouter
-    if model_map_json and mode != "openrouter":
-        click.echo("Error: --model-map is only valid with --mode openrouter", err=True)
-        sys.exit(1)
-
-    # --base-url is only valid with --mode openrouter
-    if base_url and mode != "openrouter":
-        click.echo("Error: --base-url is only valid with --mode openrouter", err=True)
-        sys.exit(1)
+    # NB (#969): the --model-map / --base-url mode guards are deferred until
+    # AFTER the template is loaded (just below the structural-validation block)
+    # so the mixed-provider auto-upgrade — which forwards these run-level
+    # OpenRouter flags to the openrouter executor it builds — can consume them
+    # in a non-openrouter mode whose template declares per-phase providers.
 
     import sys as _sys  # noqa: PLC0415
 
@@ -1235,6 +1231,26 @@ def run_template(  # noqa: C901
         click.echo(f"✗ Template has {len(errors)} structural error(s):", err=True)
         for err in errors:
             click.echo(f"  • {err}", err=True)
+        sys.exit(1)
+
+    # --- 2a. Per-phase provider auto-upgrade detection (#969) ---------
+    # Does the template declare any per-phase ``provider:``? When it does (and
+    # we are not already in openrouter mode), the runner build below
+    # auto-upgrades to PipelineRunner.from_providers — building one executor per
+    # referenced provider so the run "just works" when both credentials are
+    # present (the headline mixed-provider story).
+    _declared_providers = {p.provider for p in template.phases if getattr(p, "provider", None)}
+
+    # --model-map / --base-url mode guards (relaxed per #969 F1): these stay
+    # OpenRouter-only run flags, but are ALSO accepted when a non-openrouter
+    # mode's template declares per-phase providers (the auto-upgrade forwards
+    # them to the openrouter executor it builds). Otherwise they remain rejected.
+    _mixed_upgrade = bool(_declared_providers) and mode in ("standalone", "openrouter")
+    if model_map_json and mode != "openrouter" and not _mixed_upgrade:
+        click.echo("Error: --model-map is only valid with --mode openrouter", err=True)
+        sys.exit(1)
+    if base_url and mode != "openrouter" and not _mixed_upgrade:
+        click.echo("Error: --base-url is only valid with --mode openrouter", err=True)
         sys.exit(1)
 
     # --- Score-only mode (Issue #172) ---------------------------------
@@ -1381,13 +1397,36 @@ def run_template(  # noqa: C901
             sys.exit(1)
 
     # --- 3. Build PipelineRunner based on mode -----------------------
+    import os as _os_env  # noqa: PLC0415
+
     try:
-        if mode == "standalone":
+        if _mixed_upgrade:
+            # Mixed-provider auto-upgrade (#969): build one executor per
+            # referenced provider. The current --mode picks the DEFAULT
+            # (first/fallback) executor so executors[0] stays the no-provider
+            # selection (INV-1). --api-key feeds ANTHROPIC only; openrouter
+            # sources its key from OPENROUTER_API_KEY env exclusively (F2 — one
+            # key cannot satisfy both providers).
+            _default = "openrouter" if mode == "openrouter" else "anthropic"
+            _model_map = None
+            if model_map_json:
+                try:
+                    _model_map = json.loads(model_map_json)
+                except json.JSONDecodeError as e:
+                    click.echo(f"Error: --model-map is not valid JSON: {e}", err=True)
+                    sys.exit(1)
+            runner = PipelineRunner.from_providers(
+                template,
+                anthropic_api_key=api_key,
+                openrouter_api_key=_os_env.environ.get("OPENROUTER_API_KEY", ""),
+                openrouter_base_url=base_url,
+                openrouter_model_map=_model_map,
+                default_provider=_default,
+            )
+        elif mode == "standalone":
             runner = PipelineRunner.standalone(api_key=api_key, executor_type=executor)
         elif mode == "openclaw":
             # Read env vars only when actually needed (avoid leaking in dry-run tracebacks)
-            import os as _os_env  # noqa: PLC0415
-
             effective_url = gateway_url or _os_env.environ.get("OPENCLAW_GATEWAY_URL")
             effective_token = gateway_token or _os_env.environ.get("OPENCLAW_GATEWAY_TOKEN")
             runner = PipelineRunner.openclaw(
@@ -1395,8 +1434,6 @@ def run_template(  # noqa: C901
                 gateway_token=effective_token,
             )
         elif mode == "openrouter":
-            import os as _os_env  # noqa: PLC0415
-
             effective_key = api_key or _os_env.environ.get("OPENROUTER_API_KEY", "")
             model_map = None
             if model_map_json:

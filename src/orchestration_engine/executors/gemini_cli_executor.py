@@ -66,6 +66,8 @@ class GeminiCliExecutor(BaseExecutor):
             ``["--non-interactive"]``).  Useful in CI.
     """
 
+    provider_name = "gemini"  # per-phase provider identity (#969)
+
     def __init__(
         self,
         binary: str = _DEFAULT_BINARY,

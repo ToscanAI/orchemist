@@ -576,6 +576,12 @@ class PhaseDefinition:
     ``escalation_required`` on the abort result. ``None`` (default) disables
     escalation detection for this phase."""
 
+    # Per-phase provider targeting (#969)
+    provider: Optional[str] = None
+    """Provider that runs THIS phase: 'anthropic' | 'openrouter' (KNOWN_PROVIDERS).
+    None (default) → first-can_handle selection (run-level provider). Unknown
+    value → validation error + build-time rejection."""
+
     def __post_init__(self) -> None:  # noqa: C901
         # Normalise None values that YAML might produce for optional fields
         if self.depends_on is None:
@@ -1331,6 +1337,8 @@ class TemplateEngine:
                 "protect_on_approve",
                 # Escalation partner — reviewed phase names its adversary (#702)
                 "escalation_partner",
+                # Per-phase provider targeting (#969)
+                "provider",
                 # Dialogue phase config (Track B / #677)
                 "dialogue_config",
             }
@@ -1922,6 +1930,11 @@ class TemplateEngine:
     #: Known valid thinking level values.
     KNOWN_THINKING_LEVELS: List[str] = ["off", "low", "medium", "high"]
 
+    #: Known valid per-phase provider names (#969, v1.1). gemini/claudecode/
+    #: openclaw are NOT per-phase providers (no run-mode factory / per-phase
+    #: credential story); naming them in ``provider:`` is a validation error.
+    KNOWN_PROVIDERS: List[str] = ["anthropic", "openrouter"]
+
     def validate_template_extended(  # noqa: C901
         self,
         template: "PipelineTemplate",
@@ -1975,6 +1988,20 @@ class TemplateEngine:
                 )
                 hint = f"; did you mean '{suggestion[0]}'?" if suggestion else ""
                 warnings.append(f"Phase '{phase.id}' has unknown model_tier='{tier}'{hint}")
+
+            # ---- provider check (#969) — ERROR (not warn): unknown blocks ----
+            # Deliberate F.2 inversion of model_tier's warn-pinned precedent:
+            # an unknown provider lands in ``errors`` (so ``orch validate`` exits
+            # non-zero) AND is rejected at build time by from_providers (INV-2).
+            prov = phase.provider or ""
+            if prov and prov not in self.KNOWN_PROVIDERS:
+                suggestion = difflib.get_close_matches(prov, self.KNOWN_PROVIDERS, n=1, cutoff=0.4)
+                hint = f"; did you mean '{suggestion[0]}'?" if suggestion else ""
+                errors.append(
+                    f"Phase '{phase.id}' has unknown provider='{prov}'{hint} "
+                    f"(known: anthropic, openrouter — gemini/claudecode/openclaw "
+                    f"are not per-phase providers in v1.1)"
+                )
 
             # ---- model_chain check (#347) ----------------------------
             for i, chain_tier in enumerate(phase.model_chain or []):

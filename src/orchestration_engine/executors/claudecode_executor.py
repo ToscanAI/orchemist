@@ -50,6 +50,8 @@ class ClaudeCodeExecutor(BaseExecutor):
     to ask the Claude Code host (the session initiator) to generate a completion.
     """
 
+    provider_name = "claudecode"  # per-phase provider identity (#969)
+
     def __init__(self, mcp_server: Any):
         """Initialize with a FastMCP server instance.
 

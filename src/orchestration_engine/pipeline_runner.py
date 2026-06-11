@@ -89,20 +89,10 @@ class PipelineRunner:
         Raises:
             ValueError: If no API key is found anywhere.
         """
-        import os  # noqa: PLC0415
-
-        from .executors.anthropic_executor import AnthropicExecutor  # noqa: PLC0415
-
-        resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        if not resolved_key:
-            raise ValueError(
-                "Anthropic API key required for standalone mode.\n"
-                "  Option 1: orch run --api-key sk-ant-...\n"
-                "  Option 2: export ANTHROPIC_API_KEY=sk-ant-..."
-            )
-
-        executor = AnthropicExecutor(api_key=resolved_key, max_tokens=max_tokens)
-        return cls(executors=[executor], db_path=db_path)
+        return cls(
+            executors=[cls._build_anthropic_executor(api_key, max_tokens)],
+            db_path=db_path,
+        )
 
     @classmethod
     def from_template(
@@ -182,34 +172,10 @@ class PipelineRunner:
         Raises:
             ValueError: If no API key is found anywhere.
         """
-        import os  # noqa: PLC0415
-
-        from .executors.openrouter_executor import OpenRouterExecutor  # noqa: PLC0415
-
-        resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
-        # A custom (non-default) base_url targets a self-hosted / local OpenAI-compatible
-        # server (Ollama, LM Studio, vLLM) that needs no OpenRouter key. Normalize with the
-        # same .rstrip("/") the executor applies (openrouter_executor.py:153) before comparing.
-        _is_custom_endpoint = bool(base_url) and (
-            base_url.rstrip("/") != OpenRouterExecutor.DEFAULT_BASE_URL
-        )
-        if not resolved_key and not _is_custom_endpoint:
-            # Cloud OpenRouter (default base_url) still requires a key — guard UNWEAKENED.
-            raise ValueError(
-                "OpenRouter API key required.\n"
-                "  Option 1: orch run --api-key sk-or-...\n"
-                "  Option 2: export OPENROUTER_API_KEY=sk-or-..."
-            )
-        if not resolved_key:
-            # Keyless local endpoint: supply a harmless placeholder bearer so the
-            # Authorization header is well-formed (openrouter_executor.py:901). Local
-            # servers ignore the token; a real proxy that validates returns a clear 401.
-            resolved_key = "ollama"
-
-        executor = OpenRouterExecutor(
-            api_key=resolved_key,
-            base_url=base_url,
-            model_map=model_map,
+        executor = cls._build_openrouter_executor(
+            api_key,
+            base_url,
+            model_map,
             timeout_seconds=timeout_seconds,
             max_tokens=max_tokens,
         )
@@ -262,6 +228,157 @@ class PipelineRunner:
 
         executor = ClaudeCodeExecutor(mcp_server=mcp_server)
         return cls(executors=[executor], db_path=db_path)
+
+    # ------------------------------------------------------------------
+    # Shared per-provider executor builders (#969)
+    # ------------------------------------------------------------------
+    # These centralise credential resolution + the eager missing-credential
+    # raise so the single-provider factories AND from_providers inherit ONE
+    # message per provider. The messages are kept BYTE-IDENTICAL to the
+    # historical single-factory raises (preserving existing equality pins, e.g.
+    # test_openrouter_executor's _CLOUD_GUARD_MESSAGE and the match="API key"
+    # pins): each already names the provider (case-insensitively) AND its env
+    # var, which is exactly what INV-3 / contract #5 require for the multi-
+    # provider path too.
+
+    @staticmethod
+    def _build_anthropic_executor(api_key, max_tokens=4096):
+        """Construct an AnthropicExecutor, raising if no credential is found.
+
+        Raises:
+            ValueError: naming provider 'anthropic' (ci) + ANTHROPIC_API_KEY.
+        """
+        import os  # noqa: PLC0415
+
+        from .executors.anthropic_executor import AnthropicExecutor  # noqa: PLC0415
+
+        resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        if not resolved_key:
+            raise ValueError(
+                "Anthropic API key required for standalone mode.\n"
+                "  Option 1: orch run --api-key sk-ant-...\n"
+                "  Option 2: export ANTHROPIC_API_KEY=sk-ant-..."
+            )
+        return AnthropicExecutor(api_key=resolved_key, max_tokens=max_tokens)
+
+    @staticmethod
+    def _build_openrouter_executor(
+        api_key,
+        base_url=None,
+        model_map=None,
+        timeout_seconds: int = 300,
+        max_tokens: int = 16384,
+    ):
+        """Construct an OpenRouterExecutor, raising if no credential is found.
+
+        A custom (non-default) ``base_url`` targets a self-hosted / local
+        OpenAI-compatible server (Ollama, LM Studio, vLLM) that needs no
+        OpenRouter key; in that case a harmless placeholder bearer is supplied.
+
+        Raises:
+            ValueError: naming provider 'openrouter' + OPENROUTER_API_KEY (only
+                        when the default cloud endpoint is targeted without a key).
+        """
+        import os  # noqa: PLC0415
+
+        from .executors.openrouter_executor import OpenRouterExecutor  # noqa: PLC0415
+
+        resolved_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        # Normalize with the same .rstrip("/") the executor applies
+        # (openrouter_executor.py:153) before comparing.
+        _is_custom_endpoint = bool(base_url) and (
+            base_url.rstrip("/") != OpenRouterExecutor.DEFAULT_BASE_URL
+        )
+        if not resolved_key and not _is_custom_endpoint:
+            # Cloud OpenRouter (default base_url) still requires a key — guard UNWEAKENED.
+            # Byte-identical to the historical message (test_openrouter_executor's
+            # _CLOUD_GUARD_MESSAGE pins equality); "OpenRouter" (ci) + the env var
+            # already satisfy contract #5 for the multi-provider path.
+            raise ValueError(
+                "OpenRouter API key required.\n"
+                "  Option 1: orch run --api-key sk-or-...\n"
+                "  Option 2: export OPENROUTER_API_KEY=sk-or-..."
+            )
+        if not resolved_key:
+            # Keyless local endpoint: supply a harmless placeholder bearer so the
+            # Authorization header is well-formed. Local servers ignore the token;
+            # a real proxy that validates returns a clear 401.
+            resolved_key = "ollama"
+        return OpenRouterExecutor(
+            api_key=resolved_key,
+            base_url=base_url,
+            model_map=model_map,
+            timeout_seconds=timeout_seconds,
+            max_tokens=max_tokens,
+        )
+
+    @classmethod
+    def from_providers(
+        cls,
+        template: Any,
+        anthropic_api_key: Optional[str] = None,
+        openrouter_api_key: Optional[str] = None,
+        openrouter_base_url: Optional[str] = None,
+        openrouter_model_map: Optional[dict] = None,
+        max_tokens: int = 4096,
+        default_provider: str = "anthropic",
+        db_path: str = ":memory:",
+    ) -> "PipelineRunner":
+        """Build a multi-executor runner: one executor per provider the template
+        references (via per-phase ``provider:``), plus the ``default_provider``.
+
+        Construction is EAGER and credential-checked: a referenced provider whose
+        credential is absent raises :class:`ValueError` naming the provider + env
+        var (mirrors the single-provider factories). The ``default_provider``
+        executor is placed FIRST so no-``provider`` phases keep hitting
+        ``executors[0]`` (backward compat — every ``can_handle`` is
+        unconditionally True, so list ORDER is the backward-compat contract).
+
+        Args:
+            template:             Loaded :class:`~templates.PipelineTemplate`.
+            anthropic_api_key:    Anthropic key (or ``ANTHROPIC_API_KEY`` env var).
+            openrouter_api_key:   OpenRouter key (or ``OPENROUTER_API_KEY`` env var).
+            openrouter_base_url:  Run-level OpenRouter base URL (``--base-url``).
+            openrouter_model_map: Run-level OpenRouter tier→id map (``--model-map``).
+            max_tokens:           Max output tokens for the Anthropic executor.
+            default_provider:     The run's primary provider — placed FIRST.
+            db_path:              SQLite path.
+
+        Raises:
+            ValueError: unknown provider in ``provider:`` (not in
+                        ``KNOWN_PROVIDERS``), or a referenced provider's
+                        credential is missing.
+        """
+        from .templates import TemplateEngine  # noqa: PLC0415
+
+        # 1. Scan: union of declared per-phase providers + the default
+        #    (default FIRST so executors[0] is the no-provider fallback).
+        referenced: List[str] = [default_provider]
+        for phase in getattr(template, "phases", []) or []:
+            prov = getattr(phase, "provider", None)
+            if prov and prov not in referenced:
+                referenced.append(prov)
+
+        # 2. Runtime guard (INV-2): reject unknown providers BEFORE building.
+        unknown = [p for p in referenced if p not in TemplateEngine.KNOWN_PROVIDERS]
+        if unknown:
+            raise ValueError(
+                f"Unknown provider(s) {sorted(set(unknown))} in template phases. "
+                f"Known per-phase providers: {sorted(TemplateEngine.KNOWN_PROVIDERS)}. "
+                "gemini/claudecode/openclaw are not per-phase providers in v1.1 "
+                "(see docs/template-authoring.md#provider)."
+            )
+
+        # 3. Build one executor per referenced provider, DEFAULT FIRST (the
+        #    list comprehension preserves the insertion order of `referenced`).
+        builders = {
+            "anthropic": lambda: cls._build_anthropic_executor(anthropic_api_key, max_tokens),
+            "openrouter": lambda: cls._build_openrouter_executor(
+                openrouter_api_key, openrouter_base_url, openrouter_model_map
+            ),
+        }
+        executors: List[TaskExecutor] = [builders[p]() for p in referenced]
+        return cls(executors=executors, db_path=db_path)
 
     # ------------------------------------------------------------------
     # Context manager support
