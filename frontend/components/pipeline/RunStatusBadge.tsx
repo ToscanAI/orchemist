@@ -37,9 +37,12 @@ const STATUS_VARIANT: Record<RunStatus, BadgeVariant> = {
   success: 'success',
   failed: 'error',
   cancelled: 'error',
+  crashed: 'error',
   budget_exceeded: 'warning',
   scoring_failed: 'error',
   pending_review: 'warning',
+  rejected: 'error',
+  escalated: 'warning',
 };
 
 /** SSE-derived and legacy statuses that may arrive as strings but aren't in `RunStatus`. */
@@ -93,9 +96,12 @@ function statusLabel(status: string): string {
  * - success          → success
  * - failed           → error
  * - cancelled        → error
+ * - crashed          → error
  * - budget_exceeded  → warning
  * - scoring_failed   → error
  * - pending_review   → warning
+ * - rejected         → error
+ * - escalated        → warning
  *
  * Non-canonical fall-back: SSE stream events (connecting / aborted),
  * legacy aliases (completed / error), and daemon transient states

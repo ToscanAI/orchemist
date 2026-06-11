@@ -208,9 +208,9 @@ function RunCockpitInner() {
         </>
       }
     >
-      <div className="grid grid-cols-12 gap-4">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         {/* Phase rail */}
-        <div className="col-span-4">
+        <div className="lg:col-span-4">
           <div className="h-card p-5">
             <h2 className="text-[14px] font-bold text-harness-text">Phases · {completedCount} of {phases.length} done</h2>
             <div className="mt-1 text-[11px] text-harness-muted">
@@ -263,7 +263,7 @@ function RunCockpitInner() {
         </div>
 
         {/* Detail panel */}
-        <div className="col-span-5 flex flex-col gap-4">
+        <div className="lg:col-span-5 flex flex-col gap-4">
           <div className="h-card h-card-purple p-5">
             <h3 className="text-[16px] font-bold text-harness-text">
               {currentPhase ?? '—'} — sub-check 7d enforced from Phase 0
@@ -365,7 +365,7 @@ function RunCockpitInner() {
         </div>
 
         {/* Right: artifacts + cost/conf + drift */}
-        <div className="col-span-3 flex flex-col gap-4">
+        <div className="lg:col-span-3 flex flex-col gap-4">
           <SectionCard title="Run artifacts" subtitle={<>.orchemist/runs/{runId.slice(0, 8) || '_'}/</>}>
             {artifacts === null ? (
               <div className="text-[11px] text-harness-muted">loading artifacts…</div>

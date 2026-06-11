@@ -122,8 +122,8 @@ export default function SkillsPackModePage() {
         </div>
       </SectionCard>
 
-      <section className="mt-4 grid grid-cols-12 gap-4">
-        <div className="col-span-8">
+      <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-8">
           <SectionCard
             title="Phase skills (10) · invoked via /orchemist:&lt;phase&gt;"
             subtitle={<span>each skill delegates to a fresh subagent per <em>feedback_fresh_subagent_per_phase</em></span>}
@@ -133,7 +133,7 @@ export default function SkillsPackModePage() {
                 phases endpoint unavailable · /api/v1/phases returned no data
               </div>
             ) : (
-              <div className="grid grid-cols-5 gap-3">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
                 {cards.map((p) => (
                   <div
                     key={p.title}
@@ -182,7 +182,7 @@ export default function SkillsPackModePage() {
           </SectionCard>
         </div>
 
-        <div className="col-span-4">
+        <div className="lg:col-span-4">
           <SectionCard
             title="Local run history"
             subtitle={<span>.orchemist/runs/ · cwd: ~/ToscanWorkspace/orchemist</span>}

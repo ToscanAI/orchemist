@@ -10,6 +10,11 @@
  *   - Footer with user identity
  *
  * Active state is derived from `usePathname()` — top-level prefix match.
+ *
+ * Responsive (2026-06-11 UX audit): below the `lg` breakpoint the rail is an
+ * off-canvas drawer — translated off-screen until `open`, with a backdrop
+ * that closes it. At `lg`+ it is the original always-visible fixed rail and
+ * `open`/`onClose` have no effect. Navigating closes the drawer.
  */
 
 import Link from 'next/link';
@@ -21,6 +26,10 @@ interface LeftRailProps {
   readonly repos: readonly HarnessRepo[];
   readonly userInitials: string;
   readonly userEmail: string;
+  /** Drawer visibility below `lg`. Ignored at `lg`+ (rail always visible). */
+  readonly open: boolean;
+  /** Close the drawer (backdrop click / nav click). */
+  readonly onClose: () => void;
 }
 
 function isActive(pathname: string, href: string): boolean {
@@ -36,12 +45,26 @@ function repoDot(state: HarnessRepo['state']): string {
   }
 }
 
-export function LeftRail({ repos, userInitials, userEmail }: LeftRailProps) {
+export function LeftRail({ repos, userInitials, userEmail, open, onClose }: LeftRailProps) {
   const pathname = usePathname();
 
   return (
+    <>
+      {/* Mobile backdrop — only rendered while the drawer is open; never at lg+. */}
+      {open && (
+        <div
+          className="fixed inset-0 z-40 bg-black/60 lg:hidden"
+          data-testid="left-rail-backdrop"
+          aria-hidden
+          onClick={onClose}
+        />
+      )}
     <aside
-      className="fixed left-0 top-0 bottom-0 z-40 flex w-60 flex-col border-r border-harness-border bg-[#0E1115]"
+      className={[
+        'fixed left-0 top-0 bottom-0 z-50 flex w-60 flex-col border-r border-harness-border bg-[#0E1115]',
+        'transform transition-transform duration-200 lg:translate-x-0',
+        open ? 'translate-x-0' : '-translate-x-full',
+      ].join(' ')}
       aria-label="Primary navigation"
     >
       {/* Logo block */}
@@ -59,6 +82,7 @@ export function LeftRail({ repos, userInitials, userEmail }: LeftRailProps) {
                 <Link
                   href={item.href}
                   data-testid={`nav-${item.section}`}
+                  onClick={onClose}
                   className={[
                     'flex h-9 items-center gap-3 rounded-md px-3 text-[13px] font-semibold transition-colors',
                     active
@@ -144,5 +168,6 @@ export function LeftRail({ repos, userInitials, userEmail }: LeftRailProps) {
         <div className="truncate">{userEmail}</div>
       </div>
     </aside>
+    </>
   );
 }

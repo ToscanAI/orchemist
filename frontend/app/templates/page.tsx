@@ -44,11 +44,13 @@ export default function TemplatesPage() {
     >
     <div className="flex flex-col gap-6">
       <section>
-        <h1 className="text-2xl font-semibold tracking-tight text-content-primary">
-          Templates{!loading && !errorMessage && templates.length > 0 && (
+        {/* h2, not h1 — the TopBar already renders the page's single h1. */}
+        <h2 className="text-2xl font-semibold tracking-tight text-content-primary">
+          Templates
+          {!loading && !errorMessage && templates.length > 0 && (
             <span className="ml-2 text-base font-normal text-content-tertiary">({templates.length})</span>
           )}
-        </h1>
+        </h2>
         <p className="mt-1 text-sm text-content-secondary">
           Browse and launch pipeline templates.
         </p>
