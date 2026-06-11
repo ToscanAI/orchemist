@@ -33,6 +33,12 @@ Mode names are validated by the CLI; values outside this set are rejected by `or
 
 > **Local / self-hosted servers:** `openrouter` mode also drives any OpenAI-compatible endpoint you control. Add `--base-url http://localhost:11434/v1` (Ollama, LM Studio, vLLM) and **no API key is required** — see [Local models](#local-models-ollama--lm-studio--vllm) below.
 
+### Discovering providers from the CLI
+
+Run `orch providers list` (add `--json` to script it) to see every provider, the credential env var it needs, **whether that var is currently set**, the default tier->model mappings, the openrouter base-url default, and a maturity label — without reading source. It is read-only: it makes no network calls, constructs no executors, and never prints key material (only a `set` / `missing` / `n/a` status, never the value). Remember that `.env` files are not auto-loaded (see [`.env` file support](#env-file-support) below), so the `set` / `missing` column reflects only what is exported in the shell that runs the command.
+
+See also the maturity table in [CURRENT-STATE.md](CURRENT-STATE.md#executor-maturity).
+
 ---
 
 ## Configuration options
