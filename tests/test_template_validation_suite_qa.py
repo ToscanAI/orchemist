@@ -1152,6 +1152,7 @@ class TestOrchRunAdditional:
         user-site pytest. (This file was not in the spec §4 audited list — see
         implement.md DEVIATION-2.)"""
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("ORCH_DB_PATH", raising=False)  # #981: session env wins over HOME; clear it so HOME isolation steers default_db_path()
 
     def test_r01_dry_run_with_yml_extension_template(self, tmp_path):
         """R-01: orch run dry-run succeeds on a .yml (not .yaml) template file."""

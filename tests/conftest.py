@@ -111,6 +111,38 @@ def reset_circuit_breakers():
         _CIRCUIT_BREAKERS.clear()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_engine_db(tmp_path_factory):
+    """#981: route the engine DB to a per-session tmp file so NO test (and no
+    daemon subprocess any test spawns) writes the operator's real
+    ~/.orchestration-engine/engine.db. Sets ORCH_DB_PATH (file path), which
+    default_db_path() now honours; subprocesses inherit it via the parent env.
+    Deliberately does NOT touch HOME, so test_ac10's --collect-only subprocess
+    still resolves user-site pytest on a dev box.
+
+    NOTE (#981 round-2): ORCH_DB_PATH is checked BEFORE Path.home() in
+    default_db_path(), so this session env takes PRECEDENCE over any per-test
+    HOME redirect. Pre-existing tests that assert a HOME-derived db path, or
+    read back a HOME-derived Database() after a bare `orch run`, MUST delenv
+    ORCH_DB_PATH function-scoped (see test_engine_consolidation's
+    _unset_orch_db_path and the #980 _isolate_home fixtures). This fixture does
+    NOT silently waive that — it is the cause of it.
+
+    Why os.environ directly, not monkeypatch: pytest's monkeypatch fixture is
+    function-scoped and cannot be requested by a session-scoped fixture
+    (ScopeMismatch), so we mutate the real process environment and
+    capture/restore the prior value on teardown.
+    """
+    db_path = tmp_path_factory.mktemp("engine-db") / "engine.db"
+    prev = os.environ.get("ORCH_DB_PATH")
+    os.environ["ORCH_DB_PATH"] = str(db_path)
+    yield
+    if prev is None:
+        os.environ.pop("ORCH_DB_PATH", None)
+    else:
+        os.environ["ORCH_DB_PATH"] = prev
+
+
 # ---------------------------------------------------------------------------
 # Issues #862 / #863 / #874 / #875 — canonical test fixtures
 # ---------------------------------------------------------------------------

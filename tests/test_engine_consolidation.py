@@ -30,6 +30,15 @@ from unittest import mock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _unset_orch_db_path(monkeypatch):
+    """#981: the root conftest sets ORCH_DB_PATH session-wide, which
+    default_db_path() checks BEFORE Path.home(). These tests validate the
+    UNSET (HOME-fallback) resolution, so clear the override per-test
+    (function-scoped → overrides the session env, auto-restores)."""
+    monkeypatch.delenv("ORCH_DB_PATH", raising=False)
+
+
 # ============================================================================
 # extract_output_text — #860
 # ============================================================================

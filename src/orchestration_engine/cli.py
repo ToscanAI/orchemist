@@ -3462,6 +3462,68 @@ def _resolve_template_arg(name_or_path: str, launch_fmt: bool = False) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# admin command group (#981) — operator DB hygiene, audit-logged
+# ---------------------------------------------------------------------------
+
+
+@main.group("admin")
+def admin_group() -> None:
+    """Operator maintenance commands (DB hygiene, audit-logged)."""
+
+
+@admin_group.command("prune-test-runs")
+@click.option(
+    "--dry-run/--no-dry-run",
+    "dry_run",
+    default=True,
+    help="Report the count without deleting (default). Use --no-dry-run (with --yes) to delete.",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Confirm deletion. Required (with --no-dry-run) to actually delete.",
+)
+@click.option(
+    "--db-path",
+    default=None,
+    help="Override DB path (defaults to the engine DB).",
+)
+def prune_test_runs(dry_run: bool, yes: bool, db_path: Optional[str]) -> None:
+    """Delete pytest-residue pipeline_runs (#981).
+
+    Targets hello-pipeline rows written from a worktree gate run (output_dir
+    contains '/.wt/'). Dry-run by default (prints the count, deletes nothing);
+    pass --no-dry-run --yes to execute. NEVER auto-deletes; spares the
+    operator's real non-.wt runs.
+    """
+    from pathlib import Path  # noqa: PLC0415
+
+    from .db import Database, default_db_path  # noqa: PLC0415
+
+    where = "template_id = ? AND output_dir LIKE ?"
+    params = ("hello-pipeline", "%/.wt/%")
+    db = Database(Path(db_path) if db_path else default_db_path())
+    row = db.fetch_one(f"SELECT COUNT(*) AS c FROM pipeline_runs WHERE {where}", params)
+    n = int(row["c"]) if row else 0
+    if dry_run or not yes:
+        click.echo(
+            f"[dry-run] {n} test-residue pipeline_runs match "
+            f"(template_id='hello-pipeline' AND output_dir LIKE '%/.wt/%'). "
+            f"Re-run with --no-dry-run --yes to delete."
+        )
+        return
+    db.execute(f"DELETE FROM pipeline_runs WHERE {where}", params)
+    db.append_admin_audit(
+        action="prune_test_runs",
+        target="pipeline_runs",
+        before={"matched": n},
+        after={"deleted": n},
+    )
+    click.echo(f"Deleted {n} test-residue pipeline_runs.")
+
+
+# ---------------------------------------------------------------------------
 # templates command group
 # ---------------------------------------------------------------------------
 
