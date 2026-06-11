@@ -49,6 +49,8 @@ class AnthropicExecutor(BaseExecutor):
     Uses only stdlib (urllib) — no third-party HTTP dependencies.
     """
 
+    provider_name = "anthropic"  # per-phase provider identity (#969)
+
     API_URL = "https://api.anthropic.com/v1/messages"
     API_VERSION = "2023-06-01"
 

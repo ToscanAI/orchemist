@@ -274,6 +274,7 @@ git:
 | `model_chain` | list[string] | — | `[]` | Ordered list of model tiers to try on retry (e.g. `["sonnet", "opus"]`). Empty = use executor's default escalation chain. |
 | `min_output_length` | int | — | `0` | Minimum character count for phase output. `0` = disabled. When >0, the sequencer fails the phase if output is shorter (catches truncated LLM responses). |
 | `protected_outputs` | list[string] | — | `[]` | Filenames (relative to output dir) to checksum-protect via `file_guard.py`. SHA256 hashes are computed after this phase and verified before the next consuming phase. |
+| `provider` | string | — | `null` | Provider that runs **this** phase: `anthropic` or `openrouter` (see [§2.4](#24-per-phase-provider-targeting)). Omit to use the run-level provider. Unknown values are a validation **error**. |
 
 **Phase field aliases:** `prompt` → `prompt_template`, `model` → `model_tier`. Either form is accepted in YAML.
 
@@ -302,6 +303,44 @@ phases:
 | `opus` | Complex reasoning: architecture review, adversarial analysis, synthesis | Most expensive | Slowest |
 
 **Auto-escalation on retry:** If a phase fails or doesn't meet `min_confidence`, the engine retries with a higher tier automatically (e.g. `haiku → sonnet → opus` for `content` tasks).
+
+### 2.4 Per-Phase Provider Targeting
+
+By default every phase in a run is executed by the run-level provider (chosen by `orch run --mode`). The `provider:` phase field lets a single pipeline **mix providers** — e.g. draft on a cheap `openrouter` model and review on a frontier Anthropic model — without splitting the run or losing the orchestration, retries, and cost ledger.
+
+```yaml
+phases:
+  - id: draft
+    name: "Draft"
+    provider: openrouter        # this phase runs on OpenRouter
+    model_tier: sonnet          # resolves through OpenRouter's model_map
+    prompt_template: |
+      Draft an outline for: {input[topic]}
+  - id: review
+    name: "Review"
+    provider: anthropic         # this phase runs on Anthropic
+    model_tier: opus
+    depends_on: [draft]
+    prompt_template: |
+      Critically review the draft: {draft.output}
+```
+
+**Behaviour:**
+
+- **Values:** `anthropic` or `openrouter` only. These are the two providers with real run-mode factories (`KNOWN_PROVIDERS`). `gemini`, `claudecode`, and `openclaw` are **not** per-phase providers in v1.1 (they have no per-phase credential story) — naming any of them in `provider:` is a validation **error**.
+- **Omit → run-level default.** A phase with no `provider:` is selected exactly as today (the run's default executor), so existing templates are byte-identical. The run-level provider is always the no-`provider` fallback.
+- **Auto-upgrade, no new flag.** When a template declares any `provider:`, `orch run` automatically builds one executor per referenced provider. Run it like any other template:
+
+  ```bash
+  export ANTHROPIC_API_KEY=sk-ant-...
+  export OPENROUTER_API_KEY=sk-or-...
+  orch run mixed-pipeline.yaml --mode standalone
+  ```
+
+- **Both credentials must be present.** Each referenced provider's credential is resolved at build time; a missing one fails immediately, naming the provider and the env var (e.g. `OpenRouter API key required for provider 'openrouter'.`). In a mixed run, `--api-key` feeds **Anthropic only**; OpenRouter sources its key from `OPENROUTER_API_KEY` exclusively (one key cannot satisfy both providers).
+- **`model_tier` resolves through the target provider.** A phase's `model_tier` is mapped by the *target* executor's own table — for `provider: openrouter` it goes through the OpenRouter `model_map` (see [OpenRouter `--model-map`](#openrouter-mode)); for `provider: anthropic` through the Anthropic registry. There is no new tier vocabulary.
+- **Run-level OpenRouter config still applies.** `--base-url` / `--model-map` are run-level OpenRouter flags; in a mixed run they configure the single OpenRouter executor. Per-phase `base_url` / `model_map` are not supported in v1.1.
+- **Dry-run works without credentials.** `orch run mixed-pipeline.yaml --mode dry-run` validates and runs a mixed-provider template with no real keys (every phase falls back to the dry-run executor).
 
 ---
 

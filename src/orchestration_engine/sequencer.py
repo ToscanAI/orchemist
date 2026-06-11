@@ -2305,18 +2305,37 @@ class PhaseSequencer:
         if not task_spec:
             raise RuntimeError(f"Phase '{phase.id}': task {task_id} not found in queue")
 
-        # Find the first executor that can handle this task type
+        # Select the executor: provider-aware branch first (#969), else the
+        # historical first-can_handle loop.
         executor = None
-        for ex in self.runner.executors:
-            if ex.can_handle(task_spec.type):
-                executor = ex
-                break
-
-        if executor is None:
-            raise RuntimeError(
-                f"Phase '{phase.id}': no executor available for task type "
-                f"'{task_spec.type.value}'"
-            )
+        if getattr(phase, "provider", None):
+            executor = self._resolve_executor_by_name(phase.provider)
+            if executor is None:
+                # Defensive (contract #5): the eager from_providers build makes
+                # this unreachable for KNOWN_PROVIDERS (the executor is always
+                # present) and unknown providers are rejected at validate/build
+                # time. If we still get here, name the provider + the registered
+                # executors + the credential hint.
+                available = [type(e).__name__ for e in (self.runner.executors or [])]
+                raise RuntimeError(
+                    f"Phase '{phase.id}': no executor for provider "
+                    f"'{phase.provider}'. Registered: {available}. Ensure the "
+                    f"provider's credential is set (ANTHROPIC_API_KEY / "
+                    f"OPENROUTER_API_KEY) so the run builds it."
+                )
+        else:
+            # Backward-compat: first executor whose can_handle is True. Because
+            # every concrete can_handle returns True, this is always executors[0]
+            # (INV-1 — list order is the backward-compat contract).
+            for ex in self.runner.executors:
+                if ex.can_handle(task_spec.type):
+                    executor = ex
+                    break
+            if executor is None:
+                raise RuntimeError(
+                    f"Phase '{phase.id}': no executor available for task type "
+                    f"'{task_spec.type.value}'"
+                )
 
         total_attempts: int = phase.retries + 1
         last_result: Optional[TaskResult] = None
@@ -2792,21 +2811,19 @@ class PhaseSequencer:
             },
         }
 
-    def _resolve_dialogue_executor(self, name: str) -> Optional[Any]:
-        """Find an executor in ``self.runner.executors`` whose class name matches ``name``.
+    def _resolve_executor_by_name(self, name: str) -> Optional[Any]:
+        """Resolve a registered executor by provider name (#969).
 
-        Matching rules (case-insensitive):
-        * ``openrouter`` → class name contains ``openrouter``
-        * ``anthropic`` → class name contains ``anthropic``
-        * ``gemini_cli`` / ``gemini`` → class name contains ``gemini``
-        * ``openclaw`` → class name contains ``openclaw``
-        * ``claudecode`` → class name contains ``claudecode``
+        Match order (case-insensitive):
+        1. exact ``provider_name`` class-attr match (the explicit #969 mechanism);
+        2. legacy substring of ``type(ex).__name__`` (the historical dialogue
+           behaviour, kept so executors without a ``provider_name`` still route);
+        3. all-dry-run fallback — when EVERY registered executor is a
+           :class:`~.runner.DryRunExecutor`, return it so dry-run validation /
+           mixed-provider dry-run needs no real provider credentials.
 
-        Returns ``None`` when no matching executor is registered, EXCEPT in
-        dry-run mode (only a :class:`~.runner.DryRunExecutor` is registered),
-        where the dry-run executor is returned as a fallback so dialogue
-        phases can be validated by the template-validation suite without
-        real provider credentials.
+        Aliases (``gemini_cli`` → ``gemini``) are normalised before matching.
+        Returns ``None`` when nothing matches and the fallback does not apply.
         """
         executors = getattr(self.runner, "executors", None) or []
         if not executors:
@@ -2815,24 +2832,51 @@ class PhaseSequencer:
         needle = (name or "").lower().replace("-", "_").replace(" ", "")
         if not needle:
             return None
-        # Normalise common aliases
+        # Normalise common aliases (kept identical to the historical table)
         aliases = {
             "gemini_cli": "gemini",
         }
-        needle_norm = aliases.get(needle, needle)
+        needle = aliases.get(needle, needle)
 
+        # (1) explicit provider_name class attr.
         for ex in executors:
-            cls_name = type(ex).__name__.lower()
-            if needle_norm in cls_name:
+            prov = getattr(ex, "provider_name", "")
+            if prov and prov == needle:
                 return ex
 
-        # Dry-run fallback — when the only available executor is the dry-run
-        # mock, return it so dialogue phases can still execute (returning
-        # synthetic APPROVE output for both drafter and reviewer turns).
+        # (2) legacy substring fallback over the class name.
+        for ex in executors:
+            if needle in type(ex).__name__.lower():
+                return ex
+
+        # (3) all-dry-run fallback — when the only available executors are
+        # dry-run mocks, return one so dialogue / mixed-provider phases can
+        # still execute without real provider credentials.
         dry_runners = [ex for ex in executors if "dryrun" in type(ex).__name__.lower()]
         if len(dry_runners) == len(executors) and dry_runners:
             return dry_runners[0]
         return None
+
+    def _resolve_dialogue_executor(self, name: str) -> Optional[Any]:
+        """Find an executor in ``self.runner.executors`` whose name matches ``name``.
+
+        Back-compat shim for dialogue phases (#677) — delegates to the shared
+        :meth:`_resolve_executor_by_name` (#969), preserving the substring +
+        alias + all-dry-run-fallback behaviour exactly:
+
+        * ``openrouter`` → the OpenRouter executor
+        * ``anthropic`` → the Anthropic executor
+        * ``gemini_cli`` / ``gemini`` → the Gemini executor
+        * ``openclaw`` → the OpenClaw executor
+        * ``claudecode`` → the ClaudeCode executor
+
+        Returns ``None`` when no matching executor is registered, EXCEPT in
+        dry-run mode (only a :class:`~.runner.DryRunExecutor` is registered),
+        where the dry-run executor is returned as a fallback so dialogue
+        phases can be validated by the template-validation suite without
+        real provider credentials.
+        """
+        return self._resolve_executor_by_name(name)
 
     @staticmethod
     def _resolve_task_type(task_type_str: str) -> TaskType:

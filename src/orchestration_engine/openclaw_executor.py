@@ -195,6 +195,8 @@ class OpenClawExecutor(BaseExecutor):
         dry_run:           When True, skip actual HTTP calls and return mock output.
     """
 
+    provider_name = "openclaw"  # per-phase provider identity (#969)
+
     def __init__(
         self,
         gateway_url: Optional[str] = None,

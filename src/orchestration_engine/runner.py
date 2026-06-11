@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 class TaskExecutor(ABC):
     """Abstract base class for task executors."""
 
+    #: Per-phase provider identity (#969). Default "" = unknown/abstract; the
+    #: provider-aware resolver falls back to class-name substring for executors
+    #: that do not set a non-empty value.
+    provider_name: str = ""
+
     @abstractmethod
     def execute(
         self, task: TaskSpec, worker_id: str, model_tier: str = None, thinking_level: str = None
@@ -95,6 +100,8 @@ def _dry_run_synthetic_text(task_type: "TaskType") -> str:
 
 class DryRunExecutor(TaskExecutor):
     """Dry run executor for testing - returns mock results."""
+
+    provider_name = "dryrun"  # per-phase provider identity (#969)
 
     def __init__(self, delay_seconds: float = 2.0, failure_rate: float = 0.1):
         """Initialize dry run executor.
