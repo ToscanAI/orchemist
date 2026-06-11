@@ -46,7 +46,7 @@ If any item is unchecked, do not proceed.
 2. Bump `pyproject.toml` `version = "X.Y.Z"` and move the
    `CHANGELOG.md [Unreleased]` block under `## [X.Y.Z] - YYYY-MM-DD`.
    Also bump `src/orchestration_engine/__init__.py` `__version__` to the same
-   `X.Y.Z` \u2014 it must move with `pyproject.toml` (the health/OpenAPI version is
+   `X.Y.Z` — it must move with `pyproject.toml` (the health/OpenAPI version is
    sourced from this literal). The `tests/test_version_parity.py` guard fails
    the build if the two ever diverge (#975).
 3. Open a PR titled `Release vX.Y.Z`.
