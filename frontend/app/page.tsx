@@ -112,7 +112,7 @@ export default function FleetDashboardPage() {
     >
       {/* Row 1: 4 KPI cards */}
       <section
-        className="grid grid-cols-4 gap-4"
+        className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4"
         aria-label="Fleet key indicators"
       >
         <KPICard
@@ -164,8 +164,8 @@ export default function FleetDashboardPage() {
       </section>
 
       {/* Row 2: In-flight runs (col-span-8) + Autonomy ramp (col-span-4) */}
-      <section className="mt-4 grid grid-cols-12 gap-4">
-        <div className="col-span-8">
+      <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-8">
           <SectionCard
             title="In-flight pipeline runs"
             subtitle={
@@ -186,7 +186,11 @@ export default function FleetDashboardPage() {
                 No pipelines in flight. Launch one from the <Link href="/runs" className="h-link">Run Cockpit</Link>.
               </div>
             ) : (
-              <div>
+              /* overflow-x-auto + min-w: narrow viewports scroll the run
+                 table inside the card instead of crushing the 12-col grid
+                 (2026-06-11 UX audit). */
+              <div className="overflow-x-auto">
+                <div className="min-w-[560px]">
                 <div className="grid grid-cols-12 gap-3 px-4 pb-2 border-b border-harness-border text-[10px] tracking-widest text-harness-dim">
                   <div className="col-span-3">REPO / TEMPLATE</div>
                   <div className="col-span-1">RUN</div>
@@ -207,6 +211,7 @@ export default function FleetDashboardPage() {
                     etaLabel={entry.etaLabel}
                   />
                 ))}
+                </div>
               </div>
             )}
             <div className="mt-3 px-4 text-[10px] text-harness-dim">
@@ -214,7 +219,7 @@ export default function FleetDashboardPage() {
             </div>
           </SectionCard>
         </div>
-        <div className="col-span-4">
+        <div className="lg:col-span-4">
           <SectionCard
             title="Autonomy ramp"
             subtitle={
@@ -230,8 +235,8 @@ export default function FleetDashboardPage() {
       </section>
 
       {/* Row 3: Regression queue + Stale detection */}
-      <section className="mt-4 grid grid-cols-12 gap-4">
-        <div className="col-span-6">
+      <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-6">
           <SectionCard
             title="Regression queue"
             subtitle={
@@ -287,7 +292,7 @@ export default function FleetDashboardPage() {
             </div>
           </SectionCard>
         </div>
-        <div className="col-span-6">
+        <div className="lg:col-span-6">
           <SectionCard
             title="Stale detection · proactive maintenance"
             subtitle={

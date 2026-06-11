@@ -631,6 +631,39 @@ export function getAdminState(): Promise<AdminState> {
   return _fetch<AdminState>('/api/v1/admin/state');
 }
 
+/** One aggregated row of `GET /api/v1/costs/summary` (group_by=day). */
+export interface CostSummaryDayItem {
+  readonly day: string; // YYYY-MM-DD
+  readonly total_cost: number;
+  readonly total_input_tokens: number;
+  readonly total_output_tokens: number;
+  readonly phase_count: number;
+}
+
+export interface CostsSummaryResponse {
+  readonly items: readonly CostSummaryDayItem[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+}
+
+/**
+ * `GET /api/v1/costs/summary?group_by=day` — aggregated spend per day.
+ * Pass `start`/`end` (YYYY-MM-DD, inclusive) to bound the window; the
+ * TopBar cost pill uses `start = end = today` for live today-spend.
+ */
+export function getCostsSummary(params?: {
+  start?: string;
+  end?: string;
+  limit?: number;
+}): Promise<CostsSummaryResponse> {
+  const search = new URLSearchParams({ group_by: 'day' });
+  if (params?.start) search.set('start_date', params.start);
+  if (params?.end) search.set('end_date', params.end);
+  if (params?.limit !== undefined) search.set('limit', String(params.limit));
+  return _fetch<CostsSummaryResponse>(`/api/v1/costs/summary?${search.toString()}`);
+}
+
 /** `PUT /api/v1/admin/feature-flags` — atomic patch. */
 export function updateAdminFeatureFlags(
   patch: Partial<AdminState['feature_flags']>,

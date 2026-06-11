@@ -130,14 +130,14 @@ function AdversaryLoopInner() {
         title="Model identities · this round-trip"
         subtitle={<span>cross-model adversary at the phase boundary — the IP wedge per 2026-05-21 pivot</span>}
       >
-        <div className="grid grid-cols-12 items-center gap-3">
-          <div className="col-span-5 h-card h-card-purple p-4" style={{ background: 'linear-gradient(180deg, #1F1B2E 0%, #181425 100%)' }}>
+        <div className="grid grid-cols-1 items-center gap-3 md:grid-cols-12">
+          <div className="md:col-span-5 h-card h-card-purple p-4" style={{ background: 'linear-gradient(180deg, #1F1B2E 0%, #181425 100%)' }}>
             <div className="h-section-label" style={{ color: '#8A93A2' }}>DRAFTER</div>
             <div className="mt-1 text-[14px] font-bold text-harness-text">{drafterModel} · spec author</div>
             <div className="mt-1 text-[11px] text-harness-muted">fresh context per round · no reviewer history carry</div>
           </div>
-          <div className="col-span-2 text-center text-harness-muted text-lg">⇆</div>
-          <div className="col-span-5 h-card h-card-teal p-4" style={{ background: 'linear-gradient(180deg, #1A2A28 0%, #142220 100%)' }}>
+          <div className="hidden text-center text-harness-muted text-lg md:col-span-2 md:block">⇆</div>
+          <div className="md:col-span-5 h-card h-card-teal p-4" style={{ background: 'linear-gradient(180deg, #1A2A28 0%, #142220 100%)' }}>
             <div className="h-section-label" style={{ color: '#8A93A2' }}>REVIEWER · DIFFERENT FAMILY</div>
             <div className="mt-1 text-[14px] font-bold text-harness-text">{reviewerModel} · deep-think (Track B)</div>
             <div className="mt-1 text-[11px] text-harness-muted">fresh context per round · orchemist-adversary subagent</div>
@@ -146,8 +146,8 @@ function AdversaryLoopInner() {
       </SectionCard>
 
       {/* Round columns */}
-      <section className="mt-4 grid grid-cols-12 gap-4">
-        <div className="col-span-4">
+      <section className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-12">
+        <div className="lg:col-span-4">
           <div className="h-section-label mb-3">ROUND 1 · 14:02 UTC</div>
           <div className="h-card h-card-purple p-4 mb-3" style={{ background: 'linear-gradient(180deg, #1F1B2E 0%, #181425 100%)' }}>
             <div className="h-section-label" style={{ color: '#7C5CFC' }}>DRAFTER · spec.md</div>
@@ -175,7 +175,7 @@ function AdversaryLoopInner() {
           </div>
         </div>
 
-        <div className="col-span-4">
+        <div className="lg:col-span-4">
           <div className="h-section-label mb-3">ROUND 2 · 14:14 UTC</div>
           <div className="h-card h-card-purple p-4 mb-3" style={{ background: 'linear-gradient(180deg, #1F1B2E 0%, #181425 100%)' }}>
             <div className="h-section-label" style={{ color: '#7C5CFC' }}>DRAFTER · spec.md v2</div>
@@ -202,7 +202,7 @@ function AdversaryLoopInner() {
         </div>
 
         {/* Round 3 / convergence */}
-        <div className="col-span-4">
+        <div className="lg:col-span-4">
           <div className="h-section-label mb-3">ROUND 3 · convergence</div>
           <div className="h-card h-card-teal p-5" style={{ borderStyle: 'dashed' }}>
             <h3 className="text-[16px] font-bold text-harness-teal">Convergence reached at R2</h3>
@@ -232,7 +232,7 @@ function AdversaryLoopInner() {
         subtitle={<span>cross-model adversary at phase boundary · no competitor in the 2026 SDD market ships this</span>}
         className="mt-4"
       >
-        <table className="w-full text-[12px] border-collapse">
+        <div className="overflow-x-auto"><table className="w-full min-w-[480px] text-[12px] border-collapse">
           <thead>
             <tr className="text-[10px] text-harness-dim tracking-widest text-left">
               <th className="font-medium pb-2 pr-3">TURN</th>
@@ -319,7 +319,7 @@ function AdversaryLoopInner() {
               </>
             )}
           </tbody>
-        </table>
+        </table></div>
         <div className="mt-4 text-[10px] text-harness-dim">
           {usingLive
             ? <>Live · {dialogue!.rounds.length} turns from {dialogue!.filename}</>

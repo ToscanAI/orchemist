@@ -149,14 +149,14 @@ export default function AdminActivationPage() {
       }
     >
       {/* Section 1: Autonomy ramp */}
-      <section className="grid grid-cols-12 gap-4">
-        <div className="col-span-8">
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-8">
           <SectionCard
             title={`1 · Autonomy ramp · current Level ${adminState?.autonomy_level ?? '4.3'}`}
             subtitle={<span>L3 = review-all · L4 = auto-merge ≥ threshold · L5 = dark factory (full Tuesday-morning scenario)</span>}
           >
             <AutonomyRamp />
-            <div className="mt-4 grid grid-cols-4 gap-3 text-[11px]">
+            <div className="mt-4 grid grid-cols-2 gap-3 text-[11px] xl:grid-cols-4">
               <span className="text-harness-muted">To promote to Level 5 ·</span>
               <span className="text-harness-teal">✓ fleet UI shipped</span>
               <span className="text-harness-warning">○ stale detection (3.5)</span>
@@ -166,7 +166,7 @@ export default function AdminActivationPage() {
         </div>
 
         {/* Section 2: Modes & providers */}
-        <div className="col-span-4">
+        <div className="lg:col-span-4">
           <SectionCard title="2 · Modes &amp; providers" subtitle={<span>model-agnostic by design</span>}>
             <div className="flex flex-col gap-3">
               <Toggle label="openrouter" value={openrouter} onToggle={setOpenrouter} testId="toggle-openrouter" />
@@ -182,14 +182,14 @@ export default function AdminActivationPage() {
       </section>
 
       {/* Section 3: Branch protection (READ-ONLY status) */}
-      <section className="mt-4 grid grid-cols-12 gap-4">
-        <div className="col-span-8">
+      <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-8">
           <SectionCard
             title="3 · Branch protection · intentionally off (per René 2026-05-24)"
             subtitle={<span className="text-harness-warning">All 4 repos currently unprotected on main. See <Link href="https://github.com/ToscanAI/orchemist/blob/main/docs/harness-redesign-2026-05-24/AUTONOMY.md" className="h-link">AUTONOMY.md</Link> · issue <a href="https://github.com/ToscanAI/orchemist/issues/812" className="h-link">#812</a> closed.</span>}
             tone="warning"
           >
-            <table className="w-full text-[12px] border-collapse">
+            <div className="overflow-x-auto"><table className="w-full min-w-[480px] text-[12px] border-collapse">
               <thead>
                 <tr className="text-[10px] tracking-widest text-harness-dim">
                   <th className="text-left pb-2">REPO</th>
@@ -213,7 +213,7 @@ export default function AdminActivationPage() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
             <div className="mt-3 text-[10px] text-harness-dim">
               Engine git_integration.py already refuses force-push internally · branch protection (defence-in-depth at GitHub layer) is intentionally not enabled.
             </div>
@@ -221,7 +221,7 @@ export default function AdminActivationPage() {
         </div>
 
         {/* Section 4: Kill switches */}
-        <div className="col-span-4">
+        <div className="lg:col-span-4">
           <SectionCard title="4 · Kill switches" subtitle={<span>instant stop · do not require redeploy</span>}>
             <div className="flex flex-col gap-4">
               <Toggle label="Auto-merge globally" value={autoMerge} onToggle={setAutoMerge} testId="kill-automerge" />
@@ -241,13 +241,13 @@ export default function AdminActivationPage() {
       </section>
 
       {/* Section 5: Webhook triggers */}
-      <section className="mt-4 grid grid-cols-12 gap-4">
-        <div className="col-span-8">
+      <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-8">
           <SectionCard
             title="5 · Webhook triggers · 4 registered"
             subtitle={<span>events that auto-spawn pipelines · per-trigger rate limits enforced (webhooks.py)</span>}
           >
-            <table className="w-full text-[12px] border-collapse">
+            <div className="overflow-x-auto"><table className="w-full min-w-[480px] text-[12px] border-collapse">
               <thead>
                 <tr className="text-[10px] tracking-widest text-harness-dim">
                   <th className="text-left pb-2">TRIGGER</th>
@@ -278,7 +278,7 @@ export default function AdminActivationPage() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+            </table></div>
             <button
               type="button"
               className="mt-4 w-full rounded-md border border-dashed border-harness-purple py-2 text-[11px] text-harness-purple hover:bg-[#22321F]"
@@ -289,7 +289,7 @@ export default function AdminActivationPage() {
         </div>
 
         {/* Section 6: Feature flags */}
-        <div className="col-span-4">
+        <div className="lg:col-span-4">
           <SectionCard
             title="6 · Feature flags · v4.2"
             subtitle={

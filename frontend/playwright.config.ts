@@ -6,8 +6,11 @@ import { defineConfig, devices } from '@playwright/test';
  * Local default: spins up `next dev` on :3000 and runs against it.
  * Set `PW_BASE_URL` to point at an external host (e.g. CI / staging).
  *
- * The harness must render and be navigable when the engine is OFFLINE — every
- * page degrades to demo data. Tests therefore do not require `orch serve`.
+ * Engine dependency (post-#888): the harness REQUIRES a reachable engine —
+ * with the engine offline every route renders the EngineOfflineGuard error
+ * UI. `harness-screens.spec.ts` mocks `/api/v1/*` as offline and asserts
+ * exactly that guard, so it needs no `orch serve`; `harness-live.spec.ts`
+ * runs against a real `orch serve --port 8374`.
  */
 export default defineConfig({
   testDir: './tests-e2e',

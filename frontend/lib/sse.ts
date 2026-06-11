@@ -99,10 +99,16 @@ function deriveStatus(runStatus: SseStatusChangedEvent['status']): RunEventStatu
     case 'success':
       return 'completed';
     case 'failed':
+    case 'crashed':
     case 'budget_exceeded':
     case 'scoring_failed':
+    // escalated: the retry was escalated — THIS run ended unsuccessfully;
+    // the successor run streams separately.
+    case 'escalated':
       return 'error';
     case 'cancelled':
+    // rejected: human gate said no — operator-initiated stop, like cancel.
+    case 'rejected':
       return 'aborted';
     case 'pending_review':
       // Awaiting human gate decision — treat as still running from the

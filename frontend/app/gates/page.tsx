@@ -289,14 +289,17 @@ export default function TrustAndGatesPage() {
         </div>
       )}
 
-      <section className="grid grid-cols-12 gap-4">
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         {/* Approval queue */}
-        <div className="col-span-8">
+        <div className="lg:col-span-8">
           <SectionCard
             title="Approval queue"
             subtitle={<span>below threshold or human-review-only repos · oldest first</span>}
             testId="section-gates"
           >
+            {/* overflow-x-auto + min-w: the 12-col queue rows scroll inside
+                the card on narrow viewports (2026-06-11 UX audit). */}
+            <div className="overflow-x-auto"><div className="min-w-[640px]">
             <div className="grid grid-cols-12 gap-3 px-3 pb-2 text-[10px] tracking-widest text-harness-dim border-b border-harness-border">
               <div className="col-span-3">REPO · ISSUE / RUN</div>
               <div className="col-span-3">TEMPLATE</div>
@@ -366,6 +369,7 @@ export default function TrustAndGatesPage() {
                 </li>
               ))}
             </ul>
+            </div></div>
             {usingLive && rows.length > 0 && (
               <div className="mt-3 text-[10px] text-harness-dim">
                 {rows.length} live gate{rows.length === 1 ? '' : 's'} · approve / reject calls hit /api/v1/gates/{`{run_id}`}/(approve|reject)
@@ -378,7 +382,7 @@ export default function TrustAndGatesPage() {
         </div>
 
         {/* Trust profiles */}
-        <div className="col-span-4">
+        <div className="lg:col-span-4">
           <SectionCard
             title="Trust profiles"
             subtitle={
@@ -418,8 +422,8 @@ export default function TrustAndGatesPage() {
         </div>
       </section>
 
-      <section className="mt-4 grid grid-cols-12 gap-4">
-        <div className="col-span-6">
+      <section className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-6">
           <SectionCard
             title="Calibration curve · last 14 days"
             subtitle={<span>predicted confidence vs actual post-merge success</span>}
@@ -444,7 +448,7 @@ export default function TrustAndGatesPage() {
           </SectionCard>
         </div>
 
-        <div className="col-span-6">
+        <div className="lg:col-span-6">
           <SectionCard
             title="Recent decisions · audit trail"
             subtitle={

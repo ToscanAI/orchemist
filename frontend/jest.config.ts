@@ -19,6 +19,10 @@ const config: Config = {
     '**/__tests__/**/*.[jt]s?(x)',
     '**/?(*.)+(spec|test).[jt]s?(x)',
   ],
+  // Playwright specs live in tests-e2e/ and import @playwright/test —
+  // loading them under jest throws "Class extends value undefined".
+  // They run via `npx playwright test`, never jest (2026-06-11 UX audit).
+  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/tests-e2e/'],
 };
 
 export default createJestConfig(config);

@@ -29,9 +29,12 @@ const STATUS_OPTIONS = [
   'success',
   'failed',
   'cancelled',
+  'crashed',
   'budget_exceeded',
   'scoring_failed',
   'pending_review',
+  'rejected',
+  'escalated',
 ] as const;
 
 /**
@@ -107,12 +110,13 @@ export default function RunsPage() {
     >
       <div>
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-[14px] font-semibold text-harness-text">Pipeline Runs</h1>
+        {/* h2, not h1 — the TopBar already renders the page's single h1. */}
+        <h2 className="text-[14px] font-semibold text-harness-text">Pipeline Runs</h2>
         <span className="text-[12px] text-harness-muted">{total} total</span>
       </div>
 
       {/* Filters */}
-      <div className="mb-4 flex gap-3">
+      <div className="mb-4 flex flex-wrap gap-3">
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
@@ -160,10 +164,12 @@ export default function RunsPage() {
         </div>
       )}
 
-      {/* Table */}
+      {/* Table — overflow-x-auto so narrow viewports scroll the table inside
+          its own container instead of clipping columns (2026-06-11 UX audit:
+          at 390px only the Run ID column survived). */}
       {runs.length > 0 && (
-        <div className="overflow-hidden rounded-lg border border-default">
-          <table className="w-full text-sm">
+        <div className="overflow-x-auto rounded-lg border border-default">
+          <table className="w-full min-w-[640px] text-sm">
             <thead className="border-b border-default bg-surface-0/50">
               <tr>
                 <th className="px-4 py-3 text-left font-medium text-content-secondary">Run ID</th>

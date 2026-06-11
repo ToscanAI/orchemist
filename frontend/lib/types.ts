@@ -72,15 +72,19 @@ export interface StartRunRequest {
  *   pending → running → (success | failed | cancelled |
  *                        budget_exceeded | scoring_failed | pending_review)
  *
- * Note: there is no `'crashed'` value on the backend — previously declared
- * on the frontend, which made the `RunStatusBadge` silently fall through to
- * its neutral default for any unmapped status. Issue #811 traced this drift;
- * cleanup #821 (this file) aligns the union to the canonical engine set and
- * makes the badge mapping exhaustive.
+ * Aligned to the engine's vocabulary: `db.TERMINAL_STATUSES` (success,
+ * failed, cancelled, crashed, scoring_failed, pending_review, rejected,
+ * escalated) plus the live states (pending, running) and the daemon's
+ * `budget_exceeded`. The #821 cleanup note that claimed "there is no
+ * 'crashed' value on the backend" was wrong — the orphan reaper
+ * (`db.reap_orphans`) transitions dead-daemon rows to `'crashed'`, and it
+ * is the most common terminal status in real fleets (2026-06-11 UX audit:
+ * 785 of 1456 local runs).
  *
  * If you add a new status here, update `RunStatusBadge.statusToVariant` —
- * the switch is exhaustive on this union (TypeScript will surface unmapped
- * cases at compile time).
+ * the mapping is exhaustive on this union (TypeScript will surface unmapped
+ * cases at compile time) — and `STATUS_OPTIONS` in `app/runs/page.tsx` so
+ * the runs list can filter on it.
  */
 export type RunStatus =
   | 'pending'
@@ -88,9 +92,12 @@ export type RunStatus =
   | 'success'
   | 'failed'
   | 'cancelled'
+  | 'crashed'
   | 'budget_exceeded'
   | 'scoring_failed'
-  | 'pending_review';
+  | 'pending_review'
+  | 'rejected'
+  | 'escalated';
 
 /** Full pipeline run record returned by run endpoints. */
 export interface RunRecord {
