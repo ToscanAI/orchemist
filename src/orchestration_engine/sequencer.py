@@ -3949,8 +3949,52 @@ class StateMachineSequencer(PhaseSequencer):
         # the postmortem phase itself completes successfully.
         self._exhausted_route: bool = False
 
+        # ── Issue #978: global walk-step ceiling (defense-in-depth) ──────────
+        # Per-phase EXHAUSTED guard (below) kills the proven review<->fix spin;
+        # this ceiling is an absolute backstop against ANY future non-terminating
+        # walk. Bound = total legal dispatching visits + a small EXHAUSTED-hop
+        # margin; it can never trip a legitimate run.
+        _walk_steps = 0
+        _walk_step_ceiling = (
+            sum(p.max_iterations for p in self.template.phases if p.max_iterations > 0)
+            + len(self.template.phases)
+            + 8
+        )
+
         try:
             while current_phase_id is not None:
+                _walk_steps += 1
+                if _walk_steps > _walk_step_ceiling:
+                    logger.error(
+                        "Pipeline %s: walk-step ceiling (%d) exceeded at phase "
+                        "'%s' — aborting a non-terminating state-machine walk.",
+                        self.template.id,
+                        _walk_step_ceiling,
+                        current_phase_id,
+                    )
+                    last_phase = executed_sequence[-1] if executed_sequence else None
+                    self._safe_call_hook(
+                        self.on_pipeline_complete,
+                        self.pipeline_context,
+                        None,
+                        pipeline_id=self.template.id,
+                    )
+                    return {
+                        "phase_outputs": self.phase_outputs,
+                        "final_output": (
+                            self.phase_outputs.get(last_phase, {}) if last_phase else {}
+                        ),
+                        "iteration_history": dict(self.iteration_history),
+                        "iteration_counts": dict(self.iteration_counts),
+                        "aborted": True,
+                        "abort_reason": "WALK_STEP_LIMIT",
+                        "failed_phase": current_phase_id,
+                        "error_message": (
+                            f"Pipeline aborted: state-machine walk exceeded "
+                            f"{_walk_step_ceiling} steps without terminating "
+                            f"(last phase '{current_phase_id}')."
+                        ),
+                    }
                 # ── Phase lookup ──────────────────────────────────────────────
                 phase = self._phase_map.get(current_phase_id)
                 if phase is None:
@@ -3998,6 +4042,35 @@ class StateMachineSequencer(PhaseSequencer):
                                     _exhausted_next,
                                 )
                                 _exhausted_next = None
+                        # ── Issue #978: termination guard ─────────────────────
+                        # An over-cap phase routing EXHAUSTED must only re-enter a
+                        # target that can actually DISPATCH. A target that is itself
+                        # a loop phase already at/over its cap would re-exhaust on
+                        # entry (the cap check at :3969 fires BEFORE dispatch), so
+                        # re-entering it makes ZERO progress -> infinite no-dispatch
+                        # spin (the #978 100%-CPU hang). Treat such a target like the
+                        # "no transition" case: null it and fall through to the
+                        # MAX_ITERATIONS_EXCEEDED abort below.
+                        if _exhausted_next is not None:
+                            _target_phase = self._phase_map.get(_exhausted_next)
+                            if (
+                                _target_phase is not None
+                                and _target_phase.max_iterations > 0
+                                # re-entry increments first (:3963): would it exceed?
+                                and self.iteration_counts[_exhausted_next]
+                                >= _target_phase.max_iterations
+                            ):
+                                logger.error(
+                                    "Pipeline %s: EXHAUSTED route from '%s' resolves "
+                                    "to '%s', which is itself at/over its "
+                                    "max_iterations (%d) — re-entry cannot dispatch. "
+                                    "Aborting to avoid a non-terminating walk.",
+                                    self.template.id,
+                                    current_phase_id,
+                                    _exhausted_next,
+                                    _target_phase.max_iterations,
+                                )
+                                _exhausted_next = None
                         if _exhausted_next is not None:
                             logger.info(
                                 f"Pipeline {self.template.id}: MAX_ITERATIONS_EXCEEDED "
@@ -4026,6 +4099,12 @@ class StateMachineSequencer(PhaseSequencer):
                             "abort_reason": "MAX_ITERATIONS_EXCEEDED",
                             "failed_phase": current_phase_id,  # Issue #651: fix 'unknown' in daemon
                             "exceeded_phase": current_phase_id,
+                            "error_message": (  # Issue #978: name the exhausted phase
+                                f"Pipeline aborted: phase '{current_phase_id}' "
+                                f"exhausted max_iterations and its exhausted/failed "
+                                f"route resolves only to over-cap phase(s) "
+                                f"(non-terminating loop prevented)."
+                            ),
                         }
                         # ── Finding analysis (Issue #651) ─────────────────────────────────────
                         _finding_analysis = _analyze_round_findings(

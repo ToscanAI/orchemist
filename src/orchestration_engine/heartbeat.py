@@ -236,7 +236,11 @@ class ProgressHeartbeat:
 
         line = (
             f"[{elapsed_str}] Running {phase_word} {phase_num}/{self.total_phases}"
-            f" '{names}'... ({completed} completed)"
+            # Issue #978: clamp the displayed count — _completed counts phase
+            # EXECUTIONS (loop re-entries inflate it past the distinct-phase
+            # total, e.g. the misleading "7/7 ... (14 completed)"). Display only;
+            # the raw self._completed counter is left intact.
+            f" '{names}'... ({min(completed, self.total_phases)} completed)"
         )
         try:
             print(line, file=self._stream, flush=True)

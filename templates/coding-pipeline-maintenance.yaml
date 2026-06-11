@@ -2,7 +2,7 @@ id: coding-pipeline-maintenance
 name: "Coding Pipeline — Maintenance / Fix"
 description: "Right-sized pipeline for bug fixes, infra/deploy/CI changes, and small maintenance work where the full sealed-behavioral-contract ceremony is overkill. Flow: recon -> spec -> spec_adversary(opus) -> implement -> review(opus) -> test(suite) -> PR. SKIPS the behavioral contract + the sealed-acceptance trio (acceptance_test/test_adversary/acceptance_run) because maintenance/infra changes are validated by a FOCUSED test (when unit/e2e-testable) or by PROD VALIDATION (when the behavior is deploy-time/cloud-side and not locally sealable). Same phase IDs as the standard pipeline, so orchemist-run's subagent+model mapping applies (spec_adversary=orchemist-adversary/opus, implement=orchemist-implementer, review=general-purpose/opus, fix=general-purpose)."
 author: "Toscan"
-version: "1.1.0"
+version: "1.2.0"
 category: "code"
 tags: [code, maintenance, fix, infra, bugfix, pipeline]
 use_cases:
@@ -146,6 +146,10 @@ phases:
       success: test
       failed: review
       timeout: review
+      # Issue #978: graceful common path when the review loop exhausts —
+      # unresolved findings hand to fix once. If fix/review are also over-cap,
+      # the engine's termination guard aborts cleanly (no busy-spin).
+      exhausted: fix
     prompt_template: |
       [PIPELINE CONTEXT] MAINTENANCE pipeline — REVIEW phase (opus, independent). Read the implement commit + {output_dir}/spec.md + {output_dir}/spec_adversary.md. Do not ask questions or send messages. [/PIPELINE CONTEXT]
 
@@ -181,6 +185,10 @@ phases:
       # PR (Closes #N) + auto-merges on green CI, then runs PROD-VALIDATION.
       failed: fix
       timeout: test
+      # Issue #978: a test loop that won't pass routes to fix; if fix/review are
+      # also over-cap, the engine termination guard aborts (no spin). Closes the
+      # latent failed: fix -> ... -> review-spin path.
+      exhausted: fix
     allowed_commands: ["pnpm", "npm", "npx", "node", "turbo", "tsc", "vitest", "jest", "bash", "sh", "actionlint"]
 
 # After `test` succeeds the orchestrator: opens the PR (Closes #N, reviewer

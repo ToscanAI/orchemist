@@ -35,6 +35,7 @@ Loop / iteration support (Issue #235):
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Callable, Dict, List, Optional
 from unittest.mock import MagicMock, call, patch
 
@@ -1630,4 +1631,114 @@ class TestExhaustedRouting:
         )
 
         # Run is still stamped as failed
+        assert result.get("aborted") is True
+
+
+# ---------------------------------------------------------------------------
+# Issue #978 — non-termination guard (EXHAUSTED route re-entering an
+# already-over-cap loop phase)
+# ---------------------------------------------------------------------------
+
+
+def _run_bounded(seq: StateMachineSequencer, timeout: float = 5.0):
+    """Run ``seq.execute({})`` on a daemon thread with a join timeout.
+
+    Returns ``(thread, box)`` where ``box["result"]`` holds the execute()
+    return value once (and if) the walk terminates. The daemon flag means a
+    never-joining thread (the pre-fix #978 spin) does NOT block process exit,
+    so the RED assertion ``assert not thread.is_alive()`` is bounded — it
+    fails fast on a spin instead of hanging the test runner. ``timeout`` is a
+    watchdog, NOT a pacing sleep (the post-fix walk returns in milliseconds).
+    """
+    box: Dict[str, Any] = {}
+
+    def _go() -> None:
+        box["result"] = seq.execute({})
+
+    t = threading.Thread(target=_go, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    return t, box
+
+
+class TestTerminationGuard978:
+    """Issue #978: the walk must never busy-spin when an EXHAUSTED route
+    resolves to a loop phase that is itself already at/over its cap.
+
+    Each test bounds ``execute()`` on a daemon thread (see ``_run_bounded``)
+    so a regression (the pre-fix 100%-CPU spin) fails fast rather than
+    hanging the runner.
+    """
+
+    def test_mutual_overcap_loop_terminates(self) -> None:
+        """Probe-C shape: two phases, each max_iterations=1, in a mutual loop
+        with NO 'exhausted' transition (EXHAUSTED → 'failed' → the over-cap
+        partner). Pre-fix this spins forever (RED). Post-fix the dispatchability
+        guard nulls the over-cap target and the walk aborts cleanly.
+        """
+        phase_a = _make_phase("a", max_iterations=1, transitions={"success": "b", "failed": "b"})
+        phase_b = _make_phase("b", max_iterations=1, transitions={"success": "a", "failed": "a"})
+        template = _make_template([phase_a, phase_b])
+
+        t, box = _run_bounded(_make_sequencer(template, _success_result))
+
+        # HANGS on main → thread still alive at timeout (the RED proof).
+        assert not t.is_alive(), "execute() did not terminate — #978 busy-spin regression"
+        assert box["result"].get("aborted") is True
+        assert box["result"].get("abort_reason") in {
+            "MAX_ITERATIONS_EXCEEDED",
+            "WALK_STEP_LIMIT",
+        }
+
+    def test_missing_exhausted_key_failed_target_overcap_aborts(self) -> None:
+        """Direct unit of the guard: a single self-looping over-cap phase whose
+        'failed' points back to itself (the 'review' self-edge shape). EXHAUSTED
+        has no 'exhausted' key → 'failed: review' → review is itself over-cap →
+        guard fires → MAX_ITERATIONS_EXCEEDED naming 'review'.
+        """
+        phase = _make_phase(
+            "review",
+            max_iterations=1,
+            transitions={"success": "review", "failed": "review"},
+        )
+        template = _make_template([phase])
+
+        t, box = _run_bounded(_make_sequencer(template, _success_result))
+
+        assert not t.is_alive(), "execute() did not terminate — #978 self-edge spin"
+        assert box["result"].get("aborted") is True
+        assert box["result"].get("abort_reason") == "MAX_ITERATIONS_EXCEEDED"
+        assert "review" in (box["result"].get("error_message") or "")
+
+    def test_exhausted_failed_target_dispatchable_still_routes(self) -> None:
+        """Guard must NOT over-fire: an EXHAUSTED → 'failed' route to a fresh
+        dispatchable terminal phase (max_iterations==0) routes there exactly as
+        today (mirrors test_exhausted_fallback_to_failed_transition). Cannot
+        hang, so a plain execute() is safe.
+        """
+        phase_a = _make_phase("a", max_iterations=1, transitions={"success": "a", "failed": "done"})
+        phase_done = _make_phase("done")  # max_iterations=0 → dispatchable terminal
+        template = _make_template([phase_a, phase_done])
+
+        result = _make_sequencer(template, _success_result).execute({})
+
+        # Routed via the exhausted→failed fallback, NOT guard-aborted.
+        assert result.get("aborted") is True
+        assert result.get("abort_reason") == "EXHAUSTED_ROUTE"
+        assert "done" in result.get("phase_outputs", {})
+
+    def test_walk_step_ceiling_backstop(self) -> None:
+        """Defense-in-depth: a long-but-legal deep loop must NOT trip the
+        walk-step ceiling. A loop phase with max_iterations=5 that routes
+        EXHAUSTED to a dispatchable terminal phase dispatches 5× then exits via
+        'exhausted' — well under ceiling = 5 + 2 + 8 = 15. Proves no false-trip.
+        """
+        loop = _make_phase("L", max_iterations=5, transitions={"success": "L", "exhausted": "end"})
+        end = _make_phase("end")
+        template = _make_template([loop, end])
+
+        result = _make_sequencer(template, _success_result).execute({})
+
+        # Terminated via the exhausted route — the ceiling did NOT false-trip.
+        assert result.get("abort_reason") != "WALK_STEP_LIMIT"
         assert result.get("aborted") is True
