@@ -50,6 +50,13 @@ mixed-provider pipelines) ships via
 matrix further (more families, polish) is tracked in
 [#101](https://github.com/ToscanAI/orchemist/issues/101).
 
+Enumerate these providers from the CLI with `orch providers list` (add `--json`
+to script it): it prints each provider, its credential env var and whether that
+var is currently set, default tier->model mappings, the openrouter base-url
+default, and the maturity label above — read-only, no network calls, no key
+material ([#970](https://github.com/ToscanAI/orchemist/issues/970), closing the
+[#101](https://github.com/ToscanAI/orchemist/issues/101) epic's discoverability AC).
+
 ## Web harness
 
 Engine-required (#888): with `orch serve` running, the six screens consume real
@@ -64,7 +71,10 @@ a required CI check on every PR (#889).
   regeneration from the OpenAPI spec is not yet automated.
 - Spec adversary occasionally deviates from the first-line verdict format
   (compensated by retry loops at the cost of extra rounds).
-- Cost reporting overestimates by ~3x when OpenRouter omits `usage.total_cost` (#801).
+- When OpenRouter omits `usage.total_cost`, cost is now computed from per-tier
+  fallback rates and explicitly flagged as estimated (`metadata['cost_estimated']`
+  is `True`, with a one-time `WARNING`) rather than silently overestimated
+  (#801, #967).
 - The bash/command tool sandbox is a UX guardrail, not a security boundary —
   use OS-level isolation (firejail, containers) for untrusted workloads.
 - `pyproject.toml` project URLs still point at the old `orchestration-engine`
@@ -72,7 +82,9 @@ a required CI check on every PR (#889).
 
 ## Planned
 
-- Provider-matrix expansion — [#101](https://github.com/ToscanAI/orchemist/issues/101).
+- Provider-matrix expansion (further model families, polish) — the
+  [#101](https://github.com/ToscanAI/orchemist/issues/101) umbrella; its original
+  discoverability AC is met by `orch providers list` (#970).
 - Dialogue phase graduating from the `dialogue_phase` flag (default off today) — #677.
 - Generic adversary / dialogue runner work — #700, #702, #703.
 - Decomposition of the largest modules — #942.
