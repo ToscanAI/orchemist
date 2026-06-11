@@ -45,6 +45,10 @@ If any item is unchecked, do not proceed.
 1. Create a branch: `release/vX.Y.Z`.
 2. Bump `pyproject.toml` `version = "X.Y.Z"` and move the
    `CHANGELOG.md [Unreleased]` block under `## [X.Y.Z] - YYYY-MM-DD`.
+   Also bump `src/orchestration_engine/__init__.py` `__version__` to the same
+   `X.Y.Z` — it must move with `pyproject.toml` (the health/OpenAPI version is
+   sourced from this literal). The `tests/test_version_parity.py` guard fails
+   the build if the two ever diverge (#975).
 3. Open a PR titled `Release vX.Y.Z`.
 4. **Require two maintainer reviews** before merge. The release PR is
    the audit trail for what shipped under this version number; a single
