@@ -11,6 +11,7 @@ connection management, and schema migrations.
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import uuid
@@ -79,10 +80,24 @@ def default_db_path() -> Path:
     :mod:`cli`, :mod:`web.api`, :mod:`mcp.tools`, :mod:`daemon`, and inline
     inside :class:`Database`.
 
+    Issue #981: an ``ORCH_DB_PATH`` env var (an absolute path to the
+    ``engine.db`` *file*) takes precedence over the ``$HOME`` fallback when
+    set, so operators/CI — and the pytest suite's session-scoped conftest
+    fixture — can point the engine at a tmp DB without touching ``HOME``.
+    Production behaviour is byte-identical when the var is unset/empty.
+    Mirrors :func:`feature_flags._admin_json_path`'s ``ORCH_ADMIN_PATH``
+    idiom; the override branch additionally ``mkdir``s the file's parent to
+    preserve this function's documented parent-exists invariant (#864).
+
     Returns:
         ``Path`` pointing at the engine database file.  Callers that need
         a string path can wrap with ``str(default_db_path())``.
     """
+    override = os.environ.get("ORCH_DB_PATH")
+    if override:
+        db_file = Path(override)
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        return db_file
     default_dir = Path.home() / ".orchestration-engine"
     default_dir.mkdir(parents=True, exist_ok=True)
     return default_dir / "engine.db"

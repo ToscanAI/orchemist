@@ -55,6 +55,7 @@ def _isolate_home(tmp_path, monkeypatch):
     these tests do) to keep default_db_path() under tmp and away from the real
     ~/.orchestration-engine."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("ORCH_DB_PATH", raising=False)  # #981: session env wins over HOME; clear it so HOME isolation steers default_db_path()
 
 
 # ---------------------------------------------------------------------------
