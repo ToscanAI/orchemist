@@ -1154,6 +1154,10 @@ def run_template(  # noqa: C901
 ) -> None:
     """Execute a pipeline template end-to-end.
 
+    Persists a ``pipeline_runs`` record + per-phase costs to
+    ``~/.orchestration-engine/engine.db`` (created on first use); persistence
+    failures are non-fatal and warn once.
+
     TEMPLATE_NAME_OR_FILE is a template name (e.g. content-pipeline) or a
     path to a YAML file.  Template names are resolved using the search order:
     ORCH_TEMPLATES_PATH → ./templates/ → ~/.orch/templates/ → bundled.
@@ -1454,6 +1458,62 @@ def run_template(  # noqa: C901
         click.echo(f"✗ {exc}", err=True)
         sys.exit(1)
 
+    # --- 3a. Run persistence (#979/#980) ------------------------------
+    # Foreground runs are submitter+executor in one process, so we INSERT the
+    # pipeline_runs row here (status=running) — mirroring `orch start`
+    # (cli.py ~2132) — then drive per-phase + terminal updates via the
+    # callbacks/handlers below using the daemon's importable helpers (#954).
+    # Failure to open the DB must NEVER kill the run (req 5): on any error we
+    # warn ONCE and continue with persistence disabled (db is None).
+    from .daemon import (  # noqa: PLC0415
+        _persist_phase_complete,
+        _persist_phase_start,
+    )
+
+    db = None
+    _cost_tracker = None
+    _fg_completed_phases: list = []
+    _fg_phase_outputs: Dict[str, Any] = {}
+    try:
+        db = Database()
+        db.insert_pipeline_run(
+            {
+                "run_id": run_id,
+                "template_path": str(template_file.resolve()),
+                "template_id": template.id,
+                "input_json": _json.dumps(initial_input),
+                "mode": mode,
+                "output_dir": str(output_dir.resolve()),
+                "gateway_url": gateway_url,
+                "skip_scoring": int(skip_scoring),
+                "status": "running",
+            }
+        )
+        db.update_pipeline_run(
+            run_id,
+            pid=os.getpid(),
+            started_at=now_utc().isoformat(),
+        )
+    except Exception as _db_exc:  # noqa: BLE001
+        try:
+            _db_path_repr = str(default_db_path())
+        except Exception:  # noqa: BLE001
+            _db_path_repr = "~/.orchestration-engine/engine.db"
+        logger.warning(
+            "Run persistence disabled — could not open run database at %s: %s",
+            _db_path_repr,
+            _db_exc,
+        )
+        db = None
+    if db is not None:
+        try:
+            from .cost_tracker import CostTracker  # noqa: PLC0415
+
+            _cost_tracker = CostTracker(db)
+        except Exception as _ct_exc:  # noqa: BLE001
+            logger.warning("CostTracker init failed (non-fatal): %s", _ct_exc)
+            _cost_tracker = None
+
     # --- 4. Execute pipeline -----------------------------------------
     n_phases = len(template.phases)
     console.print(
@@ -1566,9 +1626,68 @@ def run_template(  # noqa: C901
         heartbeat is inactive (TTY mode).
         """
         heartbeat.set_current_phase(phase_id)
+        # Persist the running phase so `orch status`/the harness reflect it (#516/#979).
+        # No-op when persistence is disabled (db is None — see degradation contract).
+        if db is not None:
+            try:
+                _persist_phase_start(db, run_id, phase_id)
+            except Exception as _persist_exc:  # noqa: BLE001
+                logger.warning(
+                    "Phase-start persistence failed for '%s' (non-fatal): %s",
+                    phase_id,
+                    _persist_exc,
+                )
 
     # Live phase-completion callback (Feature #70)
     def _on_phase_complete(phase_id: str, phase_result: dict) -> None:
+        # --- #979/#980 persistence (mirrors daemon.py _on_phase_complete) ---
+        # Mutate the foreground accumulators BEFORE the serialize-only helper
+        # (daemon.py:565-566 → 618 ordering). No-op when db is None.
+        if db is not None:
+            _fg_completed_phases.append(phase_id)
+            _fg_phase_outputs[phase_id] = phase_result
+            try:
+                _persist_phase_complete(
+                    db, run_id, phase_id, _fg_completed_phases, _fg_phase_outputs
+                )
+            except Exception as _persist_exc:  # noqa: BLE001
+                logger.warning(
+                    "Phase-complete persistence failed for '%s' (non-fatal): %s",
+                    phase_id,
+                    _persist_exc,
+                )
+        # Record per-phase cost (verbatim daemon.py:663-693 extraction). No-op
+        # when the CostTracker is unavailable; dry-run results carry 0 tokens
+        # so both branches are skipped (zero cost rows — req 4).
+        if _cost_tracker is not None:
+            try:
+                _model = phase_result.get("model_used") or "unknown"
+                _in = phase_result.get("input_tokens")
+                _out = phase_result.get("output_tokens")
+                if _in is not None and _out is not None and (_in or _out):
+                    _cost_tracker.record_phase(
+                        run_id=run_id,
+                        phase_id=phase_id,
+                        model=_model,
+                        input_tokens=int(_in),
+                        output_tokens=int(_out),
+                    )
+                else:
+                    _total_tokens = phase_result.get("tokens_consumed") or 0
+                    if _total_tokens > 0:
+                        _cost_tracker.record_phase(
+                            run_id=run_id,
+                            phase_id=phase_id,
+                            model=_model,
+                            input_tokens=0,
+                            output_tokens=_total_tokens,
+                        )
+            except Exception as _cost_exc:  # noqa: BLE001
+                logger.warning(
+                    "Cost recording failed for phase '%s' (non-fatal): %s",
+                    phase_id,
+                    _cost_exc,
+                )
         _st = phase_result.get("state", "unknown")
         state_val = _st.value if hasattr(_st, "value") else str(_st)
         tokens = phase_result.get("tokens_consumed", 0)
@@ -1630,13 +1749,51 @@ def run_template(  # noqa: C901
             # In TTY mode the heartbeat is automatically inactive, so this is a no-op.
             with heartbeat:
                 result = sequencer.execute(initial_input)
+        except KeyboardInterrupt:
+            # SIGINT (#975): mark cancelled, then re-raise so Click emits
+            # "Aborted!" with its conventional exit code. KeyboardInterrupt is a
+            # BaseException, so neither sequencer.execute's `except Exception`
+            # (sequencer.py:235) nor the arm below catches it — this arm must.
+            if db is not None:
+                try:
+                    db.update_pipeline_run(
+                        run_id,
+                        status="cancelled",
+                        completed_at=now_utc().isoformat(),
+                        error_message="Cancelled by user (SIGINT)",
+                    )
+                except Exception as _term_exc:  # noqa: BLE001
+                    logger.warning("Cancelled-status write failed (non-fatal): %s", _term_exc)
+            if git_ctx:
+                git_ctx.cleanup(success=False)
+            raise
         except GitError as exc:
             console.print(f"\n[red]✗ Git error:[/red] {exc}", highlight=False)
+            if db is not None:
+                try:
+                    db.update_pipeline_run(
+                        run_id,
+                        status="failed",
+                        completed_at=now_utc().isoformat(),
+                        error_message=f"Git error: {exc}",
+                    )
+                except Exception as _term_exc:  # noqa: BLE001
+                    logger.warning("Failed-status write failed (non-fatal): %s", _term_exc)
             if git_ctx:
                 git_ctx.cleanup(success=False)
             sys.exit(1)
         except Exception as exc:  # noqa: BLE001
             click.echo(f"✗ Pipeline execution crashed: {exc}", err=True)
+            if db is not None:
+                try:
+                    db.update_pipeline_run(
+                        run_id,
+                        status="failed",
+                        completed_at=now_utc().isoformat(),
+                        error_message=f"Pipeline execution crashed: {exc}",
+                    )
+                except Exception as _term_exc:  # noqa: BLE001
+                    logger.warning("Failed-status write failed (non-fatal): %s", _term_exc)
             if git_ctx:
                 git_ctx.cleanup(success=False)
             sys.exit(1)
@@ -1646,7 +1803,29 @@ def run_template(  # noqa: C901
         failed_phase = result.get("failed_phase", "unknown")
         click.echo(f"✗ Pipeline aborted at phase '{failed_phase}'", err=True)
         click.echo(f"  Completed phases: {[*result['phase_outputs'].keys()]}", err=True)
+        if db is not None:
+            try:
+                db.update_pipeline_run(
+                    run_id,
+                    status="failed",
+                    completed_at=now_utc().isoformat(),
+                    error_message=f"Pipeline aborted at phase '{failed_phase}'",
+                )
+            except Exception as _term_exc:  # noqa: BLE001
+                logger.warning("Failed-status write failed (non-fatal): %s", _term_exc)
         sys.exit(2)
+
+    # Pipeline reached a clean end: mark success (#979). Foreground does not run
+    # the daemon's confidence-routing, so the terminal status is a plain success.
+    if db is not None:
+        try:
+            db.update_pipeline_run(
+                run_id,
+                status="success",
+                completed_at=now_utc().isoformat(),
+            )
+        except Exception as _term_exc:  # noqa: BLE001
+            logger.warning("Success-status write failed (non-fatal): %s", _term_exc)
 
     completed_phases = [*result["phase_outputs"].keys()]
     elapsed = time.time() - run_start

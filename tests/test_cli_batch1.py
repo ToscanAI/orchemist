@@ -40,6 +40,14 @@ def _invoke(args, env=None):
     return runner.invoke(main, args, env=env or {}, catch_exceptions=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_home(tmp_path, monkeypatch):
+    """#980/#981: foreground `orch run` now persists by default. Redirect HOME
+    so default_db_path() resolves under tmp and never touches the real
+    ~/.orchestration-engine."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
 # ---------------------------------------------------------------------------
 # Feature #72 — Default output directory
 # ---------------------------------------------------------------------------

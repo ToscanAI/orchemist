@@ -28,6 +28,14 @@ from orchestration_engine.schemas import (
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _isolate_home(tmp_path, monkeypatch):
+    """#980/#981: foreground `orch run` now persists by default. Redirect HOME
+    so default_db_path() resolves under tmp and never touches the real
+    ~/.orchestration-engine."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
 @pytest.fixture
 def executor():
     """An executor pointed at a mock gateway (no real HTTP)."""

@@ -1141,6 +1141,18 @@ class TestOrchValidateAdditional:
 class TestOrchRunAdditional:
     """R-01: run --mode dry-run works with a .yml extension template."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_home(self, tmp_path, monkeypatch):
+        """#980/#981: foreground `orch run` now persists by default. These R-01
+        tests invoke `orch run --mode dry-run`, which routes through the new
+        persistence block, so redirect HOME to keep default_db_path() under tmp
+        and away from the real ~/.orchestration-engine. Scoped to THIS class
+        only — a module-wide HOME redirect would break TestMetaCompliance's
+        `pytest --collect-only` subprocess, which needs the real HOME to import
+        user-site pytest. (This file was not in the spec §4 audited list — see
+        implement.md DEVIATION-2.)"""
+        monkeypatch.setenv("HOME", str(tmp_path))
+
     def test_r01_dry_run_with_yml_extension_template(self, tmp_path):
         """R-01: orch run dry-run succeeds on a .yml (not .yaml) template file."""
         yml_file = tmp_path / "run-me.yml"

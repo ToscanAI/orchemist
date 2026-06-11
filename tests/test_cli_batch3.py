@@ -47,6 +47,16 @@ def _invoke_in(cwd, args, input=None, env=None):
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_home(tmp_path, monkeypatch):
+    """#980/#981: foreground `orch run` now persists by default. `orch
+    quickstart` invokes run_template (dry-run), which routes through the new
+    persistence block, so redirect HOME (independent of the chdir(REPO_ROOT)
+    these tests do) to keep default_db_path() under tmp and away from the real
+    ~/.orchestration-engine."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
 # ---------------------------------------------------------------------------
 # Feature #65 — orch quickstart
 # ---------------------------------------------------------------------------
