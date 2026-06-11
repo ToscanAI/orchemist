@@ -337,7 +337,7 @@ phases:
   orch run mixed-pipeline.yaml --mode standalone
   ```
 
-- **Both credentials must be present.** Each referenced provider's credential is resolved at build time; a missing one fails immediately, naming the provider and the env var (e.g. `OpenRouter API key required for provider 'openrouter'.`). In a mixed run, `--api-key` feeds **Anthropic only**; OpenRouter sources its key from `OPENROUTER_API_KEY` exclusively (one key cannot satisfy both providers).
+- **Both credentials must be present.** Each referenced provider's credential is resolved at build time; a missing one fails immediately, naming the provider and the env var (e.g. `OpenRouter API key required.`). In a mixed run, `--api-key` feeds **Anthropic only**; OpenRouter sources its key from `OPENROUTER_API_KEY` exclusively (one key cannot satisfy both providers).
 - **`model_tier` resolves through the target provider.** A phase's `model_tier` is mapped by the *target* executor's own table — for `provider: openrouter` it goes through the OpenRouter `model_map` (see [OpenRouter `--model-map`](#openrouter-mode)); for `provider: anthropic` through the Anthropic registry. There is no new tier vocabulary.
 - **Run-level OpenRouter config still applies.** `--base-url` / `--model-map` are run-level OpenRouter flags; in a mixed run they configure the single OpenRouter executor. Per-phase `base_url` / `model_map` are not supported in v1.1.
 - **Dry-run works without credentials.** `orch run mixed-pipeline.yaml --mode dry-run` validates and runs a mixed-provider template with no real keys (every phase falls back to the dry-run executor).
