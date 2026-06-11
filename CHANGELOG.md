@@ -17,6 +17,9 @@ All notable changes to Orchemist (formerly Orchestration Engine).
 ### Removed
 - **Legacy adversary parser modules + sequencer shim deleted** (#703) — `spec_adversary.py` and `acceptance_test_adversary.py` are gone (zero remaining imports). The `_record_adversary_outcome` legacy-fallback shim is replaced by a clear, surfacing `ValueError` (it names `adversary_config` as the fix) for a bare `spec_adversary` phase; the escalation second shim now requires `adversary_config` (skips with a warning when absent). Epic #700's "zero hardcoded adversary phase IDs in dispatch" criterion is met.
 
+### Fixed
+- Foreground `orch run` now persists a `pipeline_runs` record (status, mode, pid, per-phase `current_phase`/`completed_phases`) and per-phase costs to `cost_tracking`, matching the daemon — so foreground runs are visible in `/api/v1/runs`, the cost summary, and the harness cockpit (#979, #980). SIGINT marks the run `cancelled`; an unopenable database disables persistence with a single warning and never breaks the run.
+
 ## [0.13.1] - 2026-06-10
 
 > Supersedes the abandoned `v0.13.0` tag: that tag was never published — the publish workflow's FAIL-closed signature gate failed on its own first live firing (see the workflow fix below) before any build or upload, so PyPI never saw 0.13.0. This release carries the identical content plus the workflow fix.

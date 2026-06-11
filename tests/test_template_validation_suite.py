@@ -39,6 +39,15 @@ from src.orchestration_engine.cli import main
 from src.orchestration_engine.sequencer import _SafeDict
 from src.orchestration_engine.templates import TemplateEngine
 
+
+@pytest.fixture(autouse=True)
+def _isolate_home(tmp_path, monkeypatch):
+    """#980/#981: foreground `orch run` now persists by default. Redirect HOME
+    so default_db_path() resolves under tmp and never touches the real
+    ~/.orchestration-engine."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
 # ---------------------------------------------------------------------------
 # Module-level: glob-based template discovery (runs at collection time)
 # ---------------------------------------------------------------------------

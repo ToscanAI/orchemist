@@ -15,6 +15,14 @@ import pytest
 from orchestration_engine.daemon import apply_config_schema_defaults
 
 
+@pytest.fixture(autouse=True)
+def _isolate_home(tmp_path, monkeypatch):
+    """#980/#981: foreground `orch run` now persists by default. Redirect HOME
+    so default_db_path() resolves under tmp and never touches the real
+    ~/.orchestration-engine."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
 class TestAppliesDefaults:
     def test_fills_missing_string_default(self):
         config: dict = {}
