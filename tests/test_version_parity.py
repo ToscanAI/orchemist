@@ -23,9 +23,9 @@ def test_version_matches_pyproject():
         data = tomllib.load(fh)
 
     project_version = data["project"]["version"]
-    assert isinstance(project_version, str) and project_version, (
-        "pyproject [project].version must be a non-empty string"
-    )
+    assert (
+        isinstance(project_version, str) and project_version
+    ), "pyproject [project].version must be a non-empty string"
     assert orchestration_engine.__version__ == project_version, (
         f"__version__ ({orchestration_engine.__version__!r}) is out of sync "
         f"with pyproject [project].version ({project_version!r}); bump both together."
