@@ -488,6 +488,8 @@ class PhaseDefinition:
     description: str = ""
     task_type: str = "content"  # content, research, review, code, translation
     model_tier: str = "sonnet"  # haiku, sonnet, opus
+    min_tier: Optional[str] = None  # #987: resolution FLOOR (haiku<sonnet<opus); None = unbounded
+    max_tier: Optional[str] = None  # #987: resolution CEILING; None = unbounded
     thinking_level: str = "low"  # off, low, medium, high
     depends_on: List[str] = field(default_factory=list)
     timeout_minutes: int = 30
@@ -1307,6 +1309,8 @@ class TemplateEngine:
                 "description",
                 "task_type",
                 "model_tier",
+                "min_tier",  # #987 per-phase resolution floor
+                "max_tier",  # #987 per-phase resolution ceiling
                 "thinking_level",
                 "depends_on",
                 "timeout_minutes",
@@ -1833,6 +1837,25 @@ class TemplateEngine:
             for re_msg in routing_errors:
                 errors.append(f"routing_config: {re_msg}")  # noqa: PERF401
 
+        # #987: per-phase tier-band sanity (structural ERROR — inverted band is unsatisfiable).
+        # Compare via TIER_ORDER.index (NOT string compare); resolve only when the field is
+        # set so an unknown bound (handled as a WARN in validate_template_extended) doesn't
+        # crash the comparison and doesn't double-fire here.
+        from .model_registry import TIER_ORDER, resolve_tier  # noqa: PLC0415
+
+        for phase in template.phases:
+            lo_t = resolve_tier(phase.min_tier) if phase.min_tier else None
+            hi_t = resolve_tier(phase.max_tier) if phase.max_tier else None
+            if (
+                lo_t is not None
+                and hi_t is not None
+                and TIER_ORDER.index(lo_t) > TIER_ORDER.index(hi_t)
+            ):
+                errors.append(
+                    f"Phase '{phase.id}' has min_tier='{phase.min_tier}' above "
+                    f"max_tier='{phase.max_tier}' (min_tier must be <= max_tier)"
+                )
+
         return errors
 
     # ------------------------------------------------------------------
@@ -1983,6 +2006,9 @@ class TemplateEngine:
         errors: List[str] = []
         warnings: List[str] = []
 
+        # #987: tier ordering + name resolution for the bound lint checks below.
+        from .model_registry import TIER_ORDER, resolve_tier  # noqa: PLC0415
+
         phase_ids = {p.id for p in template.phases}
 
         for phase in template.phases:
@@ -2008,6 +2034,35 @@ class TemplateEngine:
                 )
                 hint = f"; did you mean '{suggestion[0]}'?" if suggestion else ""
                 warnings.append(f"Phase '{phase.id}' has unknown model_tier='{tier}'{hint}")
+
+            # ---- min_tier / max_tier checks (#987) — WARN, mirroring model_tier ----
+            for _field_name in ("min_tier", "max_tier"):
+                _val = getattr(phase, _field_name, None) or ""
+                if _val and _val not in self.KNOWN_MODEL_TIERS:
+                    suggestion = difflib.get_close_matches(
+                        _val, self.KNOWN_MODEL_TIERS, n=1, cutoff=0.4
+                    )
+                    hint = f"; did you mean '{suggestion[0]}'?" if suggestion else ""
+                    warnings.append(f"Phase '{phase.id}' has unknown {_field_name}='{_val}'{hint}")
+
+            # ---- authored model_tier within [min_tier, max_tier] (#987) — WARN ----
+            # The clamp self-heals an out-of-band model_tier at dispatch, so this is a
+            # likely authoring mistake worth surfacing, NOT a build-failing error.
+            # Compare only when each value resolves to a KNOWN tier.
+            _mt = resolve_tier(phase.model_tier) if phase.model_tier else None
+            _lo = resolve_tier(phase.min_tier) if phase.min_tier else None
+            _hi = resolve_tier(phase.max_tier) if phase.max_tier else None
+            if _mt is not None:
+                if _lo is not None and TIER_ORDER.index(_mt) < TIER_ORDER.index(_lo):
+                    warnings.append(
+                        f"Phase '{phase.id}' model_tier='{phase.model_tier}' is below "
+                        f"min_tier='{phase.min_tier}' (will be raised to the floor at dispatch)"
+                    )
+                if _hi is not None and TIER_ORDER.index(_mt) > TIER_ORDER.index(_hi):
+                    warnings.append(
+                        f"Phase '{phase.id}' model_tier='{phase.model_tier}' is above "
+                        f"max_tier='{phase.max_tier}' (will be lowered to the ceiling at dispatch)"
+                    )
 
             # ---- provider check (#969) — ERROR (not warn): unknown blocks ----
             # Deliberate F.2 inversion of model_tier's warn-pinned precedent:
