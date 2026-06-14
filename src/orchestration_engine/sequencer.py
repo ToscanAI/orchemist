@@ -4352,6 +4352,82 @@ class StateMachineSequencer(PhaseSequencer):
                 # step_index = position in executed_sequence (0-based, repeats for loops)
                 self._invoke_on_phase_start(current_phase_id, phase, len(executed_sequence) - 1)
 
+                # ── Concurrent fan-out group (#988) ───────────────────────────
+                # When THIS phase declares a non-empty parallel_group it is a
+                # pure fan-out node: run the #986 lifecycle hooks ONCE here
+                # (single-threaded — neutralizes the _warm_cache race), dispatch
+                # the members CONCURRENTLY via the proven #102 core, JOIN
+                # (implicit at the pool __exit__), then resolve ONE transition
+                # from this fan-out phase. Members are validated non-loop
+                # (max_iterations==0) so the _current_build_iter / _build_phase_input
+                # race cannot occur. A phase with empty parallel_group skips this
+                # block entirely → the single-phase path below is byte-identical.
+                if phase.parallel_group:
+                    members = list(phase.parallel_group)
+                    # (a) #986 hooks ONCE, single-threaded, before the group.
+                    hook_failure = self._run_lifecycle_hooks(phase, current_iter)
+                    if hook_failure is not None:
+                        result = hook_failure
+                        with self._phase_outputs_lock:
+                            result.setdefault("metadata", {})["iteration"] = current_iter
+                            self.phase_outputs[current_phase_id] = result
+                        self._invoke_on_phase_complete(current_phase_id, result)
+                        self._safe_call_hook(
+                            self.on_pipeline_complete,
+                            self.pipeline_context,
+                            None,
+                            pipeline_id=self.template.id,
+                        )
+                        return {
+                            "phase_outputs": self.phase_outputs,
+                            "final_output": result,
+                            "failed_phase": current_phase_id,
+                            "aborted": True,
+                            "iteration_history": dict(self.iteration_history),
+                            "iteration_counts": dict(self.iteration_counts),
+                        }
+                    # (b)+(c)+(d) concurrent dispatch + implicit JOIN + lock-guarded
+                    # member-output merge — all inside the #102 core, reused as-is.
+                    group_abort = self._execute_wave_parallel(members, 0, initial_input)
+                    if group_abort is not None:
+                        # A member failed (respecting template fail_fast). Enrich
+                        # the #102 abort dict with the walk's iteration_* fields so
+                        # the daemon/postmortem see the same abort contract as every
+                        # other walk abort, then propagate exactly like a single-phase
+                        # failure abort.
+                        group_abort.setdefault("iteration_history", dict(self.iteration_history))
+                        group_abort.setdefault("iteration_counts", dict(self.iteration_counts))
+                        self._invoke_on_phase_complete(current_phase_id, group_abort)
+                        self._safe_call_hook(
+                            self.on_pipeline_complete,
+                            self.pipeline_context,
+                            None,
+                            pipeline_id=self.template.id,
+                        )
+                        return group_abort
+                    # (e) all members succeeded → resolve ONE transition from the
+                    # fan-out phase. Synthesize a SUCCESS result so determine_outcome
+                    # maps to PhaseOutcome.SUCCESS and the fan-out node's own
+                    # phase_outputs entry records the join (members are keyed
+                    # individually under their own ids by _execute_wave_parallel).
+                    group_result = {
+                        "state": TaskState.SUCCESS.value,
+                        "result": {"text": ""},
+                        "parallel_group": members,
+                        "metadata": {"iteration": current_iter},
+                    }
+                    with self._phase_outputs_lock:
+                        self.phase_outputs[current_phase_id] = group_result
+                    self._invoke_on_phase_complete(current_phase_id, group_result)
+                    outcome = determine_outcome(group_result)
+                    next_phase_id = self._resolve_next_phase(phase, outcome, group_result)
+                    self._maybe_snapshot_on_approve(phase, next_phase_id)
+                    if next_phase_id is None:
+                        current_phase_id = None
+                    else:
+                        current_phase_id = next_phase_id
+                    continue
+
                 # ── Dialogue phase dispatch + gate (Track B + #840) ──────────
                 # State-machine path: a type:dialogue phase routed via
                 # transitions hits this dispatch site. The gate must be checked

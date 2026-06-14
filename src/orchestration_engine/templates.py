@@ -596,6 +596,13 @@ class PhaseDefinition:
     max_tier: Optional[str] = None  # #987: resolution CEILING; None = unbounded
     thinking_level: str = "low"  # off, low, medium, high
     depends_on: List[str] = field(default_factory=list)
+    # Concurrent fan-out group (#988) — StateMachineSequencer only.
+    parallel_group: List[str] = field(default_factory=list)
+    """IDs of INDEPENDENT phases dispatched concurrently (via the proven #102
+    _execute_wave_parallel) when the walk reaches THIS (fan-out) phase, joined
+    by a barrier before its single onward transition resolves. Members must be
+    NON-LOOP (max_iterations==0) and must not themselves declare parallel_group
+    (no nesting — #988b deferred). Empty (default) => byte-identical serial walk."""
     timeout_minutes: int = 30
     human_review: bool = False
     prompt_template: str = ""  # Python str.format()-style with {input}, {previous_output}
@@ -700,6 +707,10 @@ class PhaseDefinition:
         # Normalise None values that YAML might produce for optional fields
         if self.depends_on is None:
             self.depends_on = []
+        # Concurrent fan-out group (#988) — None→[] so an omitted YAML key parses
+        # identically to a serial phase (byte-identical default).
+        if self.parallel_group is None:
+            self.parallel_group = []
         if self.output_schema is None:
             self.output_schema = {}
         if self.description is None:
@@ -1427,6 +1438,7 @@ class TemplateEngine:
                 "max_tier",  # #987 per-phase resolution ceiling
                 "thinking_level",
                 "depends_on",
+                "parallel_group",  # #988 concurrent fan-out group (SM only)
                 "timeout_minutes",
                 "human_review",
                 "prompt_template",
@@ -1740,6 +1752,35 @@ class TemplateEngine:
                 if dep not in all_ids:
                     errors.append(  # noqa: PERF401
                         f"Phase '{phase.id}' depends on unknown phase '{dep}'"
+                    )
+
+        # --- parallel_group validation (#988) ----------------------------
+        # A group-bearing phase fans its members out CONCURRENTLY via the #102
+        # _execute_wave_parallel core. Members MUST be non-loop (the race in
+        # StateMachineSequencer._build_phase_input over _current_build_iter is
+        # only safe when max_iterations==0) and MUST NOT themselves declare a
+        # parallel_group (nesting is deferred, #988b). All member ids must exist.
+        for phase in template.phases:
+            for member_id in phase.parallel_group:
+                if member_id not in all_ids:
+                    errors.append(
+                        f"Phase '{phase.id}': parallel_group member '{member_id}' "
+                        f"does not exist (known phases: {sorted(all_ids)})"
+                    )
+                    continue
+                member = template.phases[phase_ids[member_id]]
+                if member.max_iterations > 0:
+                    errors.append(
+                        f"Phase '{phase.id}': parallel_group member '{member_id}' "
+                        f"is a loop phase (max_iterations={member.max_iterations}); "
+                        f"group members must be non-loop (max_iterations==0). "
+                        f"Loop members are deferred (#988)."
+                    )
+                if member.parallel_group:
+                    errors.append(
+                        f"Phase '{phase.id}': parallel_group member '{member_id}' "
+                        f"itself declares a parallel_group; nested groups are not "
+                        f"supported (deferred #988b)."
                     )
 
         # Check for cycles only when there are no missing-dep errors
