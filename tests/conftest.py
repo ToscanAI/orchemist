@@ -64,10 +64,29 @@ def read_src(rel_path: str) -> str:
 
     Promoted in #876 (D-4) from 12 duplicated multi-line scaffolds of
     ``Path(__file__).resolve().parent.parent / "src" / ... .read_text()``.
+
+    Package-aware (EPIC #942 god-module decomposition): when ``rel_path``
+    names a module file (e.g. ``"cli.py"``) that has been converted into a
+    package of the same stem (``cli/``), the file no longer exists. In that
+    case this returns the concatenation of every ``*.py`` source file in the
+    package tree, so existing wiring-guard greps keep matching the exact same
+    source content regardless of which sub-module it now lives in. The grep
+    semantics are unchanged — only the on-disk layout moved.
     """
-    return (REPO_ROOT / "src" / "orchestration_engine" / rel_path).read_text(
-        encoding="utf-8",
-    )
+    base = REPO_ROOT / "src" / "orchestration_engine"
+    target = base / rel_path
+    if target.exists():
+        return target.read_text(encoding="utf-8")
+
+    # File missing — it may have become a package (``foo.py`` -> ``foo/``).
+    if rel_path.endswith(".py"):
+        pkg_dir = base / rel_path[: -len(".py")]
+        if pkg_dir.is_dir():
+            parts = [p.read_text(encoding="utf-8") for p in sorted(pkg_dir.rglob("*.py"))]
+            return "\n".join(parts)
+
+    # Preserve the original FileNotFoundError for genuinely-missing paths.
+    return target.read_text(encoding="utf-8")
 
 
 @pytest.fixture

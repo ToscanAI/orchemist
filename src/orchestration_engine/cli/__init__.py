@@ -5,7 +5,6 @@ Uses Click for command structure and rich formatting for output.
 """
 
 import json
-import logging
 import os
 import re
 import subprocess
@@ -19,96 +18,35 @@ from typing import Any, Dict, List, Optional
 import click
 import yaml
 
-from .daemon import apply_config_schema_defaults
-from .db import Database, default_db_path
-from .output_utils import (
+from ..daemon import apply_config_schema_defaults
+from ..db import Database, default_db_path
+from ..output_utils import (
     extract_output_text as _extract_output_text,
 )
-from .output_utils import (
+from ..output_utils import (
     safe_write_phase_output as _safe_write_phase_output,
 )
-from .queue import TaskQueue
-from .schemas import Priority, TaskFilters, TaskSpec, TaskState, TaskType
-from .timestamps import now_utc
-
-logger = logging.getLogger(__name__)
-
-# Global queue instance (initialized per command)
-queue: Optional[TaskQueue] = None
-
-
-def get_queue() -> TaskQueue:
-    """Get or create the global TaskQueue instance."""
-    global queue
-    if queue is None:
-        queue = TaskQueue()
-    return queue
-
-
-def format_datetime(dt: Optional[datetime]) -> str:
-    """Format datetime for display."""
-    if dt is None:
-        return "N/A"
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def format_duration(seconds: Optional[float]) -> str:
-    """Format duration in seconds to human readable format."""
-    if seconds is None or seconds == 0:
-        return "N/A"
-
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    elif seconds < 3600:
-        return f"{seconds/60:.1f}m"
-    else:
-        return f"{seconds/3600:.1f}h"
-
-
-def print_table(headers: List[str], rows: List[List[str]]) -> None:
-    """Print a simple table with headers and rows."""
-    if not rows:
-        click.echo("No data to display")
-        return
-
-    # Calculate column widths
-    col_widths = [len(h) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            if i < len(col_widths):
-                col_widths[i] = max(col_widths[i], len(str(cell)))
-
-    # Print header
-    header_line = " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers))
-    click.echo(header_line)
-    click.echo("-" * len(header_line))
-
-    # Print rows
-    for row in rows:
-        row_line = " | ".join(
-            str(row[i] if i < len(row) else "").ljust(col_widths[i]) for i in range(len(headers))
-        )
-        click.echo(row_line)
-
-
-@click.group()
-@click.option("--db-path", type=click.Path(path_type=Path), help="Database file path")
-@click.option("--verbose", "-v", is_flag=True, help="Verbose output")
-@click.version_option()
-def main(db_path: Optional[Path], verbose: bool) -> None:
-    """Orchestration Engine CLI - AI Agent Task Coordination."""
-    global queue
-
-    if verbose:
-        import logging  # noqa: PLC0415
-
-        logging.basicConfig(level=logging.INFO)
-
-    # Initialize queue with custom db path if provided
-    if db_path:
-        from .db import Database  # noqa: PLC0415
-
-        queue = TaskQueue(Database(db_path))
+from ..schemas import Priority, TaskFilters, TaskSpec, TaskState, TaskType
+from ..timestamps import now_utc
+from ._helpers import (  # noqa: F401
+    _fetch_issue_strict,
+    _find_template,
+    _fmt_elapsed,
+    _get_persistent_db_path,
+    _infer_git_context,
+    _normalize_git_url,
+    _read_openclaw_token,
+    _resolve_template_arg,
+    _scan_templates,
+    _slugify_title,
+    _template_resolution_paths,
+    _validate_required_config,
+    _yaml_str,
+    format_datetime,
+    format_duration,
+    print_table,
+)
+from ._root import get_queue, logger, main, queue  # noqa: F401
 
 
 @main.command()
@@ -288,7 +226,7 @@ def _print_run_summary_line(run: Dict[str, Any]) -> None:
         pid = run.get("pid")
         if pid:
             try:
-                from .daemon import is_process_alive  # noqa: PLC0415
+                from ..daemon import is_process_alive  # noqa: PLC0415
 
                 if not is_process_alive(pid):
                     status = "crashed"
@@ -326,7 +264,7 @@ def _print_run_detail(run: Dict[str, Any]) -> None:  # noqa: C901
     # Check PID liveness
     if status == "running" and pid:
         try:
-            from .daemon import is_process_alive  # noqa: PLC0415
+            from ..daemon import is_process_alive  # noqa: PLC0415
 
             if not is_process_alive(pid):
                 status = "crashed"
@@ -407,19 +345,6 @@ def _print_run_detail(run: Dict[str, Any]) -> None:  # noqa: C901
         click.echo(f"├─ Scoring:    {_score_icon} {_scoring_status}{_score_suffix}")
     click.echo(f"├─ Created:    {(run.get('created_at') or '')[:19]}")
     click.echo(f"└─ Logs:       orch logs {run_id}")
-
-
-def _fmt_elapsed(seconds: float) -> str:
-    """Format elapsed seconds as Xm Ys or Xs."""
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    m = int(seconds // 60)
-    s = int(seconds % 60)
-    if m < 60:
-        return f"{m}m {s}s"
-    h = m // 60
-    m = m % 60
-    return f"{h}h {m}m {s}s"
 
 
 @main.command()
@@ -736,7 +661,7 @@ def watch(run_id: str, json_mode: bool, refresh: int) -> None:  # noqa: C901
 
     # ── Fallback: legacy task-queue watch ────────────────────────────
     try:
-        from .progress import ProgressTracker  # noqa: PLC0415
+        from ..progress import ProgressTracker  # noqa: PLC0415
 
         db = Database()
         tracker = ProgressTracker(db)
@@ -826,7 +751,7 @@ def _watch_pipeline_run(  # noqa: C901
             # Check PID liveness
             if current_status == "running" and run.get("pid"):
                 try:
-                    from .daemon import is_process_alive  # noqa: PLC0415
+                    from ..daemon import is_process_alive  # noqa: PLC0415
 
                     if not is_process_alive(run["pid"]):
                         current_status = "crashed"
@@ -939,9 +864,9 @@ def workers(detailed: bool) -> None:  # noqa: C901
     """Show active worker status."""
     try:
         # Import here to avoid circular imports
-        from .concurrency import WorkerPool  # noqa: PLC0415
-        from .config import get_global_config  # noqa: PLC0415
-        from .db import Database  # noqa: PLC0415
+        from ..concurrency import WorkerPool  # noqa: PLC0415
+        from ..config import get_global_config  # noqa: PLC0415
+        from ..db import Database  # noqa: PLC0415
 
         config = get_global_config()
         db = Database()
@@ -1200,10 +1125,10 @@ def run_template(  # noqa: C901
     from rich.console import Console  # noqa: PLC0415
     from rich.table import Table  # noqa: PLC0415
 
-    from .heartbeat import ProgressHeartbeat  # noqa: PLC0415
-    from .pipeline_runner import PipelineRunner  # noqa: PLC0415
-    from .sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
-    from .templates import TemplateEngine  # noqa: PLC0415
+    from ..heartbeat import ProgressHeartbeat  # noqa: PLC0415
+    from ..pipeline_runner import PipelineRunner  # noqa: PLC0415
+    from ..sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
+    from ..templates import TemplateEngine  # noqa: PLC0415
 
     # Force plain text output in non-TTY environments (background, nohup, pipes)
     console = Console(
@@ -1277,12 +1202,12 @@ def run_template(  # noqa: C901
         # instead of a raw ANTHROPIC_API_KEY.  Issue #272.
         import os as _os_so  # noqa: PLC0415
 
-        from .scoring import run_scoring as _run_scoring  # noqa: PLC0415
+        from ..scoring import run_scoring as _run_scoring  # noqa: PLC0415
 
         _so_executor = None
         if mode == "openclaw":
             try:
-                from .openclaw_executor import OpenClawExecutor  # noqa: PLC0415
+                from ..openclaw_executor import OpenClawExecutor  # noqa: PLC0415
 
                 _so_url = gateway_url or _os_so.environ.get("OPENCLAW_GATEWAY_URL")
                 _so_token = gateway_token or _os_so.environ.get("OPENCLAW_GATEWAY_TOKEN")
@@ -1298,7 +1223,7 @@ def run_template(  # noqa: C901
                 )
         elif mode == "standalone" and api_key:
             try:
-                from .executors.anthropic_executor import AnthropicExecutor  # noqa: PLC0415
+                from ..executors.anthropic_executor import AnthropicExecutor  # noqa: PLC0415
 
                 _so_executor = AnthropicExecutor(api_key=api_key)
             except Exception:  # noqa: BLE001
@@ -1348,7 +1273,7 @@ def run_template(  # noqa: C901
             )
         else:
             try:
-                from .github_fetcher import fetch_github_issue  # noqa: PLC0415
+                from ..github_fetcher import fetch_github_issue  # noqa: PLC0415
 
                 issue_data = fetch_github_issue(repo=repo, issue_number=issue_number)
                 if issue_data:
@@ -1465,7 +1390,7 @@ def run_template(  # noqa: C901
     # callbacks/handlers below using the daemon's importable helpers (#954).
     # Failure to open the DB must NEVER kill the run (req 5): on any error we
     # warn ONCE and continue with persistence disabled (db is None).
-    from .daemon import (  # noqa: PLC0415
+    from ..daemon import (  # noqa: PLC0415
         _persist_phase_complete,
         _persist_phase_start,
     )
@@ -1507,7 +1432,7 @@ def run_template(  # noqa: C901
         db = None
     if db is not None:
         try:
-            from .cost_tracker import CostTracker  # noqa: PLC0415
+            from ..cost_tracker import CostTracker  # noqa: PLC0415
 
             _cost_tracker = CostTracker(db)
         except Exception as _ct_exc:  # noqa: BLE001
@@ -1536,7 +1461,7 @@ def run_template(  # noqa: C901
     )
 
     # --- 3c. Set up git integration if template has it enabled --------
-    from .git_integration import GitContext, GitError  # noqa: PLC0415
+    from ..git_integration import GitContext, GitError  # noqa: PLC0415
 
     git_ctx: Optional[GitContext] = None
     _gate_result = None  # MergeGateResult set by on_pipeline_complete hook
@@ -1954,8 +1879,8 @@ def run_template(  # noqa: C901
 
     # --- Auto-scoring (Issue #172) ------------------------------------
     if not skip_scoring and template.scenario:
-        from .git_integration import GitContext as _GitContext  # noqa: PLC0415
-        from .scoring import run_scoring as _run_scoring_auto  # noqa: PLC0415
+        from ..git_integration import GitContext as _GitContext  # noqa: PLC0415
+        from ..scoring import run_scoring as _run_scoring_auto  # noqa: PLC0415
 
         # Forward the pipeline executor so that LLM judge criteria are routed
         # through the same authentication path as the pipeline itself (e.g. the
@@ -2001,15 +1926,6 @@ def run_template(  # noqa: C901
 # ---------------------------------------------------------------------------
 # Issue #267 — Async pipeline execution: start / status / logs / wait / resume
 # ---------------------------------------------------------------------------
-
-
-def _get_persistent_db_path() -> str:
-    """Return the path to the persistent on-disk DB used by async runs.
-
-    Thin string-returning wrapper around :func:`orchestration_engine.db.default_db_path`
-    preserved for callsite signature compatibility (Issue #864 consolidation).
-    """
-    return str(default_db_path())
 
 
 @main.command("launch")
@@ -2133,7 +2049,7 @@ def pipeline_launch(  # noqa: C901
     """
     import uuid  # noqa: PLC0415
 
-    from .templates import TemplateEngine  # noqa: PLC0415
+    from ..templates import TemplateEngine  # noqa: PLC0415
 
     # --- Validate issue_number (Issue #591): must be positive integer ---
     if issue_number is not None and issue_number <= 0:
@@ -2547,7 +2463,7 @@ def pipeline_wait(run_id: str, timeout: int, interval: int, db_path: Optional[st
             pid = run.get("pid")
             if pid:
                 try:
-                    from .daemon import is_process_alive  # noqa: PLC0415
+                    from ..daemon import is_process_alive  # noqa: PLC0415
 
                     if not is_process_alive(pid):
                         current_status = "crashed"
@@ -2623,11 +2539,11 @@ def _tier_defaults_for(name: str) -> Dict[str, str]:
     (anthropic/-prefixed ids). All other providers carry no tier map.
     """
     if name == "anthropic":
-        from .model_registry import bare_id  # noqa: PLC0415
+        from ..model_registry import bare_id  # noqa: PLC0415
 
         return {tier: bare_id(tier) for tier in ("haiku", "sonnet", "opus")}
     if name == "openrouter":
-        from .executors.openrouter_executor import DEFAULT_MODEL_MAP  # noqa: PLC0415
+        from ..executors.openrouter_executor import DEFAULT_MODEL_MAP  # noqa: PLC0415
 
         return dict(DEFAULT_MODEL_MAP)
     return {}
@@ -2641,7 +2557,7 @@ def providers_list(json_output: bool) -> None:
     Read-only: presence of a credential is reported as a boolean only — the raw
     env-var VALUE is never printed, masked, or partially echoed.
     """
-    from .providers_info import PROVIDERS_INFO  # noqa: PLC0415
+    from ..providers_info import PROVIDERS_INFO  # noqa: PLC0415
 
     # Presence is computed HERE, at call time, from os.environ — never stored on
     # the registry (which is import-pure). bool("") and bool(None) are both False
@@ -2732,7 +2648,7 @@ def gate_group() -> None:
 )
 def gate_list(show_all: bool) -> None:
     """List pending merge gates."""
-    from .git_integration import GitContext  # noqa: PLC0415
+    from ..git_integration import GitContext  # noqa: PLC0415
 
     gates = GitContext.list_gates()
     if not gates:
@@ -2772,7 +2688,7 @@ def gate_list(show_all: bool) -> None:
 )
 def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:  # noqa: C901
     """Approve a merge gate (run ID from ``orch gate list``)."""
-    from .git_integration import GitContext, GitError  # noqa: PLC0415
+    from ..git_integration import GitContext, GitError  # noqa: PLC0415
 
     gate = GitContext.load_gate(run_id)
     if gate is None:
@@ -2828,8 +2744,8 @@ def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:  # n
 
     # Optionally create PR if template configured create_pr: true
     if updated.get("create_pr"):
-        from .git_integration import GitConfig  # noqa: PLC0415
-        from .git_integration import GitContext as _GC  # noqa: N814, PLC0415
+        from ..git_integration import GitConfig  # noqa: PLC0415
+        from ..git_integration import GitContext as _GC  # noqa: N814, PLC0415
 
         _cfg = GitConfig(create_pr=True)
         _tmp_ctx = _GC(config=_cfg, pipeline_id=updated.get("pipeline_id", ""), run_id=run_id)
@@ -2845,7 +2761,7 @@ def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:  # n
 @click.option("--message", "-m", default=None, help="Optional rejection reason.")
 def gate_reject(run_id: str, message: Optional[str]) -> None:
     """Reject a merge gate.  The feature branch is preserved for inspection."""
-    from .git_integration import GitContext, GitError  # noqa: PLC0415
+    from ..git_integration import GitContext, GitError  # noqa: PLC0415
 
     gate = GitContext.load_gate(run_id)
     if gate is None:
@@ -2870,7 +2786,7 @@ def gate_reject(run_id: str, message: Optional[str]) -> None:
 @click.argument("run_id")
 def gate_info(run_id: str) -> None:
     """Show details about a merge gate."""
-    from .git_integration import GitContext  # noqa: PLC0415
+    from ..git_integration import GitContext  # noqa: PLC0415
 
     gate = GitContext.load_gate(run_id)
     if gate is None:
@@ -3006,7 +2922,7 @@ def validate_template(template_name_or_file: str, fix: bool) -> None:  # noqa: C
     WRN = click.style("⚠", fg="yellow")  # noqa: N806
 
     try:
-        from .templates import PipelineTemplate, TemplateEngine  # noqa: F401, PLC0415
+        from ..templates import PipelineTemplate, TemplateEngine  # noqa: F401, PLC0415
 
         template_file = _resolve_template_arg(template_name_or_file)
 
@@ -3028,7 +2944,7 @@ def validate_template(template_name_or_file: str, fix: bool) -> None:  # noqa: C
 
         # ── 3b. Validate top-level adversary_config (if present) ─────
         if isinstance(raw_data, dict) and "adversary_config" in raw_data:
-            from .templates import _parse_adversary_config  # noqa: PLC0415
+            from ..templates import _parse_adversary_config  # noqa: PLC0415
 
             try:
                 _parse_adversary_config(raw_data["adversary_config"])
@@ -3106,7 +3022,7 @@ def list_phases(template_name_or_file: str) -> None:
     ORCH_TEMPLATES_PATH → ./templates/ → ~/.orch/templates/ → bundled.
     """
     try:
-        from .templates import PipelineTemplate, TemplateEngine  # noqa: F401, PLC0415
+        from ..templates import PipelineTemplate, TemplateEngine  # noqa: F401, PLC0415
 
         template_file = _resolve_template_arg(template_name_or_file)
         engine = TemplateEngine()
@@ -3143,322 +3059,6 @@ def list_phases(template_name_or_file: str) -> None:
 # ---------------------------------------------------------------------------
 # Template discovery helpers
 # ---------------------------------------------------------------------------
-
-
-def _yaml_str(val: Any) -> str:
-    """Convert a YAML-parsed value to string, mapping YAML booleans back to their
-    original keyword (e.g. False → 'off', True → 'on')."""
-    if val is False:
-        return "off"
-    if val is True:
-        return "on"
-    return str(val) if val is not None else ""
-
-
-def _template_resolution_paths() -> List[tuple]:
-    """Return list of (Path, source_label) for template scanning.
-
-    Scanned in order (each directory may or may not exist):
-    1. Paths from ``ORCH_TEMPLATES_PATH`` env var (colon-separated)  → "custom"
-    2. ``./templates/``   (project-local)                            → "project"
-    3. ``./examples/``    (project examples — backward compat)       → "examples"
-    4. ``~/.orch/templates/`` (user-global, if it exists)            → "user"
-
-    Labels are consistent with :meth:`TemplateEngine.get_search_paths` (e.g.
-    ``"project"`` for ``./templates/`` rather than the old ``"templates"``).
-
-    Note: bundled/package templates are handled by TemplateEngine.resolve_template()
-    for name-based lookup but are not listed here to keep the scan focused on
-    user-visible template sources.
-    """
-    import os as _os  # noqa: PLC0415
-
-    paths: List[tuple] = []
-
-    # 1. ORCH_TEMPLATES_PATH (colon-separated)
-    env_raw = _os.environ.get("ORCH_TEMPLATES_PATH", "")
-    if env_raw:
-        for part in env_raw.split(":"):
-            part = part.strip()
-            if part:
-                paths.append((Path(part), "custom"))
-
-    # 2+3. Project-local dirs — use "project" to match TemplateEngine.get_search_paths()
-    paths.append((Path("./templates"), "project"))
-    paths.append((Path("./examples"), "examples"))
-
-    # 4. User-global (only if it exists, to avoid creating it on scan)
-    user_dir = Path.home() / ".orch" / "templates"
-    if user_dir.exists():
-        paths.append((user_dir, "user"))
-
-    return paths
-
-
-def _scan_templates(resolution_paths: Optional[List[tuple]] = None) -> List[tuple]:
-    """Scan resolution paths for YAML templates.
-
-    Returns:
-        List of (filepath, source_label, PipelineTemplate) tuples.
-    """
-    from .templates import TemplateEngine  # noqa: PLC0415
-
-    if resolution_paths is None:
-        resolution_paths = _template_resolution_paths()
-
-    engine = TemplateEngine()
-    found = []
-    seen_stems: dict = {}  # stem → first source label
-
-    for search_path, source_label in resolution_paths:
-        if not search_path.exists():
-            continue
-        for filepath in sorted(search_path.glob("*.yaml")) + sorted(search_path.glob("*.yml")):
-            stem = filepath.stem
-            if stem in seen_stems:
-                continue
-            try:
-                template = engine.load_template(filepath)
-                seen_stems[stem] = source_label
-                found.append((filepath, source_label, template))
-            except Exception as exc:  # noqa: BLE001
-                click.echo(f"[warn] Skipping {filepath}: {exc}", err=True)
-
-    return found
-
-
-def _validate_required_config(template, initial_input: Dict[str, Any]) -> List[str]:
-    """Validate that all required config fields are present in the input.
-
-    Checks the template's ``config_schema.required`` list against the keys
-    provided in *initial_input*.  Returns a list of missing field names
-    (empty list means all required fields are present).
-    """
-    schema = getattr(template, "config_schema", None)
-    if not schema:
-        return []
-    required = schema.get("required", [])
-    if not required:
-        return []
-    # A required field is only reported missing when it is absent from the
-    # input AND the schema has no default for it (#676). Fields that are both
-    # required AND defaulted are filled by apply_config_schema_defaults right
-    # after this validation, so reporting them as missing is a false positive.
-    # Validation still sees the original (pre-default-fill) input — it simply
-    # treats a defaulted field as satisfiable. Truly-required fields with no
-    # default still error.
-    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
-    return [
-        field
-        for field in required
-        if field not in initial_input
-        and not (isinstance(properties.get(field), dict) and "default" in properties[field])
-    ]
-
-
-def _slugify_title(title: str) -> str:
-    """Slugify an issue title for branch name generation (Issue #591).
-
-    Algorithm: lowercase → replace runs of non-alphanumeric chars with hyphen
-    → strip leading/trailing hyphens → truncate to 49 chars → strip trailing
-    hyphen after truncation → fallback to 'untitled' if empty.
-
-    Note: truncates to 49 chars (not 50) to match acceptance test expectations.
-    """
-    slug = title.lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", slug)
-    slug = slug.strip("-")
-    slug = slug[:49]
-    slug = slug.rstrip("-")
-    return slug or "untitled"
-
-
-def _read_openclaw_token() -> Optional[str]:
-    """Read gateway token from ~/.openclaw/openclaw.json (Issue #591).
-
-    Returns None if the file is missing, invalid JSON, or the key path
-    gateway.auth.token is absent or null.
-    """
-    config_path = Path.home() / ".openclaw" / "openclaw.json"
-    try:
-        data = json.loads(config_path.read_text())
-        return data.get("gateway", {}).get("auth", {}).get("token") or None
-    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
-        return None
-
-
-def _normalize_git_url(url: str) -> str:
-    """Normalize git remote URL to HTTPS form (Issue #591).
-
-    Handles:
-      - SCP-style SSH:   git@github.com:owner/repo.git → https://github.com/owner/repo
-      - RFC 3986 SSH:    ssh://git@github.com/owner/repo.git → https://github.com/owner/repo
-      - HTTPS:           https://github.com/owner/repo.git → https://github.com/owner/repo
-    """
-    # SCP-style: git@host:path
-    scp_match = re.match(r"git@([^:]+):(.+?)(?:\.git)?$", url)
-    if scp_match:
-        host, path = scp_match.groups()
-        return f"https://{host}/{path}"
-    # RFC 3986 SSH: ssh://git@host/path
-    ssh2_match = re.match(r"ssh://git@([^/]+)/(.+?)(?:\.git)?$", url)
-    if ssh2_match:
-        host, path = ssh2_match.groups()
-        return f"https://{host}/{path}"
-    # HTTPS: strip trailing .git
-    if url.endswith(".git"):
-        url = url[:-4]
-    return url
-
-
-def _infer_git_context() -> tuple:
-    """Return (repo_path, repo_url) inferred from CWD (Issue #591).
-
-    repo_url is None when no remote named 'origin' exists.
-    Both are None when CWD is not inside a git repository.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True
-        )
-        repo_path = result.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-        return None, None
-
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"], capture_output=True, text=True, check=True
-        )
-        repo_url = _normalize_git_url(result.stdout.strip())
-    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
-        repo_url = None
-
-    return repo_path, repo_url
-
-
-def _fetch_issue_strict(repo: str, issue_number: int) -> dict:
-    """Fetch a GitHub issue or exit with a precise error message (Issue #591).
-
-    Distinguishes: missing credentials (no-token message, exit 1) from
-    issue-not-found (not-found message, exit 1).
-    """
-    # Detect missing credentials before API call
-    has_env_token = bool(os.environ.get("GITHUB_TOKEN"))
-    if not has_env_token:
-        try:
-            auth_result = subprocess.run(
-                ["gh", "auth", "status"], capture_output=True, text=True, timeout=10
-            )
-            if auth_result.returncode != 0:
-                click.echo(
-                    "Error: No GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'.",
-                    err=True,
-                )
-                sys.exit(1)
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            click.echo(
-                "Error: No GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'.", err=True
-            )
-            sys.exit(1)
-
-    # Fetch issue via GitHub API
-    try:
-        result = subprocess.run(
-            ["gh", "api", f"repos/{repo}/issues/{issue_number}"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        click.echo(f"Error: GitHub API request timed out fetching issue #{issue_number}.", err=True)
-        sys.exit(1)
-    if result.returncode != 0:
-        combined = (result.stderr + result.stdout).lower()
-        if "404" in combined or "not found" in combined:
-            click.echo(
-                f"Error: Issue #{issue_number} not found. "
-                "Check the issue number and your GITHUB_TOKEN.",
-                err=True,
-            )
-        else:
-            click.echo(
-                "Error: No GitHub token found. Set GITHUB_TOKEN or run 'gh auth login'.", err=True
-            )
-        sys.exit(1)
-
-    try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        click.echo(f"✗ Invalid JSON from GitHub API: {exc}", err=True)
-        sys.exit(1)
-
-
-def _resolve_template_arg(name_or_path: str, launch_fmt: bool = False) -> Path:
-    """Resolve a CLI template argument to a :class:`Path`.
-
-    Accepts:
-    * A :class:`Path` object → returned directly (already resolved, e.g. from
-      ``ctx.invoke``).
-    * A direct file path string (absolute or relative) → existence-checked.
-    * A bare template name (e.g. ``content-pipeline``) → resolved via
-      :meth:`TemplateEngine.resolve_template`.
-
-    When *launch_fmt* is True (used by ``orch launch``), uses the exact error
-    format required by Issue #591: single-line, no tip suffix.
-
-    Exits with an error message on failure.
-    """
-    import os as _os  # noqa: PLC0415
-
-    from .templates import TemplateEngine, TemplateNotFoundError  # noqa: PLC0415
-
-    # Already a Path — accept directly
-    if isinstance(name_or_path, Path):
-        if not name_or_path.exists():
-            click.echo(f"✗ Template file not found: {name_or_path}", err=True)
-            sys.exit(1)
-        return name_or_path
-
-    # Heuristic: treat as a path when it has a path separator or YAML extension
-    looks_like_path = (
-        name_or_path.endswith(".yaml")
-        or name_or_path.endswith(".yml")
-        or _os.sep in name_or_path
-        or "/" in name_or_path
-    )
-
-    if looks_like_path:
-        p = Path(name_or_path)
-        if not p.exists():
-            if launch_fmt:
-                click.echo(
-                    f"Error: Template not found: {name_or_path}. "
-                    "Run 'orch templates list' to see available templates.",
-                    err=True,
-                )
-            else:
-                click.echo(f"✗ Template file not found: {name_or_path}", err=True)
-            sys.exit(1)
-        return p
-
-    # Name-based resolution
-    engine = TemplateEngine()
-    try:
-        return engine.resolve_template(name_or_path)
-    except TemplateNotFoundError as exc:
-        if launch_fmt:
-            click.echo(
-                f"Error: Template not found: {name_or_path}. "
-                "Run 'orch templates list' to see available templates.",
-                err=True,
-            )
-        else:
-            click.echo(f"✗ {exc}", err=True)
-            click.echo(
-                "\nTip: run 'orch templates list' to see all available templates.",
-                err=True,
-            )
-        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -3499,7 +3099,7 @@ def prune_test_runs(dry_run: bool, yes: bool, db_path: Optional[str]) -> None:
     """
     from pathlib import Path  # noqa: PLC0415
 
-    from .db import Database, default_db_path  # noqa: PLC0415
+    from ..db import Database, default_db_path  # noqa: PLC0415
 
     where = "template_id = ? AND output_dir LIKE ?"
     params = ("hello-pipeline", "%/.wt/%")
@@ -3619,7 +3219,7 @@ def templates_info(name_or_path: str) -> None:  # noqa: C901
     from rich.console import Console  # noqa: PLC0415
     from rich.table import Table  # noqa: PLC0415
 
-    from .templates import TemplateEngine  # noqa: PLC0415
+    from ..templates import TemplateEngine  # noqa: PLC0415
 
     console = Console(highlight=False)
     engine = TemplateEngine()
@@ -3810,7 +3410,7 @@ def _validate_installed_template(yaml_path: Path):
 
     Raises click.ClickException on failure.
     """
-    from .templates import TemplateEngine  # noqa: PLC0415
+    from ..templates import TemplateEngine  # noqa: PLC0415
 
     engine = TemplateEngine()
     try:
@@ -3988,7 +3588,7 @@ def templates_search(query: str, refresh: bool, index_url: Optional[str]) -> Non
       orch templates search --refresh
       orch templates search code-review --index-url https://example.com/index.yaml
     """
-    from .template_index import TemplateIndex  # noqa: PLC0415
+    from ..template_index import TemplateIndex  # noqa: PLC0415
 
     index = TemplateIndex()
     url = index_url or DEFAULT_TEMPLATE_INDEX_URL
@@ -4110,7 +3710,7 @@ def quickstart(ctx: click.Context) -> None:
     )
 
     # ---- Footer ----
-    from .templates import TemplateEngine as _TE  # noqa: N814, PLC0415
+    from ..templates import TemplateEngine as _TE  # noqa: N814, PLC0415
 
     _tmpl = _TE().load_template(hello_yaml)
     n_phases = len(_tmpl.phases)
@@ -4180,9 +3780,9 @@ def templates_test(verbose: bool, fail_fast: bool) -> None:  # noqa: C901
 
     import yaml as _yaml  # noqa: PLC0415
 
-    from .pipeline_runner import PipelineRunner  # noqa: PLC0415
-    from .sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
-    from .templates import TemplateEngine  # noqa: PLC0415
+    from ..pipeline_runner import PipelineRunner  # noqa: PLC0415
+    from ..sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
+    from ..templates import TemplateEngine  # noqa: PLC0415
 
     OK_MARK = click.style("✓", fg="green")  # noqa: N806
     FAIL_MARK = click.style("✗", fg="red")  # noqa: N806
@@ -4298,103 +3898,6 @@ def templates_test(verbose: bool, fail_fast: bool) -> None:  # noqa: C901
 # ---------------------------------------------------------------------------
 # Feature #66 — orch start (interactive wizard)
 # ---------------------------------------------------------------------------
-
-
-def _find_template(name_or_path: str):  # noqa: C901
-    """Locate a template by file path OR by name/ID.
-
-    Resolution strategy:
-    1. If the argument looks like a path (has separators or .yaml/.yml), load
-       it directly.
-    2. Exact template ID match (scanning all search paths).
-    3. Exact template display-name match (case-insensitive).
-    4. :meth:`TemplateEngine.resolve_template` stem-based lookup — only returns
-       when the resolved template's ID or name also matches the query exactly
-       (prevents false positives when file stem differs from template ID).
-    5. Partial/slug matching with suggestions on ambiguous or no match.
-
-    Returns:
-        (template_path: Path, template: PipelineTemplate)
-
-    Raises SystemExit on failure.
-    """
-    import os as _os  # noqa: PLC0415
-
-    from .templates import TemplateEngine, TemplateNotFoundError  # noqa: PLC0415
-
-    engine = TemplateEngine()
-
-    is_path = (
-        name_or_path.endswith(".yaml")
-        or name_or_path.endswith(".yml")
-        or _os.sep in name_or_path
-        or "/" in name_or_path
-    )
-
-    if is_path:
-        p = Path(name_or_path)
-        try:
-            template = engine.load_template(p)
-            return p, template
-        except FileNotFoundError:
-            click.echo(f"✗ Template file not found: {name_or_path}")
-            sys.exit(1)
-        except Exception as exc:  # noqa: BLE001
-            click.echo(f"✗ Could not load template: {exc}")
-            sys.exit(1)
-
-    search = name_or_path.lower()
-    found_all = _scan_templates()
-
-    # 1. Exact ID match
-    for filepath, _source, tmpl in found_all:
-        if tmpl.id.lower() == search:
-            return filepath, tmpl
-
-    # 2. Exact name match
-    for filepath, _source, tmpl in found_all:
-        if tmpl.name.lower() == search:
-            return filepath, tmpl
-
-    # 3. Stem-based resolution via resolve_template (respects all search paths).
-    #    Only accept the result when the resolved template's ID or display name
-    #    also matches the query — avoids returning an unrelated template whose
-    #    file stem happens to equal the query but whose logical ID differs.
-    try:
-        resolved_path = engine.resolve_template(name_or_path)
-        template = engine.load_template(resolved_path)
-        if (
-            template.id.lower() == search
-            or template.name.lower() == search
-            or template.id.lower().startswith(search + "-")
-        ):
-            return resolved_path, template
-    except TemplateNotFoundError:
-        pass
-
-    # 4. Partial match: search string appears in ID or name — suggest, don't auto-resolve
-    partial_matches = [
-        f"{tmpl.name} (id: {tmpl.id})"
-        for _, _source, tmpl in found_all
-        if search in tmpl.id.lower() or search in tmpl.name.lower()
-    ]
-
-    # Not found — suggest similar
-    candidates = partial_matches or [
-        f"{tmpl.name} (id: {tmpl.id})"
-        for _, _, tmpl in found_all
-        if search in tmpl.id.lower() or search in tmpl.name.lower()
-    ]
-    click.echo(f"✗ Template '{name_or_path}' not found.")
-    if candidates:
-        click.echo("\nDid you mean one of these?")
-        for c in candidates:
-            click.echo(f"  • {c}")
-    else:
-        click.echo(
-            "\nNo similar templates found. Run 'orch templates list' to see all.",
-        )
-    sys.exit(1)
 
 
 def _prompt_for_field(
@@ -5008,10 +4511,10 @@ def import_plugin_command(  # noqa: C901
       orch import plugin-command brand-review.md --dry-run
       orch import plugin-command campaign-plan.md --validate
     """
-    from .importers.plugin_command import (  # noqa: PLC0415
+    from ..importers.plugin_command import (  # noqa: PLC0415
         GENERATED_AUTHOR,
     )
-    from .importers.plugin_command import (  # noqa: PLC0415
+    from ..importers.plugin_command import (  # noqa: PLC0415
         import_plugin_command as _do_import,
     )
 
@@ -5076,7 +4579,7 @@ def import_plugin_command(  # noqa: C901
         ERR_v = click.style("✗", fg="red")  # noqa: N806
         WRN_v = click.style("⚠", fg="yellow")  # noqa: N806
         try:
-            from .templates import PipelineTemplate, TemplateEngine  # noqa: F401, PLC0415
+            from ..templates import PipelineTemplate, TemplateEngine  # noqa: F401, PLC0415
 
             # 5a. YAML syntax
             yaml_error = _check_yaml_syntax(output)
@@ -5180,7 +4683,7 @@ def serve(  # noqa: C901
     try:
         import uvicorn  # noqa: PLC0415
 
-        from .web.api import create_api_app  # noqa: PLC0415
+        from ..web.api import create_api_app  # noqa: PLC0415
     except ImportError:
         click.echo("Web UI requires extra dependencies. Install with:", err=True)
         click.echo("  pip install orchestration-engine[web]", err=True)
@@ -5387,7 +4890,7 @@ def api_server(port: int, host: str, reload: bool, db_path: Optional[str]) -> No
     try:
         import uvicorn  # noqa: PLC0415
 
-        from .web.api import create_api_app  # noqa: PLC0415
+        from ..web.api import create_api_app  # noqa: PLC0415
     except ImportError:
         click.echo("REST API server requires extra dependencies. Install with:", err=True)
         click.echo("  pip install orchestration-engine[web]", err=True)
@@ -5451,7 +4954,7 @@ def rubric_generate(skill_file: Path, output: Optional[Path], force: bool) -> No
 
       orch rubric generate path/to/SKILL.md --output results/rubric.yaml --force
     """
-    from .rubric_generator import generate_rubric_file  # noqa: PLC0415
+    from ..rubric_generator import generate_rubric_file  # noqa: PLC0415
 
     try:
         out_path = generate_rubric_file(skill_file, output=output, force=force)
@@ -5576,9 +5079,9 @@ def scenario_run(  # noqa: C901
 
     from rich.console import Console  # noqa: PLC0415
 
-    from .pipeline_runner import PipelineRunner  # noqa: PLC0415
-    from .sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
-    from .templates import TemplateEngine  # noqa: PLC0415
+    from ..pipeline_runner import PipelineRunner  # noqa: PLC0415
+    from ..sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
+    from ..templates import TemplateEngine  # noqa: PLC0415
 
     # Import ScenarioRunner from the scenario_runner package.
     # Try both importable forms (installed package and source layout).
@@ -5638,7 +5141,7 @@ def scenario_run(  # noqa: C901
     grader_executor = None
     if not dry_run and mode == "openclaw":
         try:
-            from .openclaw_executor import OpenClawExecutor  # noqa: PLC0415
+            from ..openclaw_executor import OpenClawExecutor  # noqa: PLC0415
 
             grader_executor = OpenClawExecutor(
                 gateway_url=effective_gw_url,
@@ -5888,7 +5391,7 @@ def reviews() -> None:
 )
 def reviews_list(limit: int, offset: int, reviews_db_path: Optional[Path]) -> None:
     """List pipeline runs pending human review."""
-    from .db import Database as _Database  # noqa: PLC0415
+    from ..db import Database as _Database  # noqa: PLC0415
 
     _db_path = reviews_db_path or default_db_path()
     db = _Database(_db_path)
@@ -5934,7 +5437,7 @@ def reviews_approve(
     run_id: str, reviewed_by: Optional[str], note: Optional[str], reviews_db_path: Optional[Path]
 ) -> None:
     """Approve a pipeline run that is pending human review."""
-    from .db import Database as _Database  # noqa: PLC0415
+    from ..db import Database as _Database  # noqa: PLC0415
 
     _db_path = reviews_db_path or default_db_path()
     db = _Database(_db_path)
@@ -5976,7 +5479,7 @@ def reviews_reject(
 
     REASON is a short description of why the run was rejected.
     """
-    from .db import Database as _Database  # noqa: PLC0415
+    from ..db import Database as _Database  # noqa: PLC0415
 
     _db_path = reviews_db_path or default_db_path()
     db = _Database(_db_path)
@@ -6028,10 +5531,42 @@ def mcp_server(transport: str, port: int) -> None:
             err=True,
         )
         sys.exit(1)
-    from .mcp import run_mcp_server  # noqa: PLC0415
+    from ..mcp import run_mcp_server  # noqa: PLC0415
 
     run_mcp_server(transport=transport, port=port)
 
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# Public facade re-exports (EPIC #942 / issue #998, 950a)
+#
+# ``orchestration_engine.cli`` must keep exposing the exact pre-refactor surface:
+# the ``main`` Click group (the ``orch`` entry point) plus the private internals
+# imported by the test-suite. ``main`` / shared helpers come from the sibling
+# modules imported above; the test-imported command-coupled privates below are
+# defined inline in this module and are listed here for explicit, self-checking
+# completeness. A dropped name is caught by tests/test_facade_surface_942.py.
+# ---------------------------------------------------------------------------
+__all__ = [
+    "main",
+    "get_queue",
+    "format_datetime",
+    "format_duration",
+    "print_table",
+    "_validate_required_config",
+    "_read_openclaw_token",
+    "_watch_pipeline_run",
+    "_print_watch_event",
+    "_print_run_detail",
+    "_safe_write_phase_output",
+    "_is_github_shorthand",
+    "_install_from_git",
+    "_find_yaml_in_dir",
+    "_apply_fixes",
+    "_check_yaml_syntax",
+    "_normalize_git_url",
+    "_slugify_title",
+]
