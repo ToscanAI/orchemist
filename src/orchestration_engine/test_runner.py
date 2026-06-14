@@ -24,7 +24,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .pytest_output_parser import count_pytest_results
 
@@ -238,6 +238,7 @@ def write_acceptance_results(
     result: TestRunResult,
     output_dir: str,
     phase: str = "acceptance_run",
+    entries: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Write ``acceptance_results.json`` to ``output_dir``.
 
@@ -257,18 +258,34 @@ def write_acceptance_results(
           "total":           N+M+E,
           "pass_rate":       float,
           "failure_details": "...",
-          "exit_code":       int
+          "exit_code":       int,
+          # ── additive (#985), present ONLY when ``entries`` is not None ──
+          "matrix":          [ {"name", "command"?, "status", "exit_code",
+                                "output", "duration"?}, ... ]
         }
 
+    When ``entries is None`` (every legacy caller), the exact 10-key dict above
+    is written with NO ``"matrix"`` key — byte-identical to today's output. When
+    ``entries`` is supplied (the opt-in acceptance-matrix path, #985), an
+    additive top-level ``"matrix"`` array is appended after the 10 legacy keys.
+
     Args:
-        result:     The ``TestRunResult`` from ``run_pytest()``.
+        result:     The ``TestRunResult`` from ``run_pytest()`` (for the matrix
+                    case, the pre-aggregated cross-entry result).
         output_dir: Directory to write ``acceptance_results.json`` into.
         phase:      Value for the ``phase`` field (default ``"acceptance_run"``).
+        entries:    Optional per-entry matrix records (#985). ``None`` →
+                    byte-identical legacy 10-key file. Each entry already
+                    carries its truncated ``output`` (≤ MAX_OUTPUT_BYTES + the
+                    truncation marker), so an N-entry matrix can produce an
+                    ~N × 1 MB file — acceptable for the realistic small matrices
+                    (a handful of entries; only failing entries emit large
+                    output) this feature targets.
     """
     status = "pass" if (result.failed == 0 and result.errors == 0) else "fail"
     test_file = str(Path(output_dir) / "acceptance_tests.py")
 
-    data = {
+    data: Dict[str, Any] = {
         "phase": phase,
         "status": status,
         "test_file": test_file,
@@ -280,6 +297,11 @@ def write_acceptance_results(
         "failure_details": result.failure_details,
         "exit_code": result.exit_code,
     }
+
+    # Additive matrix breakdown (#985): only present on the opt-in matrix path.
+    # ``entries is None`` keeps the legacy 10-key file byte-identical.
+    if entries is not None:
+        data["matrix"] = entries
 
     out_path = Path(output_dir) / "acceptance_results.json"
     os.makedirs(output_dir, exist_ok=True)
