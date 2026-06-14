@@ -2648,11 +2648,37 @@ class PhaseSequencer:
         except (KeyError, IndexError, AttributeError, ValueError):
             working_dir = working_dir_raw
 
+        # Opt-in acceptance matrix (#985): interpolate each entry's command with
+        # the SAME {config}/{input}/{output_dir} context (and the same per-entry
+        # try/except fallback) as phase.command, then pass through raw so it
+        # lands in task.payload["acceptance_matrix"]. Empty list → [] → the
+        # executor takes the byte-identical legacy single-pytest path.
+        matrix_out: List[Dict[str, str]] = []
+        for entry in getattr(phase, "acceptance_matrix", None) or []:
+            entry_command_raw: str = entry.get("command", "") or ""
+            try:
+                entry_command = entry_command_raw.format(
+                    config=safe_config,
+                    input=safe_input,
+                    output_dir=output_dir_str,
+                )
+            except (KeyError, IndexError, AttributeError, ValueError) as exc:
+                logger.warning(
+                    "Phase '%s': acceptance_matrix command interpolation failed "
+                    "(%s); using raw command.",
+                    phase.id,
+                    exc,
+                )
+                entry_command = entry_command_raw
+            matrix_out.append({"name": entry.get("name", ""), "command": entry_command})
+
         logger.debug(
-            "Phase '%s': command_extras resolved — command=%r, working_dir=%r",
+            "Phase '%s': command_extras resolved — command=%r, working_dir=%r, "
+            "acceptance_matrix=%d entries",
             phase.id,
             interpolated_command,
             working_dir or "<inherit>",
+            len(matrix_out),
         )
 
         return {
@@ -2660,6 +2686,7 @@ class PhaseSequencer:
             "allowed_commands": list(phase.allowed_commands),
             "working_dir": working_dir or None,
             "output_dir": output_dir_str,
+            "acceptance_matrix": matrix_out,
         }
 
     def _sandbox_roots(self) -> Dict[str, Optional[str]]:

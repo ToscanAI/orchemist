@@ -509,6 +509,14 @@ class PhaseDefinition:
         default_factory=list
     )  # security allowlist of command prefixes
 
+    # Opt-in CI-equivalent acceptance matrix (#985)
+    acceptance_matrix: List[Dict[str, str]] = field(default_factory=list)
+    # Ordered list of ``{"name": str, "command": str}`` entries for the
+    # ``acceptance_run`` phase. Empty list = no matrix = legacy single-pytest
+    # behaviour (byte-identical results file). Each entry is run through the
+    # command_executor security model (allowlist + denylist + MAX_OUTPUT_BYTES +
+    # timeout, ``shell=False``); the aggregate is GREEN iff every entry passes.
+
     # Supervisor hook fields (Issue #194)
     supervisor: bool = False  # enable supervisor evaluation after this phase
     supervisor_prompt: Optional[str] = None  # custom evaluation prompt (uses default if None)
@@ -1317,6 +1325,8 @@ class TemplateEngine:
                 # Command execution fields (#190)
                 "command",
                 "allowed_commands",
+                # Opt-in CI-equivalent acceptance matrix (#985)
+                "acceptance_matrix",
                 # Supervisor hook fields (#194)
                 "supervisor",
                 "supervisor_prompt",
@@ -1713,6 +1723,16 @@ class TemplateEngine:
                     f"Phase '{phase.id}' has empty prompt_template — "
                     f"every phase must define a prompt."
                 )
+
+        # Light shape check for the opt-in acceptance matrix (#985): each entry
+        # must be a dict carrying both ``name`` and ``command``.
+        for phase in template.phases:
+            for idx, entry in enumerate(phase.acceptance_matrix or []):
+                if not isinstance(entry, dict) or not entry.get("name") or not entry.get("command"):
+                    errors.append(
+                        f"Phase '{phase.id}' acceptance_matrix[{idx}] must be a "
+                        f"dict with non-empty 'name' and 'command' keys."
+                    )
 
         # Check that all skill_ref files exist (with path traversal protection)
         template_dir = template.template_path.parent if template.template_path is not None else None

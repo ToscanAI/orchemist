@@ -1212,6 +1212,18 @@ class OpenClawExecutor(BaseExecutor):
                 "No 'output_dir' in task payload for acceptance_run phase",
             )
 
+        # ── Opt-in acceptance MATRIX branch (#985) ─────────────────────────
+        # MUST precede the acceptance_tests.py existence guard below: matrix
+        # entries are arbitrary allowlisted commands (one may itself be a
+        # ``python3 -m pytest …``), so the matrix path does NOT require an
+        # acceptance_tests.py file. An empty/absent matrix falls through to the
+        # UNCHANGED legacy single-pytest path (byte-identical results file).
+        matrix = task.payload.get("acceptance_matrix") or []
+        if matrix:
+            return self._execute_acceptance_matrix(
+                task, start_time, task_id, output_dir, matrix, timeout_sec
+            )
+
         test_file = os.path.join(output_dir, "acceptance_tests.py")
 
         if not os.path.exists(test_file):
@@ -1282,6 +1294,160 @@ class OpenClawExecutor(BaseExecutor):
             task_type=task.type,
             state=state,
             confidence=result.pass_rate,
+            result={"text": summary},
+            errors=[],
+            started_at=start_time,
+            completed_at=now_utc(),
+            model_used="local-subprocess",
+            execution_time_seconds=elapsed,
+        )
+
+    def _execute_acceptance_matrix(
+        self,
+        task: TaskSpec,
+        start_time: datetime,
+        task_id: str,
+        output_dir: str,
+        matrix: List[Dict[str, str]],
+        timeout_sec: int,
+    ) -> TaskResult:
+        """Run an opt-in acceptance MATRIX (#985) — run-all-then-report.
+
+        Every ``{"name", "command"}`` entry is dispatched IN ORDER through the
+        shared ``command_executor`` security model (allowlist + dangerous-pattern
+        denylist + MAX_OUTPUT_BYTES truncation + timeout, ``shell=False``) by
+        building a per-entry ``TaskSpec(type=COMMAND, …)`` and calling
+        ``CommandExecutor.execute``. The loop NEVER fails fast: a failing,
+        timed-out, or security-blocked entry reddens the aggregate but every
+        other entry still runs and is captured.
+
+        Aggregate (top-level results fields): ``passed`` = entries with
+        ``exit_code == 0``; ``failed`` = entries with ``exit_code != 0`` (a
+        non-zero exit, a timeout, AND a security block all count as failed);
+        ``errors`` = 0; ``total`` = ``len(matrix)``; ``pass_rate`` =
+        ``passed / total``; ``status`` = ``"pass"`` iff every entry passed; the
+        aggregate ``exit_code`` = 0 iff all passed else 1.
+
+        The per-entry breakdown is persisted additively under a ``"matrix"`` key
+        in ``acceptance_results.json``; the 10 legacy top-level keys are retained
+        for the downstream ``confidence.py`` reader. Note: each entry stores its
+        already-truncated output (≤ MAX_OUTPUT_BYTES + marker), so an N-entry
+        matrix can produce an ~N × 1 MB results file (acceptable for the small
+        matrices this feature targets — typically a handful of entries, only
+        failing ones emitting large output).
+
+        Args:
+            task:        The ACCEPTANCE_RUN TaskSpec (its payload supplies the
+                         shared ``allowed_commands`` allowlist and ``working_dir``).
+            start_time:  Datetime when the task started.
+            task_id:     Stable task identifier string.
+            output_dir:  Directory to write ``acceptance_results.json`` into.
+            matrix:      Ordered list of ``{"name", "command"}`` entries (already
+                         interpolated by ``_build_command_extras``).
+            timeout_sec: Per-entry timeout ceiling (the phase timeout).
+
+        Returns:
+            TaskResult with ``state=SUCCESS`` iff every entry passed,
+            ``confidence`` = aggregate pass_rate, and a short matrix summary in
+            ``result['text']`` (for downstream prompt feedback).
+        """
+        from . import (  # noqa: PLC0415 — lazy: avoids circular dep at module load
+            test_runner,
+        )
+        from .command_executor import (  # noqa: PLC0415 — lazy: import-cycle safety
+            CommandExecutor,
+        )
+
+        # The phase declares ONE shared allowlist for all entries. We pass
+        # ``allowed_commands`` through verbatim — ``or []`` deliberately
+        # SUPPRESSES CommandExecutor's DEFAULT_ALLOWED_COMMANDS fallback so a
+        # matrix entry must be EXPLICITLY allowlisted by the phase (intentional
+        # fail-closed behaviour for the CI-equivalent matrix, #985).
+        allowed_commands: List[str] = task.payload.get("allowed_commands") or []
+        working_dir: Optional[str] = task.payload.get("working_dir")
+
+        executor = CommandExecutor(default_timeout=timeout_sec)
+
+        entries: List[Dict[str, Any]] = []
+        passed = 0
+        failed = 0
+        for item in matrix:
+            name = item.get("name", "")
+            command = item.get("command", "")
+
+            entry_spec = TaskSpec(
+                type=TaskType.COMMAND,
+                payload={
+                    "command": command,
+                    "allowed_commands": allowed_commands,
+                    "cwd": working_dir,
+                },
+            )
+            entry_result = executor.execute(entry_spec)
+
+            exit_code = int(entry_result.result.get("exit_code", -1))
+            output = entry_result.result.get("text", "")
+            entry_passed = entry_result.state == TaskState.SUCCESS
+            if entry_passed:
+                passed += 1
+            else:
+                failed += 1
+
+            entry_record: Dict[str, Any] = {
+                "name": name,
+                "command": command,
+                "status": "pass" if entry_passed else "fail",
+                "exit_code": exit_code,
+                "output": output,
+            }
+            if entry_result.started_at and entry_result.completed_at:
+                entry_record["duration"] = (
+                    entry_result.completed_at - entry_result.started_at
+                ).total_seconds()
+            entries.append(entry_record)
+
+        total = len(matrix)
+        all_passed = failed == 0
+        pass_rate = (passed / total) if total > 0 else 0.0
+
+        # Build the aggregate TestRunResult so the existing writer maps the 10
+        # legacy top-level keys (status="pass" iff failed==0 and errors==0;
+        # exit_code is the AGGREGATE 0/1, not any single entry's code).
+        failure_details = "\n".join(f"{e['name']}: exit {e['exit_code']}" for e in entries)
+        agg_result = test_runner.TestRunResult(
+            passed=passed,
+            failed=failed,
+            errors=0,
+            total=total,
+            pass_rate=pass_rate,
+            failure_details=failure_details,
+            full_output=failure_details,
+            exit_code=0 if all_passed else 1,
+        )
+        test_runner.write_acceptance_results(agg_result, output_dir, entries=entries)
+
+        elapsed = (now_utc() - start_time).total_seconds()
+        state = TaskState.SUCCESS if all_passed else TaskState.FAILED
+
+        summary_lines = [f"{passed}/{total} matrix entries passed"]
+        summary_lines += [f"- {e['name']}: {e['status']}" for e in entries]
+        summary = "\n".join(summary_lines)
+
+        logger.info(
+            "OpenClawExecutor: ACCEPTANCE_RUN matrix task=%s state=%s "
+            "passed=%d failed=%d total=%d",
+            task_id,
+            state.value,
+            passed,
+            failed,
+            total,
+        )
+
+        return TaskResult(
+            task_id=task_id,
+            task_type=task.type,
+            state=state,
+            confidence=pass_rate,
             result={"text": summary},
             errors=[],
             started_at=start_time,
