@@ -2587,6 +2587,113 @@ class PhaseSequencer:
             f"Please review the above failure and try a different approach."
         )
 
+    def _build_hook_failure_result(
+        self, phase, current_iter, hook_name, command, exit_code, output
+    ) -> dict:
+        """Build a terminal abort phase-result dict for a failed lifecycle hook (#986).
+
+        Mirrors the placeholder/folder-guard terminal returns so the caller can
+        abort the run identically: ``state == "permanently_failed"`` marks a hard,
+        non-retryable stop (a phase must NEVER proceed against a stale/broken
+        build).
+        """
+        msg = (
+            f"Lifecycle hook {hook_name!r} failed (exit {exit_code}) before phase "
+            f"'{phase.id}': command {command!r}. Refusing to run the phase against a "
+            f"stale/broken build. Output:\n{output}"
+        )
+        logger.error("Pipeline %s: %s", self.template.id, msg)
+        return {
+            "state": "permanently_failed",
+            "result": msg,
+            "error": msg,
+            "hook_name": hook_name,
+            "cost_usd": 0.0,
+            "tokens_consumed": 0,
+            "execution_time_seconds": 0.0,
+            "metadata": {"iteration": current_iter},
+        }
+
+    def _run_lifecycle_hooks(self, phase, current_iter):  # noqa: C901
+        """Run declared lifecycle hooks on a content-hash MISS (#986).
+
+        Called at the per-phase dispatch seam (before ``submit_task``). For each
+        hook declared on the template, compute the content-hash of its
+        ``invalidation`` glob-set rooted at ``config['repo_path']``; on a MISS
+        (stored hash differs, or first-ever) dispatch the hook command through
+        :class:`~.command_executor.CommandExecutor` and store the new hash on
+        success; on a HIT skip (the warm artifact is reused).
+
+        Returns ``None`` on success / no-op, or a terminal phase-result abort dict
+        when a hook MISS fails (security-block, non-zero exit, timeout) so the
+        caller can abort the run — a phase must NEVER proceed against
+        stale/broken state, and a failed hook's hash is NOT stored.
+        """
+        hooks_cfg = getattr(self.template, "lifecycle_hooks", None)
+        if hooks_cfg is None or not hooks_cfg.hooks:
+            return None  # byte-identical default: no hooks → no-op
+
+        # Hooks shell out to real build/seed commands; in dry-run (structure
+        # smoke test) we must NOT run them. Mirror _check_for_unresolved_placeholders.
+        if self._is_dry_run_mode():
+            return None
+
+        repo_path = self.config.get("repo_path") if isinstance(self.config, dict) else None
+        if not repo_path:
+            # No consumer repo to root the globs against → cannot compute inputs.
+            # A template that declares hooks but supplies no repo_path is
+            # misconfigured; the byte-identical no-hooks path is the safe fallback
+            # rather than aborting an otherwise-valid run.
+            logger.warning(
+                "Pipeline %s: lifecycle_hooks declared but config['repo_path'] is "
+                "absent — skipping hooks.",
+                self.template.id,
+            )
+            return None
+
+        from .command_executor import CommandExecutor  # noqa: PLC0415 — import-cycle safety
+        from .file_guard import hash_glob_set  # noqa: PLC0415
+
+        for name, hook in hooks_cfg.hooks.items():
+            current_hash = hash_glob_set(repo_path, hook.invalidation)
+            if self._warm_cache.get(name) == current_hash:
+                logger.debug(
+                    "Pipeline %s: lifecycle hook %r HIT (inputs unchanged) — "
+                    "reusing warm artifact.",
+                    self.template.id,
+                    name,
+                )
+                continue  # HIT — reuse, skip the hook
+
+            logger.info(
+                "Pipeline %s: lifecycle hook %r MISS — running %r.",
+                self.template.id,
+                name,
+                hook.command,
+            )
+            executor = CommandExecutor(default_timeout=hooks_cfg.timeout_seconds)
+            spec = TaskSpec(
+                type=TaskType.COMMAND,
+                payload={
+                    "command": hook.command,
+                    "allowed_commands": hooks_cfg.allowed_commands or [],
+                    "cwd": str(repo_path),
+                },
+            )
+            result = executor.execute(spec)
+            if result.state != TaskState.SUCCESS:
+                # NEVER proceed against a broken build/seed — abort the run.
+                # Do NOT store the new hash (a failed MISS leaves no success residue).
+                text = (result.result or {}).get("text", "")
+                exit_code = (result.result or {}).get("exit_code", -1)
+                return self._build_hook_failure_result(
+                    phase, current_iter, name, hook.command, exit_code, text
+                )
+            # Success — store the new input-hash so subsequent phases HIT.
+            self._warm_cache[name] = current_hash
+
+        return None
+
     def _build_command_extras(
         self,
         phase: "PhaseDefinition",
@@ -3610,6 +3717,11 @@ class StateMachineSequencer(PhaseSequencer):
         """Current iteration being built; set by execute() before _build_phase_input call."""
         self._git_handoff = _git_handoff
         """Optional GitHandoff instance for commit-based phase tracking (Issue #674)."""
+        self._warm_cache: Dict[str, str] = {}
+        """Per-run warm-build/seed cache (Issue #986): hook_name → last input-set
+        content-hash. A HIT (stored hash == current glob-set hash) skips the hook;
+        a MISS runs it and stores the new hash. Pure-hash state — no teardown
+        needed. Reset at the start of each :meth:`execute` call."""
 
     # ------------------------------------------------------------------
     # Loop detection and iteration history helpers
@@ -3949,6 +4061,7 @@ class StateMachineSequencer(PhaseSequencer):
         # ── Reset per-execution tracking (supports re-use of the sequencer) ───
         self.iteration_history = defaultdict(list)
         self.iteration_counts = defaultdict(int)
+        self._warm_cache = {}  # Issue #986: per-run warm build/seed cache
 
         # ── Detect loop groups for {iteration_history} variable (Issue #667) ──
         self._loop_groups = self._detect_loop_groups()
@@ -4373,6 +4486,36 @@ class StateMachineSequencer(PhaseSequencer):
                 # current state of the guarded directory (not iteration-1 state).
                 # Local dict — no shared instance state.
                 _path_snapshots = self._snapshot_protected_paths(phase)
+
+                # ── Warm build/seed lifecycle hooks (#986) ────────────────────
+                # Run declared hooks on a content-hash MISS before dispatching
+                # this phase, so every phase observes an up-to-date build/seed.
+                # A failed hook aborts the run (never proceed against stale state).
+                hook_failure = self._run_lifecycle_hooks(phase, current_iter)
+                if hook_failure is not None:
+                    result = hook_failure
+                    with self._phase_outputs_lock:
+                        if current_phase_id in self.phase_outputs:
+                            self.iteration_history[current_phase_id].append(
+                                self.phase_outputs[current_phase_id]
+                            )
+                        result.setdefault("metadata", {})["iteration"] = current_iter
+                        self.phase_outputs[current_phase_id] = result
+                    self._invoke_on_phase_complete(current_phase_id, result)
+                    self._safe_call_hook(
+                        self.on_pipeline_complete,
+                        self.pipeline_context,
+                        None,
+                        pipeline_id=self.template.id,
+                    )
+                    return {
+                        "phase_outputs": self.phase_outputs,
+                        "final_output": result,
+                        "failed_phase": current_phase_id,
+                        "aborted": True,
+                        "iteration_history": dict(self.iteration_history),
+                        "iteration_counts": dict(self.iteration_counts),
+                    }
 
                 task_id = self.runner.queue.submit_task(task)
                 logger.info(

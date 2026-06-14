@@ -285,6 +285,110 @@ class BudgetConfig:
             )
 
 
+@dataclass
+class LifecycleHook:
+    """One declared lifecycle hook (Issue #986 — warm build/seed cache).
+
+    Attributes:
+        command: Shell command run via :class:`~.command_executor.CommandExecutor`
+            (``shell=False``, allowlist + dangerous-pattern denylist + timeout +
+            ``MAX_OUTPUT_BYTES``). Required, non-empty.
+        invalidation: List of path globs (relative to ``config['repo_path']``)
+            whose CONTENT is hashed to decide HIT vs MISS. Required, non-empty.
+    """
+
+    command: str
+    invalidation: List[str] = field(default_factory=list)
+
+
+@dataclass
+class LifecycleHooksConfig:
+    """Parsed template-level ``lifecycle_hooks:`` block (Issue #986).
+
+    Absent block ⇒ ``None`` on the template ⇒ the warm-cache runner is a no-op
+    (byte-identical to today). ``hooks`` preserves declaration order (dict
+    insertion order) so ``build`` runs before ``seed`` when both are declared.
+
+    Attributes:
+        hooks: Ordered mapping of hook name → :class:`LifecycleHook`.
+        allowed_commands: Shared, fail-closed allowlist applied to ALL hooks.
+            Empty/absent ⇒ ``[]`` ⇒ every hook command is blocked (no
+            ``DEFAULT_ALLOWED_COMMANDS`` fallback).
+        timeout_seconds: Per-hook command timeout. Default 120
+            (= ``command_executor.DEFAULT_TIMEOUT_SECONDS``).
+    """
+
+    hooks: Dict[str, LifecycleHook] = field(default_factory=dict)
+    allowed_commands: List[str] = field(default_factory=list)
+    timeout_seconds: int = 120
+
+
+def _parse_lifecycle_hooks_config(raw: Any) -> Optional["LifecycleHooksConfig"]:
+    """Parse the ``lifecycle_hooks:`` section into a :class:`LifecycleHooksConfig`.
+
+    Mirrors :func:`_parse_budget_config`: returns ``None`` when the section is
+    absent or not a dict (fully opt-in — absence == byte-identical no-caching
+    behaviour). The reserved top-level keys ``allowed_commands`` and
+    ``timeout_seconds`` configure ALL hooks; every other key is a hook
+    declaration that must be a mapping with a non-empty ``command`` string and a
+    non-empty ``invalidation`` list of glob strings (else ``ValueError`` at load,
+    consistent with ``_parse_budget_config`` raising on a bad value).
+
+    Args:
+        raw: The value of ``data.get("lifecycle_hooks")`` — a dict, ``None``, or a
+             non-dict value (treated as absent).
+
+    Returns:
+        A :class:`LifecycleHooksConfig` if ``raw`` is a dict, else ``None``.
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    reserved = {"allowed_commands", "timeout_seconds"}
+    allowed_commands = list(raw.get("allowed_commands") or [])
+    timeout_seconds = int(raw.get("timeout_seconds") or 120)
+
+    hooks: Dict[str, "LifecycleHook"] = {}
+    for name, spec in raw.items():
+        if name in reserved:
+            continue
+        if not isinstance(spec, dict):
+            raise ValueError(
+                f"Template lifecycle_hooks: hook '{name}' must be a mapping with "
+                f"'command' and 'invalidation', got {spec!r}"
+            )
+        known = {"command", "invalidation"}
+        unknown = set(spec.keys()) - known
+        if unknown:
+            logger.warning(
+                "Template lifecycle_hooks hook '%s' has unknown fields (ignored): %s",
+                name,
+                sorted(unknown),
+            )
+        command = spec.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError(
+                f"Template lifecycle_hooks: hook '{name}' requires a non-empty " f"'command' string"
+            )
+        invalidation = spec.get("invalidation")
+        if (
+            not isinstance(invalidation, list)
+            or not invalidation
+            or not all(isinstance(g, str) and g.strip() for g in invalidation)
+        ):
+            raise ValueError(
+                f"Template lifecycle_hooks: hook '{name}' requires a non-empty "
+                f"'invalidation' list of glob strings"
+            )
+        hooks[name] = LifecycleHook(command=command, invalidation=list(invalidation))
+
+    return LifecycleHooksConfig(
+        hooks=hooks,
+        allowed_commands=allowed_commands,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def _parse_budget_config(raw: Any) -> Optional["BudgetConfig"]:
     """Parse the ``budget:`` section of a pipeline YAML into a :class:`BudgetConfig`.
 
@@ -738,6 +842,11 @@ class PipelineTemplate:
     """Parsed ``budget:`` section from the template YAML, or ``None`` if absent.
     When ``None``, no budget enforcement is applied (fully opt-in)."""
 
+    # --- Warm build/seed lifecycle hooks (Issue #986) ---
+    lifecycle_hooks: Optional["LifecycleHooksConfig"] = None
+    """Parsed ``lifecycle_hooks:`` section, or ``None`` if absent (fully opt-in).
+    When ``None``, the warm-cache hook runner is a no-op (byte-identical to today)."""
+
     # --- Template composition fields (Issue #704) ---
     extends: Optional[str] = None
     """Source ``extends:`` ID from the child template YAML (metadata only).
@@ -796,6 +905,11 @@ class PipelineTemplate:
         # Normalise budget field: non-BudgetConfig values → None
         if self.budget is not None and not isinstance(self.budget, BudgetConfig):
             self.budget = None
+        # Normalise lifecycle_hooks field: non-LifecycleHooksConfig values → None (#986)
+        if self.lifecycle_hooks is not None and not isinstance(
+            self.lifecycle_hooks, LifecycleHooksConfig
+        ):
+            self.lifecycle_hooks = None
         # Normalise extends / excluded_phase_ids (Issue #704)
         if self.extends is not None and not isinstance(self.extends, str):
             self.extends = None
@@ -1436,6 +1550,11 @@ class TemplateEngine:
         # Parse optional budget: section (Issue #5.2.2)
         budget_config_parsed: Optional[BudgetConfig] = _parse_budget_config(data.get("budget"))
 
+        # Parse optional lifecycle_hooks: section (Issue #986 — warm build/seed cache)
+        lifecycle_hooks_parsed: Optional[LifecycleHooksConfig] = _parse_lifecycle_hooks_config(
+            data.get("lifecycle_hooks")
+        )
+
         return PipelineTemplate(
             id=data["id"],
             name=data["name"],
@@ -1461,6 +1580,7 @@ class TemplateEngine:
             on_complete=on_complete_config,  # Issue #330.1: pipeline chaining config
             routing_config=routing_config_parsed,  # Issue #331.2: confidence-based routing
             budget=budget_config_parsed,  # Issue #5.2.2: budget enforcement
+            lifecycle_hooks=lifecycle_hooks_parsed,  # Issue #986: warm build/seed cache
             extends=source_extends,  # Issue #704: composition metadata
             excluded_phase_ids=list(removed_phase_ids),  # Issue #704: composition metadata
         )
