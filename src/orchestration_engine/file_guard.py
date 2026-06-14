@@ -151,6 +151,94 @@ def compute_directory_hash(  # noqa: C901
     return h.hexdigest()
 
 
+def _normalize_glob(pattern: str) -> str:
+    """Normalize a glob so a trailing ``**`` matches FILES recursively (Issue #986).
+
+    On Python 3.10–3.12 (the supported / CI-tested versions) ``Path.glob("src/**")``
+    matches DIRECTORIES ONLY — with an ``is_file()`` filter it yields an empty set,
+    so a change to ``src/x.ts`` could never flip the hash. The fix: rewrite a
+    trailing ``**`` segment (or a bare ``**``) into ``…/**/*`` so the subsequent
+    ``is_file()/is_symlink()`` filter sees the actual files under the tree. A
+    pattern that does not end in ``**`` is returned unchanged.
+
+    Examples:
+        ``"src/**"``  → ``"src/**/*"``   (recursive files under src/)
+        ``"**"``       → ``"**/*"``
+        ``"src/**/*.py"`` → ``"src/**/*.py"`` (already file-matching; unchanged)
+        ``"package.json"`` → ``"package.json"`` (no ``**``; unchanged)
+    """
+    if pattern == "**":
+        return "**/*"
+    if pattern.endswith("/**"):
+        return pattern + "/*"
+    return pattern
+
+
+def hash_glob_set(root: Union[str, Path], globs: List[str]) -> str:
+    """Deterministic SHA256 over the SET of files matched by *globs* under *root*.
+
+    Drives the same digest recipe as :func:`compute_directory_hash` (rel-path +
+    ``b"\\x00"`` + content + ``b"\\xff"`` separator, entries sorted lexicographically
+    by POSIX rel-path) but over a glob-matched file set instead of a full
+    ``os.walk``. Used by the Issue #986 warm cache as the per-hook invalidation key:
+
+    * identical content ⇒ identical digest;
+    * a 1-byte change, or an add/remove under the globs ⇒ a different digest;
+    * the result is order-independent (the globs are flattened into a set then
+      sorted);
+    * an empty match-set returns the SHA256 of the empty byte string — a stable,
+      non-empty hex sentinel, so "no inputs yet" is well-defined and never
+      collides with a non-empty match-set's digest.
+
+    Symlinks are NOT followed (their target string is hashed) — the same boundary
+    safety as :func:`compute_directory_hash`. Directories matched by a glob are
+    skipped (only files contribute). A missing *root* is treated as an empty
+    match-set (the sentinel).
+
+    Each glob is normalized via :func:`_normalize_glob` so a trailing ``**``
+    matches files recursively on Python 3.10–3.12 (see that function).
+
+    Args:
+        root: Root directory the globs are rooted at (str or Path).
+        globs: List of path-glob strings, relative to *root*.
+
+    Returns:
+        Lowercase SHA256 hex digest string (64 chars).
+    """
+    root_path = Path(root)
+    matched: set = set()
+    if root_path.exists():
+        for pattern in globs:
+            normalized = _normalize_glob(pattern)
+            for p in root_path.glob(normalized):
+                if p.is_file() or p.is_symlink():
+                    matched.add(p)
+
+    # Sort by POSIX rel-path string for deterministic, cross-platform ordering.
+    entries = sorted(matched, key=lambda p: p.relative_to(root_path).as_posix())
+
+    h = hashlib.sha256()
+    for full in entries:
+        rel = full.relative_to(root_path).as_posix()
+        h.update(rel.encode())
+        h.update(b"\x00")
+        if full.is_symlink():
+            # Hash the link target string — do NOT read linked file content.
+            h.update(b"SYMLINK:")
+            h.update(os.readlink(str(full)).encode())
+        else:
+            try:
+                with full.open("rb") as fh:
+                    for chunk in iter(lambda: fh.read(65536), b""):
+                        h.update(chunk)
+            except OSError as exc:
+                # Unreadable → contributes only its rel-path (mirror
+                # compute_directory_hash's graceful skip).
+                _logger.debug("hash_glob_set: skipping unreadable file %s (%s)", full, exc)
+        h.update(b"\xff")  # separator between entries
+    return h.hexdigest()
+
+
 def verify_hash(path: Union[str, Path], expected: str) -> None:
     """Verify that the file at *path* has the expected SHA256 hash.
 
