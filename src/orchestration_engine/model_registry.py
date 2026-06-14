@@ -52,6 +52,13 @@ CANONICAL_PREFIXED: Dict[ModelTier, str] = {
     tier: f"anthropic/{mid}" for tier, mid in CANONICAL_BARE.items()
 }
 
+#: Canonical tier capability ordering, cheapest → most capable. The single
+#: source of truth for "tier A is below/at/above tier B" comparisons. Both
+#: KNOWN_MODEL_TIERS (templates.py) and MODEL_ESCALATION_LADDER (adaptive_retry.py)
+#: encode this same haiku<sonnet<opus order independently; this tuple is the
+#: canonical reference the bound logic clamps against.
+TIER_ORDER: tuple[ModelTier, ...] = (ModelTier.HAIKU, ModelTier.SONNET, ModelTier.OPUS)
+
 #: Default tier used when a value cannot be resolved to a known tier.
 _DEFAULT_TIER: ModelTier = ModelTier.SONNET
 
@@ -80,6 +87,28 @@ _ALIAS_TO_TIER: Dict[str, ModelTier] = {
 def canonical_id(tier: ModelTier, *, prefixed: bool = False) -> str:
     """Return the canonical id for *tier* (bare by default, prefixed on request)."""
     return CANONICAL_PREFIXED[tier] if prefixed else CANONICAL_BARE[tier]
+
+
+def clamp_tier(
+    tier: ModelTier,
+    min_tier: Optional[ModelTier] = None,
+    max_tier: Optional[ModelTier] = None,
+) -> ModelTier:
+    """Clamp *tier* into the inclusive band ``[min_tier, max_tier]`` per TIER_ORDER.
+
+    Returns *tier* raised to *min_tier* if it sits below the floor, lowered to
+    *max_tier* if it sits above the ceiling, else *tier* unchanged. A ``None``
+    bound is unbounded on that side. With both bounds ``None`` this is the
+    identity function (the byte-identical default — see #987). Assumes
+    ``min_tier <= max_tier`` (validated upstream at template-load time); this
+    helper does not re-validate the band.
+    """
+    idx = TIER_ORDER.index(tier)
+    if min_tier is not None:
+        idx = max(idx, TIER_ORDER.index(min_tier))
+    if max_tier is not None:
+        idx = min(idx, TIER_ORDER.index(max_tier))
+    return TIER_ORDER[idx]
 
 
 def resolve_tier(value: Union[ModelTier, str, None]) -> Optional[ModelTier]:

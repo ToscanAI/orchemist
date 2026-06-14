@@ -366,7 +366,9 @@ class PhaseSequencer:
                 }
 
             # Resolve model tier to a ModelTier enum value (if possible)
-            preferred_model = self._resolve_model_tier(phase.model_tier)
+            preferred_model = self._resolve_model_tier(
+                phase.model_tier, phase.min_tier, phase.max_tier
+            )
 
             # Create and queue the TaskSpec
             task = TaskSpec(
@@ -633,7 +635,9 @@ class PhaseSequencer:
                 self._invoke_on_phase_complete(phase_id, result)
                 return result
 
-            preferred_model = self._resolve_model_tier(phase.model_tier)
+            preferred_model = self._resolve_model_tier(
+                phase.model_tier, phase.min_tier, phase.max_tier
+            )
 
             task = TaskSpec(
                 type=self._resolve_task_type(phase.task_type),
@@ -1281,7 +1285,9 @@ class PhaseSequencer:
                         **self._build_command_extras(phase, initial_input),
                     },
                     priority=Priority.HIGH,
-                    preferred_model=self._resolve_model_tier(phase.model_tier),
+                    preferred_model=self._resolve_model_tier(
+                        phase.model_tier, phase.min_tier, phase.max_tier
+                    ),
                     timeout_seconds=phase.timeout_minutes * 60,
                 )
 
@@ -2915,7 +2921,11 @@ class PhaseSequencer:
             return TaskType.CONTENT
 
     @staticmethod
-    def _resolve_model_tier(model_tier_str: str):
+    def _resolve_model_tier(
+        model_tier_str: str,
+        min_tier: Optional[str] = None,
+        max_tier: Optional[str] = None,
+    ):
         """Map a friendly model tier name to a ModelTier enum value.
 
         The PhaseDefinition uses short names (haiku, sonnet, opus) while
@@ -2923,13 +2933,25 @@ class PhaseSequencer:
         Delegates to the canonical model_registry (#916) — the single
         short↔versioned bridge. Returns None if the tier is not recognised
         (runner will use its default).
+
+        #987: when *min_tier*/*max_tier* are given, the resolved tier is clamped
+        into the inclusive band [min_tier, max_tier] (haiku<sonnet<opus). A
+        ``None`` bound is unbounded on that side; with both ``None`` this is a
+        no-op (byte-identical default). Clamping is applied ONLY when the phase's
+        own tier resolved to a concrete ModelTier — an unresolved tier (None,
+        "use runner default") is returned unchanged so the floor never
+        manufactures a model where the author asked for the runner default.
         """
-        from .model_registry import resolve_tier  # noqa: PLC0415
+        from .model_registry import clamp_tier, resolve_tier  # noqa: PLC0415
 
         resolved = resolve_tier(model_tier_str)
-        if resolved is None and model_tier_str:
-            logger.debug(f"Unrecognised model_tier '{model_tier_str}'; using runner default")
-        return resolved
+        if resolved is None:
+            if model_tier_str:
+                logger.debug(f"Unrecognised model_tier '{model_tier_str}'; using runner default")
+            return None
+        lo = resolve_tier(min_tier) if min_tier else None
+        hi = resolve_tier(max_tier) if max_tier else None
+        return clamp_tier(resolved, lo, hi)
 
 
 # Module-level alias for the supervisor response parser (convenience for tests)
@@ -4327,7 +4349,9 @@ class StateMachineSequencer(PhaseSequencer):
                         "iteration_counts": dict(self.iteration_counts),
                     }
 
-                preferred_model = self._resolve_model_tier(phase.model_tier)
+                preferred_model = self._resolve_model_tier(
+                    phase.model_tier, phase.min_tier, phase.max_tier
+                )
 
                 task = TaskSpec(
                     type=self._resolve_task_type(phase.task_type),

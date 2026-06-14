@@ -2,7 +2,7 @@ id: coding-pipeline-standard
 name: "Coding Pipeline Standard"
 description: "Coding pipeline with 12 phase definitions (10 happy-path phases + 2 exhaustion postmortems). Phase 0 (existing_symbols_inventory) produces a sticky `existing_symbols.md` artifact that SPEC, BEHAVIORAL, SPEC_ADVERSARY, ACCEPTANCE_TEST, IMPLEMENT, REVIEW, and FIX all read to prevent sub-check 7d (re-implementation of existing symbols). 3-phase spec loop: spec → behavioral → adversary. Each agent writes ONE file, eliminating the bifurcation bug where secondary artifacts (spec-behavioral.md) were never written to disk. Adversarial spec review, engine-verified behavioral validation after EVERY code change."
 author: "Toscan"
-version: "2.3.0"
+version: "2.4.0"
 category: "code"
 tags: [code, development, review, testing, pipeline]
 use_cases:
@@ -124,7 +124,10 @@ phases:
   - id: existing_symbols_inventory
     name: "Existing-symbols inventory (sub-check 7d pre-flight)"
     description: "Greps the project for existing UI primitives, shared libraries, adjacent action/hook patterns, and workspace-barrel exports. Writes a sticky `existing_symbols.md` artifact read by every subsequent phase. Resolves the late-catch problem for sub-check 7d (re-implementation of existing symbol). DISPATCH: when adapted for Claude-Code-as-orchestrator use, this phase requires a write-capable subagent type (`general-purpose`) — see header comment + ToscanAI/orchemist#903."
-    model_tier: sonnet
+    model_tier: sonnet  # #987 — sits at its ceiling (see max_tier); kept sonnet, NOT haiku, because
+                        # the /api/v1/phases frontend contract (tests/test_phases_endpoint.py +
+                        # frontend/lib/phaseLabels.ts PhaseTier) only renders sonnet|opus|engine
+    max_tier: sonnet    # #987 — ceiling: a mechanical inventory phase never resolves above sonnet
     thinking_level: medium
     max_iterations: 2
     transitions:
@@ -447,6 +450,7 @@ phases:
     name: "Spec Adversary Review"
     description: "Adversarially review behavioral contracts AND implementation spec. Checks for vague contracts, trivial satisfaction, missing edge cases, implementation leakage, and divergence between spec and contracts."
     model_tier: opus
+    min_tier: opus      # #987 — judgment-gate FLOOR: never cheapened below opus
     thinking_level: high
     max_iterations: 3
     transitions:
@@ -842,6 +846,7 @@ phases:
     name: "Opus Code Review"
     description: "Senior code review by Opus — quality gate with APPROVE/REQUEST_CHANGES verdict"
     model_tier: opus
+    min_tier: opus      # #987 — judgment-gate FLOOR: never cheapened below opus
     thinking_level: high
     max_iterations: 3
     supervisor: true
