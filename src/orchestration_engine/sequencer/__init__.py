@@ -57,6 +57,7 @@ from ..transitions import _VERDICT_KEYWORDS, PhaseOutcome, determine_outcome, ex
 # resolving for every historical importer / test.
 from ._consts import _DEFAULT_SUPERVISOR_PROMPT, _TERMINAL_PUNCTUATION  # noqa: F401
 from ._helpers import (  # noqa: F401
+    _FINDING_TAG_RE,
     _analyze_round_findings,
     _are_findings_similar,
     _extract_findings_from_text,
