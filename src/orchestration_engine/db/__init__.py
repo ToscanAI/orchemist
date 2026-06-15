@@ -2,6 +2,15 @@
 
 Provides SQLite-backed persistent storage with WAL mode, proper indexing,
 connection management, and schema migrations.
+
+EPIC #942 / sub-issue 951a: ``db.py`` is now the ``db/`` package. This module
+is the *facade* — it re-exports the exact public surface the original module
+exposed (``Database``, ``default_db_path``, ``parse_json_list``,
+``TERMINAL_STATUSES``, ``STALE_TASK_THRESHOLD_MINUTES``) so no caller import
+line changes anywhere. The connection/transaction core lives in
+:mod:`._core` (``CoreMixin``); module constants + the sqlite3 adapter
+registration live in :mod:`._consts`. All remaining ~124 ``Database`` methods
+stay defined inline here and migrate to per-domain mixins in 951b-e.
 """
 
 # Trailing/blank-line whitespace and long lines below live inside triple-quoted
@@ -11,267 +20,27 @@ connection management, and schema migrations.
 
 import json
 import logging
-import os
 import sqlite3
-import threading
-import uuid
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ._consts import (  # noqa: F401  # re-exported public surface + sqlite adapter registration
+    STALE_TASK_THRESHOLD_MINUTES,
+    TERMINAL_STATUSES,
+    default_db_path,
+    parse_json_list,
+)
+from ._core import CoreMixin
+
 logger = logging.getLogger(__name__)
 
-# Explicit datetime adapters — required for Python 3.12+ which deprecated
-# the built-in sqlite3 datetime adapter/converter.
-sqlite3.register_adapter(datetime, lambda val: val.isoformat())
-sqlite3.register_converter("timestamp", lambda val: datetime.fromisoformat(val.decode()))
-
-from .timestamps import normalize_ts, now_utc  # noqa: E402
-
-# ---------------------------------------------------------------------------
-# Shared terminal-state set — single source of truth used by db, api, and
-# any other module that needs to distinguish "run is done" from "run is live".
-# Add new terminal statuses here; they propagate automatically everywhere.
-# ---------------------------------------------------------------------------
-TERMINAL_STATUSES: frozenset = frozenset(
-    {
-        "success",
-        "failed",
-        "cancelled",
-        "crashed",
-        "scoring_failed",
-        "pending_review",
-        "rejected",
-        "escalated",  # Issue #396: retry was escalated — original run is terminal
-    }
-)
+from ..timestamps import normalize_ts, now_utc  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Issue #932 (item 1) — staleness threshold for queue-health reporting.
-# A task that has been in 'running' state strictly longer than this many
-# minutes is considered stale. Single source of truth: matches the
-# QueueStats docstring ("True if tasks stuck > 30min", schemas.py). queue.py
-# consumes this via has_stale_running_tasks() rather than redefining it.
-# ---------------------------------------------------------------------------
-STALE_TASK_THRESHOLD_MINUTES = 30
-
-
-# ---------------------------------------------------------------------------
-# Issue #864 — canonical default DB path resolver
-# ---------------------------------------------------------------------------
-# Previously this logic was duplicated 5 ways across cli.py, web/api.py,
-# mcp/tools.py, daemon.py, and inline inside Database.__init__.  The mcp
-# variant was the only one creating parent directories (``parents=True``),
-# so the canonical form preserves that behaviour — operators who haven't
-# created ``~/.orchestration-engine`` see the path created on first access
-# rather than a ``FileNotFoundError``.
-# ---------------------------------------------------------------------------
-
-
-def default_db_path() -> Path:
-    """Return the canonical persistent on-disk DB path used by async runs.
-
-    Resolves to ``$HOME/.orchestration-engine/engine.db`` and ensures the
-    parent directory exists (``mkdir(parents=True, exist_ok=True)``).  This
-    is the canonical location previously duplicated 5 ways across
-    :mod:`cli`, :mod:`web.api`, :mod:`mcp.tools`, :mod:`daemon`, and inline
-    inside :class:`Database`.
-
-    Issue #981: an ``ORCH_DB_PATH`` env var (an absolute path to the
-    ``engine.db`` *file*) takes precedence over the ``$HOME`` fallback when
-    set, so operators/CI — and the pytest suite's session-scoped conftest
-    fixture — can point the engine at a tmp DB without touching ``HOME``.
-    Production behaviour is byte-identical when the var is unset/empty.
-    Mirrors :func:`feature_flags._admin_json_path`'s ``ORCH_ADMIN_PATH``
-    idiom; the override branch additionally ``mkdir``s the file's parent to
-    preserve this function's documented parent-exists invariant (#864).
-
-    Returns:
-        ``Path`` pointing at the engine database file.  Callers that need
-        a string path can wrap with ``str(default_db_path())``.
-    """
-    override = os.environ.get("ORCH_DB_PATH")
-    if override:
-        db_file = Path(override)
-        db_file.parent.mkdir(parents=True, exist_ok=True)
-        return db_file
-    default_dir = Path.home() / ".orchestration-engine"
-    default_dir.mkdir(parents=True, exist_ok=True)
-    return default_dir / "engine.db"
-
-
-# ---------------------------------------------------------------------------
-# Issue #866 — canonical JSON-list column parser
-# ---------------------------------------------------------------------------
-# The ``completed_phases`` column is stored as a JSON string in SQLite but
-# may be returned by drivers as a native list (e.g. when wrapped by tests
-# using TypedDict fixtures).  Both mcp/tools.py and the ``_run_to_dict``
-# closure in web/api.py reinvented this parser; consolidating here keeps
-# both call sites consistent if the column type ever changes.
-# ---------------------------------------------------------------------------
-
-
-def parse_json_list(val: Any) -> list:
-    """Safely parse a JSON-list column that may be None, list, or JSON string.
-
-    Used for the ``completed_phases`` column on ``pipeline_runs``.  Returns
-    an empty list when *val* is ``None`` or cannot be decoded — callers
-    should never receive a partial / malformed list from this helper.
-
-    Args:
-        val: Raw column value from a ``pipeline_runs`` row.  Tolerates
-             ``None``, ``list`` (already decoded), or any other type that
-             can be passed to :func:`json.loads`.
-
-    Returns:
-        A native Python list (possibly empty).  Never raises.
-    """
-    if val is None:
-        return []
-    if isinstance(val, list):
-        return val
-    try:
-        return json.loads(val)
-    except (json.JSONDecodeError, TypeError):
-        return []
-
-
-class Database:
+class Database(CoreMixin):
     """SQLite database manager with connection pooling and migrations."""
-
-    def __init__(self, db_path: Optional[Path] = None):
-        """Initialize database connection.
-
-        Args:
-            db_path: Path to SQLite database file. Defaults to ~/.orchestration-engine/engine.db
-        """
-        if db_path is None:
-            db_path = default_db_path()
-
-        # Thread-local storage for connections
-        self._local = threading.local()
-
-        # Detect :memory: databases — each raw ":memory:" connection is isolated
-        # per connection, so threads would see empty databases.  Instead we use
-        # SQLite's shared-cache in-memory URI so every thread-local connection
-        # attaches to the same in-memory database while still having its own
-        # connection object (avoiding multi-thread write races).
-        self._shared_connection: Optional[sqlite3.Connection] = None
-        if str(db_path) == ":memory:":
-            db_name = uuid.uuid4().hex[:12]
-            self._db_uri: Optional[str] = f"file:memdb_{db_name}?mode=memory&cache=shared"
-            self.db_path = Path(":memory:")
-        else:
-            self._db_uri = None
-            self.db_path = Path(db_path)
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # SQLite shared-cache in-memory databases use *table-level* locking
-        # rather than the WAL-based database-level locking used by file DBs.
-        # Table-level locks are not subject to busy_timeout, so concurrent
-        # write transactions from multiple threads (parallel pipeline phases)
-        # immediately raise "database table is locked" instead of retrying.
-        # We serialise all write transactions with a threading.Lock when
-        # operating in shared-cache mode so callers never see that error.
-        self._write_lock: Optional[threading.Lock] = (
-            threading.Lock() if self._db_uri is not None else None
-        )
-
-        # Initialize database schema
-        self._initialize_database()
-
-    @property
-    def _conn(self) -> sqlite3.Connection:
-        """Alias for :meth:`get_connection` for test helper compatibility.
-
-        Provides the ``db._conn`` attribute expected by test helpers that
-        introspect the underlying SQLite connection (e.g. for SELECT queries
-        on ``pipeline_runs`` in acceptance tests).
-        """
-        return self.get_connection()
-
-    def get_connection(self) -> sqlite3.Connection:
-        """Get a thread-local database connection.
-
-        For :memory: databases we use a shared-cache URI so every thread sees
-        the same data while keeping its own connection object.
-        """
-        if not hasattr(self._local, "connection"):
-            if self._db_uri is not None:
-                self._local.connection = sqlite3.connect(
-                    self._db_uri,
-                    uri=True,
-                    check_same_thread=False,
-                    timeout=30.0,
-                    detect_types=sqlite3.PARSE_DECLTYPES,
-                )
-            else:
-                self._local.connection = sqlite3.connect(
-                    str(self.db_path),
-                    check_same_thread=False,
-                    timeout=30.0,
-                    detect_types=sqlite3.PARSE_DECLTYPES,
-                )
-            self._configure_connection(self._local.connection)
-
-        return self._local.connection
-
-    @contextmanager
-    def _locked(self):
-        """Acquire the write lock (if any) for shared-cache in-memory DBs.
-
-        Use this to serialise read operations that would otherwise raise
-        ``OperationalError: database table is locked`` when another thread
-        holds a write lock on the same shared-cache database.
-        For file-based DBs this is a no-op (WAL handles it).
-        """
-        if self._write_lock is not None:
-            with self._write_lock:
-                yield
-        else:
-            yield
-
-    @contextmanager
-    def transaction(self):
-        """Context manager for database transactions.
-
-        For shared-cache in-memory databases (used in tests / dry-run) the
-        lock serialises writes across threads so that table-level locking
-        does not raise ``OperationalError: database table is locked``.
-        File-based databases with WAL mode handle concurrency natively and
-        do not need the extra lock.
-        """
-        conn = self.get_connection()
-        if self._write_lock is not None:
-            with self._write_lock:
-                try:
-                    yield conn
-                    conn.commit()
-                except Exception:
-                    conn.rollback()
-                    raise
-        else:
-            try:
-                yield conn
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-
-    def _configure_connection(self, conn: sqlite3.Connection) -> None:
-        """Configure SQLite connection with optimal settings."""
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA cache_size = 10000")
-        conn.execute("PRAGMA temp_store = memory")
-        conn.execute("PRAGMA foreign_keys = ON")
-
-        # Set row factory for dict-like access
-        conn.row_factory = sqlite3.Row
 
     def _initialize_database(self) -> None:
         """Initialize database schema with all tables and indexes."""
@@ -1498,77 +1267,6 @@ class Database:
             "max_workers": 8,
         }
 
-    # Generic Query Methods
-
-    def execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
-        """Execute a SQL query and return the cursor.
-
-        Auto-commits after execution so callers (concurrency.py, progress.py,
-        recovery.py) don't have to manage transactions explicitly.  DDL
-        statements (CREATE TABLE, etc.) already have implicit commit semantics
-        in SQLite; DML (INSERT/UPDATE/DELETE) is committed here so the write
-        is durable from the caller's perspective.
-        """
-        conn = self.get_connection()
-        cursor = conn.execute(query, params)
-        conn.commit()
-        return cursor
-
-    def fetch_all(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-        """Execute query and return all rows as dicts (no commit — read-only)."""
-        conn = self.get_connection()
-        cursor = conn.execute(query, params)
-        return [self._row_to_dict(row) for row in cursor.fetchall()]
-
-    def fetch_one(self, query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
-        """Execute query and return first row as dict, or None (no commit — read-only)."""
-        conn = self.get_connection()
-        cursor = conn.execute(query, params)
-        row = cursor.fetchone()
-        return self._row_to_dict(row) if row else None
-
-    # Utility Methods
-
-    def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
-        """Convert SQLite row to dictionary with JSON parsing."""
-        data = dict(row)
-
-        # Parse JSON fields
-        json_fields = [
-            "payload",
-            "tags",
-            "metadata",
-            "config",
-            "result",
-            "error_patterns",
-            "suggested_fixes",
-            "input_map",
-            "filters",  # trigger fields (Issue #329.1)
-            "signals_json",  # routing_decisions (Issue #331.3)
-            "affected_files",  # regressions (Issue #3.3a.1)
-            "issues_found",  # review_outcomes (Issue #4.1.2)
-        ]
-        for field in json_fields:
-            if field in data and data[field] is not None:
-                try:
-                    data[field] = json.loads(data[field])
-                except (json.JSONDecodeError, TypeError):
-                    pass  # Keep original value if JSON parsing fails
-
-        # Normalise datetime objects → ISO strings so callers (queue.py etc.)
-        # that do datetime.fromisoformat(value) continue to work unchanged.
-        # PARSE_DECLTYPES converts TIMESTAMP columns to datetime objects; we
-        # convert them back to strings here to preserve the public contract.
-        for key, value in data.items():
-            if isinstance(value, datetime):
-                data[key] = value.isoformat()
-
-        # Cast SQLite INTEGER columns that represent booleans to Python bool
-        if "enabled" in data and data["enabled"] is not None:
-            data["enabled"] = bool(data["enabled"])
-
-        return data
-
     # ------------------------------------------------------------------
     # Pipeline Run Operations (Issue #267 — async daemon)
     # ------------------------------------------------------------------
@@ -1727,11 +1425,11 @@ class Database:
             this invocation. ``0`` on any top-level error or when no
             zombies are present.
         """
-        # Lazy import: db.py is imported by daemon.py (transitively via
-        # run_daemon), so a top-level `from .daemon import` would deadlock
+        # Lazy import: the db package is imported by daemon.py (transitively
+        # via run_daemon), so a top-level `from ..daemon import` would deadlock
         # at module load time.
         try:
-            from .daemon import is_process_alive  # noqa: PLC0415
+            from ..daemon import is_process_alive  # noqa: PLC0415
         except Exception as exc:  # pragma: no cover — defensive  # noqa: BLE001
             logger.error("sweep_zombie_runs: cannot import is_process_alive: %s", exc)
             return 0
@@ -4462,9 +4160,3 @@ class Database:
             )
             row = cursor.fetchone()
         return self._row_to_dict(row) if row else None
-
-    def close(self) -> None:
-        """Close database connections."""
-        if hasattr(self._local, "connection"):
-            self._local.connection.close()
-            delattr(self._local, "connection")
