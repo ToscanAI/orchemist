@@ -40,6 +40,7 @@ import pytest
 FACADE_MODULES: Tuple[str, ...] = (
     "orchestration_engine.cli",
     "orchestration_engine.web.api",
+    "orchestration_engine.sequencer",
 )
 
 TESTS_DIR = Path(__file__).resolve().parent

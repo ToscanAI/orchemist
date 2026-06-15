@@ -12,6 +12,21 @@ is controlled by three fields on :class:`~.templates.PipelineTemplate`:
 
 All shared state (``phase_outputs``, progress callbacks) is protected by
 reentrant locks so wave-level concurrency is safe.
+
+Package layout (EPIC #942, sub-issue 953a — facade-preserving decomposition)
+----------------------------------------------------------------------------
+This ``__init__`` is the FACADE. The module was converted from a single
+``sequencer.py`` file into a ``sequencer/`` package. The two stateful classes
+:class:`PhaseSequencer` and :class:`StateMachineSequencer` (with the #978
+termination guard, #988 ``parallel_group`` fan-out, and #986 lifecycle-hook
+seam) stay INLINE here, byte-for-byte unchanged — class-splitting is deferred
+to sub-issue 953c. Only the *pure* module-level members moved out: the
+constants into :mod:`._consts`, the free helper functions into
+:mod:`._helpers`, and the prompt-rendering proxy classes into :mod:`._proxies`.
+They are re-imported below (by bare name) so the inline class bodies — which
+reference them at call time — resolve exactly as before, and so every historical
+``from orchestration_engine.sequencer import ...`` keeps resolving
+byte-identically.
 """
 
 import logging
@@ -27,42 +42,37 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from .file_guard import compute_directory_hash, compute_hash
-from .output_parser import extract_and_write, parse_output
-from .review_parser import ReviewOutcome, parse_review_output
-from .schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
-from .templates import PhaseDefinition, PipelineTemplate, TemplateEngine
-from .timestamps import now_utc
-from .transitions import _VERDICT_KEYWORDS, PhaseOutcome, determine_outcome, extract_verdict
+from ..file_guard import compute_directory_hash, compute_hash
+from ..output_parser import extract_and_write, parse_output
+from ..review_parser import ReviewOutcome, parse_review_output
+from ..schemas import Priority, TaskError, TaskResult, TaskSpec, TaskState, TaskType
+from ..templates import PhaseDefinition, PipelineTemplate, TemplateEngine
+from ..timestamps import now_utc
+from ..transitions import _VERDICT_KEYWORDS, PhaseOutcome, determine_outcome, extract_verdict
+
+# --- Facade re-exports (EPIC #942 953a) -------------------------------------
+# Pure module-level members extracted into sibling sub-modules. Imported here
+# so (a) the inline class bodies below resolve them by bare name exactly as
+# before, and (b) ``from orchestration_engine.sequencer import <name>`` keeps
+# resolving for every historical importer / test.
+from ._consts import _DEFAULT_SUPERVISOR_PROMPT, _TERMINAL_PUNCTUATION  # noqa: F401
+from ._helpers import (  # noqa: F401
+    _FINDING_TAG_RE,
+    _analyze_round_findings,
+    _are_findings_similar,
+    _extract_findings_from_text,
+    _extract_phase_text,
+    _is_within_dir,
+    _wrap_callable_runner,
+)
+from ._proxies import (  # noqa: F401
+    _PhaseOutput,
+    _PreviousOutputInlineProxy,
+    _PreviousOutputProxy,
+    _SafeDict,
+)
 
 logger = logging.getLogger(__name__)
-
-# Module-level constant for output-length validation (Issue #351).
-# Kept here so it is allocated once, not on every _validate_phase_output call.
-_TERMINAL_PUNCTUATION: frozenset = frozenset(".!?:")
-
-# Default supervisor prompt template (Issue #194).
-# Placeholders: {rubric}, {phase_output}
-_DEFAULT_SUPERVISOR_PROMPT = """\
-You are a quality supervisor evaluating the output of a pipeline phase.
-
-## RUBRIC
-{rubric}
-
-## OUTPUT
-{phase_output}
-
-## Instructions
-Review the phase output against the rubric above.
-
-Respond with exactly ONE of the following verdicts on the **first non-blank line**:
-
-- `APPROVE: <brief reason>` — output meets all criteria, pipeline may continue
-- `REVISE: <specific feedback>` — output needs improvement; describe exactly what to fix
-- `ABORT: <reason>` — output is fundamentally flawed or dangerous; pipeline must stop
-
-Your verdict line must start with APPROVE, REVISE, or ABORT.
-"""
 
 
 class PhaseSequencer:
@@ -291,7 +301,7 @@ class PhaseSequencer:
             # that downstream handlers treat as a clean exit, and the linear
             # wave proceeds to the next phase.
             if getattr(phase, "dialogue_config", None) is not None:
-                from . import feature_flags as _ff  # noqa: PLC0415
+                from .. import feature_flags as _ff  # noqa: PLC0415
 
                 if not _ff.is_enabled("dialogue_phase"):
                     # INFO not WARNING: the default-disabled state IS a clean
@@ -577,7 +587,7 @@ class PhaseSequencer:
             # A type:dialogue phase in a parallel wave bypasses the task
             # queue entirely — and bypasses the gate if not checked here.
             if getattr(phase, "dialogue_config", None) is not None:
-                from . import feature_flags as _ff  # noqa: PLC0415
+                from .. import feature_flags as _ff  # noqa: PLC0415
 
                 if not _ff.is_enabled("dialogue_phase"):
                     logger.info(
@@ -914,7 +924,7 @@ class PhaseSequencer:
                 )
                 return
             try:
-                from .adversary_parser import (  # noqa: PLC0415
+                from ..adversary_parser import (  # noqa: PLC0415
                     compute_reward,
                     parse_adversary_output,
                     persist_reward,
@@ -2651,8 +2661,8 @@ class PhaseSequencer:
             )
             return None
 
-        from .command_executor import CommandExecutor  # noqa: PLC0415 — import-cycle safety
-        from .file_guard import hash_glob_set  # noqa: PLC0415
+        from ..command_executor import CommandExecutor  # noqa: PLC0415 — import-cycle safety
+        from ..file_guard import hash_glob_set  # noqa: PLC0415
 
         for name, hook in hooks_cfg.hooks.items():
             current_hash = hash_glob_set(repo_path, hook.invalidation)
@@ -2846,7 +2856,7 @@ class PhaseSequencer:
             ``cost_usd``, ``tokens_consumed``, ``execution_time_seconds``,
             and metadata.
         """
-        from .dialogue_phase import DialogueRunner  # noqa: PLC0415
+        from ..dialogue_phase import DialogueRunner  # noqa: PLC0415
 
         start_time = time.time()
         config = phase.dialogue_config
@@ -3049,7 +3059,7 @@ class PhaseSequencer:
         "use runner default") is returned unchanged so the floor never
         manufactures a model where the author asked for the runner default.
         """
-        from .model_registry import clamp_tier, resolve_tier  # noqa: PLC0415
+        from ..model_registry import clamp_tier, resolve_tier  # noqa: PLC0415
 
         resolved = resolve_tier(model_tier_str)
         if resolved is None:
@@ -3063,512 +3073,6 @@ class PhaseSequencer:
 
 # Module-level alias for the supervisor response parser (convenience for tests)
 _parse_supervisor_response = PhaseSequencer._parse_supervisor_response
-
-
-def _is_within_dir(path: Path, directory: Path) -> bool:
-    """Return True if *path* is the same as, or a descendant of, *directory*.
-
-    Both arguments should already be resolved (absolute, symlink-free) paths.
-    """
-    try:
-        path.relative_to(directory)
-        return True
-    except ValueError:
-        return False
-
-
-def _extract_phase_text(phase_output: Any) -> str:
-    """Extract clean text from a phase output dict.
-
-    Phase outputs are stored as ``TaskResult.model_dump()`` dicts.  The actual
-    text lives at ``result.text`` (or ``result["text"]``).  If the output is
-    already a string, return it as-is.
-    """
-    if isinstance(phase_output, str):
-        return phase_output
-    if isinstance(phase_output, dict):
-        # Primary path: result dict from TaskResult.model_dump()
-        result = phase_output.get("result", {})
-        if isinstance(result, dict):
-            text = result.get("text", "")
-            if text:
-                return str(text)
-        # Fallback: maybe it's a flat dict with 'text' at top level
-        text = phase_output.get("text", "")
-        if text:
-            return str(text)
-        # Last resort: stringify but warn
-        logger.warning(
-            f"Phase output dict has no 'result.text' key; falling back to str(). "
-            f"Keys: {list(phase_output.keys())}"
-        )
-        return str(phase_output)
-    return str(phase_output)
-
-
-# ---------------------------------------------------------------------------
-# Issue #651 — Finding analysis helpers for MAX_ITERATIONS_EXCEEDED
-# ---------------------------------------------------------------------------
-
-#: Regex matching a tagged finding line: [SEVERITY][category] description
-_FINDING_TAG_RE = re.compile(r"^\s*\[([A-Za-z]+)\]\[([^\]]+)\]\s+(.+)$")
-
-
-def _extract_findings_from_text(text: str) -> list:
-    """Extract findings from a round file's text content.
-
-    Returns a list of finding strings.  Tagged lines of the form
-    ``[SEVERITY][category] description`` are returned as individual findings.
-    If no tagged lines exist, the entire file content (up to 2 000 chars) is
-    returned as a single finding — unless the file contains only markdown
-    headers or empty lines, in which case an empty list is returned.
-    """
-    findings = []
-    for line in text.splitlines():
-        if _FINDING_TAG_RE.match(line):
-            findings.append(line.strip())  # noqa: PERF401
-    if not findings:
-        # No tagged lines — check for substantive untagged content
-        content_lines = [
-            line for line in text.splitlines() if line.strip() and not line.strip().startswith("#")
-        ]
-        if content_lines:
-            findings = [text.strip()[:2000]]
-    return findings
-
-
-def _are_findings_similar(a: str, b: str) -> bool:
-    """Return *True* if two finding strings are substantially similar.
-
-    Uses word-set Jaccard similarity (intersection / union ≥ 0.50) after
-    lowercasing and stripping ``[TAG][TAG]`` prefixes.  Empty word-sets
-    are never considered similar.
-    """
-
-    def _words(s: str) -> set:
-        # Strip [SEVERITY][category] tag prefix before comparison
-        s = re.sub(r"^\s*\[[^\]]+\]\[[^\]]+\]\s*", "", s.lower())
-        return set(re.findall(r"\w+", s))
-
-    words_a = _words(a)
-    words_b = _words(b)
-    if not words_a or not words_b:
-        return False
-    intersection = len(words_a & words_b)
-    union = len(words_a | words_b)
-    return (intersection / union) >= 0.50
-
-
-def _analyze_round_findings(output_dir, phase_id: str, max_iterations: int) -> str:  # noqa: C901
-    """Analyse iteration-indexed round files for repeated vs new findings.
-
-    Returns an analysis string to append to the error message, or ``""`` when
-    analysis is not applicable (non-iterative phase, fewer than 2 files,
-    fewer than 2 readable files).
-
-    Side-effects when analysis is produced:
-    * Logs the result at ``ERROR`` level.
-    * Writes ``finding_analysis.md`` to *output_dir*.
-    """
-    if max_iterations <= 1:
-        return ""  # Non-iterative phase — skip
-
-    if output_dir is None:
-        return ""
-
-    output_path = Path(output_dir)
-    safe_pid = re.sub(r"[^\w\-]", "_", phase_id)
-
-    # Discover all round files: {safe_pid}_round{N}.md
-    round_files = []
-    for n in range(1, max_iterations + 2):  # scan up to max+1 to catch edge cases
-        rp = output_path / f"{safe_pid}_round{n}.md"
-        if rp.exists():
-            round_files.append((n, rp))
-
-    if len(round_files) < 2:
-        return ""  # Nothing to compare
-
-    # Read each file; skip unreadable files with a warning
-    per_round_findings: list = []
-    for n, rp in round_files:
-        try:
-            text = rp.read_text(encoding="utf-8", errors="replace")
-            findings = _extract_findings_from_text(text)
-            per_round_findings.append(findings)
-        except Exception as exc:  # noqa: BLE001, PERF203
-            logger.warning(
-                "Finding analysis: could not read round file '%s': %s — skipping.", rp, exc
-            )
-
-    if len(per_round_findings) < 2:
-        # After skipping unreadable files, fewer than 2 readable files remain
-        return ""
-
-    n_rounds = len(per_round_findings)
-
-    # Check how many rounds contributed at least one finding
-    rounds_with_findings = [f for f in per_round_findings if f]
-    if len(rounds_with_findings) < 2:
-        analysis = (
-            f"{n_rounds} round files found but no structured findings could be "
-            f"extracted for comparison."
-        )
-        logger.error("Finding analysis for phase '%s': %s", phase_id, analysis)
-        if output_dir:
-            try:
-                analysis_path = output_path / "finding_analysis.md"
-                analysis_path.write_text(
-                    f"# Finding Analysis\n\nPhase: `{phase_id}`\n\n{analysis}\n",
-                    encoding="utf-8",
-                )
-            except Exception as _exc:  # noqa: BLE001
-                logger.warning("Failed to write finding_analysis.md: %s", _exc)
-        return analysis
-
-    # Compare findings across all rounds: find any pair from different rounds
-    # that is similar.  Track the finding that matches the most rounds.
-    all_findings_flat = [
-        (r_idx, finding)
-        for r_idx, findings in enumerate(per_round_findings)
-        for finding in findings
-    ]
-
-    repeated_finding = None
-    best_match_count = 0
-
-    for i, (round_i, finding_i) in enumerate(all_findings_flat):
-        match_rounds = {round_i}
-        for j, (round_j, finding_j) in enumerate(all_findings_flat):
-            if i == j or round_j == round_i:
-                continue
-            if _are_findings_similar(finding_i, finding_j):
-                match_rounds.add(round_j)
-        if len(match_rounds) >= 2 and len(match_rounds) > best_match_count:
-            best_match_count = len(match_rounds)
-            repeated_finding = finding_i
-
-    if repeated_finding is not None:
-        summary = repeated_finding[:200]
-        analysis = (
-            f"Repeated finding detected across {best_match_count} rounds: {summary}. "
-            f"The loop may be stuck on a hallucinated or unfixable issue."
-        )
-    else:
-        analysis = (
-            f"All {n_rounds} rounds raised different issues. The code may need "
-            f"manual intervention or the issue should be split."
-        )
-
-    logger.error("Finding analysis for phase '%s': %s", phase_id, analysis)
-    if output_dir:
-        try:
-            analysis_path = output_path / "finding_analysis.md"
-            analysis_path.write_text(
-                f"# Finding Analysis\n\nPhase: `{phase_id}`\n\n{analysis}\n",
-                encoding="utf-8",
-            )
-        except Exception as _exc:  # noqa: BLE001
-            logger.warning("Failed to write finding_analysis.md: %s", _exc)
-
-    return analysis
-
-
-def _wrap_callable_runner(fn):  # noqa: C901
-    """Wrap a plain callable as a minimal runner object for testing.
-
-    When *fn* is a callable (not already a runner with `.queue`/`.executors`),
-    this creates a lightweight shim so that ``StateMachineSequencer`` can
-    accept a bare function as its ``runner`` argument in unit tests.
-
-    The callable signature expected by the shim::
-
-        fn(phase_def, context, **kwargs) -> dict
-
-    The returned dict is used as the phase result directly.
-    """
-
-    class _FakeQueue:
-        def __init__(self):
-            self._store = {}
-
-        def submit_task(self, spec):
-            self._store[spec.id] = spec
-            return spec.id
-
-        def get_task(self, task_id):
-            return self._store.get(task_id)
-
-        def complete_task(self, task_id, result):
-            pass
-
-        def fail_task(self, task_id, error):
-            pass
-
-    class _FakeExecutor:
-        def __init__(self, callable_fn):
-            self._fn = callable_fn
-
-        def can_handle(self, task_type):  # noqa: ARG002
-            return True
-
-        def execute(self, task_spec, **kwargs):
-            # Call the wrapped function and convert the result
-            result_dict = self._fn(
-                None,  # phase_def (not available here)
-                task_spec.payload.get("prompt", ""),
-                **kwargs,
-            )
-            # Wrap the dict in a minimal object that satisfies _execute_and_wait
-            return _FakeTaskResult(result_dict)
-
-    class _FakeTaskResult:
-        """Minimal TaskResult shim for use in tests."""
-
-        def __init__(self, data: dict):
-            self._data = data
-            # Map common dict keys to TaskResult attributes
-            self.state = type("S", (), {"value": "success"})()
-            self.state = _FakeState(data)
-            self.confidence = data.get("confidence", 0.8)
-            self.metadata = data.get("metadata", {})
-            self.errors = data.get("errors", [])
-            self.model_used = data.get("model_used")
-
-        def model_dump(self):
-            content = self._data.get("content", self._data.get("result", ""))
-            verdict = self._data.get("verdict", "")
-            # Build text for content-based routing (extract_verdict).
-            # If a verdict key is present, prepend it so extract_verdict finds it.
-            text_parts = []
-            if verdict:
-                text_parts.append(verdict)
-            if content:
-                text_parts.append(content)
-            text = "\n".join(text_parts) if text_parts else ""
-            return {
-                "content": content,
-                "verdict": verdict,
-                "status": self._data.get("status", "completed"),
-                "text": text,
-                "result": {"text": text},
-                "state": "success",
-                **self._data,
-            }
-
-        # Pydantic v1 compat
-        def dict(self):
-            return self.model_dump()
-
-    class _FakeState:
-        def __init__(self, data: dict):
-            status = data.get("status", "completed")
-            # Map status strings to TaskState
-            if status in ("completed", "success"):
-                self.value = "success"
-            else:
-                self.value = "failed"
-
-        def __eq__(self, other):
-            # Handle TaskState (str enum): its value attr holds the string
-            if hasattr(other, "value"):
-                return self.value == other.value
-            # Handle plain strings
-            return self.value == other
-
-        def __hash__(self):
-            return hash(self.value)
-
-        def __str__(self):
-            return self.value
-
-        def __repr__(self):
-            return f"_FakeState({self.value!r})"
-
-    class _FakeRunner:
-        def __init__(self, callable_fn):
-            self.queue = _FakeQueue()
-            self.executors = [_FakeExecutor(callable_fn)]
-
-    return _FakeRunner(fn)
-
-
-class _SafeDict(dict):
-    """A dict subclass that returns a placeholder string for missing keys.
-
-    This prevents ``str.format()`` calls from raising ``KeyError`` when the
-    template references a phase output that has not yet been produced (e.g.
-    due to template authoring errors).
-
-    When a ``missing_sink`` set is supplied, every emitted ``<MISSING:key>``
-    marker is also recorded into it. This lets callers distinguish markers that
-    THIS mapping actually generated (a genuine missing config/input reference)
-    from ``<MISSING:...>`` substrings that merely appear in inlined content
-    (e.g. ``context_files`` / ``skill_context`` text) — the latter never
-    invoke ``__missing__`` and so are never recorded (#535).
-    """
-
-    def __init__(self, *args, missing_sink: Optional[set] = None, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        # Stored via object.__setattr__ so __getattr__ below never intercepts it.
-        object.__setattr__(self, "_missing_sink", missing_sink)
-
-    def __missing__(self, key: str) -> str:
-        logger.warning(f"Template referenced missing key: '{key}' — substituting <MISSING:{key}>")
-        sink = object.__getattribute__(self, "_missing_sink")
-        if sink is not None:
-            sink.add(f"<MISSING:{key}>")
-        return f"<MISSING:{key}>"
-
-    def __getattr__(self, key: str) -> Any:
-        try:
-            return self[key]
-        except KeyError:
-            logger.warning(
-                f"Template referenced missing attribute: '{key}' — substituting <MISSING:{key}>"
-            )
-            try:
-                sink = object.__getattribute__(self, "_missing_sink")
-            except AttributeError:
-                sink = None
-            if sink is not None:
-                sink.add(f"<MISSING:{key}>")
-            return f"<MISSING:{key}>"
-
-
-class _PhaseOutput:
-    """Wrapper that allows ``{phase_id.output}`` syntax in prompt templates.
-
-    When a template references ``{requirements.output}``, Python's ``str.format()``
-    calls ``getattr(phase_obj, 'output')``.  This class provides that attribute.
-    It also has a ``__format__`` method so ``{requirements}`` (without ``.output``)
-    returns the output text directly.
-    """
-
-    def __init__(self, text: str) -> None:
-        self.output = text
-        self._text = text
-
-    def __format__(self, format_spec: str) -> str:
-        return format(self._text, format_spec)
-
-    def __str__(self) -> str:
-        return self._text
-
-    def __repr__(self) -> str:
-        return f"_PhaseOutput({self._text[:80]!r}...)"
-
-
-class _PreviousOutputProxy:
-    """Smart proxy for the ``{previous_output}`` template variable (fix/243).
-
-    Behaviour depends on whether *output_dir* is set:
-
-    * **output_dir set** — ``{previous_output}`` expands to a compact,
-      file-path-based summary (phase name + word count + ``→ path/phase.md``).
-      Full phase content is NOT inlined, saving 30 K+ tokens per run.
-      ``{previous_output[phase_id]}`` prepends a ``"Full output at: …"`` note
-      before the inline text so models know where to find the full version.
-
-    * **output_dir not set** — ``{previous_output}`` expands to
-      ``str(phase_outputs)`` (the old behaviour, full backward compatibility).
-      ``{previous_output[phase_id]}`` returns the extracted text with no note.
-
-    Missing phase IDs return ``<MISSING:previous_output[phase_id]>`` so
-    template authoring errors produce visible, non-crashing placeholders.
-    """
-
-    def __init__(
-        self,
-        phase_outputs: dict,
-        output_dir: Optional[str],
-        phase_map: dict,
-        missing_sink: Optional[set] = None,
-    ) -> None:
-        self._phase_outputs = phase_outputs
-        self._output_dir = output_dir
-        self._phase_map = phase_map
-        # Optional set that collects emitted <MISSING:previous_output[...]>
-        # markers so the dispatch-level guard can reject genuinely-missing
-        # upstream references (#535).
-        self._missing_sink = missing_sink
-
-    # ── str.format() calls __format__ for {previous_output} ──────────────────
-
-    def __format__(self, format_spec: str) -> str:
-        if self._output_dir:
-            return format(self._build_summary(), format_spec)
-        return format(str(self._phase_outputs), format_spec)
-
-    def __str__(self) -> str:
-        if self._output_dir:
-            return self._build_summary()
-        return str(self._phase_outputs)
-
-    # ── str.format() calls __getitem__ for {previous_output[phase_id]} ───────
-
-    def __getitem__(self, key: str) -> str:
-        if key not in self._phase_outputs:
-            if self._missing_sink is not None:
-                self._missing_sink.add(f"<MISSING:previous_output[{key}]>")
-            return f"<MISSING:previous_output[{key}]>"
-        inline = _extract_phase_text(self._phase_outputs[key])
-        if self._output_dir:
-            safe_pid = key.replace("-", "_")
-            return f"Full output at: {self._output_dir}/{safe_pid}.md\n\n{inline}"
-        return inline
-
-    # ── internal helpers ──────────────────────────────────────────────────────
-
-    def _build_summary(self) -> str:
-        """Return compact summary lines, one per prior phase."""
-        if not self._phase_outputs:
-            return "No prior phases."
-        lines: List[str] = []
-        for pid, pout in self._phase_outputs.items():
-            text = _extract_phase_text(pout)
-            word_count = len(text.split()) if text else 0
-            phase_def = self._phase_map.get(pid)
-            phase_name = phase_def.name if phase_def else pid
-            safe_pid = pid.replace("-", "_")
-            lines.append(
-                f"- {phase_name} ({pid}): completed, ~{word_count} words"
-                f" → {self._output_dir}/{safe_pid}.md"
-            )
-        return "\n".join(lines)
-
-    def __repr__(self) -> str:
-        return f"_PreviousOutputProxy(output_dir={self._output_dir!r}, phases={list(self._phase_outputs.keys())})"  # noqa: E501
-
-
-class _PreviousOutputInlineProxy:
-    """Proxy for ``{previous_output_inline}`` — always returns full inline content.
-
-    Preserves the pre-fix/243 ``{previous_output}`` behaviour for templates
-    that explicitly require every prior phase output dumped inline.  The full
-    raw ``phase_outputs`` dict repr is returned as a string, regardless of
-    whether *output_dir* is configured.
-    """
-
-    def __init__(self, phase_outputs: dict, missing_sink: Optional[set] = None) -> None:
-        self._phase_outputs = phase_outputs
-        self._missing_sink = missing_sink
-
-    def __format__(self, format_spec: str) -> str:
-        return format(str(self._phase_outputs), format_spec)
-
-    def __str__(self) -> str:
-        return str(self._phase_outputs)
-
-    def __getitem__(self, key: str) -> str:
-        if key not in self._phase_outputs:
-            if self._missing_sink is not None:
-                self._missing_sink.add(f"<MISSING:previous_output_inline[{key}]>")
-            return f"<MISSING:previous_output_inline[{key}]>"
-        return _extract_phase_text(self._phase_outputs[key])
-
-    def __repr__(self) -> str:
-        return f"_PreviousOutputInlineProxy(phases={list(self._phase_outputs.keys())})"
 
 
 class StateMachineSequencer(PhaseSequencer):
@@ -4191,7 +3695,7 @@ class StateMachineSequencer(PhaseSequencer):
                         # pipeline. This is what consumers who care about
                         # sub-check 7d rigour want: an empty/missing inventory
                         # is a BLOCKER, not "fall through and grep ad-hoc".
-                        from . import feature_flags as _ff  # noqa: PLC0415
+                        from .. import feature_flags as _ff  # noqa: PLC0415
 
                         if current_phase_id == _ff.PHASE_0_ID and _exhausted_next is not None:
                             if _ff.is_enabled("phase0_hard_gate"):
@@ -4298,7 +3802,7 @@ class StateMachineSequencer(PhaseSequencer):
                             else:
                                 try:
                                     adv_raw = _extract_phase_text(self.phase_outputs[partner_id])
-                                    from .adversary_parser import (  # noqa: PLC0415
+                                    from ..adversary_parser import (  # noqa: PLC0415
                                         parse_adversary_output,
                                     )
 
@@ -4435,7 +3939,7 @@ class StateMachineSequencer(PhaseSequencer):
                 # consumer uses (PhaseSequencer linear / parallel paths cover
                 # the non-state-machine case in _execute_wave_*).
                 if getattr(phase, "dialogue_config", None) is not None:
-                    from . import feature_flags as _ff  # noqa: PLC0415
+                    from .. import feature_flags as _ff  # noqa: PLC0415
 
                     if not _ff.is_enabled("dialogue_phase"):
                         logger.info(
