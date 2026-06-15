@@ -1,15 +1,19 @@
-"""FastAPI REST API for the Orchestration Engine (Issue #257).
+"""FastAPI REST API app factory for the Orchestration Engine (Issue #257).
 
-Provides a versioned JSON REST API backed by the same daemon-based
-async execution infrastructure used by ``orch launch``.  This is
-separate from ``web/app.py`` (browser UI) — it targets programmatic
-consumers such as CI/CD pipelines, OpenClaw, and external scripts.
+This module holds :func:`create_api_app`, the FastAPI app factory, with ALL of
+its inner route closures kept verbatim. It is part of the ``web/api/`` package
+created by the facade-preserving decomposition of the former ``web/api.py``
+god-module (Issue #942, sub-issue 952a). The closure-free module-level members
+were extracted into sibling modules and are imported below; the public surface
+is re-exported from the package :mod:`orchestration_engine.web.api` facade.
 
-All dependencies (fastapi, uvicorn) are optional extras — import this
-module only after confirming they are installed.
+Route extraction (converting the inner ``@app.<verb>`` closures into
+``APIRouter`` modules) is deliberately deferred to sub-issues 952b-d.
+
+All dependencies (fastapi, uvicorn) are optional extras — import this module
+only after confirming they are installed.
 """
 
-import hashlib
 import hmac
 import json
 import logging
@@ -19,366 +23,28 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
-from orchestration_engine.db import default_db_path, parse_json_list
+from orchestration_engine.db import parse_json_list
 from orchestration_engine.env_utils import env_int
 from orchestration_engine.issue_automation import generate_pipeline_input
 
+from .admin_flags import _ADMIN_DEFAULTS, _ADMIN_KNOWN_FLAGS
+from .deps import _get_persistent_db_path
+from .schemas import (
+    _apply_input_map,
+    _coerce_admin_doc,
+    _merge_feature_flags_with_passthrough,
+    _strict_coerce_bool,
+)
+from .security import SlidingWindowRateLimiter, _verify_github_signature
+from .sse import _SSE_LIMITER
+
 logger = logging.getLogger(__name__)
-
-
-def _get_persistent_db_path() -> str:
-    """Return the path to the persistent on-disk DB used by async runs.
-
-    Thin string-returning wrapper around :func:`orchestration_engine.db.default_db_path`
-    preserved for callsite signature compatibility (Issue #864 consolidation).
-    """
-    return str(default_db_path())
-
-
-def _verify_github_signature(secret: str, payload_bytes: bytes, sig_header: Optional[str]) -> bool:
-    """Verify an HMAC-SHA256 GitHub-style webhook signature.
-
-    GitHub sends ``X-Hub-Signature-256: sha256=<hex_digest>``.  This function
-    recomputes the HMAC-SHA256 of *payload_bytes* using *secret* and compares
-    it to the digest in *sig_header* using a constant-time comparison to
-    prevent timing attacks.
-
-    Args:
-        secret: Shared HMAC secret string.
-        payload_bytes: Raw request body bytes.
-        sig_header: Value of the ``X-Hub-Signature-256`` header
-            (e.g. ``"sha256=abc123..."``).  May be ``None``.
-
-    Returns:
-        ``True`` when the signature is valid, ``False`` otherwise
-        (including when *sig_header* is ``None`` or malformed).
-    """
-    if not sig_header:
-        return False
-    if not sig_header.startswith("sha256="):
-        return False
-    expected = sig_header[len("sha256=") :]
-    computed = hmac.new(
-        secret.encode("utf-8"),
-        payload_bytes,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(computed, expected)
-
-
-def _apply_input_map(payload: Dict[str, Any], input_map: Dict[str, Any]) -> Dict[str, Any]:
-    """Transform a webhook payload dict into pipeline input vars using *input_map*.
-
-    Each key in *input_map* becomes an input variable.  Values that start with
-    ``"$."`` are treated as simple dot-path expressions into *payload*.  Other
-    values are used as literals.
-
-    Example::
-
-        payload   = {"repository": {"full_name": "org/repo"}, "ref": "refs/heads/main"}
-        input_map = {"repo": "$.repository.full_name", "branch": "$.ref", "env": "prod"}
-        # result: {"repo": "org/repo", "branch": "refs/heads/main", "env": "prod"}
-
-    Args:
-        payload: Parsed webhook JSON body.
-        input_map: Dict mapping pipeline variable names to payload paths or
-            literal values.
-
-    Returns:
-        Dict of pipeline input variables.  Missing paths produce ``None``.
-    """
-    result: Dict[str, Any] = {}
-    for var_name, path_or_literal in input_map.items():
-        if isinstance(path_or_literal, str) and path_or_literal.startswith("$."):
-            # Simple dot-path resolution: "$.a.b.c" → payload["a"]["b"]["c"]
-            parts = path_or_literal[2:].split(".")
-            value: Any = payload
-            for part in parts:
-                if isinstance(value, dict):
-                    value = value.get(part)
-                else:
-                    value = None
-                    break
-            result[var_name] = value
-        else:
-            result[var_name] = path_or_literal
-    return result
-
-
-def _check_rate_limit(trigger_id: str, rate_limit: int, db: Any) -> bool:
-    """Check whether a webhook trigger has exceeded its per-minute rate limit.
-
-    Args:
-        trigger_id: The trigger identifier to check.
-        rate_limit: Maximum allowed invocations per minute (0 = unlimited).
-        db: :class:`~orchestration_engine.db.Database` instance.
-
-    Returns:
-        ``True`` when the rate limit is exceeded (caller should return 429).
-        ``False`` when the invocation is allowed.
-    """
-    if rate_limit == 0:
-        return False  # Unlimited
-    since = datetime.now(timezone.utc) - timedelta(seconds=60)
-    count = db.count_webhook_invocations_since(trigger_id, since)
-    return count >= rate_limit
-
-
-class SlidingWindowRateLimiter:
-    """A named, unit-testable sliding-window rate limiter for webhook triggers.
-
-    Uses a 60-second sliding window backed by the ``webhook_invocations``
-    table in the DB.  Delegates to the same logic as ``_check_rate_limit()``
-    but wraps it in a proper class so it can be tested and extended
-    independently.
-
-    Example::
-
-        limiter = SlidingWindowRateLimiter(db)
-        if limiter.check(trigger_id, rate_limit):
-            raise HTTPException(status_code=429, detail="Rate limit exceeded")
-    """
-
-    def __init__(self, db: Any) -> None:
-        """Initialise with a DB instance.
-
-        Args:
-            db: :class:`~orchestration_engine.db.Database` instance used to
-                query invocation counts and record new invocations.
-        """
-        self._db = db
-
-    def check(self, trigger_id: str, rate_limit: int) -> bool:
-        """Return ``True`` if the rate limit is exceeded, ``False`` otherwise.
-
-        Args:
-            trigger_id: The trigger identifier to check.
-            rate_limit: Maximum allowed invocations per minute (0 = unlimited).
-
-        Returns:
-            ``True`` when the caller should block the request (429).
-            ``False`` when the invocation is allowed.
-        """
-        return _check_rate_limit(trigger_id, rate_limit, self._db)
-
-
-# ── Module-scope admin helpers (round-4 audit) ────────────────────────────────
-# These are pure transforms; lifting them out of `create_api_app`'s closure
-# makes them directly testable, which closes a round-4 trivial-satisfaction
-# finding (the previous in-closure test could not actually observe shared
-# mutable state in module-level defaults because TestClient JSON-round-trips
-# everything).
-
-_ADMIN_DEFAULTS: Dict[str, Any] = {
-    "autonomy_level": "4.3",
-    "feature_flags": {
-        "phase0_hard_gate": False,
-        "extend_verdict": True,
-        "dialogue_phase": False,
-        "cross_repo": False,
-    },
-    "modes": {
-        "openrouter": True,
-        "standalone": True,
-        "openclaw": False,
-        "dry_run": True,
-    },
-}
-_ADMIN_KNOWN_FLAGS = frozenset(_ADMIN_DEFAULTS["feature_flags"].keys())
-_ADMIN_KNOWN_MODES = frozenset(_ADMIN_DEFAULTS["modes"].keys())
-
-
-def _strict_coerce_bool(value: Any) -> Optional[bool]:
-    """Strict bool coercion. Returns the bool when the input is one of
-    the canonical truthy/falsy values, or ``None`` to signal
-    "unrecognised — caller must decide what to substitute".
-
-    Accepts: ``bool`` (any), ``int``/``float`` ∈ {0, 1}, and the strings
-    ``true``/``false``/``yes``/``no``/``on``/``off``/``1``/``0`` plus
-    the empty string (→ False). Everything else returns ``None`` —
-    callers handle the substitute (per-field default in
-    ``_coerce_admin_doc``, 400 response in the PUT handler).
-    """
-    if isinstance(value, bool):
-        return value
-    # `bool` is a subclass of `int`; the bool check above wins. Numbers
-    # outside {0, 1} are explicitly rejected to avoid e.g. `2` becoming True.
-    if isinstance(value, int) and value in (0, 1):
-        return bool(value)
-    if isinstance(value, float) and value in (0.0, 1.0):
-        return bool(value)
-    if isinstance(value, str):
-        low = value.strip().lower()
-        if low in ("true", "1", "yes", "on"):
-            return True
-        if low in ("false", "0", "no", "off", ""):
-            return False
-    return None
-
-
-def _coerce_admin_doc(loaded: Any) -> Dict[str, Any]:
-    """Merge a possibly-malformed loaded JSON value over the defaults.
-
-    Defensive against every shape that a hand-edited `admin.json` can
-    take: not-a-dict, nested key is the wrong type, scalar where dict
-    expected, missing keys, values that aren't bools. The output is
-    ALWAYS the same shape as ``_ADMIN_DEFAULTS`` with every value
-    type-validated; unparseable values fall back to the per-key default
-    (NOT to `bool(value)` which would silently coerce "maybe" → True).
-
-    Returns a freshly-constructed dict — callers may mutate it without
-    affecting subsequent requests. Inner dicts are always built fresh
-    via ``dict(_ADMIN_DEFAULTS["..."])`` so module-level defaults never
-    get aliased.
-    """
-    if not isinstance(loaded, dict):
-        return {
-            "autonomy_level": _ADMIN_DEFAULTS["autonomy_level"],
-            "feature_flags": dict(_ADMIN_DEFAULTS["feature_flags"]),
-            "modes": dict(_ADMIN_DEFAULTS["modes"]),
-        }
-    merged: Dict[str, Any] = {
-        "autonomy_level": str(loaded.get("autonomy_level", _ADMIN_DEFAULTS["autonomy_level"])),
-        "feature_flags": dict(_ADMIN_DEFAULTS["feature_flags"]),
-        "modes": dict(_ADMIN_DEFAULTS["modes"]),
-    }
-    ff = loaded.get("feature_flags")
-    if isinstance(ff, dict):
-        for k in _ADMIN_KNOWN_FLAGS:
-            if k in ff:
-                coerced = _strict_coerce_bool(ff[k])
-                if coerced is not None:
-                    merged["feature_flags"][k] = coerced
-                # else: keep default for this flag (round-2 review fix)
-    mm = loaded.get("modes")
-    if isinstance(mm, dict):
-        for k in _ADMIN_KNOWN_MODES:
-            if k in mm:
-                coerced = _strict_coerce_bool(mm[k])
-                if coerced is not None:
-                    merged["modes"][k] = coerced
-    return merged
-
-
-def _merge_feature_flags_with_passthrough(
-    disk_flags: Dict[str, Any],
-) -> Dict[str, Any]:
-    """Canonicalise known flags + preserve unknown nested keys.
-
-    Round-4 audit caught a regression: round-3's pre-write canonicalisation
-    via `_coerce_admin_doc({"feature_flags": disk_flags})["feature_flags"]`
-    silently dropped any flag a forward-compat operator (or beta build) had
-    added to `feature_flags` but isn't in ``_ADMIN_KNOWN_FLAGS``. This
-    helper does the same canonicalisation for known flags but preserves
-    unknown ones verbatim, mirroring the `extra` top-level handling.
-    """
-    canonical = _coerce_admin_doc({"feature_flags": disk_flags})["feature_flags"]
-    if not isinstance(disk_flags, dict):
-        return canonical
-    unknown = {k: v for k, v in disk_flags.items() if k not in _ADMIN_KNOWN_FLAGS}
-    # Canonical values take precedence — operator-edited unknown keys do not
-    # shadow the engine-managed known ones.
-    return {**unknown, **canonical}
-
-
-class _SseConnectionLimiter:
-    """Per-process SSE connection counter + per-IP cap (Issue #841).
-
-    Module-level singleton (``_SSE_LIMITER``) so that:
-      - all FastAPI workers in the same process share counts
-      - tests can import and drive admit/release directly without
-        opening real streams (which TestClient blocks on indefinitely
-        due to the 1-second poll loop)
-      - the metrics endpoint and the stream endpoint read the same
-        counters atomically
-
-    Limits are env-var driven (``ORCH_SSE_MAX_TOTAL`` default 100,
-    ``ORCH_SSE_MAX_PER_IP`` default 10; ``0`` disables the
-    corresponding limit). Env vars are re-read on every ``admit`` call
-    so operators can re-tune live without restarting.
-    """
-
-    def __init__(self) -> None:
-        import threading  # noqa: PLC0415
-
-        self._lock = threading.Lock()
-        self._active_total: int = 0
-        self._active_per_ip: Dict[str, int] = {}
-
-    @staticmethod
-    def limits() -> Tuple[int, int]:
-        """Return ``(max_total, max_per_ip)`` from env vars. Malformed
-        values fall back to the documented defaults — never raises."""
-        max_total = env_int(os.environ.get("ORCH_SSE_MAX_TOTAL"), 100)
-        max_per_ip = env_int(os.environ.get("ORCH_SSE_MAX_PER_IP"), 10)
-        return max_total, max_per_ip
-
-    def admit(self, client_ip: str) -> Optional[str]:
-        """Try to admit a new SSE connection. Returns ``None`` on
-        success (counters incremented) or a human-readable detail
-        string when a limit is exceeded (counters unchanged).
-
-        Caller MUST call :meth:`release` with the SAME ``client_ip``
-        from a finally block when the connection ends.
-        """
-        max_total, max_per_ip = self.limits()
-        with self._lock:
-            if max_total > 0 and self._active_total >= max_total:
-                return (
-                    f"SSE total connection limit reached "
-                    f"({self._active_total}/{max_total}). Try again later."
-                )
-            if max_per_ip > 0:
-                cur = self._active_per_ip.get(client_ip, 0)
-                if cur >= max_per_ip:
-                    return (
-                        f"SSE per-IP connection limit reached "
-                        f"({cur}/{max_per_ip} from {client_ip}). "
-                        f"Close one before opening another."
-                    )
-            self._active_total += 1
-            self._active_per_ip[client_ip] = self._active_per_ip.get(client_ip, 0) + 1
-        return None
-
-    def release(self, client_ip: str) -> None:
-        """Decrement counters for a closing connection. Saturating at
-        zero — never goes negative even if release() is called more
-        times than admit() (defensive)."""
-        with self._lock:
-            self._active_total = max(0, self._active_total - 1)
-            cur = self._active_per_ip.get(client_ip, 0)
-            if cur <= 1:
-                self._active_per_ip.pop(client_ip, None)
-            else:
-                self._active_per_ip[client_ip] = cur - 1
-
-    def metrics(self) -> Dict[str, Any]:
-        """Return a snapshot dict suitable for JSON serialisation."""
-        max_total, max_per_ip = self.limits()
-        with self._lock:
-            return {
-                "active_total": self._active_total,
-                "active_per_ip": dict(self._active_per_ip),
-                "max_total": max_total,
-                "max_per_ip": max_per_ip,
-            }
-
-    def _reset_for_tests(self) -> None:
-        """Used by the test suite to start each test from zero counts."""
-        with self._lock:
-            self._active_total = 0
-            self._active_per_ip.clear()
-
-
-# Process-wide singleton. The web app injects this into request handlers
-# via a closure reference; tests import it directly to verify counters.
-_SSE_LIMITER = _SseConnectionLimiter()
 
 
 def create_api_app(  # noqa: C901
@@ -2823,7 +2489,7 @@ def create_api_app(  # noqa: C901
         """
         import json as _json  # noqa: PLC0415
 
-        from .. import feature_flags as _ff  # noqa: PLC0415
+        from ... import feature_flags as _ff  # noqa: PLC0415
 
         admin_path = _ff._admin_json_path()  # honours ORCH_ADMIN_PATH (#840)
         raw_loaded: Any = None
@@ -2911,7 +2577,7 @@ def create_api_app(  # noqa: C901
                 )
             patch[k] = coerced
 
-        from .. import feature_flags as _ff  # noqa: PLC0415
+        from ... import feature_flags as _ff  # noqa: PLC0415
 
         admin_path = _ff._admin_json_path()  # honours ORCH_ADMIN_PATH (#840)
         admin_dir = admin_path.parent
@@ -3611,7 +3277,7 @@ def create_api_app(  # noqa: C901
                 detail=f"Trust profile '{profile_id}' not found",
             )
 
-        from ..trust import TrustCalibrator  # noqa: PLC0415
+        from ...trust import TrustCalibrator  # noqa: PLC0415
 
         old_score = float(profile["trust_score"])
         new_score = body.trust_score
@@ -4215,7 +3881,7 @@ def create_api_app(  # noqa: C901
         offset: int = 0,
     ):
         """List all merge gates with optional status filter and pagination."""
-        from ..git_integration import GitContext  # noqa: PLC0415
+        from ...git_integration import GitContext  # noqa: PLC0415
 
         all_gates = GitContext.list_gates()
         if status:
@@ -4227,7 +3893,7 @@ def create_api_app(  # noqa: C901
     @app.get("/api/v1/gates/{run_id}")
     async def get_gate(run_id: str):
         """Get a single gate by run ID."""
-        from ..git_integration import GitContext  # noqa: PLC0415
+        from ...git_integration import GitContext  # noqa: PLC0415
 
         gate = GitContext.load_gate(run_id)
         if gate is None:
@@ -4237,7 +3903,7 @@ def create_api_app(  # noqa: C901
     @app.post("/api/v1/gates/{run_id}/approve")
     async def approve_gate(run_id: str, req: GateApproveRequest = GateApproveRequest()):
         """Approve a merge gate."""
-        from ..git_integration import GitContext, GitError  # noqa: PLC0415
+        from ...git_integration import GitContext, GitError  # noqa: PLC0415
 
         gate = GitContext.load_gate(run_id)
         if gate is None:
@@ -4269,7 +3935,7 @@ def create_api_app(  # noqa: C901
     @app.post("/api/v1/gates/{run_id}/reject")
     async def reject_gate(run_id: str, req: GateRejectRequest = GateRejectRequest()):
         """Reject a merge gate."""
-        from ..git_integration import GitContext, GitError  # noqa: PLC0415
+        from ...git_integration import GitContext, GitError  # noqa: PLC0415
 
         gate = GitContext.load_gate(run_id)
         if gate is None:

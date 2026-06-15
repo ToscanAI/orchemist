@@ -37,7 +37,10 @@ import pytest
 # (db -> #951, sequencer -> #953, web/api -> #952). The leading "src." alias is
 # handled automatically; do NOT list it separately.
 # ---------------------------------------------------------------------------
-FACADE_MODULES: Tuple[str, ...] = ("orchestration_engine.cli",)
+FACADE_MODULES: Tuple[str, ...] = (
+    "orchestration_engine.cli",
+    "orchestration_engine.web.api",
+)
 
 TESTS_DIR = Path(__file__).resolve().parent
 
