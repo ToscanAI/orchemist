@@ -40,8 +40,6 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
-
 from ..file_guard import compute_directory_hash, compute_hash
 from ..output_parser import extract_and_write, parse_output
 from ..review_parser import ReviewOutcome, parse_review_output
@@ -62,7 +60,14 @@ from ._helpers import (  # noqa: F401
     _are_findings_similar,
     _extract_findings_from_text,
     _extract_phase_text,
+    _format_failure_context,
     _is_within_dir,
+    _load_skill,
+    _parse_supervisor_response,
+    _resolve_model_tier,
+    _resolve_task_type,
+    _safe_call_hook,
+    _sanitize_error_for_prompt,
     _wrap_callable_runner,
 )
 from ._proxies import (  # noqa: F401
@@ -1321,29 +1326,11 @@ class PhaseSequencer:
                     }
                 # Loop back to evaluate the new output
 
-    @staticmethod
-    def _parse_supervisor_response(text: str):
-        """Parse supervisor text response for APPROVE / REVISE / ABORT.
-
-        Scans each line and checks its first word (case-insensitive).
-        Returns ``("APPROVE" | "REVISE" | "ABORT" | "UNKNOWN", reason_str)``.
-        On no match defaults to APPROVE with a warning.
-        """
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                continue
-            upper = stripped.upper()
-            for verdict in ("APPROVE", "REVISE", "ABORT"):
-                if upper.startswith(verdict):
-                    # Extract reason after the keyword (and optional colon/space)
-                    remainder = stripped[len(verdict) :].lstrip(":").strip()
-                    return verdict, remainder
-        logger.warning(
-            f"Supervisor response had no APPROVE/REVISE/ABORT verdict; "
-            f"defaulting to APPROVE. Response preview: {text[:200]!r}"
-        )
-        return "APPROVE", "no verdict found — defaulting to APPROVE"
+    # Stateless parser relocated to ._helpers (EPIC #942 953b). The
+    # ``staticmethod(...)`` wrapper preserves no-self semantics so
+    # ``self._parse_supervisor_response(text)`` and
+    # ``PhaseSequencer._parse_supervisor_response(text)`` resolve byte-identically.
+    _parse_supervisor_response = staticmethod(_parse_supervisor_response)
 
     # ------------------------------------------------------------------
     # Output length validation (Issue #351)
@@ -2164,100 +2151,11 @@ class PhaseSequencer:
             "confidence": 0.0,
         }
 
-    @staticmethod
-    def _load_skill(  # noqa: C901
-        skill_ref: str, template_dir: Optional[Path] = None
-    ) -> Tuple[str, str]:
-        """Load a skill file, stripping YAML frontmatter.
-
-        Resolves ``skill_ref`` in this order:
-        1. Absolute path (if given) — must be under ``~/.orch/skills/``
-        2. Relative to ``template_dir`` (if provided)
-        3. ``~/.orch/skills/``
-
-        Path traversal protection: the resolved path must lie within one of the
-        permitted directories.  Absolute paths are restricted to ``~/.orch/skills/``
-        only; relative paths may also resolve within ``template_dir``.
-
-        Args:
-            skill_ref:    Path string from the ``skill_refs`` list.
-            template_dir: Directory of the template file (for relative resolution).
-
-        Returns:
-            ``(skill_name, skill_content)`` where ``skill_name`` comes from the
-            frontmatter ``name:`` field or the filename stem, and
-            ``skill_content`` is the body text with frontmatter stripped.
-
-        Raises:
-            FileNotFoundError: If the skill file cannot be located.
-            ValueError: If the resolved path escapes the allowed directories
-                        (path traversal protection).
-        """
-        skill_path = Path(skill_ref)
-        global_skills_dir = (Path.home() / ".orch" / "skills").resolve()
-
-        # Build the set of allowed root directories.
-        # Absolute skill_refs are only permitted under the global skills dir.
-        # Relative skill_refs may also resolve within template_dir.
-        if skill_path.is_absolute():
-            allowed_dirs = [global_skills_dir]
-        else:
-            allowed_dirs = [global_skills_dir]
-            if template_dir is not None:
-                allowed_dirs.append(template_dir.resolve())
-
-        # Resolve to an existing file
-        resolved: Optional[Path] = None
-        if skill_path.is_absolute():
-            if skill_path.exists():
-                resolved = skill_path.resolve()
-        else:
-            if template_dir is not None:
-                candidate = template_dir / skill_path
-                if candidate.exists():
-                    resolved = candidate.resolve()
-            if resolved is None:
-                candidate_global = global_skills_dir / skill_path
-                if candidate_global.exists():
-                    resolved = candidate_global
-
-        if resolved is None:
-            raise FileNotFoundError(
-                f"Skill file '{skill_ref}' not found "
-                f"(template_dir={template_dir}, ~/.orch/skills/)"
-            )
-
-        # --- Path traversal protection -----------------------------------
-        resolved_real = resolved.resolve()
-        if not any(_is_within_dir(resolved_real, d) for d in allowed_dirs):
-            raise ValueError(
-                f"Skill path '{skill_ref}' resolves to '{resolved_real}', which is "
-                f"outside the allowed directories: "
-                f"{[str(d) for d in allowed_dirs]}. "
-                f"Relative skill_refs must stay within the template directory or "
-                f"~/.orch/skills/; absolute paths must be under ~/.orch/skills/."
-            )
-
-        raw = resolved_real.read_text(encoding="utf-8")
-
-        # Strip YAML frontmatter: text between --- delimiters at start of file
-        frontmatter_data: Dict[str, Any] = {}
-        body = raw
-        if raw.startswith("---"):
-            # Find closing ---
-            end_match = re.search(r"\n---[ \t]*(?:\n|$)", raw[3:])
-            if end_match:
-                fm_text = raw[3 : 3 + end_match.start()]
-                body = raw[3 + end_match.end() :]
-                try:
-                    frontmatter_data = yaml.safe_load(fm_text) or {}
-                except Exception:  # noqa: BLE001
-                    frontmatter_data = {}
-
-        # Skill name: prefer frontmatter 'name:', else filename stem
-        skill_name: str = str(frontmatter_data.get("name", "")).strip() or resolved_real.stem
-
-        return skill_name, body.strip()
+    # Stateless skill loader relocated to ._helpers (EPIC #942 953b). The
+    # ``staticmethod(...)`` wrapper preserves no-self semantics so both
+    # ``self._load_skill(...)`` and ``PhaseSequencer._load_skill(...)`` resolve
+    # byte-identically.
+    _load_skill = staticmethod(_load_skill)
 
     def _execute_and_wait(  # noqa: C901
         self, task_id: str, phase: PhaseDefinition, initial_input: Optional[dict] = None
@@ -2508,94 +2406,11 @@ class PhaseSequencer:
     # Static helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _sanitize_error_for_prompt(error: str) -> str:
-        """Strip Python tracebacks and ANSI codes from an error string, then truncate.
-
-        Intended to produce a clean, concise error message suitable for
-        inclusion in an LLM retry prompt.
-
-        Processing steps:
-        1. Strip ANSI escape codes (colour codes, cursor movement, etc.)
-        2. Remove Python traceback blocks — keeps only the final exception line
-           (e.g. ``ValueError: something``).
-        3. Truncate the result to 500 characters, appending ``"..."`` when
-           truncation occurs.
-
-        Args:
-            error: Raw error string (may contain tracebacks and/or ANSI codes).
-
-        Returns:
-            Sanitized string of at most 500 characters.
-        """
-        # 1. Remove ANSI escape codes
-        ansi_escape = re.compile(r"\x1b\[[0-9;]*[mGKHFJsr]")
-        error = ansi_escape.sub("", error)
-
-        # 2. Strip Python traceback blocks.
-        #    A traceback starts with "Traceback (most recent call last):" and
-        #    the body consists of indented lines ("  File ...", "    code...").
-        #    The block ends at the first non-indented line which is the actual
-        #    exception type/message (e.g. "ValueError: foo").  We skip the
-        #    traceback body and keep only that final exception line.
-        lines = error.splitlines()
-        in_traceback = False
-        filtered: List[str] = []
-        for line in lines:
-            if line.strip().startswith("Traceback (most recent call last):"):
-                in_traceback = True
-                continue
-            if in_traceback:
-                # Traceback body: lines indented with spaces or tabs
-                if line.startswith("  ") or line.startswith("\t"):
-                    continue
-                else:
-                    # Non-indented line → the exception class/message line
-                    in_traceback = False
-                    filtered.append(line)
-            else:
-                filtered.append(line)
-
-        error = "\n".join(filtered).strip()
-
-        # 3. Truncate to 500 chars
-        if len(error) > 500:
-            error = error[:497] + "..."
-
-        return error
-
-    @staticmethod
-    def _format_failure_context(attempt: int, error: str, partial_output: str) -> str:
-        """Return a markdown-formatted failure context block for LLM retry prompts.
-
-        The returned string is injected into the phase prompt on the *next*
-        attempt (via the ``{failure_context}`` placeholder) so that the LLM
-        can see what went wrong and try a different approach.
-
-        Partial output is truncated to 1 000 characters inside this method;
-        pass the full partial output here and store it separately in
-        ``retry_history`` if you need the untruncated version.
-
-        Args:
-            attempt:        The 1-based attempt number that failed.
-            error:          Sanitized error message (output of
-                            :meth:`_sanitize_error_for_prompt`).
-            partial_output: Any text produced by the failed attempt before it
-                            errored.  May be an empty string.
-
-        Returns:
-            Markdown string ready for injection into a prompt template.
-        """
-        display_partial = partial_output[:1000] if partial_output else "(none)"
-
-        return (
-            f"## Previous Attempt Failed\n\n"
-            f"**Attempt:** {attempt}\n"
-            f"**Error:** {error}\n\n"
-            f"**Partial Output:**\n"
-            f"{display_partial}\n\n"
-            f"Please review the above failure and try a different approach."
-        )
+    # Stateless retry-prompt helpers relocated to ._helpers (EPIC #942 953b).
+    # The ``staticmethod(...)`` wrappers preserve no-self semantics so both
+    # ``self._x(...)`` and ``PhaseSequencer._x(...)`` resolve byte-identically.
+    _sanitize_error_for_prompt = staticmethod(_sanitize_error_for_prompt)
+    _format_failure_context = staticmethod(_format_failure_context)
 
     def _build_hook_failure_result(
         self, phase, current_iter, hook_name, command, exit_code, output
@@ -3028,51 +2843,18 @@ class PhaseSequencer:
         """
         return self._resolve_executor_by_name(name)
 
-    @staticmethod
-    def _resolve_task_type(task_type_str: str) -> TaskType:
-        """Map a string task type to a TaskType enum, defaulting to CONTENT."""
-        try:
-            return TaskType(task_type_str.lower())
-        except ValueError:
-            logger.warning(f"Unknown task_type '{task_type_str}'; defaulting to 'content'")
-            return TaskType.CONTENT
-
-    @staticmethod
-    def _resolve_model_tier(
-        model_tier_str: str,
-        min_tier: Optional[str] = None,
-        max_tier: Optional[str] = None,
-    ):
-        """Map a friendly model tier name to a ModelTier enum value.
-
-        The PhaseDefinition uses short names (haiku, sonnet, opus) while
-        the schema uses versioned names (haiku-4-5, sonnet-4, opus-4-6).
-        Delegates to the canonical model_registry (#916) — the single
-        short↔versioned bridge. Returns None if the tier is not recognised
-        (runner will use its default).
-
-        #987: when *min_tier*/*max_tier* are given, the resolved tier is clamped
-        into the inclusive band [min_tier, max_tier] (haiku<sonnet<opus). A
-        ``None`` bound is unbounded on that side; with both ``None`` this is a
-        no-op (byte-identical default). Clamping is applied ONLY when the phase's
-        own tier resolved to a concrete ModelTier — an unresolved tier (None,
-        "use runner default") is returned unchanged so the floor never
-        manufactures a model where the author asked for the runner default.
-        """
-        from ..model_registry import clamp_tier, resolve_tier  # noqa: PLC0415
-
-        resolved = resolve_tier(model_tier_str)
-        if resolved is None:
-            if model_tier_str:
-                logger.debug(f"Unrecognised model_tier '{model_tier_str}'; using runner default")
-            return None
-        lo = resolve_tier(min_tier) if min_tier else None
-        hi = resolve_tier(max_tier) if max_tier else None
-        return clamp_tier(resolved, lo, hi)
+    # Stateless tier/task-type resolvers relocated to ._helpers (EPIC #942 953b).
+    # The ``staticmethod(...)`` wrappers preserve no-self semantics so both
+    # ``self._x(...)`` and ``PhaseSequencer._x(...)`` resolve byte-identically.
+    _resolve_task_type = staticmethod(_resolve_task_type)
+    _resolve_model_tier = staticmethod(_resolve_model_tier)
 
 
-# Module-level alias for the supervisor response parser (convenience for tests)
-_parse_supervisor_response = PhaseSequencer._parse_supervisor_response
+# Module-level alias for the supervisor response parser (convenience for tests).
+# EPIC #942 953b: the canonical definition now lives in ._helpers and is already
+# imported at the top of this facade (``from ._helpers import _parse_supervisor_response``),
+# so the module-level name is the SAME free function the class aliases via
+# ``staticmethod(...)``. The redundant re-bind from the class attr was removed.
 
 
 class StateMachineSequencer(PhaseSequencer):
@@ -4404,18 +4186,7 @@ class StateMachineSequencer(PhaseSequencer):
     # Hook helper
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _safe_call_hook(hook, *args, pipeline_id: str = "") -> None:
-        """Call *hook* with *args*, logging but swallowing all exceptions.
-
-        Kept as a ``@staticmethod`` on this class so it stays scoped to
-        :class:`StateMachineSequencer` rather than polluting the module namespace.
-        This mirrors the pattern used throughout :class:`PhaseSequencer` so that
-        a misbehaving ``on_pipeline_complete`` callback never crashes the pipeline.
-        """
-        if hook is None:
-            return
-        try:
-            hook(*args)
-        except Exception as hook_exc:  # noqa: BLE001
-            logger.warning(f"Pipeline {pipeline_id}: on_pipeline_complete hook failed: {hook_exc}")
+    # Stateless hook-invoker relocated to ._helpers (EPIC #942 953b). The
+    # ``staticmethod(...)`` wrapper preserves no-self semantics so
+    # ``self._safe_call_hook(...)`` resolves byte-identically.
+    _safe_call_hook = staticmethod(_safe_call_hook)
