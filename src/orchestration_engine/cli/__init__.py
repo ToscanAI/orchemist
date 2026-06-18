@@ -4,9 +4,6 @@ Provides CLI commands for task queue management: submit, status, list, cancel, e
 Uses Click for command structure and rich formatting for output.
 """
 
-import json
-import os
-
 # ``subprocess`` / ``time`` / ``datetime`` / ``timezone`` / ``Decimal`` /
 # ``now_utc`` and the schema enums below are no longer referenced by the commands
 # that remain inline in this module (they moved to queue_cmds / pipeline_cmds with
@@ -15,6 +12,9 @@ import os
 # ``subprocess`` / ``Database``, because the relocated commands resolve them as
 # facade attributes (``_cli.subprocess`` / ``_cli.Database``) and existing tests
 # patch them on the ``orchestration_engine.cli`` module (EPIC #942 / 950b).
+# (``json`` / ``os`` were dropped in 950d when the ``providers`` group — their
+# only remaining inline consumer — moved to ``providers_cmds``; neither is part
+# of the facade's test-observed surface.)
 import subprocess  # noqa: F401
 import sys
 import time  # noqa: F401
@@ -45,10 +45,11 @@ from ..timestamps import now_utc  # noqa: F401
 
 # Importing the command-group modules below registers their @main.command /
 # @main.group decorators on the shared `main` Click group purely as an import
-# side effect (EPIC #942 / 950b + 950c: registration-by-import). Every command
-# remains reachable through ``main`` (``orch <cmd>``) and as an attribute of its
-# ``queue_cmds`` / ``pipeline_cmds`` / ``templates_cmds`` / ``import_cmds``
-# submodule; no caller imports the command functions by name from this facade.
+# side effect (EPIC #942 / 950b + 950c + 950d: registration-by-import). Every
+# command remains reachable through ``main`` (``orch <cmd>``) and as an attribute
+# of its ``queue_cmds`` / ``pipeline_cmds`` / ``templates_cmds`` / ``import_cmds``
+# / ``providers_cmds`` / ``gate_cmds`` / ``admin_cmds`` submodule; no caller
+# imports the command functions by name from this facade.
 #
 # The explicit re-exports keep the names that ARE referenced through the facade:
 #  * the test-imported privates ``_print_run_detail`` / ``_watch_pipeline_run`` /
@@ -63,7 +64,15 @@ from ..timestamps import now_utc  # noqa: F401
 #    ``_USER_TEMPLATES_DIR`` / ``_TEMPLATE_INDEX_CACHE`` module-globals (patched;
 #    ``templates_cmds`` reads them as ``_cli.<name>`` at call time so the patch on
 #    THIS module is what the relocated command bodies observe — EPIC #942 / 950c).
-from . import import_cmds, pipeline_cmds, queue_cmds, templates_cmds  # noqa: E402,F401
+from . import (  # noqa: E402,F401
+    admin_cmds,
+    gate_cmds,
+    import_cmds,
+    pipeline_cmds,
+    providers_cmds,
+    queue_cmds,
+    templates_cmds,
+)
 from ._helpers import (  # noqa: F401
     _fetch_issue_strict,
     _find_template,
@@ -100,399 +109,6 @@ from .templates_cmds import (  # noqa: E402,F401
     _install_from_git,
     _is_github_shorthand,
 )
-
-# ---------------------------------------------------------------------------
-# orch providers — read-only provider discoverability (#970, #101 epic-closer)
-# ---------------------------------------------------------------------------
-
-
-@main.group("providers")
-def providers_group() -> None:
-    """Inspect configured model providers (read-only).
-
-    Lists each provider, the credential env var it needs, whether that var is
-    currently set, default tier->model mappings, and a maturity label. Makes no
-    network calls, constructs no executors, and touches no database.
-
-    Note: .env files are NOT auto-loaded — export vars in your shell first
-    (see docs/openrouter-setup.md for the manual `set -a; source .env` recipe).
-
-    Examples:
-
-      orch providers list            # human-readable table
-      orch providers list --json     # machine-readable JSON
-    """
-
-
-def _tier_defaults_for(name: str) -> Dict[str, str]:
-    """Return the tier->model default map for *name* (empty for non-tiered providers).
-
-    Derived from the LIVE registries so the displayed defaults can never drift
-    from what the executors actually emit: anthropic uses the canonical bare ids
-    (``model_registry.bare_id``); openrouter uses ``DEFAULT_MODEL_MAP``
-    (anthropic/-prefixed ids). All other providers carry no tier map.
-    """
-    if name == "anthropic":
-        from ..model_registry import bare_id  # noqa: PLC0415
-
-        return {tier: bare_id(tier) for tier in ("haiku", "sonnet", "opus")}
-    if name == "openrouter":
-        from ..executors.openrouter_executor import DEFAULT_MODEL_MAP  # noqa: PLC0415
-
-        return dict(DEFAULT_MODEL_MAP)
-    return {}
-
-
-@providers_group.command("list")
-@click.option("--json", "json_output", is_flag=True, help="Output as JSON.")
-def providers_list(json_output: bool) -> None:
-    """List model providers, their credential env vars, status, and maturity.
-
-    Read-only: presence of a credential is reported as a boolean only — the raw
-    env-var VALUE is never printed, masked, or partially echoed.
-    """
-    from ..providers_info import PROVIDERS_INFO  # noqa: PLC0415
-
-    # Presence is computed HERE, at call time, from os.environ — never stored on
-    # the registry (which is import-pure). bool("") and bool(None) are both False
-    # so an unset OR empty var reads as "missing" (pipeline_runner.py:255,286).
-    if json_output:
-        result = [
-            {
-                "name": p.name,
-                "mode": p.mode,
-                "per_phase": p.per_phase,
-                "credential_env": p.credential_env,
-                "configured": bool(p.credential_env and os.environ.get(p.credential_env, "")),
-                "default_models": _tier_defaults_for(p.name),
-                "maturity": p.maturity,
-                "notes": p.notes,
-            }
-            for p in PROVIDERS_INFO
-        ]
-        click.echo(json.dumps(result, indent=2))
-        return
-
-    headers = [
-        "Provider",
-        "Mode",
-        "Per-phase",
-        "Credential env",
-        "Status",
-        "Default models",
-        "Maturity",
-        "Notes",
-    ]
-    rows = []
-    for p in PROVIDERS_INFO:
-        if p.credential_env is None:
-            cred_cell = "-"
-            status_cell = "n/a"
-        else:
-            cred_cell = p.credential_env
-            configured = bool(os.environ.get(p.credential_env, ""))
-            status_cell = "set" if configured else "missing"
-        defaults = _tier_defaults_for(p.name)
-        models_cell = (
-            ", ".join(f"{tier}={mid}" for tier, mid in defaults.items()) if defaults else "-"
-        )
-        rows.append(  # noqa: PERF401
-            [
-                p.name,
-                p.mode,
-                "yes" if p.per_phase else "no",
-                cred_cell,
-                status_cell,
-                models_cell,
-                p.maturity,
-                p.notes,
-            ]
-        )
-    print_table(headers, rows)
-
-
-# ---------------------------------------------------------------------------
-# orch gate — merge gate management commands
-# ---------------------------------------------------------------------------
-
-
-@main.group("gate")
-def gate_group() -> None:
-    """Manage coding pipeline merge gates.
-
-    After a git-enabled pipeline completes, it creates a merge gate that
-    requires human approval before the feature branch is merged.
-
-    Examples:
-
-      orch gate list                      # show all pending gates
-      orch gate approve abc12345          # approve a gate (run ID)
-      orch gate reject abc12345           # reject a gate
-      orch gate info abc12345             # show gate details
-    """
-
-
-@gate_group.command("list")
-@click.option(
-    "--all",
-    "show_all",
-    is_flag=True,
-    default=False,
-    help="Show all gates including approved/rejected.",
-)
-def gate_list(show_all: bool) -> None:
-    """List pending merge gates."""
-    from ..git_integration import GitContext  # noqa: PLC0415
-
-    gates = GitContext.list_gates()
-    if not gates:
-        click.echo("No merge gates found.")
-        return
-
-    if not show_all:
-        gates = [g for g in gates if g.get("status") == "awaiting_approval"]
-        if not gates:
-            click.echo("No pending merge gates.  Use --all to see all gates.")
-            return
-
-    headers = ["Run ID", "Pipeline", "Branch", "Status", "Created"]
-    rows = []
-    for g in gates:
-        rows.append(  # noqa: PERF401
-            [
-                g.get("run_id", "?")[:10],
-                g.get("pipeline_id", "?")[:25],
-                g.get("branch", "?")[:40],
-                g.get("status", "?"),
-                (g.get("created_at") or "?")[:19],
-            ]
-        )
-    print_table(headers, rows)
-
-
-@gate_group.command("approve")
-@click.argument("run_id")
-@click.option("--message", "-m", default=None, help="Optional approval message.")
-@click.option(
-    "--force",
-    "-f",
-    is_flag=True,
-    default=False,
-    help="Override score gate enforcement and approve even when scoring failed. Use with caution.",
-)
-def gate_approve(run_id: str, message: Optional[str], force: bool) -> None:  # noqa: C901
-    """Approve a merge gate (run ID from ``orch gate list``)."""
-    from ..git_integration import GitContext, GitError  # noqa: PLC0415
-
-    gate = GitContext.load_gate(run_id)
-    if gate is None:
-        click.echo(f"✗ No gate found for run ID '{run_id}'", err=True)
-        sys.exit(1)
-
-    if gate.get("status") not in ("awaiting_approval",):
-        current = gate.get("status", "?")
-        click.echo(
-            f"⚠ Gate '{run_id}' is in status '{current}' — "
-            f"can only approve 'awaiting_approval' gates."
-        )
-        if current in ("approved", "rejected"):
-            sys.exit(0)
-        sys.exit(1)
-
-    # --- Score gate enforcement (Issue #289) --------------------------
-    _gate_scoring = gate.get("scoring_status")
-    _gate_score = gate.get("scoring_score")
-    if _gate_scoring == "failed" and not force:
-        _score_pct = f"{_gate_score * 100:.1f}" if _gate_score is not None else "n/a"
-        click.echo("✗ Score gate FAILED — approval blocked.", err=True)
-        click.echo(f"  Score: {_score_pct} / 100  (threshold: see scenario config)", err=True)
-        click.echo(
-            "  Pipeline scoring failed. Fix the issues and re-run, " "or use --force to override.",
-            err=True,
-        )
-        sys.exit(1)
-    elif _gate_scoring == "failed" and force:
-        click.echo("⚠ Score gate FAILED — approving anyway because --force was specified.")
-    elif _gate_scoring == "error":
-        click.echo(
-            "⚠ Scoring encountered an error for this run — proceeding without score gate enforcement."  # noqa: E501
-        )
-    elif _gate_scoring is None:
-        click.echo("⚠ No scoring data for this run — proceeding without score gate.")
-    # scoring_status == "passed" → allow silently (happy path)
-
-    try:
-        updated = GitContext.update_gate_status(
-            run_id, "approved", message=message or "Approved via orch gate approve"
-        )
-    except GitError as exc:
-        click.echo(f"✗ {exc}", err=True)
-        sys.exit(1)
-
-    branch = updated.get("branch", "?")
-    base = updated.get("base_branch", "main")
-    click.echo(f"✓ Gate '{run_id}' approved.")
-    click.echo(f"  Branch: {branch}")
-    click.echo(f"  Merge into {base}:")
-    click.echo(f"    git checkout {base} && git merge --no-ff {branch}")
-
-    # Optionally create PR if template configured create_pr: true
-    if updated.get("create_pr"):
-        from ..git_integration import GitConfig  # noqa: PLC0415
-        from ..git_integration import GitContext as _GC  # noqa: N814, PLC0415
-
-        _cfg = GitConfig(create_pr=True)
-        _tmp_ctx = _GC(config=_cfg, pipeline_id=updated.get("pipeline_id", ""), run_id=run_id)
-        pr_url = _tmp_ctx.create_pr(updated)
-        if pr_url:
-            click.echo(f"  PR created: {pr_url}")
-        else:
-            click.echo("  ⚠ PR creation failed — run `gh pr create` manually or check gh CLI.")
-
-
-@gate_group.command("reject")
-@click.argument("run_id")
-@click.option("--message", "-m", default=None, help="Optional rejection reason.")
-def gate_reject(run_id: str, message: Optional[str]) -> None:
-    """Reject a merge gate.  The feature branch is preserved for inspection."""
-    from ..git_integration import GitContext, GitError  # noqa: PLC0415
-
-    gate = GitContext.load_gate(run_id)
-    if gate is None:
-        click.echo(f"✗ No gate found for run ID '{run_id}'", err=True)
-        sys.exit(1)
-
-    try:
-        updated = GitContext.update_gate_status(
-            run_id, "rejected", message=message or "Rejected via orch gate reject"
-        )
-    except GitError as exc:
-        click.echo(f"✗ {exc}", err=True)
-        sys.exit(1)
-
-    branch = updated.get("branch", "?")
-    click.echo(f"✓ Gate '{run_id}' rejected.")
-    click.echo(f"  Branch '{branch}' preserved for inspection.")
-    click.echo(f"  To delete it:  git branch -d {branch}")
-
-
-@gate_group.command("info")
-@click.argument("run_id")
-def gate_info(run_id: str) -> None:
-    """Show details about a merge gate."""
-    from ..git_integration import GitContext  # noqa: PLC0415
-
-    gate = GitContext.load_gate(run_id)
-    if gate is None:
-        click.echo(f"✗ No gate found for run ID '{run_id}'", err=True)
-        sys.exit(1)
-
-    status = gate.get("status", "?")
-    status_emoji = {
-        "awaiting_approval": "⏳",
-        "approved": "✅",
-        "rejected": "❌",
-        "skipped": "⏭",
-    }
-    emoji = status_emoji.get(status, "❓")
-
-    click.echo(f"Gate: {run_id}")
-    click.echo(f"├─ Status:   {emoji} {status}")
-    click.echo(f"├─ Pipeline: {gate.get('pipeline_id', '?')}")
-    click.echo(f"├─ Branch:   {gate.get('branch', '?')}")
-    click.echo(f"├─ Base:     {gate.get('base_branch', '?')}")
-    click.echo(f"├─ Changes:  {gate.get('diff_stats', 'n/a')}")
-
-    # Scoring info (Issue #289)
-    _scoring_status = gate.get("scoring_status")
-    _scoring_score = gate.get("scoring_score")
-    if _scoring_status is not None:
-        _score_emoji = {"passed": "✅", "failed": "❌", "error": "⚠️"}.get(_scoring_status, "❓")
-        _score_pct = f"  ({_scoring_score * 100:.1f}/100)" if _scoring_score is not None else ""
-        click.echo(f"├─ Scoring:  {_score_emoji} {_scoring_status}{_score_pct}")
-    else:
-        click.echo("├─ Scoring:  ⏳ pending (not yet scored)")
-
-    click.echo(f"├─ Created:  {(gate.get('created_at') or '?')[:19]}")
-    if gate.get("updated_at"):
-        click.echo(f"├─ Updated:  {gate['updated_at'][:19]}")
-    if gate.get("message"):
-        click.echo(f"├─ Message:  {gate['message']}")
-    if gate.get("output_dir"):
-        click.echo(f"├─ Output:   {gate['output_dir']}")
-
-    commits = gate.get("commits", [])
-    if commits:
-        click.echo(f"└─ Commits ({len(commits)}):")
-        for c in commits:
-            click.echo(f"   • {c.get('sha', '?')[:8]}  {c.get('message', '?')}")
-    else:
-        click.echo("└─ Commits:  none")
-
-
-# ---------------------------------------------------------------------------
-# admin command group (#981) — operator DB hygiene, audit-logged
-# ---------------------------------------------------------------------------
-
-
-@main.group("admin")
-def admin_group() -> None:
-    """Operator maintenance commands (DB hygiene, audit-logged)."""
-
-
-@admin_group.command("prune-test-runs")
-@click.option(
-    "--dry-run/--no-dry-run",
-    "dry_run",
-    default=True,
-    help="Report the count without deleting (default). Use --no-dry-run (with --yes) to delete.",
-)
-@click.option(
-    "--yes",
-    is_flag=True,
-    default=False,
-    help="Confirm deletion. Required (with --no-dry-run) to actually delete.",
-)
-@click.option(
-    "--db-path",
-    default=None,
-    help="Override DB path (defaults to the engine DB).",
-)
-def prune_test_runs(dry_run: bool, yes: bool, db_path: Optional[str]) -> None:
-    """Delete pytest-residue pipeline_runs (#981).
-
-    Targets hello-pipeline rows written from a worktree gate run (output_dir
-    contains '/.wt/'). Dry-run by default (prints the count, deletes nothing);
-    pass --no-dry-run --yes to execute. NEVER auto-deletes; spares the
-    operator's real non-.wt runs.
-    """
-    from pathlib import Path  # noqa: PLC0415
-
-    # F811: intentionally re-imported lazily here; the module-level Database is a
-    # facade re-export / patch target (see top-of-module note), not used in body.
-    from ..db import Database, default_db_path  # noqa: PLC0415, F811
-
-    where = "template_id = ? AND output_dir LIKE ?"
-    params = ("hello-pipeline", "%/.wt/%")
-    db = Database(Path(db_path) if db_path else default_db_path())
-    row = db.fetch_one(f"SELECT COUNT(*) AS c FROM pipeline_runs WHERE {where}", params)
-    n = int(row["c"]) if row else 0
-    if dry_run or not yes:
-        click.echo(
-            f"[dry-run] {n} test-residue pipeline_runs match "
-            f"(template_id='hello-pipeline' AND output_dir LIKE '%/.wt/%'). "
-            f"Re-run with --no-dry-run --yes to delete."
-        )
-        return
-    db.execute(f"DELETE FROM pipeline_runs WHERE {where}", params)
-    db.append_admin_audit(
-        action="prune_test_runs",
-        target="pipeline_runs",
-        before={"matched": n},
-        after={"deleted": n},
-    )
-    click.echo(f"Deleted {n} test-residue pipeline_runs.")
-
 
 # ---------------------------------------------------------------------------
 # orch serve — local web UI server  (Feature #79)
