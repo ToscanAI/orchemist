@@ -368,7 +368,7 @@ rm ~/.orchestration-engine/engine.db
 
 ## Advanced: OpenClaw mode
 
-> OpenClaw mode is deprecated — the gateway is no longer active. Documented here for historical/self-hosted use.
+> **Deprecated.** OpenClaw mode is deprecated and will be removed in a future release — use `standalone` (direct Anthropic) or `openrouter` instead. Removal is tracked in [#1036](https://github.com/ToscanAI/orchemist/issues/1036). Documented here for historical/self-hosted use.
 
 - **OpenClaw** — if you're running inside OpenClaw, you're already set. The executor will use OpenClaw's session infrastructure automatically.
 

@@ -120,7 +120,10 @@ PROVIDERS_INFO: Tuple[ProviderInfo, ...] = (
         per_phase=False,
         credential_env="OPENCLAW_GATEWAY_TOKEN",  # cli.py:1070/1284/1431/2097
         maturity="Deprecated",  # CURRENT-STATE.md "Executor maturity": OpenClawExecutor
-        notes="Gateway no longer active; kept for historical runs.",
+        notes=(
+            "Gateway no longer active; kept for historical runs. "
+            "(DEPRECATED — use standalone or openrouter; removal tracked in #1036)"
+        ),
     ),
     ProviderInfo(
         name="dryrun",

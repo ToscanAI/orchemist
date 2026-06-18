@@ -9,6 +9,7 @@ Used exclusively by the `orch run` CLI command.
 
 import logging
 import tempfile
+import warnings
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -17,6 +18,16 @@ from .queue import TaskQueue
 from .runner import TaskExecutor  # ABC only — no heavy imports
 
 logger = logging.getLogger(__name__)
+
+#: Deprecation notice for the ``openclaw`` execution mode (EPIC #1033, Phase 1
+#: of the sunset tracked in #1036). Phase 1 only DEPRECATES — ``openclaw`` stays
+#: fully functional; removal is Phase 2. Emitted (consistently) at every
+#: user-facing mode-selection site, never inside ``OpenClawExecutor.__init__``.
+OPENCLAW_DEPRECATION_MESSAGE = (
+    "The 'openclaw' execution mode is deprecated and will be removed in a "
+    "future release. Use 'standalone' (direct Anthropic) or 'openrouter'. "
+    "See https://github.com/ToscanAI/orchemist/issues/1036."
+)
 
 
 class PipelineRunner:
@@ -138,7 +149,21 @@ class PipelineRunner:
             timeout_seconds:   Max seconds per phase session (default 600).
             dry_run:           Skip real HTTP calls and return mock output.
             db_path:           SQLite path.
+
+        .. deprecated::
+            The ``openclaw`` mode is deprecated (EPIC #1033, Phase 1) and will
+            be removed in a future release (removal tracked in #1036). Use
+            :meth:`standalone` (direct Anthropic) or :meth:`openrouter` instead.
+            It remains fully functional in Phase 1.
         """
+        # Deprecation signal at the programmatic mode entry — the daemon and the
+        # MCP launch tool both route through here (#1036, Phase 1). Emitted
+        # BEFORE constructing the executor so it fires regardless of gateway
+        # state. The warning is intentionally NOT in OpenClawExecutor.__init__
+        # (constructed by ~25 unrelated unit tests).
+        logger.warning(OPENCLAW_DEPRECATION_MESSAGE)
+        warnings.warn(OPENCLAW_DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=2)
+
         from .openclaw_executor import OpenClawExecutor  # noqa: PLC0415
 
         executor = OpenClawExecutor(

@@ -90,6 +90,10 @@ Operator-edited (or admin-API-edited) JSON document with three keys:
 }
 ```
 
+> **Note:** the `openclaw` mode is deprecated and will be removed in a future
+> release — use `standalone` (direct Anthropic) or `openrouter` instead. Removal
+> is tracked in [#1036](https://github.com/ToscanAI/orchemist/issues/1036).
+
 - **Writers:** the admin API (`PUT /api/v1/admin/feature-flags`,
   validated by `_coerce_admin_doc()` in `web/api.py`), AND the operator
   by hand. The path is overridable via `ORCH_ADMIN_PATH`.
