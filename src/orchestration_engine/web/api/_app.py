@@ -22,7 +22,6 @@ import re
 import subprocess
 import sys
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -32,9 +31,14 @@ from orchestration_engine.issue_automation import generate_pipeline_input
 
 from .admin_flags import _ADMIN_DEFAULTS, _ADMIN_KNOWN_FLAGS
 from .deps import _get_persistent_db_path
+from .routers.costs import register_cost_routes
+from .routers.gates import register_gate_routes
 from .routers.phases import register_phase_routes
+from .routers.reviews import register_review_routes
 from .routers.runs import register_run_routes
 from .routers.templates import register_template_routes
+from .routers.triggers import register_trigger_routes
+from .routers.trust import register_trust_routes
 from .schemas import (
     _apply_input_map,
     _coerce_admin_doc,
@@ -180,48 +184,11 @@ def create_api_app(  # noqa: C901
     # ------------------------------------------------------------------
     # Pydantic models — Trigger CRUD
     # ------------------------------------------------------------------
-
-    class TriggerCreateRequest(BaseModel):
-        """Body for POST /api/v1/triggers — create a new webhook trigger."""
-
-        id: Optional[str] = None
-        """Trigger identifier.  When omitted a unique ID is generated
-        automatically (``trig-<12 hex chars>``)."""
-
-        template_id: str
-        """ID of the pipeline template to run when this trigger fires."""
-
-        mode: str = "async"
-        """Execution mode: ``'sync'``, ``'async'``, or ``'fire_and_forget'``."""
-
-        secret: Optional[str] = None
-        """Optional shared HMAC secret for request verification (write-only —
-        never returned in responses)."""
-
-        rate_limit: int = 0
-        """Maximum requests per minute (0 = unlimited)."""
-
-        input_map: Dict[str, Any] = {}
-        """Maps webhook payload fields to pipeline input variables."""
-
-        filters: List[Dict[str, Any]] = []
-        """List of filter conditions evaluated against incoming payloads."""
-
-        enabled: bool = True
-        """Whether this trigger is active.  Disabled triggers silently skip."""
-
-    class TriggerUpdateRequest(BaseModel):
-        """Body for PUT /api/v1/triggers/{id} — update an existing trigger.
-
-        All fields are optional; only provided fields are updated.
-        """
-
-        mode: Optional[str] = None
-        secret: Optional[str] = None
-        rate_limit: Optional[int] = None
-        input_map: Optional[Dict[str, Any]] = None
-        filters: Optional[List[Dict[str, Any]]] = None
-        enabled: Optional[bool] = None
+    # ``TriggerCreateRequest`` / ``TriggerUpdateRequest`` (request bodies for the
+    # trigger CRUD routes) moved with those routes into
+    # ``routers/triggers.py::register_trigger_routes`` (Issue #942, 952c).
+    # ``TriggerResponse`` (the response model referenced in route docstrings)
+    # stays here alongside the other response models.
 
     class TriggerResponse(BaseModel):
         """Serialised trigger record returned by the API.
@@ -242,34 +209,10 @@ def create_api_app(  # noqa: C901
         enabled: bool
         created_at: Optional[str]
 
-    # ------------------------------------------------------------------
-    # Helper — redact secret and build TriggerResponse dict from a DB row
-    # ------------------------------------------------------------------
-
-    def _trigger_to_response(row: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert a DB trigger row dict to a TriggerResponse-compatible dict.
-
-        The ``secret`` field is redacted to ``'***'`` when set, to enforce
-        write-only semantics.
-
-        Args:
-            row: A trigger row dict as returned by ``db.get_trigger()`` or
-                 ``db.list_triggers()``.
-
-        Returns:
-            A dict safe to serialise as a ``TriggerResponse``.
-        """
-        return {
-            "id": row["id"],
-            "template_id": row["template_id"],
-            "mode": row.get("mode", "async"),
-            "secret": "***" if row.get("secret") else None,
-            "rate_limit": row.get("rate_limit", 0),
-            "input_map": row.get("input_map") or {},
-            "filters": row.get("filters") or [],
-            "enabled": bool(row.get("enabled", True)),
-            "created_at": row.get("created_at"),
-        }
+    # ``_trigger_to_response`` (redact-secret → TriggerResponse-dict helper) moved
+    # with the trigger CRUD + webhook routes into
+    # ``routers/triggers.py::register_trigger_routes`` (Issue #942, 952c) — it is
+    # used only by those routes.
 
     # ------------------------------------------------------------------
     # Helper — build RunResponse dict from a DB row
@@ -657,347 +600,32 @@ def create_api_app(  # noqa: C901
         _sse_limiter=_SSE_LIMITER,
     )
 
-    @app.post("/api/v1/webhooks/{trigger_id}")
-    async def handle_webhook(trigger_id: str, request: Request) -> JSONResponse:  # noqa: C901
-        """Receive an incoming webhook and fire the associated pipeline.
-
-        Looks up the trigger configuration, verifies the HMAC-SHA256 signature
-        (when a ``secret`` is configured), enforces the per-trigger rate limit,
-        applies the ``input_map`` to transform the webhook payload into pipeline
-        input vars, and launches the pipeline.
-
-        Path parameter:
-            trigger_id (str): Trigger identifier (must match a row in the
-                ``triggers`` table).
-
-        Request headers:
-            X-Hub-Signature-256: Optional HMAC-SHA256 signature header
-                (required when the trigger has a ``secret`` configured).
-
-        Returns:
-            - **200** when the trigger is disabled (no pipeline launched).
-            - **201** when the pipeline was launched in ``async`` or ``sync``
-              mode.
-            - **200** when the trigger mode is ``fire_and_forget``.
-            - **403** when the signature is invalid or missing (and a secret
-              is configured).
-            - **404** when the trigger is not found.
-            - **429** when the rate limit is exceeded.
-        """
-        db = Database(Path(effective_db_path))
-
-        # 1. Look up trigger
-        trigger_row = db.get_trigger(trigger_id)
-        if trigger_row is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Trigger '{trigger_id}' not found",
-            )
-
-        # 2. Check enabled flag — disabled triggers silently accept but skip
-        if not trigger_row.get("enabled", True):
-            return JSONResponse(
-                {"status": "skipped", "reason": "trigger_disabled"},
-                status_code=200,
-            )
-
-        # 3. Read body bytes (must happen before signature verification)
-        payload_bytes = await request.body()
-
-        # 4. Verify GitHub HMAC-SHA256 signature (if secret configured)
-        secret = trigger_row.get("secret")
-        if secret:
-            sig_header = request.headers.get("X-Hub-Signature-256")
-            if not _verify_github_signature(secret, payload_bytes, sig_header):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Invalid or missing webhook signature",
-                )
-
-        # 5. Rate-limit check (sliding-window, 60-second window)
-        rate_limit = trigger_row.get("rate_limit", 0)
-        limiter = SlidingWindowRateLimiter(db)
-        if limiter.check(trigger_id, rate_limit):
-            raise HTTPException(
-                status_code=429,
-                detail=f"Rate limit of {rate_limit} req/min exceeded for trigger '{trigger_id}'",
-            )
-
-        # 6. Parse payload JSON
-        try:
-            payload: Dict[str, Any] = json.loads(payload_bytes) if payload_bytes else {}
-        except (json.JSONDecodeError, ValueError):
-            payload = {}
-
-        # 6b. Evaluate trigger filters — if any filter doesn't match, skip silently
-        filters = trigger_row.get("filters") or []
-        if filters and not TriggerMatcher.matches(filters, payload):
-            return JSONResponse(
-                {"status": "skipped", "reason": "filter_mismatch"},
-                status_code=200,
-            )
-
-        # 7. Apply input_map to transform payload → pipeline input
-        # Values starting with "$." are resolved by _apply_input_map (dot-path).
-        # Values of the form "{{payload.x.y}}" are resolved by InputMapper (template).
-        # Other values are treated as literals.
-        input_map = trigger_row.get("input_map") or {}
-        if input_map:
-            # First pass: resolve $.path expressions
-            dot_path_map = {
-                k: v
-                for k, v in input_map.items()
-                if not (isinstance(v, str) and v.startswith("{{payload."))
-            }
-            template_map = {
-                k: v
-                for k, v in input_map.items()
-                if isinstance(v, str) and v.startswith("{{payload.")
-            }
-            input_data = _apply_input_map(payload, dot_path_map) if dot_path_map else {}
-            # Second pass: resolve {{payload.*}} templates
-            if template_map:
-                input_data.update(InputMapper.apply(payload, template_map))
-        else:
-            input_data = dict(payload)
-
-        # 8. Resolve and validate template
-        template_id = trigger_row["template_id"]
-        template_file = _resolve_template(template_id)
-
-        engine = TemplateEngine()
-        try:
-            template = engine.load_template(template_file)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=f"Invalid template: {exc}")
-
-        # 9. Record invocation (after all guards pass, before launching)
-        db.record_webhook_invocation(trigger_id)
-
-        # 10. Launch pipeline via shared helper
-        trigger_mode = trigger_row.get("mode", "async")
-        # Map trigger mode to daemon mode (fire_and_forget → standalone)
-        daemon_mode_map = {
-            "sync": "standalone",
-            "async": "standalone",
-            "fire_and_forget": "standalone",
-        }
-        daemon_mode = daemon_mode_map.get(trigger_mode, "standalone")
-
-        gateway_url = os.environ.get("OPENCLAW_GATEWAY_URL")
-        run_dict = _launch_pipeline_from_trigger(
-            template_file=template_file,
-            template=template,
-            input_data=input_data,
-            mode=daemon_mode,
-            gateway_url=gateway_url,
-            db=db,
-        )
-
-        # fire_and_forget → respond 200 (accepted, no run details)
-        if trigger_mode == "fire_and_forget":
-            return JSONResponse(
-                {"status": "accepted", "run_id": run_dict["run_id"]},
-                status_code=200,
-            )
-
-        return JSONResponse(run_dict, status_code=201)
-
-    # ------------------------------------------------------------------
-    # Trigger CRUD endpoints
-    # ------------------------------------------------------------------
-
-    @app.post("/api/v1/triggers", status_code=201)
-    async def create_trigger(body: TriggerCreateRequest) -> JSONResponse:
-        """Create a new webhook trigger.
-
-        Args:
-            body: ``TriggerCreateRequest`` JSON body.
-
-        Returns:
-            - **201** with a ``TriggerResponse`` JSON object on success.
-            - **400** when the trigger config fails validation.
-            - **409** when a trigger with the same ``id`` already exists.
-        """
-        from orchestration_engine.webhooks import (  # noqa: PLC0415
-            TriggerConfig,
-            TriggerValidationError,
-        )
-
-        db = Database(Path(effective_db_path))
-
-        trigger_id = body.id or TriggerConfig.generate_id()
-
-        try:
-            cfg = TriggerConfig(
-                id=trigger_id,
-                template_id=body.template_id,
-                mode=body.mode,
-                secret=body.secret,
-                rate_limit=body.rate_limit,
-                input_map=body.input_map,
-                filters=body.filters,
-                enabled=body.enabled,
-            )
-        except TriggerValidationError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-
-        import sqlite3  # noqa: PLC0415
-
-        try:
-            db.create_trigger(cfg.to_dict())
-        except sqlite3.IntegrityError:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Trigger with id '{trigger_id}' already exists",
-            )
-
-        row = db.get_trigger(trigger_id)
-        return JSONResponse(_trigger_to_response(row), status_code=201)
-
-    @app.get("/api/v1/triggers")
-    async def list_triggers_endpoint(
-        template_id: Optional[str] = None,
-        mode: Optional[str] = None,
-        enabled: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> JSONResponse:
-        """List webhook triggers with optional filtering and pagination.
-
-        Query parameters:
-            template_id: Filter by template id.
-            mode: Filter by execution mode.
-            enabled: ``'true'`` / ``'false'`` to filter by enabled state.
-            limit: Maximum number of results (default 100).
-            offset: Number of results to skip (for pagination).
-
-        Returns:
-            JSON object with ``items`` array.
-        """
-        db = Database(Path(effective_db_path))
-
-        # Parse the enabled query param (string) into Optional[bool]
-        enabled_filter: Optional[bool] = None
-        if enabled is not None:
-            if enabled.lower() == "true":
-                enabled_filter = True
-            elif enabled.lower() == "false":
-                enabled_filter = False
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Query param 'enabled' must be 'true' or 'false'",
-                )
-
-        rows = db.list_triggers(
-            template_id=template_id,
-            mode=mode,
-            enabled=enabled_filter,
-            limit=limit,
-            offset=offset,
-        )
-        return JSONResponse({"items": [_trigger_to_response(r) for r in rows]})
-
-    @app.get("/api/v1/triggers/{trigger_id}")
-    async def get_trigger_endpoint(trigger_id: str) -> JSONResponse:
-        """Get a single webhook trigger by id.
-
-        Path parameter:
-            trigger_id: Trigger identifier.
-
-        Returns:
-            - **200** with a ``TriggerResponse`` JSON object.
-            - **404** when the trigger is not found.
-        """
-        db = Database(Path(effective_db_path))
-        row = db.get_trigger(trigger_id)
-        if row is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Trigger '{trigger_id}' not found",
-            )
-        return JSONResponse(_trigger_to_response(row))
-
-    @app.put("/api/v1/triggers/{trigger_id}")
-    async def update_trigger_endpoint(trigger_id: str, body: TriggerUpdateRequest) -> JSONResponse:
-        """Update an existing webhook trigger.
-
-        Only fields that are explicitly provided in the request body are
-        updated; omitted fields retain their current values.
-
-        Path parameter:
-            trigger_id: Trigger identifier.
-
-        Args:
-            body: ``TriggerUpdateRequest`` JSON body.
-
-        Returns:
-            - **200** with the updated ``TriggerResponse`` JSON object.
-            - **400** when validation fails.
-            - **404** when the trigger is not found.
-        """
-        from orchestration_engine.webhooks import TriggerValidationError  # noqa: PLC0415
-
-        db = Database(Path(effective_db_path))
-
-        # Verify the trigger exists
-        existing = db.get_trigger(trigger_id)
-        if existing is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Trigger '{trigger_id}' not found",
-            )
-
-        # Build kwargs with only the fields that were provided
-        update_kwargs: Dict[str, Any] = {}
-        if body.mode is not None:
-            update_kwargs["mode"] = body.mode
-        if body.secret is not None:
-            update_kwargs["secret"] = body.secret
-        if body.rate_limit is not None:
-            update_kwargs["rate_limit"] = body.rate_limit
-        if body.input_map is not None:
-            update_kwargs["input_map"] = body.input_map
-        if body.filters is not None:
-            update_kwargs["filters"] = body.filters
-        if body.enabled is not None:
-            update_kwargs["enabled"] = body.enabled
-
-        if update_kwargs:
-            # Validate the merged result before writing
-            from orchestration_engine.webhooks import TriggerConfig  # noqa: PLC0415
-
-            merged = {**existing, **update_kwargs}
-            try:
-                TriggerConfig.from_dict(merged)
-            except TriggerValidationError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-
-            db.update_trigger(trigger_id, **update_kwargs)
-
-        row = db.get_trigger(trigger_id)
-        return JSONResponse(_trigger_to_response(row))
-
-    @app.delete("/api/v1/triggers/{trigger_id}", status_code=204)
-    async def delete_trigger_endpoint(trigger_id: str) -> Response:
-        """Delete a webhook trigger.
-
-        Path parameter:
-            trigger_id: Trigger identifier.
-
-        Returns:
-            - **204** (no content) on success.
-            - **404** when the trigger is not found.
-        """
-        db = Database(Path(effective_db_path))
-        deleted = db.delete_trigger(trigger_id)
-        if not deleted:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Trigger '{trigger_id}' not found",
-            )
-        return Response(status_code=204)
+    # ---- Triggers + webhooks (Issue #942, 952c: extracted to routers/) -------
+    # The incoming-webhook receiver + the trigger CRUD closures moved verbatim
+    # into routers/triggers.py via the register-function pattern; every object
+    # the closures referenced from this factory scope (framework classes, the
+    # Database/TemplateEngine classes, the webhook helpers, the per-call
+    # effective_db_path, and the shared _resolve_template /
+    # _launch_pipeline_from_trigger helpers) is passed explicitly so behaviour is
+    # identical. The TriggerCreateRequest/TriggerUpdateRequest bodies and the
+    # _trigger_to_response helper moved with them.
+    register_trigger_routes(
+        app,
+        JSONResponse=JSONResponse,
+        HTTPException=HTTPException,
+        Request=Request,
+        Response=Response,
+        Database=Database,
+        TemplateEngine=TemplateEngine,
+        InputMapper=InputMapper,
+        TriggerMatcher=TriggerMatcher,
+        SlidingWindowRateLimiter=SlidingWindowRateLimiter,
+        _verify_github_signature=_verify_github_signature,
+        _apply_input_map=_apply_input_map,
+        effective_db_path=effective_db_path,
+        _resolve_template=_resolve_template,
+        _launch_pipeline_from_trigger=_launch_pipeline_from_trigger,
+    )
 
     # ── Harness aggregate endpoints (items 4, 6, 7 from the post-0.10 audit) ──
     # These three close the read-side data gaps the harness was rendering as
@@ -1438,453 +1066,60 @@ def create_api_app(  # noqa: C901
         action: Optional[str]
         justification: Optional[str]
 
-    class ApproveRequest(BaseModel):
-        """Body for POST /api/v1/reviews/{run_id}/approve."""
-
-        reviewed_by: Optional[str] = None
-        """Optional operator identifier stored with the review record."""
-
-        note: Optional[str] = None
-        """Optional approval note stored in ``review_reason``."""
-
-    class RejectRequest(BaseModel):
-        """Body for POST /api/v1/reviews/{run_id}/reject."""
-
-        reason: str
-        """Mandatory rejection reason stored in ``review_reason``."""
-
-        reviewed_by: Optional[str] = None
-        """Optional operator identifier stored with the review record."""
-
-    # ------------------------------------------------------------------
-    # Helper — build ReviewResponse dict from an enriched pending-review row
-    # ------------------------------------------------------------------
-
-    def _review_row_to_dict(row: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert an enriched pending-review DB row to a ReviewResponse dict."""
-        return {
-            "run_id": row.get("run_id", ""),
-            "template_id": row.get("template_id", ""),
-            "status": row.get("status", ""),
-            "created_at": row.get("created_at"),
-            "completed_at": row.get("completed_at"),
-            "review_reason": row.get("review_reason"),
-            "reviewed_at": row.get("reviewed_at"),
-            "reviewed_by": row.get("reviewed_by"),
-            "confidence_score": row.get("confidence_score"),
-            "tier_name": row.get("tier_name"),
-            "action": row.get("action"),
-            "justification": row.get("justification"),
-        }
+    # ``ApproveRequest`` / ``RejectRequest`` (request bodies) and the
+    # ``_review_row_to_dict`` helper moved with the review-queue routes into
+    # ``routers/reviews.py::register_review_routes`` (Issue #942, 952c) — they are
+    # used only by those routes.  ``ReviewResponse`` (referenced in route
+    # docstrings) stays here alongside the other response models.
 
     # ------------------------------------------------------------------
     # Review Queue endpoints (Issue #331.4)
     # ------------------------------------------------------------------
 
-    @app.get("/api/v1/reviews")
-    async def list_reviews(
-        limit: int = 20,
-        offset: int = 0,
-    ) -> JSONResponse:
-        """List pipeline runs currently awaiting human review.
-
-        Returns enriched run records that include confidence score, tier,
-        action, and justification from the associated routing decision.
-
-        Query parameters:
-            limit:  Maximum number of results (default 20, max 100).
-            offset: Number of results to skip (for pagination).
-
-        Returns:
-            JSON object with ``items`` array, ``total`` count, ``limit``,
-            and ``offset`` fields.
-        """
-        limit = max(1, min(limit, 100))
-        offset = max(0, offset)
-        db = Database(Path(effective_db_path))
-        items = db.list_pending_reviews(limit=limit, offset=offset)
-        total = db.count_pending_reviews()
-        return JSONResponse(
-            {
-                "items": [_review_row_to_dict(r) for r in items],
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-            }
-        )
-
-    @app.post("/api/v1/reviews/{run_id}/approve", status_code=200)
-    async def approve_review(run_id: str, body: ApproveRequest) -> JSONResponse:
-        """Approve a pending-review pipeline run.
-
-        Transitions the run from ``pending_review`` to ``success`` and records
-        the reviewer identity and optional note.
-
-        Path parameter:
-            run_id: Pipeline run identifier.
-
-        Request body (JSON):
-            reviewed_by (str, optional): Operator identifier.
-            note (str, optional): Approval note.
-
-        Returns:
-            - **200** with the updated run dict on success.
-            - **404** when the run is not found.
-            - **409** when the run is not in ``pending_review`` status.
-        """
-        db = Database(Path(effective_db_path))
-        run = db.get_pipeline_run(run_id)
-        if run is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Run '{run_id}' not found",
-            )
-        if run.get("status") != "pending_review":
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Run '{run_id}' is in status '{run.get('status')}', "
-                    "not 'pending_review'. Only pending_review runs can be approved."
-                ),
-            )
-        ok = db.approve_pipeline_run(
-            run_id=run_id,
-            reviewed_by=body.reviewed_by,
-            note=body.note,
-        )
-        if not ok:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Could not approve run '{run_id}'",
-            )
-        run = db.get_pipeline_run(run_id)
-        return JSONResponse(_run_to_dict(run))
-
-    @app.post("/api/v1/reviews/{run_id}/reject", status_code=200)
-    async def reject_review(run_id: str, body: RejectRequest) -> JSONResponse:
-        """Reject a pending-review pipeline run.
-
-        Transitions the run from ``pending_review`` to ``rejected`` and records
-        the rejection reason and reviewer identity.
-
-        Path parameter:
-            run_id: Pipeline run identifier.
-
-        Request body (JSON):
-            reason (str): Mandatory rejection reason.
-            reviewed_by (str, optional): Operator identifier.
-
-        Returns:
-            - **200** with the updated run dict on success.
-            - **404** when the run is not found.
-            - **409** when the run is not in ``pending_review`` status.
-        """
-        db = Database(Path(effective_db_path))
-        run = db.get_pipeline_run(run_id)
-        if run is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Run '{run_id}' not found",
-            )
-        if run.get("status") != "pending_review":
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Run '{run_id}' is in status '{run.get('status')}', "
-                    "not 'pending_review'. Only pending_review runs can be rejected."
-                ),
-            )
-        ok = db.reject_pipeline_run(
-            run_id=run_id,
-            reason=body.reason,
-            reviewed_by=body.reviewed_by,
-        )
-        if not ok:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Could not reject run '{run_id}'",
-            )
-        run = db.get_pipeline_run(run_id)
-        return JSONResponse(_run_to_dict(run))
+    # ---- Review queue (Issue #942, 952c: extracted to routers/) -------------
+    # The list/approve/reject closures moved verbatim into routers/reviews.py via
+    # the register-function pattern; the shared _run_to_dict helper is passed in
+    # (it is also used by routes that stay here and in routers/runs.py). The
+    # ApproveRequest/RejectRequest bodies and the _review_row_to_dict helper moved
+    # with them.
+    register_review_routes(
+        app,
+        JSONResponse=JSONResponse,
+        HTTPException=HTTPException,
+        Database=Database,
+        effective_db_path=effective_db_path,
+        _run_to_dict=_run_to_dict,
+    )
 
     # ------------------------------------------------------------------
     # Cost API endpoints (Issue #5.2.3)
     # ------------------------------------------------------------------
 
-    _VALID_GROUP_BY = {"day", "template", "model"}  # noqa: N806
-    _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")  # noqa: N806
-
-    @app.get("/api/v1/costs/summary")
-    async def cost_summary(
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
-        group_by: str = "day",
-        limit: int = 20,
-        offset: int = 0,
-    ) -> JSONResponse:
-        """Return aggregated cost data grouped by day, template, or model.
-
-        Query parameters:
-            start_date: Optional ISO date ``YYYY-MM-DD`` (inclusive lower bound).
-            end_date:   Optional ISO date ``YYYY-MM-DD`` (inclusive upper bound).
-            group_by:   Grouping dimension — ``day`` (default), ``template``, or
-                        ``model``.
-            limit:      Page size (default 20, max 100).
-            offset:     Number of items to skip (default 0).
-
-        Returns:
-            200 with ``{"items": [...], "total": int, "limit": int, "offset": int}``.
-            400 when ``group_by`` is invalid or date strings are malformed.
-        """
-        if group_by not in _VALID_GROUP_BY:
-            raise HTTPException(
-                status_code=400,
-                detail=f"group_by must be one of {sorted(_VALID_GROUP_BY)}, got {group_by!r}",
-            )
-        if start_date is not None and not _DATE_RE.match(start_date):
-            raise HTTPException(
-                status_code=400,
-                detail=f"start_date must be YYYY-MM-DD, got {start_date!r}",
-            )
-        if end_date is not None and not _DATE_RE.match(end_date):
-            raise HTTPException(
-                status_code=400,
-                detail=f"end_date must be YYYY-MM-DD, got {end_date!r}",
-            )
-        limit = max(1, min(limit, 100))
-        offset = max(0, offset)
-
-        db = Database(Path(effective_db_path))
-        items = db.get_cost_summary(start_date, end_date, group_by, limit, offset)
-        total = db.count_cost_summary(start_date, end_date, group_by)
-        return JSONResponse(
-            {
-                "items": items,
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-            }
-        )
-
-    @app.get("/api/v1/costs/run/{run_id}")
-    async def cost_run_breakdown(run_id: str) -> JSONResponse:
-        """Return per-phase cost records for a specific pipeline run.
-
-        Path parameters:
-            run_id: The pipeline run identifier.
-
-        Returns:
-            200 with ``{"run_id": str, "items": [...], "total_cost": float,
-            "total_input_tokens": int, "total_output_tokens": int}``.
-            404 when no cost records exist for the given ``run_id``.
-        """
-        db = Database(Path(effective_db_path))
-        items = db.get_run_costs(run_id)
-        if not items:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No cost records found for run '{run_id}'",
-            )
-        total_cost = sum(row.get("cost_usd", 0.0) or 0.0 for row in items)
-        total_input = sum(row.get("input_tokens", 0) or 0 for row in items)
-        total_output = sum(row.get("output_tokens", 0) or 0 for row in items)
-        return JSONResponse(
-            {
-                "run_id": run_id,
-                "items": items,
-                "total_cost": total_cost,
-                "total_input_tokens": total_input,
-                "total_output_tokens": total_output,
-            }
-        )
+    # The summary/run-breakdown closures (and the _VALID_GROUP_BY set + _DATE_RE
+    # regex they validate against) moved verbatim into routers/costs.py via the
+    # register-function pattern (Issue #942, 952c).
+    register_cost_routes(
+        app,
+        JSONResponse=JSONResponse,
+        HTTPException=HTTPException,
+        Database=Database,
+        effective_db_path=effective_db_path,
+    )
 
     # ------------------------------------------------------------------
     # Trust profile API endpoints (Issue #4.2.4)
     # ------------------------------------------------------------------
 
-    class TrustOverrideRequest(BaseModel):
-        """Body for PUT /api/v1/trust/profiles/{profile_id} — manual override."""
-
-        trust_score: float
-        """New trust score to set, in [0.0, 1.0]."""
-
-        reason: str
-        """Human-readable justification for the manual override."""
-
-        reviewed_by: Optional[str] = None
-        """Optional operator identifier stored in the audit log."""
-
-    @app.get("/api/v1/trust/profiles")
-    async def list_trust_profiles(
-        limit: int = 100,
-        offset: int = 0,
-    ) -> JSONResponse:
-        """List all trust profiles, ordered by id ASC.
-
-        Query parameters:
-            limit:  Maximum number of results (default 100, max 500).
-            offset: Number of rows to skip for pagination (default 0).
-
-        Returns:
-            JSON object with ``items`` array, ``total`` count, ``limit``,
-            and ``offset`` fields.
-        """
-        limit = max(1, min(limit, 500))
-        offset = max(0, offset)
-        db = Database(Path(effective_db_path))
-        all_profiles = db.list_trust_profiles()
-        total = len(all_profiles)
-        items = all_profiles[offset : offset + limit]
-        return JSONResponse(
-            {
-                "items": items,
-                "total": total,
-                "limit": limit,
-                "offset": offset,
-            }
-        )
-
-    @app.get("/api/v1/trust/profiles/{profile_id}")
-    async def get_trust_profile_by_id(profile_id: int) -> JSONResponse:
-        """Return a single trust profile by its integer primary key.
-
-        Args:
-            profile_id: Integer primary key of the trust profile row.
-
-        Returns:
-            200 with the trust profile dict.
-            404 when no profile matches the given id.
-        """
-        db = Database(Path(effective_db_path))
-        profile = db.get_trust_profile_by_id(profile_id)
-        if profile is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Trust profile '{profile_id}' not found",
-            )
-        return JSONResponse(profile)
-
-    @app.put("/api/v1/trust/profiles/{profile_id}")
-    async def override_trust_profile(
-        profile_id: int,
-        body: TrustOverrideRequest,
-    ) -> JSONResponse:
-        """Manually override the trust score for a profile.
-
-        Validates that ``trust_score`` is in ``[0.0, 1.0]``, updates the DB
-        row, re-derives the ``auto_merge_threshold``, and logs a
-        ``trust_adjustments`` entry with reason ``"manual_override"``.
-
-        Args:
-            profile_id: Integer primary key of the trust profile to update.
-            body:       ``TrustOverrideRequest`` with the new score and reason.
-
-        Returns:
-            200 with the updated trust profile dict.
-            404 when no profile matches the given id.
-            422 when ``trust_score`` is outside ``[0.0, 1.0]``.
-        """
-        if not (0.0 <= body.trust_score <= 1.0):
-            raise HTTPException(
-                status_code=422,
-                detail=f"trust_score must be in [0.0, 1.0], got {body.trust_score!r}",
-            )
-        db = Database(Path(effective_db_path))
-        profile = db.get_trust_profile_by_id(profile_id)
-        if profile is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Trust profile '{profile_id}' not found",
-            )
-
-        from ...trust import TrustCalibrator  # noqa: PLC0415
-
-        old_score = float(profile["trust_score"])
-        new_score = body.trust_score
-        delta = new_score - old_score
-
-        # Re-derive auto_merge_threshold
-        calibrator = TrustCalibrator(
-            repo=profile["repo"],
-            template_id=profile["template_id"],
-            task_type=profile["task_type"],
-        )
-        successful_merges = int(profile.get("successful_merges", 0))
-        new_threshold = calibrator.compute_threshold(new_score, successful_merges)
-
-        now_iso = datetime.now(timezone.utc).isoformat()
-        updated: Dict[str, Any] = {
-            "repo": profile["repo"],
-            "template_id": profile["template_id"],
-            "task_type": profile["task_type"],
-            "auto_merge_threshold": new_threshold,
-            "human_review_threshold": float(profile["human_review_threshold"]),
-            "trust_score": new_score,
-            "total_runs": int(profile["total_runs"]),
-            "successful_merges": successful_merges,
-            "regressions": int(profile["regressions"]),
-            "reverted_prs": int(profile["reverted_prs"]),
-            "last_run_at": profile.get("last_run_at"),
-            "created_at": profile["created_at"],
-            "updated_at": now_iso,
-        }
-        db.upsert_trust_profile(updated)
-
-        # Build audit note (include reviewer if supplied)
-        audit_reason = "manual_override"
-        if body.reviewed_by:
-            audit_reason = f"manual_override:{body.reviewed_by}"
-
-        db.insert_trust_adjustment(
-            {
-                "profile_id": profile_id,
-                "delta": delta,
-                "reason": audit_reason,
-                "run_id": None,
-                "score_before": old_score,
-                "score_after": new_score,
-                "created_at": now_iso,
-            }
-        )
-
-        refreshed = db.get_trust_profile_by_id(profile_id)
-        return JSONResponse(refreshed)
-
-    @app.get("/api/v1/trust/adjustments")
-    async def list_trust_adjustments(
-        profile_id: int,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> JSONResponse:
-        """Return the trust adjustment audit log for a profile.
-
-        Query parameters:
-            profile_id: **(required)** Integer primary key of the trust profile.
-            limit:      Maximum number of results (default 100, max 500).
-            offset:     Number of rows to skip for pagination (default 0).
-
-        Returns:
-            200 with ``{"items": [...], "total": int, "limit": int, "offset": int}``.
-            404 when no profile matches ``profile_id``.
-        """
-        limit = max(1, min(limit, 500))
-        offset = max(0, offset)
-        db = Database(Path(effective_db_path))
-        profile = db.get_trust_profile_by_id(profile_id)
-        if profile is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Trust profile '{profile_id}' not found",
-            )
-        items = db.list_trust_adjustments(profile_id=profile_id, limit=limit, offset=offset)
-        return JSONResponse(
-            {
-                "items": items,
-                "total": len(items),
-                "limit": limit,
-                "offset": offset,
-            }
-        )
+    # The list/detail/override/adjustments closures (and the TrustOverrideRequest
+    # body for the override route) moved verbatim into routers/trust.py via the
+    # register-function pattern (Issue #942, 952c).
+    register_trust_routes(
+        app,
+        JSONResponse=JSONResponse,
+        HTTPException=HTTPException,
+        Database=Database,
+        effective_db_path=effective_db_path,
+    )
 
     # ------------------------------------------------------------------
     # Telegram HITL Callback Endpoint (Issue #429.5)
@@ -2387,94 +1622,14 @@ def create_api_app(  # noqa: C901
     # Merge Gate endpoints (#743)
     # ------------------------------------------------------------------
 
-    class GateApproveRequest(BaseModel):
-        message: Optional[str] = None
-        force: bool = False
-
-    class GateRejectRequest(BaseModel):
-        reason: Optional[str] = None
-
-    @app.get("/api/v1/gates")
-    async def list_gates(
-        status: Optional[str] = None,
-        limit: int = 50,
-        offset: int = 0,
-    ):
-        """List all merge gates with optional status filter and pagination."""
-        from ...git_integration import GitContext  # noqa: PLC0415
-
-        all_gates = GitContext.list_gates()
-        if status:
-            all_gates = [g for g in all_gates if g.get("status") == status]
-        total = len(all_gates)
-        items = all_gates[offset : offset + limit]
-        return {"items": items, "total": total, "limit": limit, "offset": offset}
-
-    @app.get("/api/v1/gates/{run_id}")
-    async def get_gate(run_id: str):
-        """Get a single gate by run ID."""
-        from ...git_integration import GitContext  # noqa: PLC0415
-
-        gate = GitContext.load_gate(run_id)
-        if gate is None:
-            raise HTTPException(status_code=404, detail=f"No gate found for run ID '{run_id}'")
-        return gate
-
-    @app.post("/api/v1/gates/{run_id}/approve")
-    async def approve_gate(run_id: str, req: GateApproveRequest = GateApproveRequest()):
-        """Approve a merge gate."""
-        from ...git_integration import GitContext, GitError  # noqa: PLC0415
-
-        gate = GitContext.load_gate(run_id)
-        if gate is None:
-            raise HTTPException(status_code=404, detail=f"No gate found for run ID '{run_id}'")
-
-        current_status = gate.get("status")
-        if current_status != "awaiting_approval":
-            raise HTTPException(
-                status_code=409,
-                detail=f"Gate is in status '{current_status}', can only approve 'awaiting_approval' gates",  # noqa: E501
-            )
-
-        scoring_status = gate.get("scoring_status")
-        if scoring_status == "failed" and not req.force:
-            raise HTTPException(
-                status_code=409,
-                detail="Score gate FAILED \u2014 approval blocked. Use force=true to override.",
-            )
-
-        try:
-            updated = GitContext.update_gate_status(
-                run_id, "approved", message=req.message or "Approved via API"
-            )
-        except GitError as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
-
-        return updated
-
-    @app.post("/api/v1/gates/{run_id}/reject")
-    async def reject_gate(run_id: str, req: GateRejectRequest = GateRejectRequest()):
-        """Reject a merge gate."""
-        from ...git_integration import GitContext, GitError  # noqa: PLC0415
-
-        gate = GitContext.load_gate(run_id)
-        if gate is None:
-            raise HTTPException(status_code=404, detail=f"No gate found for run ID '{run_id}'")
-
-        current_status = gate.get("status")
-        if current_status != "awaiting_approval":
-            raise HTTPException(
-                status_code=409,
-                detail=f"Gate is in status '{current_status}', can only reject 'awaiting_approval' gates",  # noqa: E501
-            )
-
-        try:
-            updated = GitContext.update_gate_status(
-                run_id, "rejected", message=req.reason or "Rejected via API"
-            )
-        except GitError as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
-
-        return updated
+    # The list/detail/approve/reject closures (and the GateApproveRequest /
+    # GateRejectRequest bodies) moved verbatim into routers/gates.py via the
+    # register-function pattern (Issue #942, 952c). These routes operate on gate
+    # state via GitContext (no Database), so register_gate_routes takes only the
+    # framework HTTPException it raises.
+    register_gate_routes(
+        app,
+        HTTPException=HTTPException,
+    )
 
     return app
