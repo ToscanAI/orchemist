@@ -27,16 +27,41 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .confidence import ConfidenceCalculator
-from .db import default_db_path
-from .output_utils import (
+from ..confidence import ConfidenceCalculator
+from ..db import default_db_path
+from ..output_utils import (
     extract_output_text as _extract_output_text,
 )
-from .output_utils import (
+from ..output_utils import (
     safe_write_phase_output as _safe_write_phase_output,
 )
-from .routing import DEFAULT_ROUTING_CONFIG, RoutingEngine
-from .timestamps import now_utc
+from ..routing import DEFAULT_ROUTING_CONFIG, RoutingEngine
+from ..timestamps import now_utc
+
+# Clusters extracted into sub-modules (wave a of #1034).  Re-imported here so
+# (a) the retained inline run_daemon and its helpers resolve these by bare name
+# and (b) the package facade re-exports the EXACT prior public surface — every
+# public name AND every private _name a caller/test imports from
+# ``orchestration_engine.daemon`` still resolves here.  These sub-modules
+# eagerly import only ..routing / ..timestamps / stdlib; the SINGLE eager db
+# edge is ``default_db_path`` above — do NOT add another eager ``from ..db``
+# here or in the sub-modules or the db<->daemon import cycle re-forms.
+from ._config import (  # noqa: F401  # re-exported public + private surface
+    _HAPPY_KEYS,
+    _get_effective_max_retries,
+    _happy_path_phase_ids,
+    apply_config_schema_defaults,
+)
+from ._lifecycle import (  # noqa: F401  # re-exported public + private surface
+    _fail,
+    _remove_pid_file,
+    _setup_logging,
+    _write_pid_file,
+    is_process_alive,
+)
+from ._notify import (  # noqa: F401  # re-exported private surface
+    _apply_daemon_notification_suppression,
+)
 
 # ---------------------------------------------------------------------------
 # Logging bootstrap — daemon writes to output_dir/.orch-daemon.log
@@ -87,231 +112,13 @@ def _sigterm_handler(signum: int, frame: Any) -> None:  # noqa: ARG001
 
 
 # ---------------------------------------------------------------------------
-# Happy-path phase derivation for the postflight oracle (Issue #915)
-# ---------------------------------------------------------------------------
-
-# Outcome keys that advance a run along its happy path, in priority order.
-# ``approve`` is preferred over ``success`` so the walk follows the real happy
-# target on phases that carry BOTH (e.g. standard's ``spec_adversary`` has
-# ``approve: acceptance_test`` plus a defensive ``success: spec`` loop-back used
-# only when verdict extraction fails).
-_HAPPY_KEYS = ("approve", "success")
-
-
-def _happy_path_phase_ids(template: Any) -> List[str]:
-    """Return the happy-path reachable phase IDs of *template*.
-
-    Walks the transition graph from the entry phase (``template.phases[0].id``)
-    following ONLY the happy edges — ``approve`` preferred over ``success`` per
-    phase — using the merged transitions from
-    :meth:`TemplateEngine._compute_effective_transitions`.  A visited-set guards
-    against cycles (e.g. standard's ``spec_adversary success: spec`` back-edge),
-    and dangling targets (a happy edge pointing at an unknown id) are skipped.
-    The walk stops along a branch when a phase has no ``approve``/``success``
-    target (terminal).
-
-    Conditional/terminal phases reachable only via non-happy outcomes
-    (``request_changes``, ``abort``, ``exhausted``, ``failed``, ``timeout``) —
-    e.g. ``fix`` / ``postmortem_*`` — are therefore excluded, which is exactly
-    the oracle the postflight completeness check needs (a clean run never
-    executes them).  Issue #915.
-
-    Returns:
-        Ordered list of happy-path phase IDs (first-seen order).  Returns ``[]``
-        for a malformed or empty template so a failure degrades to a skipped
-        check rather than crashing the (advisory) postflight block.
-    """
-    try:
-        phases = getattr(template, "phases", None)
-        if not phases:
-            return []
-        from .templates import TemplateEngine  # noqa: PLC0415
-
-        eff = TemplateEngine._compute_effective_transitions(template)
-        valid_ids = {p.id for p in phases}
-        entry = phases[0].id
-
-        visited: List[str] = []  # preserves first-seen order
-        seen: set = set()
-        stack: List[str] = [entry]
-        while stack:
-            pid = stack.pop()
-            if pid in seen or pid not in valid_ids:
-                continue  # cycle/self-loop guard + ignore dangling targets
-            seen.add(pid)
-            visited.append(pid)
-            outcomes = eff.get(pid, {})
-            # Follow ONE happy successor: prefer 'approve', else 'success'.
-            for key in _HAPPY_KEYS:
-                tgt = outcomes.get(key)
-                if tgt is not None:
-                    stack.append(tgt)
-                    break
-        return visited
-    except Exception as exc:  # pragma: no cover - defensive  # noqa: BLE001
-        logger.warning("_happy_path_phase_ids: failed to derive oracle (non-fatal): %s", exc)
-        return []
-
-
-# ---------------------------------------------------------------------------
-# PID file helpers
-# ---------------------------------------------------------------------------
-
-
-def _write_pid_file(output_dir: Path) -> Path:
-    """Write current PID to output_dir/.orch-daemon.pid and return the path."""
-    pid_path = output_dir / ".orch-daemon.pid"
-    pid_path.write_text(str(os.getpid()))
-    return pid_path
-
-
-def _remove_pid_file(pid_path: Path) -> None:
-    """Remove the PID file, ignoring errors."""
-    try:
-        pid_path.unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def is_process_alive(pid: int) -> bool:
-    """Return True if a process with *pid* is running."""
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # Process exists but we don't have permission to signal it.
-        return True
-
-
-# ---------------------------------------------------------------------------
-# Retry cap helpers
-# ---------------------------------------------------------------------------
-
-
-def apply_config_schema_defaults(config: Dict[str, Any], config_schema: Any) -> None:
-    """Fill missing keys in *config* from *config_schema* property defaults.
-
-    Mutates ``config`` in place. For every key declared under
-    ``config_schema.properties.<key>.default``, the key is added to
-    ``config`` if (and only if) it is not already present.
-
-    Why this exists (#835):
-        Prompt templates render via ``str.format(config=_SafeDict(config), …)``.
-        Without applying schema defaults, an existing consumer who has not
-        migrated their config dict to include a newly-added optional field
-        would see the literal string ``<MISSING:fieldname>`` substituted into
-        the rendered prompt (``_SafeDict.__missing__`` fallback) — a silent
-        backward-compat regression. Filling defaults here keeps non-migrated
-        consumers running cleanly when the YAML adds new optional fields.
-
-    Safety:
-        - Existing keys in ``config`` are never overwritten.
-        - Properties without a ``default`` are not touched.
-        - Non-dict ``config_schema``, non-dict ``properties``, and missing
-          ``properties`` are all no-ops (defensive — schemas are operator-
-          editable YAML).
-    """
-    if not isinstance(config_schema, dict):
-        return
-    props = config_schema.get("properties")
-    if not isinstance(props, dict):
-        return
-    for key, spec in props.items():
-        if isinstance(spec, dict) and "default" in spec and key not in config:
-            config[key] = spec["default"]
-
-
-def _get_effective_max_retries(template: Any) -> int:
-    """Compute the effective max_retries cap from the template's routing config.
-
-    Reads all routing tiers with ``strategy == 'retry'`` and applies the
-    lowest non-zero cap across all such tiers. Returns:
-
-    - ``0`` if all retry tiers explicitly set ``max_retries=0`` (no retries).
-    - ``1`` if no retry tiers are defined at all (safe default).
-    - The lowest non-zero cap among all retry tiers otherwise.
-
-    Falls back to ``DEFAULT_ROUTING_CONFIG`` when the template has no
-    ``routing_config`` attribute or it is ``None``.
-
-    Args:
-        template: A loaded pipeline template object.
-
-    Returns:
-        Integer effective max_retries cap (>= 0).
-    """
-    _DEFAULT = 1  # noqa: N806
-    routing_config = getattr(template, "routing_config", None)
-    if routing_config is None:
-        routing_config = DEFAULT_ROUTING_CONFIG
-    retry_tiers = [t for t in routing_config.tiers if t.strategy == "retry"]
-    if not retry_tiers:
-        return _DEFAULT
-    caps = [t.max_retries for t in retry_tiers]
-    nonzero = [c for c in caps if c > 0]
-    if not nonzero:
-        return 0  # All tiers explicitly cap retries at 0
-    return min(nonzero)
-
-
-# ---------------------------------------------------------------------------
-# Daemon notification suppression (Issue #660)
-# ---------------------------------------------------------------------------
-
-
-def _apply_daemon_notification_suppression() -> None:
-    """Suppress OpenClaw notifications for the daemon process.
-
-    Force-clears ``NOTIFY_OPENCLAW_ENABLED`` in the current process environment
-    so that every subsequent :meth:`~orchestration_engine.notifications.NotificationDispatcher.from_env`
-    call within the daemon produces a dispatcher with the OpenClaw backend
-    disabled.
-
-    This prevents daemon pipeline events (``human_review``, ``auto_merge``)
-    from triggering ``sessions_send`` calls to the Claude Code / TUI session,
-    which was causing rogue agent spawning that interfered with running
-    pipelines.
-
-    Telegram and Webhook backends are unaffected — those notify humans, not AI
-    agents.
-
-    **Opt-in:** set ``NOTIFY_OPENCLAW_DAEMON_ENABLED=1`` (or ``true`` / ``yes``)
-    to re-enable OpenClaw notifications from daemon runs if explicitly desired.
-
-    Any failure to apply the suppression is logged as a WARNING and silently
-    swallowed so the daemon continues operating (non-fatal).
-    """
-    daemon_flag = os.environ.get("NOTIFY_OPENCLAW_DAEMON_ENABLED", "")
-    if str(daemon_flag).strip().lower() in ("1", "true", "yes"):
-        logger.info(
-            "NOTIFY_OPENCLAW_DAEMON_ENABLED=%r — OpenClaw notifications retained "
-            "for daemon process",
-            daemon_flag,
-        )
-        return
-
-    try:
-        os.environ["NOTIFY_OPENCLAW_ENABLED"] = ""
-        logger.info(
-            "OpenClaw notifications suppressed for daemon process "
-            "(set NOTIFY_OPENCLAW_DAEMON_ENABLED=1 to re-enable)"
-        )
-    except Exception as exc:  # pragma: no cover  # noqa: BLE001
-        logger.warning("Failed to suppress OpenClaw notifications (non-fatal): %s", exc)
-
-
-# ---------------------------------------------------------------------------
 # Core daemon function
 # ---------------------------------------------------------------------------
 
 
 def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
     """Main daemon entry point.  Called by __main__ after argument parsing."""
-    from .db import Database  # noqa: PLC0415
+    from ..db import Database  # noqa: PLC0415
 
     # Open the persistent DB (on-disk file, not :memory:)
     db = Database(Path(db_path))
@@ -354,7 +161,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
 
     # --- Load template ---
     try:
-        from .templates import TemplateEngine  # noqa: PLC0415
+        from ..templates import TemplateEngine  # noqa: PLC0415
 
         engine = TemplateEngine()
         template_path = Path(run["template_path"])
@@ -368,7 +175,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
     try:
         import os as _os  # noqa: PLC0415
 
-        from .pipeline_runner import PipelineRunner  # noqa: PLC0415
+        from ..pipeline_runner import PipelineRunner  # noqa: PLC0415
 
         if mode == "standalone":
             api_key = _os.environ.get("ANTHROPIC_API_KEY")
@@ -417,7 +224,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
 
     # --- Instantiate CostTracker (Issue #5.2.2) ---
     try:
-        from .cost_tracker import CostTracker  # noqa: PLC0415
+        from ..cost_tracker import CostTracker  # noqa: PLC0415
 
         _cost_tracker = CostTracker(db)
     except Exception as exc:  # noqa: BLE001
@@ -426,7 +233,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
 
     # --- Preflight: Definition of Ready (Issue #476, #576) ---
     try:
-        from .preflight import PreflightChecker  # noqa: PLC0415
+        from ..preflight import PreflightChecker  # noqa: PLC0415
 
         # Extract required_fields and category from template (Issue #576).
         # config_schema.required overrides the hardcoded REQUIRED_INPUT_FIELDS
@@ -479,7 +286,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
     _gate_branch: str = initial_input.get("branch_name") or initial_input.get("branch") or ""
     if _gate_branch:
         try:
-            from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+            from ..git_integration import GitContext as _GitContext  # noqa: PLC0415
 
             _gate_repo_path: Optional[str] = (
                 initial_input.get("repo_path") or initial_input.get("repo") or None
@@ -717,7 +524,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
                 and not _budget_exceeded_flag
             ):
                 try:
-                    from .cost_tracker import BudgetExceededError  # noqa: PLC0415
+                    from ..cost_tracker import BudgetExceededError  # noqa: PLC0415
 
                     _cost_tracker.check_budget(
                         run_id=run_id,
@@ -749,7 +556,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
             )
 
     # --- Execute pipeline ---
-    from .sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
+    from ..sequencer import PhaseSequencer, StateMachineSequencer  # noqa: PLC0415
 
     # Auto-select sequencer: use StateMachineSequencer when the template
     # declares transitions on any phase or at the template level.
@@ -770,7 +577,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
     _repo_path = initial_input.get("repo_path") if initial_input else None
     if _repo_path and output_dir:
         try:
-            from .git_handoff import GitHandoff  # noqa: PLC0415
+            from ..git_handoff import GitHandoff  # noqa: PLC0415
 
             _git_handoff = GitHandoff(repo_path=Path(_repo_path), run_id=run_id)
             logger.info("GitHandoff created for run_id=%s", run_id)
@@ -865,7 +672,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
         # --- Diagnose failure (non-fatal) ---
         _diagnosis = None
         try:
-            from .diagnosis import DiagnosisEngine  # noqa: PLC0415
+            from ..diagnosis import DiagnosisEngine  # noqa: PLC0415
 
             _diag_executor = runner.executors[0] if runner.executors else None
             if _diag_executor is not None:
@@ -883,7 +690,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
         # --- Adaptive retry (#3.2.3) ---
         if _diagnosis is not None:
             try:
-                from .adaptive_retry import AdaptiveRetryEngine  # noqa: PLC0415
+                from ..adaptive_retry import AdaptiveRetryEngine  # noqa: PLC0415
 
                 _retry_engine = AdaptiveRetryEngine(db=db, db_path=db_path)
                 _max_retries = _get_effective_max_retries(template)
@@ -928,7 +735,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
         try:
             from rich.console import Console  # noqa: PLC0415
 
-            from .scoring import run_scoring as _run_scoring  # noqa: PLC0415
+            from ..scoring import run_scoring as _run_scoring  # noqa: PLC0415
 
             console = Console(highlight=False, force_terminal=False, no_color=True)
             # Forward the pipeline executor so LLM judge criteria route
@@ -959,7 +766,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
             # Persist scoring results to the gate file so orch gate info/approve
             # can enforce the score gate (Issue #289)
             try:
-                from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+                from ..git_integration import GitContext as _GitContext  # noqa: PLC0415
 
                 _GitContext.update_gate_scoring(run_id, _scoring_status, scoring_score)
             except Exception as _ge:  # noqa: BLE001
@@ -980,7 +787,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
             # _final_status remains 'success'. Gate approve will warn but allow.
             # Mark gate with error status on scoring exception (Issue #289)
             try:
-                from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+                from ..git_integration import GitContext as _GitContext  # noqa: PLC0415
 
                 _GitContext.update_gate_scoring(run_id, "error", None)
             except Exception as _ge:  # noqa: BLE001
@@ -988,7 +795,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
 
     # --- Postflight: Definition of Done (Issue #476) ---
     try:
-        from .postflight import PostflightChecker  # noqa: PLC0415
+        from ..postflight import PostflightChecker  # noqa: PLC0415
 
         _elapsed = None
         try:
@@ -1117,7 +924,7 @@ def run_daemon(run_id: str, db_path: str) -> None:  # noqa: C901
     # and spawn any configured child pipelines.  Failures here are non-fatal:
     # the parent run has already been marked with its final status.
     try:
-        from .chains import evaluate_on_complete, spawn_chain_runs  # noqa: PLC0415
+        from ..chains import evaluate_on_complete, spawn_chain_runs  # noqa: PLC0415
 
         child_configs = evaluate_on_complete(
             template=template,
@@ -1298,7 +1105,7 @@ def _do_auto_merge(
         scoring_score:     The scoring score used for the log message.  May be
                            ``None`` when called from the routing path.
     """
-    from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+    from ..git_integration import GitContext as _GitContext  # noqa: PLC0415
 
     strategy = auto_merge_config.strategy if auto_merge_config else "merge"
     score_str = f"{scoring_score:.4f}" if scoring_score is not None else "n/a"
@@ -1422,7 +1229,7 @@ class _PromptExecutorAdapter:
         extracts and returns the text content from the resulting
         :class:`~schemas.TaskResult`.
         """
-        from .schemas import ModelTier, TaskSpec, TaskType  # noqa: PLC0415
+        from ..schemas import ModelTier, TaskSpec, TaskType  # noqa: PLC0415
 
         task = TaskSpec(
             type=TaskType.REVIEW,
@@ -1515,7 +1322,7 @@ def _run_post_pipeline_review_analysis(
     audit_results: list = []
     if executor is not None and review_outcomes:
         try:
-            from .audit import AuditPhase  # noqa: PLC0415
+            from ..audit import AuditPhase  # noqa: PLC0415
 
             _prompt_executor = _PromptExecutorAdapter(executor)
             _audit_model = _prompt_executor.model
@@ -1557,7 +1364,7 @@ def _run_post_pipeline_review_analysis(
     # so the snapshot reflects the updated longitudinal accuracy.
     if calibration_outcomes:
         try:
-            from .reviewer_calibration import ReviewerCalibrator  # noqa: PLC0415
+            from ..reviewer_calibration import ReviewerCalibrator  # noqa: PLC0415
 
             _calibrator = ReviewerCalibrator(db=db)
             _calibrator.calibrate_and_save(calibration_outcomes)
@@ -1815,8 +1622,8 @@ def _dispatch_routing_action(  # noqa: C901
                 decision.score,
             )
             try:
-                from .git_integration import GitContext as _GitContextHR  # noqa: PLC0415
-                from .notifications import NotificationDispatcher  # noqa: PLC0415
+                from ..git_integration import GitContext as _GitContextHR  # noqa: PLC0415
+                from ..notifications import NotificationDispatcher  # noqa: PLC0415
 
                 # Enrich notification with issue context from the gate file
                 _gate_data = _GitContextHR.load_gate(run_id) or {}
@@ -1967,7 +1774,7 @@ def _dispatch_auto_merge(  # noqa: C901
         review_text = _extract_output_text(review_out).strip()
         # Issue #687: canonical verdict extractor lives in verdict_parser and
         # returns lowercase ("approve" / "request_changes" / "abort" / None).
-        from .verdict_parser import extract_verdict as _extract_verdict  # noqa: PLC0415
+        from ..verdict_parser import extract_verdict as _extract_verdict  # noqa: PLC0415
 
         _verdict = _extract_verdict(text=review_text)
         if _verdict != "approve":
@@ -1981,7 +1788,7 @@ def _dispatch_auto_merge(  # noqa: C901
             return
 
     # Load gate file to resolve branch name (required for safety checks and merge).
-    from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+    from ..git_integration import GitContext as _GitContext  # noqa: PLC0415
 
     gate_data = _GitContext.load_gate(run_id)
     if gate_data is None:
@@ -2060,7 +1867,7 @@ def _dispatch_auto_merge(  # noqa: C901
 
     # --- Dispatch notification after successful merge ---
     try:
-        from .notifications import NotificationDispatcher  # noqa: PLC0415
+        from ..notifications import NotificationDispatcher  # noqa: PLC0415
 
         _notifier = NotificationDispatcher.from_env()
         _notifier.dispatch(
@@ -2123,9 +1930,9 @@ def _trigger_sprint_chain_next(
         logger.debug("sprint_chain: no issue_number for run %s — skipping", run_id)
         return
     try:
-        from .cost_tracker import CostTracker  # noqa: PLC0415
-        from .db import Database  # noqa: PLC0415
-        from .sprint_chain import SprintChainManager  # noqa: PLC0415
+        from ..cost_tracker import CostTracker  # noqa: PLC0415
+        from ..db import Database  # noqa: PLC0415
+        from ..sprint_chain import SprintChainManager  # noqa: PLC0415
 
         db = Database(Path(db_path))
         tracker = CostTracker(db)
@@ -2173,7 +1980,7 @@ def _post_reject_comment(
         confidence_result: :class:`~confidence.ConfidenceResult` for explanation text.
     """
     try:
-        from .git_integration import GitContext as _GitContext  # noqa: PLC0415
+        from ..git_integration import GitContext as _GitContext  # noqa: PLC0415
 
         gate_data = _GitContext.load_gate(run_id)
         if gate_data is None:
@@ -2227,32 +2034,6 @@ def _post_reject_comment(
             run_id,
             exc,
         )
-
-
-def _fail(db: Any, run_id: str, pid_path: Path, message: str) -> None:
-    """Mark run as failed and exit."""
-    logger.error("FAIL: %s", message)
-    try:
-        db.update_pipeline_run(
-            run_id,
-            status="failed",
-            completed_at=now_utc().isoformat(),
-            error_message=message,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Could not update DB on fail: %s", exc)
-    _remove_pid_file(pid_path)
-    sys.exit(1)
-
-
-def _setup_logging(log_path: Path) -> None:
-    """Configure root logger to write to the daemon log file."""
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(str(log_path), mode="a", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s"))
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    root.addHandler(handler)
 
 
 def _write_summary(
@@ -2357,7 +2138,7 @@ def dispatch_regression_fix_safely(
         The ``run_id`` string of the spawned fix pipeline, or ``None`` when
         the SafetyGuard blocked the attempt or when the pipeline launch failed.
     """
-    from .regression import RegressionStatus, SafetyGuard  # noqa: PLC0415
+    from ..regression import RegressionStatus, SafetyGuard  # noqa: PLC0415
 
     guard = SafetyGuard()
     allowed, reason = guard.should_attempt_fix(regression, db)
@@ -2443,7 +2224,7 @@ def _post_github_result_hook(  # noqa: C901
                            Defaults to ``""`` (backward-compatible coding path).
     """
     try:
-        from .issue_automation import (  # noqa: PLC0415
+        from ..issue_automation import (  # noqa: PLC0415
             create_content_pr,
             create_pr_for_issue,
             post_failure_summary_comment,
@@ -2605,7 +2386,7 @@ def _post_github_result_hook(  # noqa: C901
             # --- Safety net: ensure branch exists on remote before PR creation ---
             # Sub-agents sometimes commit locally without pushing.  Push now so
             # `gh pr create` doesn't fail with "No commits between main and branch".
-            from .postflight import ensure_branch_pushed  # noqa: PLC0415
+            from ..postflight import ensure_branch_pushed  # noqa: PLC0415
 
             _repo_path = initial_input.get("repo_path", "")
             if _repo_path:
