@@ -19,11 +19,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from orchestration_engine.db import Database, default_db_path, parse_json_list
+from orchestration_engine.pipeline_runner import OPENCLAW_DEPRECATION_MESSAGE
 from orchestration_engine.templates import TemplateEngine, TemplateNotFoundError
 from orchestration_engine.timestamps import now_utc
 
 logger = logging.getLogger(__name__)
 
+# NOTE: "openclaw" is DEPRECATED (EPIC #1033, Phase 1 / #1036) but kept here —
+# it still works in Phase 1; removal is Phase 2. See OPENCLAW_DEPRECATION_MESSAGE.
 _VALID_MODES = {"dry-run", "standalone", "openclaw"}
 
 
@@ -79,6 +82,8 @@ def register_tools(mcp) -> None:  # noqa: C901
         Args:
             template_id: ID or path of the template to run.
             mode: Execution mode — one of ``dry-run``, ``standalone``, ``openclaw``.
+                  ``openclaw`` is DEPRECATED (removal tracked in #1036); use
+                  ``standalone`` (direct Anthropic) or ``openrouter`` instead.
             inputs: Optional dict of pipeline input values.
 
         Returns:
@@ -91,6 +96,13 @@ def register_tools(mcp) -> None:  # noqa: C901
 
         if mode not in _VALID_MODES:
             return f"Invalid mode: {mode}. " f"Supported modes: dry-run, standalone, openclaw"
+
+        # Deprecation notice for the openclaw mode (EPIC #1033, Phase 1 / #1036).
+        # It still works (the daemon routes through PipelineRunner.openclaw, which
+        # also emits a DeprecationWarning); we log here and surface the notice in
+        # the tool's text result so MCP clients see it.
+        if mode == "openclaw":
+            logger.warning(OPENCLAW_DEPRECATION_MESSAGE)
 
         try:
             engine = TemplateEngine()
@@ -143,7 +155,10 @@ def register_tools(mcp) -> None:  # noqa: C901
 
             db.update_pipeline_run(run_id, pid=proc.pid)
 
-            return json.dumps({"run_id": run_id, "status": "running"})
+            _result: Dict[str, Any] = {"run_id": run_id, "status": "running"}
+            if mode == "openclaw":
+                _result["deprecation"] = OPENCLAW_DEPRECATION_MESSAGE
+            return json.dumps(_result)
 
         except Exception as exc:
             logger.error("orchemist_launch error: %s", exc, exc_info=True)

@@ -20,6 +20,7 @@ with real paths / a real ``Database``, and the dry-run scenario tests drive
 ``ScenarioRunner`` directly, never the cli facade attributes).
 """
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -29,8 +30,11 @@ import yaml
 
 from ..daemon import apply_config_schema_defaults
 from ..db import default_db_path
+from ..pipeline_runner import OPENCLAW_DEPRECATION_MESSAGE
 from ._helpers import _resolve_template_arg, print_table
 from ._root import main
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # orch rubric — skill rubric generation  (AC-1)
@@ -264,6 +268,10 @@ def scenario_run(  # noqa: C901
 
     grader_executor = None
     if not dry_run and mode == "openclaw":
+        # Deprecation notice (EPIC #1033, Phase 1 / #1036): visible on the CLI +
+        # logged. This is the eval grader's openclaw selection site.
+        logger.warning(OPENCLAW_DEPRECATION_MESSAGE)
+        click.echo(f"⚠ {OPENCLAW_DEPRECATION_MESSAGE}", err=True)
         try:
             from ..openclaw_executor import OpenClawExecutor  # noqa: PLC0415
 

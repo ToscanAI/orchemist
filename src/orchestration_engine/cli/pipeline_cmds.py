@@ -36,6 +36,7 @@ from ..output_utils import (
 from ..output_utils import (
     safe_write_phase_output as _safe_write_phase_output,
 )
+from ..pipeline_runner import OPENCLAW_DEPRECATION_MESSAGE
 from ..timestamps import now_utc
 from ._helpers import (
     _find_template,
@@ -533,6 +534,8 @@ def run_template(  # noqa: C901
 
         _so_executor = None
         if mode == "openclaw":
+            # Deprecation notice (EPIC #1033, Phase 1 / #1036) — visible CLI warning.
+            click.echo(f"⚠ {OPENCLAW_DEPRECATION_MESSAGE}", err=True)
             try:
                 from ..openclaw_executor import OpenClawExecutor  # noqa: PLC0415
 
@@ -682,6 +685,9 @@ def run_template(  # noqa: C901
         elif mode == "standalone":
             runner = PipelineRunner.standalone(api_key=api_key, executor_type=executor)
         elif mode == "openclaw":
+            # Deprecation notice (EPIC #1033, Phase 1 / #1036): a DeprecationWarning
+            # alone is invisible on the CLI, so surface a visible warning here.
+            click.echo(f"⚠ {OPENCLAW_DEPRECATION_MESSAGE}", err=True)
             # Read env vars only when actually needed (avoid leaking in dry-run tracebacks)
             effective_url = gateway_url or _os_env.environ.get("OPENCLAW_GATEWAY_URL")
             effective_token = gateway_token or _os_env.environ.get("OPENCLAW_GATEWAY_TOKEN")
@@ -1510,6 +1516,10 @@ def pipeline_launch(  # noqa: C901
     # NOTE: This runs BEFORE missing-fields validation so that "No gateway token found"
     # is the error shown when mode=openclaw and no token is available — not a fields error.
     if mode == "openclaw":
+        # Deprecation notice (EPIC #1033, Phase 1 / #1036): the daemon subprocess
+        # this command spawns emits a DeprecationWarning, but that is invisible to
+        # the user's terminal — surface a visible warning here.
+        click.echo(f"⚠ {OPENCLAW_DEPRECATION_MESSAGE}", err=True)
         effective_token = (
             gateway_token or os.environ.get("OPENCLAW_GATEWAY_TOKEN") or _cli._read_openclaw_token()
         )

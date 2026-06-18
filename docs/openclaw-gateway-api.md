@@ -1,5 +1,11 @@
 # OpenClaw Gateway API — Tools Invoke
 
+> **⚠️ DEPRECATED.** The `openclaw` execution mode is deprecated and will be removed in a
+> future release. Use `standalone` (direct Anthropic) or `openrouter` instead. It remains
+> functional for now; removal is tracked in
+> [#1036](https://github.com/ToscanAI/orchemist/issues/1036). This page is retained for
+> historical / self-hosted reference only.
+
 The orchestration engine's OpenClaw executor communicates with the OpenClaw gateway
 over HTTP to spawn and manage sub-agent sessions for each pipeline phase.
 

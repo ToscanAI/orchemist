@@ -40,7 +40,7 @@ You declare your pipeline in a single YAML file. The engine handles phase sequen
 | Mode | Backend | Status |
 |---|---|---|
 | **openrouter** | Any model via OpenRouter (Anthropic, OpenAI, Google, etc.) | Primary — production path since 2026-04-17 |
-| **openclaw** | Claude sub-agents via OpenClaw gateway | Deprecated — gateway no longer active; historical use only |
+| **openclaw** | Claude sub-agents via OpenClaw gateway | Deprecated — use `standalone` or `openrouter`; removal tracked in [#1036](https://github.com/ToscanAI/orchemist/issues/1036) |
 | **standalone** | Direct Anthropic API | Available for simple pipelines |
 | **dry-run** | Mock execution for template validation | Stable |
 
