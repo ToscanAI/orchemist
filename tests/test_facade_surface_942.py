@@ -43,6 +43,7 @@ FACADE_MODULES: Tuple[str, ...] = (
     "orchestration_engine.sequencer",
     "orchestration_engine.db",
     "orchestration_engine.daemon",
+    "orchestration_engine.templates",
 )
 
 TESTS_DIR = Path(__file__).resolve().parent
