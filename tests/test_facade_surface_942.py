@@ -44,6 +44,7 @@ FACADE_MODULES: Tuple[str, ...] = (
     "orchestration_engine.db",
     "orchestration_engine.daemon",
     "orchestration_engine.templates",
+    "orchestration_engine.issue_automation",
 )
 
 TESTS_DIR = Path(__file__).resolve().parent
