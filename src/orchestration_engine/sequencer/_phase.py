@@ -2784,6 +2784,41 @@ class PhaseSequencer:
             return dry_runners[0]
         return None
 
+    def _register_dialogue_executors_once(self) -> None:
+        """Lazily append dialogue-participant executors (e.g. ``gemini_cli``) that
+        the mode factory did not build, to ``self.runner.executors``, at the
+        dialogue-dispatch chokepoint (#1051).
+
+        A dialogue phase names its drafter/reviewer under
+        ``dialogue_config.{drafter,reviewer}.executor``, not the per-phase
+        ``provider:``, so no mode factory ever constructs the GeminiCliExecutor a
+        ``gemini_cli`` participant requires. Calling this at the TOP of
+        :meth:`_resolve_dialogue_executor` covers CLI + daemon + web + eval +
+        programmatic (and the state-machine path via
+        ``StateMachineSequencer(PhaseSequencer)``, which inherits this method) in
+        ONE seam. Idempotent and dry-run-guarded — safe to call on every resolve.
+        """
+        runner = getattr(self, "runner", None)
+        executors = getattr(runner, "executors", None)
+        if runner is None or executors is None:
+            return
+        # Dry-run guard WITHOUT a mode string (the sequencer has none): if EVERY
+        # currently-registered executor is a DryRunExecutor, skip the append so
+        # the all-dry-run fallback in :meth:`_resolve_executor_by_name` stays
+        # exactly intact. This is the precise inverse of the fallback condition
+        # ``len(dry_runners) == len(executors) and dry_runners`` — appending a
+        # non-dry-run gemini executor would flip that to False and break the
+        # dry-run template-validation suite.
+        if executors and all("dryrun" in type(e).__name__.lower() for e in executors):
+            return
+        # Idempotent: _append_dialogue_executors skips when a "gemini"
+        # provider_name is already present, so a GeminiCliExecutor added by a
+        # prior resolve / a prior dialogue phase is never duplicated. Lazy import
+        # keeps the dependency contained (no import cycle exists either way).
+        from ..pipeline_runner import PipelineRunner  # noqa: PLC0415
+
+        PipelineRunner._append_dialogue_executors(executors, getattr(self, "template", None))
+
     def _resolve_dialogue_executor(self, name: str) -> Optional[Any]:
         """Find an executor in ``self.runner.executors`` whose name matches ``name``.
 
@@ -2797,12 +2832,19 @@ class PhaseSequencer:
         * ``openclaw`` → the OpenClaw executor
         * ``claudecode`` → the ClaudeCode executor
 
+        Before delegating it runs :meth:`_register_dialogue_executors_once`, the
+        lazy/idempotent/dry-run-guarded append (#1051) that ensures a
+        ``gemini_cli`` participant has a real :class:`GeminiCliExecutor` to
+        resolve to, for EVERY entrypoint that dispatches dialogue through this
+        chokepoint.
+
         Returns ``None`` when no matching executor is registered, EXCEPT in
         dry-run mode (only a :class:`~.runner.DryRunExecutor` is registered),
         where the dry-run executor is returned as a fallback so dialogue
         phases can be validated by the template-validation suite without
         real provider credentials.
         """
+        self._register_dialogue_executors_once()
         return self._resolve_executor_by_name(name)
 
     # Stateless tier/task-type resolvers relocated to ._helpers (EPIC #942 953b).

@@ -107,6 +107,11 @@ class DialogueParticipant(BaseModel):
         Thinking budget passed to executors that support extended thinking
         (Anthropic / OpenRouter).  Defaults to ``off`` to keep prototype
         costs predictable.
+    disable_tools:
+        Whether to disable executor tool-calling for this participant.
+        Defaults to ``True`` — dialogue turns are text-in / text-out, so the
+        drafter/reviewer should not run as agentic tool-using coding agents.
+        Set ``false`` to opt a participant back into tool use.
     """
 
     executor: str = Field(
@@ -117,6 +122,13 @@ class DialogueParticipant(BaseModel):
     role: Optional[str] = Field(default=None, description="Role prompt prepended to every turn.")
     thinking_level: Optional[str] = Field(
         default="off", description="Thinking budget (off/low/medium/high)."
+    )
+    disable_tools: bool = Field(
+        default=True,
+        description=(
+            "Disable executor tool-calling for this participant (default True: "
+            "dialogue turns are text-in/text-out). Set false to opt back in."
+        ),
     )
 
     model_config = {"extra": "allow"}
@@ -614,6 +626,7 @@ class DialogueRunner:
         payload: Dict[str, Any] = {
             "prompt": prompt,
             "phase_id": self.phase_id,
+            "disable_tools": participant.disable_tools,
         }
         if participant.model:
             payload["model"] = participant.model
