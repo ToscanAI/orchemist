@@ -337,6 +337,78 @@ class PipelineRunner:
             max_tokens=max_tokens,
         )
 
+    # ------------------------------------------------------------------
+    # Dialogue-participant executor registration (#1051)
+    # ------------------------------------------------------------------
+    # A dialogue phase names its drafter/reviewer executors under
+    # ``phase.dialogue_config.{drafter,reviewer}.executor`` — NOT the per-phase
+    # ``provider:`` field — so NO mode factory (standalone/openrouter/...) ever
+    # builds the GeminiCliExecutor a ``gemini_cli`` participant needs. These two
+    # helpers close that registration gap. They are reusable + unit-testable in
+    # isolation here, but CALLED from the sequencer dialogue-dispatch chokepoint
+    # (``sequencer/_phase.py::_resolve_dialogue_executor``) so EVERY entrypoint
+    # (CLI + daemon + web + eval + programmatic) is covered by one seam.
+    # ``gemini`` stays OUT of KNOWN_PROVIDERS and the from_providers builders map
+    # (it is a dialogue-participant concern, not a per-phase provider).
+
+    @staticmethod
+    def _build_gemini_executor(
+        default_model: Optional[str] = None,
+        default_timeout_seconds: int = 600,
+    ):
+        """Construct a :class:`GeminiCliExecutor` for dialogue participants that
+        name ``gemini_cli``.
+
+        The binary is resolved from ``$GEMINI_BINARY`` (or ``gemini`` on PATH);
+        no credential raise — the gemini CLI owns its own auth cache. Construction
+        is side-effect-free: no ``shutil.which`` / subprocess runs here (the
+        binary is only probed at execute time, ``gemini_cli_executor.py``), so a
+        missing ``gemini`` binary surfaces as an execute-time error, not a
+        registration failure.
+        """
+        import os  # noqa: PLC0415
+
+        from .executors.gemini_cli_executor import GeminiCliExecutor  # noqa: PLC0415
+
+        binary = os.environ.get("GEMINI_BINARY") or "gemini"
+        return GeminiCliExecutor(
+            binary=binary,
+            default_model=default_model,
+            default_timeout_seconds=default_timeout_seconds,
+        )
+
+    @classmethod
+    def _append_dialogue_executors(cls, executors, template):
+        """Scan a template's ``type: dialogue`` phases and append (in place,
+        idempotently) the non-default executors their participants name — today
+        only ``gemini_cli`` → :class:`GeminiCliExecutor`. Returns ``executors``.
+
+        Skips a name already satisfiable by the existing list (matched by
+        ``provider_name``), so repeated calls — multiple dialogue phases, or the
+        drafter+reviewer resolves of a single phase — never append a duplicate.
+        Does NOT touch ``KNOWN_PROVIDERS`` (gemini is a dialogue-participant
+        concern, not a per-phase provider).
+        """
+        # participant-name (normalised) -> provider_name the builder yields.
+        name_builders = {"gemini_cli": "gemini", "gemini": "gemini"}
+        present = {getattr(e, "provider_name", "") for e in executors}
+        for phase in getattr(template, "phases", []) or []:
+            dc = getattr(phase, "dialogue_config", None)
+            if dc is None:
+                continue
+            for participant in (dc.drafter, dc.reviewer):
+                name = getattr(participant, "executor", "") or ""
+                name = name.strip().lower().replace("-", "_")
+                prov = name_builders.get(name)
+                if prov == "gemini" and "gemini" not in present:
+                    executors.append(
+                        cls._build_gemini_executor(
+                            default_model=getattr(participant, "model", None)
+                        )
+                    )
+                    present.add("gemini")
+        return executors
+
     @classmethod
     def from_providers(
         cls,
